@@ -98,11 +98,14 @@ cd resilient
 
 ### Sensor Reading Example
 
-The `examples/sensor_example2.rs` file demonstrates how to use live blocks and assertions to create a resilient sensor reading system.
+## Examples
 
-### Self-Healing Example
+The `new_examples` directory contains working examples of the Resilient language:
 
-The `examples/self_healing2.rs` file shows how Resilient can recover from failures and continue operation.
+- `new_examples/simple.rs` - A minimal hello world program
+- `new_examples/live_block_demo.rs` - Demonstrates live blocks with enhanced logging
+
+> **Note**: If you encounter issues with existing examples in the `examples` directory, use the new examples as reference for the correct syntax and structure.
 
 ## Syntax Requirements
 
@@ -113,10 +116,30 @@ See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and example
 - Live blocks provide self-healing capabilities
 - Assertions validate system invariants
 
+### Utility Script
+
+If you have code that doesn't conform to Resilient's parameter requirements, you can use the provided conversion tool:
+
+```bash
+# Convert functions without parameters to Resilient-compatible format
+./convert_functions.sh input_file.rs output_file.rs
+```
+
+This will automatically add `int dummy` parameters to functions without parameters and add `0` as an argument to function calls without parameters.
+
 ## Project Status
 
-This is an MVP (Minimum Viable Product) implementation of the Resilient language. Future improvements will include:
+This is an MVP (Minimum Viable Product) implementation of the Resilient language. Recent improvements include:
 
+- Fixed all code warnings for clean compilation
+- Enhanced error messages in the interpreter
+- Improved logging for live blocks and assertions with colorized output
+- Added detailed documentation in SYNTAX.md about language requirements
+- Created helper utilities for running examples
+
+Future improvements will include:
+
+- Flexible function parameter handling (currently all functions must have parameters)
 - More sophisticated type system
 - Ownership and borrowing model
 - Compiler optimizations

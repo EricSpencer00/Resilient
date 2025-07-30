@@ -4,19 +4,33 @@ This document outlines the syntax requirements and quirks discovered during impl
 
 ## Function Declarations
 
-Functions in Resilient must always have parameters with types, even if they're not used:
+Functions in Resilient must always have parameters with types, even if they're not used. This is a strict requirement of the language:
 
 ```rust
-// Incorrect - will fail to parse
+// INCORRECT - Will fail to parse and compile
 fn main() {
     println("Hello, world!");
 }
 
-// Correct - includes a parameter even if unused
+// CORRECT - Includes a parameter even if unused
 fn main(int dummy) {
     println("Hello, world!");
 }
 ```
+
+### Function Calls
+
+When calling functions, you must provide values for all parameters:
+
+```rust
+// Correct - passes a value for the dummy parameter
+main(0);
+
+// For a function with multiple parameters
+process_data(42, "sensor1");
+```
+
+> **Note**: This is a core design choice in Resilient. While it may seem unusual compared to other languages, it helps ensure explicit parameter handling and improves code clarity in safety-critical systems.
 
 ## Variable Declarations
 

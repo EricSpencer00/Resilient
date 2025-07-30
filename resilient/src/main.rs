@@ -892,23 +892,31 @@ impl Interpreter {
         // Create a snapshot of the environment
         let env_snapshot = self.env.clone();
         
+        // Log the start of live block execution
+        eprintln!("\x1B[36m[LIVE BLOCK] Starting execution of live block\x1B[0m");
+        
         // Try to evaluate the body with multiple retries
         loop {
             match self.eval(body) {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    eprintln!("\x1B[32m[LIVE BLOCK] Successfully executed live block\x1B[0m");
+                    return Ok(value)
+                },
                 Err(error) => {
                     retry_count += 1;
                     
-                    // Log the error with more context
-                    eprintln!("[LIVE BLOCK] Error detected (attempt {}/{}): {}", 
+                    // Log the error with more context and colorized output
+                    eprintln!("\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m", 
                               retry_count, MAX_RETRIES, error);
                     
                     if retry_count >= MAX_RETRIES {
-                        eprintln!("[LIVE BLOCK] Maximum retry attempts reached, propagating error");
+                        eprintln!("\x1B[31m[LIVE BLOCK] Maximum retry attempts reached, propagating error\x1B[0m");
                         return Err(format!("Live block failed after {} attempts: {}", MAX_RETRIES, error));
                     }
                     
-                    eprintln!("[LIVE BLOCK] Restoring environment to last known good state and retrying...");
+                    eprintln!("\x1B[36m[LIVE BLOCK] Restoring environment to last known good state\x1B[0m");
+                    eprintln!("\x1B[36m[LIVE BLOCK] Retrying execution (attempt {}/{})\x1B[0m", 
+                              retry_count + 1, MAX_RETRIES);
                     
                     // Restore the environment from the snapshot
                     self.env = env_snapshot.clone();
