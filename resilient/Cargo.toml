@@ -1,0 +1,11 @@
+[package]
+name = "resilient"
+version = "0.1.0"
+edition = "2025"
+description = "A programming language designed for extreme reliability in embedded and safety-critical systems"
+authors = ["Eric Spencer"]
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+logos = "0.13"
+rustyline = "12.0.0"
