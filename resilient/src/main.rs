@@ -5,8 +5,11 @@ use std::io;
 use std::io::Write;
 use std::path::Path;
 
-// Import the typechecker module
+// Import modules
 mod typechecker;
+mod parser;
+mod repl;
+
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
 
@@ -365,7 +368,11 @@ impl Parser {
         
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
-            _ => panic!("Expected identifier after 'fn'"),
+            _ => {
+                eprintln!("Parser error: Expected identifier after 'fn', found {:?}", self.current_token);
+                // Return a placeholder to allow parsing to continue
+                String::from("error_function")
+            },
         };
         
         self.next_token(); // Skip name
@@ -374,10 +381,30 @@ impl Parser {
         if self.current_token != Token::LeftParen {
             // For better error messages, provide more context
             if name == "main" {
-                panic!("Expected '(' after function name. Functions in Resilient must have parameters, even if unused. Try: fn main(int dummy) {{ ... }}");
+                eprintln!("Parser error: Expected '(' after function name '{}'. Functions in Resilient must have parameters, even if unused. Try: fn main(int dummy) {{ ... }}", name);
             } else {
-                panic!("Expected '(' after function name");
+                eprintln!("Parser error: Expected '(' after function name '{}'", name);
             }
+            
+            // Try to recover by skipping to the opening brace
+            while self.current_token != Token::LeftBrace && self.current_token != Token::Eof {
+                self.next_token();
+            }
+            
+            if self.current_token == Token::Eof {
+                return Node::Function {
+                    name,
+                    parameters: Vec::new(),
+                    body: Box::new(Node::Block(Vec::new())),
+                };
+            }
+            
+            let body = self.parse_block_statement();
+            return Node::Function {
+                name,
+                parameters: Vec::new(),
+                body: Box::new(body),
+            };
         }
         
         self.next_token(); // Skip '('
@@ -385,7 +412,19 @@ impl Parser {
         let parameters = self.parse_function_parameters();
         
         if self.current_token != Token::LeftBrace {
-            panic!("Expected '{{' after function parameters");
+            eprintln!("Parser error: Expected '{{' after function parameters for '{}'", name);
+            // Try to recover by skipping to the opening brace
+            while self.current_token != Token::LeftBrace && self.current_token != Token::Eof {
+                self.next_token();
+            }
+            
+            if self.current_token == Token::Eof {
+                return Node::Function {
+                    name,
+                    parameters,
+                    body: Box::new(Node::Block(Vec::new())),
+                };
+            }
         }
         
         let body = self.parse_block_statement();
@@ -1189,6 +1228,15 @@ fn start_repl() -> RustylineResult<()> {
                 let mut parser = Parser::new(lexer);
                 let program = parser.parse_program();
                 
+                // Check for parser errors
+                if !parser.errors.is_empty() {
+                    eprintln!("\x1B[31mParser errors:\x1B[0m");
+                    for error in &parser.errors {
+                        eprintln!("\x1B[31m  - {}\x1B[0m", error);
+                    }
+                    continue;
+                }
+                
                 // Run type checker if enabled
                 if type_check_enabled {
                     match typechecker::TypeChecker::new().check_program(&program) {
@@ -1243,6 +1291,21 @@ fn execute_file(filename: &str, type_check: bool) -> RResult<()> {
     let lexer = Lexer::new(contents);
     let mut parser = Parser::new(lexer);
     let program = parser.parse_program();
+    
+    // Check for parser errors
+    if !parser.errors.is_empty() {
+        eprintln!("\x1B[31mParser errors:\x1B[0m");
+        for error in &parser.errors {
+            eprintln!("\x1B[31m  - {}\x1B[0m", error);
+        }
+        
+        // Only fail if there are severe errors
+        if parser.errors.iter().any(|e| e.contains("Expected '(' after function name")) {
+            return Err(format!("Failed to parse program: {} errors", parser.errors.len()));
+        } else {
+            eprintln!("\x1B[33mWarning: Continuing despite parser errors\x1B[0m");
+        }
+    }
     
     // Type checking if enabled
     if type_check {
@@ -1420,8 +1483,9 @@ fn main() {
         }
     }
     
-    // Start REPL if no file was provided
-    if let Err(e) = start_repl() {
+    // Start the enhanced REPL if no file was provided
+    let mut enhanced_repl = repl::EnhancedREPL::new();
+    if let Err(e) = enhanced_repl.run() {
         eprintln!("REPL error: {}", e);
     }
 }
