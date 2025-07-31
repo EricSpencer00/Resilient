@@ -49,8 +49,8 @@ cargo build
 # List available examples
 echo -e "\n${CYAN}Available examples:${NC}"
 echo "1. Hello World (examples/hello.rs)"
-echo "2. Self-healing with live blocks (examples/self_healing.rs)"
-echo "3. Sensor monitoring with assertions (examples/sensor_example.rs)"
+echo "2. Self-healing with live blocks (examples/self_healing2.rs)"
+echo "3. Sensor monitoring with assertions (examples/sensor_example2.rs)"
 echo "4. Comprehensive language features (examples/comprehensive.rs)"
 echo "5. Minimal example (examples/minimal.rs)"
 echo "6. Run all examples"
@@ -64,10 +64,10 @@ case $example_choice in
         run_example "examples/hello.rs" "Hello World"
         ;;
     2)
-        run_example "examples/self_healing.rs" "Self-healing with live blocks"
+        run_example "examples/self_healing2.rs" "Self-healing with live blocks"
         ;;
     3)
-        run_example "examples/sensor_example.rs" "Sensor monitoring with assertions"
+        run_example "examples/sensor_example2.rs" "Sensor monitoring with assertions"
         ;;
     4)
         run_example "examples/comprehensive.rs" "Comprehensive language features"
@@ -77,8 +77,8 @@ case $example_choice in
         ;;
     6)
         run_example "examples/hello.rs" "Hello World"
-        run_example "examples/self_healing.rs" "Self-healing with live blocks"
-        run_example "examples/sensor_example.rs" "Sensor monitoring with assertions"
+        run_example "examples/self_healing2.rs" "Self-healing with live blocks"
+        run_example "examples/sensor_example2.rs" "Sensor monitoring with assertions"
         run_example "examples/comprehensive.rs" "Comprehensive language features"
         run_example "examples/minimal.rs" "Minimal example"
         ;;

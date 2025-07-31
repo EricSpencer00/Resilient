@@ -35,7 +35,7 @@ if [ ! -f "$EXAMPLE" ]; then
 fi
 
 # Check if example is one of the working examples
-WORKING_EXAMPLES=("examples/minimal.rs" "examples/comprehensive.rs" "examples/sensor_example2.rs" "examples/self_healing2.rs")
+WORKING_EXAMPLES=("examples/hello.rs" "examples/minimal.rs" "examples/comprehensive.rs" "examples/sensor_example2.rs" "examples/self_healing2.rs")
 FOUND=0
 
 for we in "${WORKING_EXAMPLES[@]}"; do
@@ -47,7 +47,7 @@ done
 
 if [ $FOUND -eq 0 ]; then
   echo "Warning: This example may not work with the current parser."
-  echo "Working examples are: minimal, comprehensive, sensor_example2, self_healing2"
+  echo "Working examples are: hello, minimal, comprehensive, sensor_example2, self_healing2"
   echo "Proceeding anyway..."
 fi
 

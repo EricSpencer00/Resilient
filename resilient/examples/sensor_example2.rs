@@ -53,14 +53,18 @@ fn main_loop(int dummy) {
     println("Starting sensor monitoring system...");
     println("Threshold set to: " + threshold);
     
-    // The live block will handle recoverable errors by retrying
+    // The live {
+    block will handle recoverable errors by retrying
+}
     live {
         current_retry = current_retry + 1;
         
         println("\nReading sensor (attempt " + current_retry + ")...");
         let sensor_value = read_sensor(0);
         
-        // Validate the reading - if this fails, the live block will retry
+        // Validate the reading - if this fails, the live {
+    block will retry
+}
         assert(is_valid_reading(sensor_value), 
                "Invalid sensor reading detected (" + sensor_value + ")");
         
