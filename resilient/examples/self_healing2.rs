@@ -48,7 +48,9 @@ fn main(int dummy) {
         log_status("Executing unreliable operation...");
         let result = unreliable_operation(0);
         
-        // If result is negative, this will cause the live block to retry
+        // If result is negative, this will cause the live {
+    block to retry
+}
         assert(result >= 0, "Operation failed with code " + result + ", initiating recovery...");
         
         // If we get here, the operation succeeded

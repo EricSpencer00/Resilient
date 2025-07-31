@@ -1,5 +1,7 @@
 // Comprehensive example demonstrating all key features of Resilient
-// This includes: live blocks, assertions, static variables, etc.
+// This includes: live {
+    blocks, assertions, static variables, etc.
+}
 
 // ----- System status monitoring -----
 
