@@ -1,7 +1,7 @@
 ---
 id: RES-055
 title: Type preserving signatures for math builtins
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G11
 created: 2026-04-17
@@ -39,3 +39,27 @@ generally irrational, so `Float` is the right return type.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `floor(int)` and `ceil(int)` now passthrough to `Value::Int` (they
+    were demoting to `Value::Float`). Float behavior unchanged.
+  - `pow(int, int)` returns `Value::Int` via `i64::checked_pow`.
+    Overflow → clean `pow: integer overflow ({base} ^ {exp})` error.
+    Negative int exponent → `pow: negative exponent {exp} undefined for
+    int base` (since negative powers are non-integer).
+  - Mixed int↔float / pure float `pow` keeps original `f64::powf`.
+  - `sqrt`, `abs`, `min`, `max` deliberately untouched (already
+    correct).
+- 2026-04-17 tests:
+  - 9 new unit tests in `main.rs` `mod tests` covering each preserved
+    return type + the overflow / negative-exp error paths + an
+    `abs/min/max` regression check.
+  - Existing `math_builtins_sqrt_pow_floor_ceil` test updated — it had
+    been pinning the old float behavior for `pow(2, 10)`; now expects
+    `Value::Int(1024)`. Comment notes the RES-055 change.
+  - New `examples/int_math.rs` + `int_math.expected.txt` golden:
+    int-pure pipeline through `pow(2, 8)`, `floor(7)`, `ceil(-3)` →
+    prints `256\n7\n-3`.
+- 2026-04-17 verification: 162 tests default / 171 with `--features
+  z3`. `cargo build`, `cargo clippy -- -D warnings` clean both
+  feature configs. Manual end-to-end run of `int_math.rs` confirms
+  no float coercion in the output.

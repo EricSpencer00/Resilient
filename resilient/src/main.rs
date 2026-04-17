@@ -2327,15 +2327,30 @@ fn builtin_sqrt(args: &[Value]) -> RResult<Value> {
     }
 }
 
-/// `pow(base, exp)` — base^exp. Float-returning.
+/// `pow(base, exp)` — base^exp.
+///
+/// RES-055: type-preserving. `pow(int, int)` returns `Int` via
+/// checked exponentiation (overflow is a clean error, not a panic).
+/// Negative integer exponents are a runtime error since `n^-k` is
+/// generally not an integer. Mixed int↔float or any float arg keeps
+/// the original float behavior.
 fn builtin_pow(args: &[Value]) -> RResult<Value> {
-    let to_f = |v: &Value| match v {
-        Value::Int(i) => Some(*i as f64),
-        Value::Float(f) => Some(*f),
-        _ => None,
-    };
     match args {
+        [Value::Int(base), Value::Int(exp)] => {
+            // Negative exponent isn't representable as Int.
+            let exp_u32: u32 = (*exp).try_into().map_err(|_| {
+                format!("pow: negative exponent {} undefined for int base", exp)
+            })?;
+            base.checked_pow(exp_u32).map(Value::Int).ok_or_else(|| {
+                format!("pow: integer overflow ({} ^ {})", base, exp)
+            })
+        }
         [a, b] => {
+            let to_f = |v: &Value| match v {
+                Value::Int(i) => Some(*i as f64),
+                Value::Float(f) => Some(*f),
+                _ => None,
+            };
             let (Some(base), Some(exp)) = (to_f(a), to_f(b)) else {
                 return Err(format!("pow: expected numeric args, got {:?} and {:?}", a, b));
             };
@@ -2345,20 +2360,27 @@ fn builtin_pow(args: &[Value]) -> RResult<Value> {
     }
 }
 
-/// `floor(x)` — round toward negative infinity. Always returns float.
+/// `floor(x)` — round toward negative infinity.
+///
+/// RES-055: type-preserving. `floor(int)` is the identity — the input
+/// is already an integer, no point demoting it to f64. `floor(float)`
+/// keeps the original float-returning semantics.
 fn builtin_floor(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Int(i)] => Ok(Value::Float(*i as f64)),
+        [Value::Int(i)] => Ok(Value::Int(*i)),
         [Value::Float(f)] => Ok(Value::Float(f.floor())),
         [other] => Err(format!("floor: expected numeric, got {:?}", other)),
         _ => Err(format!("floor: expected 1 argument, got {}", args.len())),
     }
 }
 
-/// `ceil(x)` — round toward positive infinity. Always returns float.
+/// `ceil(x)` — round toward positive infinity.
+///
+/// RES-055: type-preserving. Same logic as floor — `ceil(int)` is the
+/// identity, `ceil(float)` returns float.
 fn builtin_ceil(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::Int(i)] => Ok(Value::Float(*i as f64)),
+        [Value::Int(i)] => Ok(Value::Int(*i)),
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
         [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
@@ -5382,6 +5404,8 @@ mod tests {
 
     #[test]
     fn math_builtins_sqrt_pow_floor_ceil() {
+        // RES-055: pow/floor/ceil are type-preserving — int args
+        // produce Int results. sqrt is intentionally still Float.
         let src = r#"
             let a = sqrt(16);
             let b = pow(2, 10);
@@ -5392,8 +5416,11 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         let get = |n: &str| interp.env.get(n).unwrap();
+        // sqrt(int) is still Float — irrational results are the norm.
         assert!(matches!(get("a"), Value::Float(v) if (v - 4.0).abs() < 1e-9));
-        assert!(matches!(get("b"), Value::Float(v) if (v - 1024.0).abs() < 1e-9));
+        // pow(int, int) is now Int (RES-055).
+        assert!(matches!(get("b"), Value::Int(1024)));
+        // floor/ceil of float still return Float.
         assert!(matches!(get("c"), Value::Float(v) if (v - 3.0).abs() < 1e-9));
         assert!(matches!(get("d"), Value::Float(v) if (v - 4.0).abs() < 1e-9));
     }
@@ -5661,6 +5688,107 @@ mod tests {
         match interp.env.get("y").expect("y defined") {
             Value::Int(v) => assert_eq!(v, 42),
             other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    // ---------- RES-055: type-preserving math builtins ----------
+
+    #[test]
+    fn floor_of_int_returns_int() {
+        match builtin_floor(&[Value::Int(7)]).unwrap() {
+            Value::Int(7) => {}
+            other => panic!("expected Int(7), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn floor_of_float_still_returns_float() {
+        match builtin_floor(&[Value::Float(3.7)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 3.0),
+            other => panic!("expected Float(3.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ceil_of_negative_int_returns_int() {
+        match builtin_ceil(&[Value::Int(-3)]).unwrap() {
+            Value::Int(-3) => {}
+            other => panic!("expected Int(-3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ceil_of_float_still_returns_float() {
+        match builtin_ceil(&[Value::Float(-2.4)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, -2.0),
+            other => panic!("expected Float(-2.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pow_of_int_int_returns_int() {
+        match builtin_pow(&[Value::Int(2), Value::Int(10)]).unwrap() {
+            Value::Int(1024) => {}
+            other => panic!("expected Int(1024), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pow_int_overflow_is_clean_error() {
+        // 2^63 overflows i64.
+        let err = builtin_pow(&[Value::Int(2), Value::Int(63)])
+            .expect_err("must overflow");
+        assert!(err.contains("overflow"), "error should mention overflow: {}", err);
+    }
+
+    #[test]
+    fn pow_with_negative_int_exponent_errors() {
+        let err = builtin_pow(&[Value::Int(2), Value::Int(-1)])
+            .expect_err("negative exp must error for int base");
+        assert!(
+            err.contains("negative exponent"),
+            "error should mention negative exponent: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pow_keeps_float_behavior_when_either_arg_is_float() {
+        match builtin_pow(&[Value::Float(2.0), Value::Int(3)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 8.0),
+            other => panic!("expected Float(8.0), got {:?}", other),
+        }
+        match builtin_pow(&[Value::Int(2), Value::Float(3.0)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 8.0),
+            other => panic!("expected Float(8.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sqrt_of_int_still_returns_float() {
+        // RES-055: sqrt deliberately UNCHANGED — irrational results
+        // are the norm, so Float is the right return type.
+        match builtin_sqrt(&[Value::Int(4)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 2.0),
+            other => panic!("expected Float(2.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn abs_min_max_remain_type_preserving() {
+        // Sanity check that our changes didn't regress the builtins
+        // that were already type-preserving.
+        match builtin_abs(&[Value::Int(-5)]).unwrap() {
+            Value::Int(5) => {}
+            other => panic!("abs(Int(-5)): expected Int(5), got {:?}", other),
+        }
+        match builtin_min(&[Value::Int(2), Value::Int(7)]).unwrap() {
+            Value::Int(2) => {}
+            other => panic!("min: expected Int(2), got {:?}", other),
+        }
+        match builtin_max(&[Value::Int(2), Value::Int(7)]).unwrap() {
+            Value::Int(7) => {}
+            other => panic!("max: expected Int(7), got {:?}", other),
         }
     }
 }
