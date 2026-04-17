@@ -203,6 +203,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::Match { scrutinee, arms } => {
+                let _ = self.check_node(scrutinee)?;
+                for (_, body) in arms {
+                    let _ = self.check_node(body)?;
+                }
+                Ok(Type::Void)
+            },
+
             Node::StructDecl { .. } => Ok(Type::Void),
 
             Node::StructLiteral { fields, .. } => {

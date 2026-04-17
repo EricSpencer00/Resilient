@@ -36,6 +36,9 @@ enum Token {
     Struct,
     New,
     Dot,
+    Match,
+    FatArrow,
+    Underscore,
     
     // Literals
     Identifier(String),
@@ -156,6 +159,9 @@ impl Lexer {
                 if self.peek_char() == '=' {
                     self.read_char();
                     Token::Equal
+                } else if self.peek_char() == '>' {
+                    self.read_char();
+                    Token::FatArrow
                 } else {
                     Token::Assign
                 }
@@ -283,6 +289,8 @@ impl Lexer {
                         "invariant" => Token::Invariant,
                         "struct" => Token::Struct,
                         "new" => Token::New,
+                        "match" => Token::Match,
+                        "_" => Token::Underscore,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -420,6 +428,17 @@ impl Lexer {
     }
 }
 
+/// RES-039: patterns for `match` arms.
+#[derive(Debug, Clone)]
+enum Pattern {
+    /// Matches a literal int, float, string, or bool.
+    Literal(Node),
+    /// Binds the scrutinee to an identifier; always matches.
+    Identifier(String),
+    /// Matches anything without binding (`_`).
+    Wildcard,
+}
+
 // AST nodes for our parser
 #[derive(Debug, Clone)]
 enum Node {
@@ -505,6 +524,11 @@ enum Node {
     CallExpression {
         function: Box<Node>,
         arguments: Vec<Node>,
+    },
+    /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
+    Match {
+        scrutinee: Box<Node>,
+        arms: Vec<(Pattern, Node)>,
     },
     /// RES-038: `struct NAME { TYPE FIELD, ... }` declaration. Fields
     /// are carried but currently unused at runtime — the typechecker
@@ -1237,6 +1261,7 @@ impl Parser {
             },
             Token::LeftBracket => Some(self.parse_array_literal()),
             Token::New => Some(self.parse_struct_literal()),
+            Token::Match => Some(self.parse_match_expression()),
             _ => None,
         };
         
@@ -1478,6 +1503,88 @@ impl Parser {
             }
         }
         Node::StructLiteral { name, fields }
+    }
+
+    /// Parse `match SCRUTINEE { PATTERN => EXPR, ... }`. Current token
+    /// is `match` on entry; on exit it's `}`.
+    fn parse_match_expression(&mut self) -> Node {
+        self.next_token(); // skip 'match'
+        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+        self.next_token(); // past last token of scrutinee
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after match scrutinee, found {:?}", tok));
+            return Node::Match {
+                scrutinee: Box::new(scrutinee),
+                arms: Vec::new(),
+            };
+        }
+
+        let mut arms: Vec<(Pattern, Node)> = Vec::new();
+        if self.peek_token == Token::RightBrace {
+            self.next_token(); // to '}'
+            return Node::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            };
+        }
+
+        self.next_token(); // skip '{'
+        loop {
+            let pattern = self.parse_pattern();
+            self.next_token(); // advance past the pattern to '=>'
+            if self.current_token != Token::FatArrow {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected '=>' after match pattern, found {:?}",
+                    tok
+                ));
+                break;
+            }
+            self.next_token(); // skip '=>'
+            let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+            arms.push((pattern, body));
+            self.next_token(); // past last token of body
+            if self.current_token == Token::Comma {
+                self.next_token();
+            }
+            if self.current_token == Token::RightBrace {
+                break;
+            }
+            if matches!(self.current_token, Token::Eof) {
+                self.record_error("Unexpected EOF inside match expression".to_string());
+                break;
+            }
+        }
+
+        Node::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        }
+    }
+
+    /// Parse a single match pattern. On exit current_token is the
+    /// pattern's last token.
+    fn parse_pattern(&mut self) -> Pattern {
+        match &self.current_token {
+            Token::Underscore => Pattern::Wildcard,
+            Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral(*n)),
+            Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral(*f)),
+            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral(s.clone())),
+            Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral(*b)),
+            Token::Identifier(name) => Pattern::Identifier(name.clone()),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Unsupported match pattern starting with {:?}",
+                    tok
+                ));
+                Pattern::Wildcard
+            }
+        }
+        // Caller expects current_token on the last token of the pattern.
+        // All of the above are single-token patterns, so no advance.
     }
 
     /// Parse `.field`. current_token is `.` on entry; on exit current is `field`.
@@ -2227,6 +2334,28 @@ impl Interpreter {
                 }
                 Ok(Value::Array(out))
             },
+            Node::Match { scrutinee, arms } => {
+                let sval = self.eval(scrutinee)?;
+                for (pattern, body) in arms {
+                    if let Some(binding) = self.match_pattern(pattern, &sval)? {
+                        if let Some((name, value)) = binding {
+                            // Create a transient enclosing env so the
+                            // identifier pattern's binding doesn't
+                            // leak out of the arm.
+                            let saved = self.env.clone();
+                            self.env = Environment::new_enclosed(saved.clone());
+                            self.env.set(name, value);
+                            let result = self.eval(body);
+                            self.env = saved;
+                            return result;
+                        } else {
+                            return self.eval(body);
+                        }
+                    }
+                }
+                // No arm matched → void.
+                Ok(Value::Void)
+            },
             Node::StructDecl { .. } => {
                 // Declarations are pure compile-time metadata today.
                 // The typechecker (G7) will register them in a struct
@@ -2733,6 +2862,34 @@ impl Interpreter {
         }
     }
     
+    /// RES-039: test a pattern against a value. On match, returns
+    /// `Some(binding)` where binding is `Some((name, value))` for an
+    /// identifier pattern or `None` otherwise. On no match, returns `None`.
+    #[allow(clippy::type_complexity)]
+    fn match_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value: &Value,
+    ) -> RResult<Option<Option<(String, Value)>>> {
+        match pattern {
+            Pattern::Wildcard => Ok(Some(None)),
+            Pattern::Identifier(name) => Ok(Some(Some((name.clone(), value.clone())))),
+            Pattern::Literal(node) => {
+                let pat_val = self.eval(node)?;
+                let is_equal = match (&pat_val, value) {
+                    (Value::Int(a), Value::Int(b)) => a == b,
+                    (Value::Float(a), Value::Float(b)) => a == b,
+                    (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
+                    (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
+                    (Value::String(a), Value::String(b)) => a == b,
+                    (Value::Bool(a), Value::Bool(b)) => a == b,
+                    _ => false,
+                };
+                Ok(if is_equal { Some(None) } else { None })
+            }
+        }
+    }
+
     fn is_truthy(&self, value: &Value) -> bool {
         match value {
             Value::Bool(b) => *b,
@@ -3393,6 +3550,85 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- match (RES-039) ----------
+
+    #[test]
+    fn match_literal_arm() {
+        let src = r#"
+            let r = match 2 {
+                0 => "zero",
+                1 => "one",
+                2 => "two",
+                n => "other",
+            };
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("r").unwrap() {
+            Value::String(s) => assert_eq!(s, "two"),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_identifier_binding() {
+        let src = r#"
+            let r = match 42 {
+                0 => -1,
+                n => n * 2,
+            };
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(84)));
+    }
+
+    #[test]
+    fn match_wildcard_falls_through() {
+        let src = r#"
+            let r = match "nope" {
+                "yes" => 1,
+                _ => 0,
+            };
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(0)));
+    }
+
+    #[test]
+    fn match_no_arm_matches_returns_void() {
+        let src = r#"
+            let r = match 5 {
+                0 => 1,
+                1 => 2,
+            };
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Void));
+    }
+
+    #[test]
+    fn match_binding_does_not_leak() {
+        // Identifier pattern binding must not escape the match.
+        let src = r#"
+            let m = match 1 { n => n + 1, };
+            let outer = 99;
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        // `n` should NOT be visible outside the match arm.
+        assert!(interp.env.get("n").is_none());
+        assert!(matches!(interp.env.get("m").unwrap(), Value::Int(2)));
     }
 
     // ---------- Structs (RES-038) ----------
