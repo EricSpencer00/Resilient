@@ -492,7 +492,11 @@ enum Pattern {
 // AST nodes for our parser
 #[derive(Debug, Clone)]
 enum Node {
-    Program(Vec<Node>),
+    /// RES-077 (G6 partial): top-level statements carry source spans
+    /// so diagnostics can point at the originating line:col. Sub-
+    /// expressions inside each statement still have no spans —
+    /// RES-078 / RES-079 cover those.
+    Program(Vec<span::Spanned<Node>>),
     /// RES-073: top-level `use "path";` import. The path is resolved
     /// relative to the file containing the `use`. Resolved away by
     /// `expand_uses` (in `imports.rs`) before the program reaches the
@@ -702,15 +706,34 @@ impl Parser {
     }
     
     fn parse_program(&mut self) -> Node {
-        let mut program = Vec::new();
-        
+        let mut program: Vec<span::Spanned<Node>> = Vec::new();
+
         while self.current_token != Token::Eof {
+            // RES-077 (G6 partial): capture each statement's source
+            // span by snapshotting the lexer's last_token_line/column
+            // BEFORE parse_statement and AFTER. End-position reflects
+            // the lexer's cursor at the moment the statement-recognizer
+            // returned, which is close enough to the true end-of-stmt
+            // for diagnostics (off by at most one whitespace token).
+            let start = span::Pos::new(
+                self.lexer.last_token_line,
+                self.lexer.last_token_column,
+                0,
+            );
             if let Some(statement) = self.parse_statement() {
-                program.push(statement);
+                let end = span::Pos::new(
+                    self.lexer.last_token_line,
+                    self.lexer.last_token_column,
+                    0,
+                );
+                program.push(span::Spanned::new(
+                    statement,
+                    span::Span::new(start, end),
+                ));
             }
             self.next_token();
         }
-        
+
         Node::Program(program)
     }
     
@@ -3045,23 +3068,24 @@ impl Interpreter {
         }
     }
     
-    fn eval_program(&mut self, statements: &[Node]) -> RResult<Value> {
+    fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
         // are Rc<RefCell> so the post-hoist mutation of the env is
         // visible to every previously-captured handle.
+        // RES-077: statements are now Spanned<Node>; deref via .node.
         for statement in statements {
-            if matches!(statement, Node::Function { .. }) {
-                self.eval(statement)?;
+            if matches!(statement.node, Node::Function { .. }) {
+                self.eval(&statement.node)?;
             }
         }
 
         let mut result = Value::Void;
         for statement in statements {
-            if matches!(statement, Node::Function { .. }) {
+            if matches!(statement.node, Node::Function { .. }) {
                 continue;
             }
-            result = self.eval(statement)?;
+            result = self.eval(&statement.node)?;
             if let Value::Return(value) = result {
                 return Ok(*value);
             }
@@ -3941,7 +3965,7 @@ mod tests {
         match program {
             Node::Program(stmts) => {
                 assert_eq!(stmts.len(), 1);
-                match &stmts[0] {
+                match &stmts[0].node {
                     Node::LetStatement { name, value, .. } => {
                         assert_eq!(name, "x");
                         assert!(matches!(**value, Node::IntegerLiteral(42)));
@@ -3962,7 +3986,7 @@ mod tests {
         let (program, errors) = parse("fn main() { let x = 1; }");
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
         match program {
-            Node::Program(stmts) => match &stmts[0] {
+            Node::Program(stmts) => match &stmts[0].node {
                 Node::Function { name, parameters, .. } => {
                     assert_eq!(name, "main");
                     assert!(parameters.is_empty(), "expected no params, got {:?}", parameters);
@@ -3978,7 +4002,7 @@ mod tests {
         let (program, errors) = parse("fn add(int a, int b) { return a + b; }");
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
         match program {
-            Node::Program(stmts) => match &stmts[0] {
+            Node::Program(stmts) => match &stmts[0].node {
                 Node::Function { name, parameters, .. } => {
                     assert_eq!(name, "add");
                     assert_eq!(
@@ -4600,7 +4624,7 @@ mod tests {
         let (p, errors) = parse("let x: int = 42;");
         assert!(errors.is_empty(), "{:?}", errors);
         match p {
-            Node::Program(stmts) => match &stmts[0] {
+            Node::Program(stmts) => match &stmts[0].node {
                 Node::LetStatement { name, value, type_annot } => {
                     assert_eq!(name, "x");
                     assert_eq!(type_annot.as_deref(), Some("int"));
@@ -4632,7 +4656,7 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors);
         // Find the Function node to check its return_type.
         match p {
-            Node::Program(stmts) => match &stmts[0] {
+            Node::Program(stmts) => match &stmts[0].node {
                 Node::Function { name, return_type, .. } => {
                     assert_eq!(name, "add");
                     assert_eq!(return_type.as_deref(), Some("int"));
@@ -5749,7 +5773,7 @@ mod tests {
         let (program, errors) = parse("fn foo() { return; }");
         assert!(errors.is_empty(), "errors: {:?}", errors);
         match program {
-            Node::Program(stmts) => match &stmts[0] {
+            Node::Program(stmts) => match &stmts[0].node {
                 Node::Function { body, .. } => match body.as_ref() {
                     Node::Block(inner) => match &inner[0] {
                         Node::ReturnStatement { value } => assert!(value.is_none()),
@@ -5951,6 +5975,36 @@ mod tests {
         let Value::Array(mid) = &outer[1] else { panic!("mid"); };
         let Value::Array(leaf) = &mid[0] else { panic!("leaf"); };
         assert!(matches!(leaf[0], Value::Int(99)));
+    }
+
+    // ---------- RES-077: Program statements carry Span ----------
+
+    #[test]
+    fn program_statements_carry_non_default_spans() {
+        // RES-077: every top-level statement comes back as a
+        // Spanned<Node> with a populated Span. Use two statements
+        // separated by a newline so we can assert the second's start
+        // line is strictly later than the first's.
+        let src = "let x = 1;\nlet y = 2;";
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program, got {:?}", program);
+        };
+        assert_eq!(stmts.len(), 2);
+        let s0 = &stmts[0];
+        let s1 = &stmts[1];
+        // Spans must be non-default — a default Span has line 0.
+        assert!(s0.span.start.line >= 1, "stmt0 start line: {:?}", s0.span);
+        assert!(s1.span.start.line >= 1, "stmt1 start line: {:?}", s1.span);
+        // And ordered: stmt 1 starts on a later line than stmt 0.
+        assert!(
+            s1.span.start.line > s0.span.start.line,
+            "expected line order, got s0={:?} s1={:?}",
+            s0.span, s1.span
+        );
+        // The inner node still has its existing shape.
+        assert!(matches!(s0.node, Node::LetStatement { .. }));
     }
 
     #[test]

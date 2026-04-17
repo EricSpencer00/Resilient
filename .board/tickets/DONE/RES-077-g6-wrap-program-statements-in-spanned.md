@@ -1,7 +1,7 @@
 ---
 id: RES-077
 title: G6 wrap Program statements in Spanned
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -62,3 +62,29 @@ that's RES-078 / RES-079.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `Node::Program(Vec<Node>)` → `Node::Program(Vec<span::Spanned<Node>>)`.
+  - `Parser::parse_program` snapshots `lexer.last_token_line/column`
+    before and after each `parse_statement` to populate the per-stmt
+    `Span`. Offsets remain 0 (we don't yet thread them); line/column
+    are the actionable parts.
+  - `Interpreter::eval_program` signature `&[Node]` → `&[Spanned<Node>]`,
+    derefs via `.node` for both the function-hoist pre-pass and the
+    main eval loop.
+  - `typechecker::check_program` mirror update — both the contract-
+    table pre-pass and the per-stmt `check_node` loop deref `.node`.
+  - `imports::expand_uses` rewritten to thread `Spanned<Node>` through
+    the splice — the `Node::Use` destructure happens on `stmt.node`
+    and recursive imports preserve span on the inserted statements.
+  - 6 in-tree test sites that did `match &stmts[0] { ... }` updated
+    to `match &stmts[0].node { ... }` via a single targeted sed.
+- 2026-04-17 acceptance test: `program_statements_carry_non_default_spans`
+  parses a two-statement source, asserts both `Spanned`s have
+  `start.line >= 1`, and asserts the second statement's start line is
+  strictly later than the first's. Pre-existing parser shape test
+  (`parser_let_statement_produces_expected_shape`) updated to reach
+  through `.node`.
+- 2026-04-17 verification: 166 unit + 1 golden + 6 smoke = 173 tests
+  default. With `--features z3`: 174 + 1 + 7 = 182 tests. Clippy
+  clean both ways. Diff is ~80 lines net (well under the 250-line
+  guidance) — the limit on scope held.

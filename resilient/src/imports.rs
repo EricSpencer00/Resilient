@@ -21,6 +21,7 @@
 //!
 //! Those are intentional follow-ups; this is the foundation.
 
+use crate::span::Spanned;
 use crate::{parse, Node};
 use std::collections::HashSet;
 use std::fs;
@@ -40,15 +41,19 @@ pub fn expand_uses(
     base_dir: &Path,
     loaded: &mut HashSet<PathBuf>,
 ) -> Result<(), String> {
+    // RES-077: top-level statements are now Spanned<Node>. Destructure
+    // each `Spanned` to inspect / route the inner node, but preserve
+    // the span on whatever we keep (so once RES-078..080 add spans to
+    // sub-expressions the diagnostic chain stays intact end-to-end).
     let stmts = match program {
         Node::Program(stmts) => stmts,
         _ => return Ok(()),
     };
 
-    let mut expanded: Vec<Node> = Vec::with_capacity(stmts.len());
+    let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
-        if let Node::Use { path } = stmt {
-            let target = resolve_use_path(base_dir, &path)?;
+        if let Node::Use { path } = &stmt.node {
+            let target = resolve_use_path(base_dir, path)?;
 
             // Cycle / already-loaded check: canonicalize so that
             // `./helpers.res` and `helpers.res` collapse to one entry.
@@ -77,7 +82,7 @@ pub fn expand_uses(
             // drained).
             if let Node::Program(imported_stmts) = imported_program {
                 for s in imported_stmts {
-                    if !matches!(s, Node::Use { .. }) {
+                    if !matches!(s.node, Node::Use { .. }) {
                         expanded.push(s);
                     }
                 }

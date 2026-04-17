@@ -427,6 +427,8 @@ impl TypeChecker {
                 // in the contract table. Mirrors the interpreter's
                 // function-hoisting pass so call sites can fold contracts
                 // even for forward references.
+                // RES-077: top-level statements are now Spanned<Node>;
+                // deref via .node for the existing destructure.
                 for stmt in statements {
                     if let Node::Function {
                         name,
@@ -434,7 +436,7 @@ impl TypeChecker {
                         requires,
                         ensures,
                         ..
-                    } = stmt
+                    } = &stmt.node
                     {
                         self.contract_table.insert(
                             name.clone(),
@@ -449,7 +451,7 @@ impl TypeChecker {
 
                 let mut result_type = Type::Void;
                 for stmt in statements {
-                    result_type = self.check_node(stmt)?;
+                    result_type = self.check_node(&stmt.node)?;
                 }
                 Ok(result_type)
             }
