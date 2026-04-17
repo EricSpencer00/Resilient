@@ -3872,6 +3872,62 @@ mod tests {
         assert!(err.contains("invalid"), "{}", err);
     }
 
+    // ---------- Static contract discharge (RES-060) ----------
+
+    #[test]
+    fn contract_tautology_passes_typecheck() {
+        // `5 != 0` is provably true — the typechecker folds it.
+        typecheck_src(r#"
+            fn f() requires 5 != 0 { return 1; }
+        "#).unwrap();
+    }
+
+    #[test]
+    fn contract_contradiction_rejected_at_compile_time() {
+        let err = typecheck_src(r#"
+            fn f() requires 0 != 0 { return 1; }
+        "#).unwrap_err();
+        assert!(
+            err.contains("contract can never hold"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn contract_literal_false_rejected() {
+        let err = typecheck_src(r#"
+            fn f() requires false { return 1; }
+        "#).unwrap_err();
+        assert!(
+            err.contains("contract can never hold"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn contract_with_free_variable_not_folded() {
+        // `x > 0` can't be proven at compile time; typecheck should
+        // accept it and leave the check for runtime.
+        typecheck_src(r#"
+            fn f(int x) requires x > 0 { return x; }
+        "#).unwrap();
+    }
+
+    #[test]
+    fn contract_complex_arithmetic_folds() {
+        // 2 + 3 == 5 → tautology.
+        typecheck_src(r#"
+            fn f() requires 2 + 3 == 5 { return 1; }
+        "#).unwrap();
+        // 2 + 3 == 4 → contradiction.
+        let err = typecheck_src(r#"
+            fn g() requires 2 + 3 == 4 { return 1; }
+        "#).unwrap_err();
+        assert!(err.contains("never hold"), "unexpected: {}", err);
+    }
+
     // ---------- Typechecker rejection (RES-053) ----------
 
     fn typecheck_src(src: &str) -> Result<(), String> {

@@ -56,6 +56,76 @@ fn compatible(a: &Type, b: &Type) -> bool {
     a == b || matches!(a, Type::Any) || matches!(b, Type::Any)
 }
 
+/// RES-060: fold a contract expression down to a concrete boolean if
+/// it has no free variables. Returns:
+///   Some(true)  — provably always true (tautology, accept and discharge)
+///   Some(false) — provably always false (contradiction, reject)
+///   None        — can't decide statically (leave for runtime check)
+///
+/// This is the first static-verification brick in Phase 4. G9b will
+/// replace this with a real SMT layer that can also reason about
+/// bindings, but the shape of the return type stays the same.
+fn fold_const_bool(n: &Node) -> Option<bool> {
+    match n {
+        Node::BooleanLiteral(b) => Some(*b),
+        Node::PrefixExpression { operator, right } if operator == "!" => {
+            fold_const_bool(right).map(|b| !b)
+        }
+        Node::InfixExpression { left, operator, right } => {
+            match operator.as_str() {
+                "&&" => match (fold_const_bool(left), fold_const_bool(right)) {
+                    (Some(a), Some(b)) => Some(a && b),
+                    (Some(false), _) | (_, Some(false)) => Some(false),
+                    _ => None,
+                },
+                "||" => match (fold_const_bool(left), fold_const_bool(right)) {
+                    (Some(a), Some(b)) => Some(a || b),
+                    (Some(true), _) | (_, Some(true)) => Some(true),
+                    _ => None,
+                },
+                "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+                    let l = fold_const_i64(left)?;
+                    let r = fold_const_i64(right)?;
+                    Some(match operator.as_str() {
+                        "==" => l == r,
+                        "!=" => l != r,
+                        "<" => l < r,
+                        ">" => l > r,
+                        "<=" => l <= r,
+                        ">=" => l >= r,
+                        _ => unreachable!(),
+                    })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Fold an integer-typed expression to a concrete i64 if no free vars.
+fn fold_const_i64(n: &Node) -> Option<i64> {
+    match n {
+        Node::IntegerLiteral(v) => Some(*v),
+        Node::PrefixExpression { operator, right } if operator == "-" => {
+            fold_const_i64(right).map(|v| -v)
+        }
+        Node::InfixExpression { left, operator, right } => {
+            let l = fold_const_i64(left)?;
+            let r = fold_const_i64(right)?;
+            match operator.as_str() {
+                "+" => l.checked_add(r),
+                "-" => l.checked_sub(r),
+                "*" => l.checked_mul(r),
+                "/" if r != 0 => l.checked_div(r),
+                "%" if r != 0 => l.checked_rem(r),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 // Environment for storing type information
 #[derive(Debug, Clone)]
 pub struct TypeEnvironment {
@@ -221,7 +291,7 @@ impl TypeChecker {
         match node {
             Node::Program(_statements) => self.check_program(node),
             
-            Node::Function { name, parameters, body, return_type: declared_rt, .. } => {
+            Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt } => {
                 let mut param_types = Vec::new();
 
                 // Create a new enclosed environment for function body
@@ -236,6 +306,19 @@ impl TypeChecker {
 
                 // Temporarily swap environments
                 std::mem::swap(&mut self.env, &mut function_env);
+
+                // RES-060: statically fold every requires / ensures
+                // clause. A contradiction is a compile-time error; a
+                // tautology is discharged; anything else is left for
+                // runtime.
+                for clause in requires.iter().chain(ensures.iter()) {
+                    if let Some(false) = fold_const_bool(clause) {
+                        return Err(format!(
+                            "fn {}: contract can never hold (statically false clause)",
+                            name
+                        ));
+                    }
+                }
 
                 // Check function body
                 let body_type = self.check_node(body)?;
