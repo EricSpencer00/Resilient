@@ -33,6 +33,9 @@ enum Token {
     Requires,
     Ensures,
     Invariant,
+    Struct,
+    New,
+    Dot,
     
     // Literals
     Identifier(String),
@@ -243,6 +246,11 @@ impl Lexer {
             '}' => Token::RightBrace,
             '[' => Token::LeftBracket,
             ']' => Token::RightBracket,
+            // RES-038: `.` is now a real token (field access). Numeric
+            // literals are still fine because read_number consumes `.`
+            // before the tokenizer can dispatch here — digit check
+            // comes first in next_token's fall-through arm.
+            '.' => Token::Dot,
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,
@@ -273,6 +281,8 @@ impl Lexer {
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
                         "invariant" => Token::Invariant,
+                        "struct" => Token::Struct,
+                        "new" => Token::New,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -496,6 +506,31 @@ enum Node {
         function: Box<Node>,
         arguments: Vec<Node>,
     },
+    /// RES-038: `struct NAME { TYPE FIELD, ... }` declaration. Fields
+    /// are carried but currently unused at runtime — the typechecker
+    /// (G7) will register them in a struct table to verify literal
+    /// construction.
+    #[allow(dead_code)]
+    StructDecl {
+        name: String,
+        fields: Vec<(String, String)>, // (type, field_name)
+    },
+    /// RES-038: `NAME { field: expr, ... }` struct literal.
+    StructLiteral {
+        name: String,
+        fields: Vec<(String, Node)>,
+    },
+    /// RES-038: `target.field` read.
+    FieldAccess {
+        target: Box<Node>,
+        field: String,
+    },
+    /// RES-038: `target.field = expr` write.
+    FieldAssignment {
+        target: Box<Node>,
+        field: String,
+        value: Box<Node>,
+    },
     /// RES-032: `[e1, e2, e3]` array literal.
     ArrayLiteral(Vec<Node>),
     /// RES-032: `a[i]` read.
@@ -579,6 +614,7 @@ impl Parser {
     fn parse_statement(&mut self) -> Option<Node> {
         match self.current_token {
             Token::Function => Some(self.parse_function()),
+            Token::Struct => Some(self.parse_struct_decl()),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
             Token::Return => Some(self.parse_return_statement()),
@@ -596,10 +632,13 @@ impl Parser {
             Token::Identifier(_) if self.peek_token == Token::Assign => {
                 Some(self.parse_assignment())
             }
-            // Index assignment: `IDENT[...] = EXPR;` — handled by parsing
-            // the left-hand side as an expression (which becomes an
-            // IndexExpression), then checking for `=`.
-            Token::Identifier(_) if self.peek_token == Token::LeftBracket => {
+            // Index / field assignment: `IDENT[...] = EXPR;` or
+            // `IDENT.field.more = EXPR;`. We let the expression parser
+            // build the full LHS, then disambiguate at the `=`.
+            Token::Identifier(_)
+                if self.peek_token == Token::LeftBracket
+                    || self.peek_token == Token::Dot =>
+            {
                 Some(self.parse_maybe_index_assignment())
             }
             _ => self.parse_expression_statement(),
@@ -622,11 +661,16 @@ impl Parser {
             if self.peek_token == Token::Semicolon {
                 self.next_token();
             }
-            // Destructure the IndexExpression we just built.
+            // Destructure the LHS to pick the right assignment shape.
             match lhs {
                 Node::IndexExpression { target, index } => Node::IndexAssignment {
                     target,
                     index,
+                    value: Box::new(value),
+                },
+                Node::FieldAccess { target, field } => Node::FieldAssignment {
+                    target,
+                    field,
                     value: Box::new(value),
                 },
                 _ => Node::ExpressionStatement(Box::new(lhs)),
@@ -1192,6 +1236,7 @@ impl Parser {
                 expr
             },
             Token::LeftBracket => Some(self.parse_array_literal()),
+            Token::New => Some(self.parse_struct_literal()),
             _ => None,
         };
         
@@ -1218,6 +1263,10 @@ impl Parser {
                 Token::LeftBracket => {
                     self.next_token(); // move onto '['
                     self.parse_index_expression(current_left)
+                },
+                Token::Dot => {
+                    self.next_token(); // move onto '.'
+                    self.parse_field_access(current_left)
                 },
                 _ => Some(current_left),
             };
@@ -1306,6 +1355,148 @@ impl Parser {
         args
     }
 
+    /// Parse `struct NAME { TYPE FIELD, ... }`. current_token is `struct`
+    /// on entry; on exit current_token is `}`.
+    fn parse_struct_decl(&mut self) -> Node {
+        self.next_token(); // skip 'struct'
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'struct', found {:?}", tok));
+                String::new()
+            }
+        };
+        self.next_token();
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after struct name, found {:?}", tok));
+            return Node::StructDecl { name, fields: Vec::new() };
+        }
+        self.next_token(); // skip '{'
+
+        let mut fields = Vec::new();
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            let ty = match &self.current_token {
+                Token::Identifier(t) => t.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!("Expected field type, found {:?}", tok));
+                    break;
+                }
+            };
+            self.next_token();
+            let fname = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!("Expected field name after type '{}', found {:?}", ty, tok));
+                    break;
+                }
+            };
+            fields.push((ty, fname));
+            self.next_token();
+            if self.current_token == Token::Comma {
+                self.next_token();
+            } else if self.current_token != Token::RightBrace {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ',' or '}}' after struct field, found {:?}",
+                    tok
+                ));
+                break;
+            }
+        }
+        Node::StructDecl { name, fields }
+    }
+
+    /// Parse `new NAME { field: expr, ... }`. current_token is `new`
+    /// on entry; on exit current_token is `}`.
+    fn parse_struct_literal(&mut self) -> Node {
+        self.next_token(); // skip 'new'
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected struct name after 'new', found {:?}", tok));
+                String::new()
+            }
+        };
+        self.next_token();
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after struct name, found {:?}", tok));
+            return Node::StructLiteral { name, fields: Vec::new() };
+        }
+
+        let mut fields: Vec<(String, Node)> = Vec::new();
+
+        if self.peek_token == Token::RightBrace {
+            self.next_token(); // to '}'
+            return Node::StructLiteral { name, fields };
+        }
+
+        self.next_token(); // skip '{'
+        loop {
+            let fname = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected field name in struct literal, found {:?}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token();
+            if self.current_token != Token::Colon {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ':' after field name '{}' in struct literal, found {:?}",
+                    fname, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip ':'
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+            fields.push((fname, value));
+            // parse_expression leaves current on the last token of the
+            // expression; advance to move past it.
+            self.next_token();
+            if self.current_token == Token::Comma {
+                self.next_token();
+            } else if self.current_token == Token::RightBrace {
+                break;
+            } else {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ',' or '}}' in struct literal, found {:?}",
+                    tok
+                ));
+                break;
+            }
+        }
+        Node::StructLiteral { name, fields }
+    }
+
+    /// Parse `.field`. current_token is `.` on entry; on exit current is `field`.
+    fn parse_field_access(&mut self, target: Node) -> Option<Node> {
+        self.next_token(); // skip '.'
+        let field = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected field name after '.', found {:?}", tok));
+                return Some(target);
+            }
+        };
+        Some(Node::FieldAccess {
+            target: Box::new(target),
+            field,
+        })
+    }
+
     /// Parse `[e1, e2, ...]`. current_token is `[` on entry; on exit
     /// current_token is `]`.
     fn parse_array_literal(&mut self) -> Node {
@@ -1374,6 +1565,7 @@ impl Parser {
             Token::Multiply | Token::Divide | Token::Modulo => 10,
             Token::LeftParen => 11,
             Token::LeftBracket => 11,
+            Token::Dot => 11,
             _ => 0,
         }
     }
@@ -1392,6 +1584,7 @@ impl Parser {
             Token::Multiply | Token::Divide | Token::Modulo => 10,
             Token::LeftParen => 11,
             Token::LeftBracket => 11,
+            Token::Dot => 11,
             _ => 0,
         }
     }
@@ -1427,6 +1620,12 @@ enum Value {
     /// RES-032: dynamic array. Mixed types allowed at runtime until a
     /// real type system (G7) can enforce a single element type.
     Array(Vec<Value>),
+    /// RES-038: user-defined record. Fields are stored in declaration
+    /// order so Display is stable.
+    Struct {
+        name: String,
+        fields: Vec<(String, Value)>,
+    },
     Return(Box<Value>),
     Void,
 }
@@ -1443,6 +1642,9 @@ impl std::fmt::Debug for Value {
             }
             Value::Builtin { name, .. } => write!(f, "Builtin({})", name),
             Value::Array(items) => write!(f, "Array({} items)", items.len()),
+            Value::Struct { name, fields } => {
+                write!(f, "Struct({}, {} fields)", name, fields.len())
+            }
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
         }
@@ -1467,6 +1669,16 @@ impl std::fmt::Display for Value {
                     write!(f, "{}", v)?;
                 }
                 write!(f, "]")
+            }
+            Value::Struct { name, fields } => {
+                write!(f, "{} {{ ", name)?;
+                for (i, (fname, fval)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", fname, fval)?;
+                }
+                write!(f, " }}")
             }
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
@@ -1528,6 +1740,53 @@ impl Environment {
         } else {
             false
         }
+    }
+}
+
+/// Walk a `FieldAssignment` target tree, collecting the chain of field
+/// names. Returns (root_identifier, [field1, field2, ...]). If the root
+/// isn't an identifier, the first return is None.
+fn flatten_field_target(target: &Node, last_field: &str) -> (Option<String>, Vec<String>) {
+    let mut path = vec![last_field.to_string()];
+    let mut node = target;
+    loop {
+        match node {
+            Node::Identifier(name) => return (Some(name.clone()), {
+                path.reverse();
+                path
+            }),
+            Node::FieldAccess { target: t, field } => {
+                path.push(field.clone());
+                node = t;
+            }
+            _ => return (None, Vec::new()),
+        }
+    }
+}
+
+/// Given a root struct value, set the field chain to `new_val` and
+/// return the updated root. Errors if any intermediate is not a struct
+/// or a field is absent.
+fn set_nested_field(root: Value, path: &[String], new_val: Value) -> RResult<Value> {
+    if path.is_empty() {
+        return Ok(new_val);
+    }
+    match root {
+        Value::Struct { name, mut fields } => {
+            let head = &path[0];
+            let tail = &path[1..];
+            let idx = fields.iter().position(|(n, _)| n == head).ok_or_else(|| {
+                format!("Struct {} has no field '{}'", name, head)
+            })?;
+            let old = std::mem::replace(&mut fields[idx].1, Value::Void);
+            let updated = set_nested_field(old, tail, new_val)?;
+            fields[idx].1 = updated;
+            Ok(Value::Struct { name, fields })
+        }
+        other => Err(format!(
+            "Cannot assign field on non-struct value {:?}",
+            other
+        )),
     }
 }
 
@@ -1967,6 +2226,62 @@ impl Interpreter {
                     out.push(self.eval(item)?);
                 }
                 Ok(Value::Array(out))
+            },
+            Node::StructDecl { .. } => {
+                // Declarations are pure compile-time metadata today.
+                // The typechecker (G7) will register them in a struct
+                // table; for now they're a runtime no-op, and Value
+                // construction trusts the literal.
+                Ok(Value::Void)
+            },
+            Node::StructLiteral { name, fields } => {
+                let mut out = Vec::with_capacity(fields.len());
+                for (fname, fexpr) in fields {
+                    out.push((fname.clone(), self.eval(fexpr)?));
+                }
+                Ok(Value::Struct {
+                    name: name.clone(),
+                    fields: out,
+                })
+            },
+            Node::FieldAccess { target, field } => {
+                let tval = self.eval(target)?;
+                match tval {
+                    Value::Struct { name, fields } => {
+                        fields
+                            .into_iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, v)| v)
+                            .ok_or_else(|| {
+                                format!("Struct {} has no field '{}'", name, field)
+                            })
+                    }
+                    other => Err(format!(
+                        "Cannot access field '{}' on non-struct {:?}",
+                        field, other
+                    )),
+                }
+            },
+            Node::FieldAssignment { target, field, value } => {
+                // Only support `IDENT.field = v` and `IDENT.f1.f2 = v`
+                // for MVP. The target tree is a chain of Identifier and
+                // FieldAccess nodes; we walk it to find the root binding,
+                // then mutate a cloned copy and reassign.
+                let new_val = self.eval(value)?;
+                let (root_name, path) = flatten_field_target(target, field);
+                let Some(root_name) = root_name else {
+                    return Err(
+                        "Field assignment target must start with an identifier"
+                            .to_string(),
+                    );
+                };
+                let current = self
+                    .env
+                    .get(&root_name)
+                    .ok_or_else(|| format!("Identifier not found: {}", root_name))?;
+                let updated = set_nested_field(current, &path, new_val)?;
+                let _ = self.env.reassign(&root_name, updated);
+                Ok(Value::Void)
             },
             Node::IndexExpression { target, index } => {
                 let target_val = self.eval(target)?;
@@ -3002,17 +3317,14 @@ mod tests {
     }
 
     #[test]
-    fn lexer_emits_unknown_instead_of_panicking_on_dot() {
-        // RES-010: a stray `.` used to hit `panic!("Unexpected character: .")`.
-        // Now it comes out as Token::Unknown('.') and the parser keeps going.
+    fn lexer_dot_token_and_float_literal_coexist() {
+        // RES-010 used to assert Token::Unknown('.'), but RES-038
+        // promotes `.` to a real token for field access. Numeric
+        // literals with decimals (1.5) still lex correctly because
+        // read_number consumes the `.` before the outer dispatcher
+        // gets a chance.
         let tokens = tokenize(". 1.5");
-        assert_eq!(
-            tokens[0],
-            Token::Unknown('.'),
-            "expected Token::Unknown('.'), got {:?}",
-            tokens[0]
-        );
-        // And the following valid float still lexes.
+        assert_eq!(tokens[0], Token::Dot);
         assert!(
             tokens.iter().any(|t| matches!(t, Token::FloatLiteral(f) if *f == 1.5)),
             "expected FloatLiteral(1.5) to follow, got {:?}",
@@ -3081,6 +3393,87 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- Structs (RES-038) ----------
+
+    #[test]
+    fn struct_decl_literal_and_access() {
+        let src = r#"
+            struct Point { int x, int y, }
+            let p = new Point { x: 3, y: 4 };
+            let dx = p.x;
+            let dy = p.y;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("dx").unwrap(), Value::Int(3)));
+        assert!(matches!(interp.env.get("dy").unwrap(), Value::Int(4)));
+    }
+
+    #[test]
+    fn struct_field_assignment() {
+        let src = r#"
+            struct Point { int x, int y, }
+            let p = new Point { x: 0, y: 0 };
+            p.x = 7;
+            let got = p.x;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("got").unwrap(), Value::Int(7)));
+    }
+
+    #[test]
+    fn struct_nested_field_assignment() {
+        let src = r#"
+            struct Inner { int v, }
+            struct Outer { int tag, int v, }
+            let o = new Outer { tag: 1, v: 0 };
+            o.v = 99;
+            let got = o.v;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("got").unwrap(), Value::Int(99)));
+    }
+
+    #[test]
+    fn struct_unknown_field_errors() {
+        let src = r#"
+            struct Point { int x, int y, }
+            let p = new Point { x: 1, y: 2 };
+            let z = p.z;
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("no field 'z'"), "err: {}", err);
+    }
+
+    #[test]
+    fn struct_empty() {
+        let src = r#"
+            struct Empty {}
+            let e = new Empty {};
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("e").unwrap() {
+            Value::Struct { name, fields } => {
+                assert_eq!(name, "Empty");
+                assert!(fields.is_empty());
+            }
+            other => panic!("{:?}", other),
+        }
     }
 
     // ---------- Live-block invariants (RES-036) ----------

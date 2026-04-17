@@ -203,6 +203,26 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::StructDecl { .. } => Ok(Type::Void),
+
+            Node::StructLiteral { fields, .. } => {
+                for (_, e) in fields {
+                    let _ = self.check_node(e)?;
+                }
+                Ok(Type::Void)
+            },
+
+            Node::FieldAccess { target, .. } => {
+                let _ = self.check_node(target)?;
+                Ok(Type::Void)
+            },
+
+            Node::FieldAssignment { target, value, .. } => {
+                let _ = self.check_node(target)?;
+                let _ = self.check_node(value)?;
+                Ok(Type::Void)
+            },
+
             Node::IndexExpression { target, index } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
