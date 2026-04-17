@@ -96,3 +96,27 @@ blocks + brif + jump.
 
 ## Log
 - 2026-04-17 created by manager (Phase E scope)
+- 2026-04-17 executor: jit_backend refactored from "single
+  return expression" to "walk top-level statements." New helpers:
+  compile_statements (Spanned wrapper), compile_node_list (raw Node
+  walker that returns Ok(true) when a terminator was emitted),
+  lower_if_statement (brif into then/else cranelift blocks),
+  lower_block_or_stmt (Block/IfStatement/ReturnStatement
+  delegate). Returned-bool is the terminator-detection mechanism
+  since cranelift's is_filled is private — the helpers thread it
+  back to the caller, who decides whether to error (top-level)
+  or fall through (inside a Block, future phase).
+  Phase E enforces: both arms of every if must end in a return.
+  Bare `if` (no else) and arms without returns return
+  Unsupported with descriptive messages so users see the gap.
+  Seven new unit tests cover: then-arm, else-arm, arith
+  condition, bool-literal condition, nested if in then-arm,
+  bare-if rejection, arm-without-return rejection. Smoke test
+  bytecode_jit_runs_if_else added: `if (3 < 7) { return 42; }
+  else { return 0; }` → driver prints 42, exits 0.
+  Field name correction vs ticket draft: AST uses
+  `condition`/`consequence`/`alternative` (not the `then_branch`/
+  `else_branch` the ticket guessed). The else_branch shape
+  (`Option<Box<Node>>` pointing at a Block, or a nested If for
+  `else if`) matches the ticket. Matrix: default 217, z3 225,
+  lsp 221, jit 245 — clippy clean across all four.

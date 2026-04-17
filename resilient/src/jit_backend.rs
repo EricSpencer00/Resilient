@@ -76,13 +76,17 @@ fn make_module() -> Result<JITModule, JitError> {
 /// `return <int-arith expression>;` at the top level, where the
 /// expression uses only integer literals and `+`.
 pub fn run(program: &Node) -> Result<i64, JitError> {
-    // Step 1: locate the top-level ReturnStatement. The compiler
-    // and tree walker both accept richer programs, but Phase B is
-    // strictly limited.
-    let return_expr = top_level_return_expr(program)?;
+    // Step 1: locate the top-level statement slice we need to
+    // lower. The compiler and tree walker both accept richer
+    // programs; the JIT path is still a strict subset.
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return Err(JitError::Unsupported("non-Program root")),
+    };
 
     // Step 2: build a `i64 () -> i64` function whose body lowers
-    // `return_expr` and returns it.
+    // the program statements (possibly including IfStatement) and
+    // emits the appropriate return_ per arm.
     let mut module = make_module()?;
     let mut sig = module.make_signature();
     sig.returns.push(AbiParam::new(types::I64));
@@ -100,8 +104,11 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
-        let result = lower_expr(return_expr, &mut bcx)?;
-        bcx.ins().return_(&[result]);
+        // RES-102: walk top-level statements and emit returns
+        // inline. compile_statements handles IfStatement (each arm
+        // gets its own block + return_) and the trailing
+        // ReturnStatement.
+        compile_statements(stmts, &mut bcx)?;
         bcx.finalize();
     }
 
@@ -124,22 +131,152 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
     Ok(result)
 }
 
-/// Find the expression of the top-level `return EXPR;` statement.
-/// Phase B requires exactly one `ReturnStatement` at top level
-/// containing an `Some(expr)` payload; everything else returns
-/// `Unsupported` or `EmptyProgram` so future phases can grow the
-/// supported shape.
-fn top_level_return_expr(program: &Node) -> Result<&Node, JitError> {
-    let stmts = match program {
-        Node::Program(s) => s,
-        _ => return Err(JitError::Unsupported("non-Program root")),
-    };
-    for spanned in stmts {
-        if let Node::ReturnStatement { value: Some(expr), .. } = &spanned.node {
-            return Ok(expr);
+/// RES-102: walk a slice of top-level statements and emit
+/// Cranelift instructions including the function's `return_`.
+///
+/// Phase E supports two top-level shapes:
+/// 1. A single `ReturnStatement { value: Some(expr) }`
+///    → lowers the expression and emits `return_`.
+/// 2. An `IfStatement` whose then-arm AND else-arm each contain
+///    a `ReturnStatement` → lowers via a brif into two blocks,
+///    each block ends with `return_`. A trailing return after
+///    the if is allowed (acts as a fallthrough), but currently
+///    Phase E requires both arms of the if to return so the
+///    trailing path is unreachable. (Future phase can lift this.)
+///
+/// Anything else is `Unsupported(...)` or `EmptyProgram` so the
+/// supported shape grows ticket by ticket.
+fn compile_statements(
+    stmts: &[crate::Spanned<Node>],
+    bcx: &mut FunctionBuilder,
+) -> Result<(), JitError> {
+    // Top-level statements are Spanned<Node>; Block bodies are
+    // raw Node. Strip the wrapper here and delegate to the shared
+    // walker so the lowering logic isn't duplicated.
+    let nodes: Vec<&Node> = stmts.iter().map(|s| &s.node).collect();
+    let returned = compile_node_list(&nodes, bcx)?;
+    if !returned {
+        return Err(JitError::EmptyProgram);
+    }
+    Ok(())
+}
+
+/// Walks a slice of statement nodes and emits cranelift
+/// instructions. Returns `Ok(true)` when the walk emitted a
+/// terminator (a `return_`, or an if/else where both arms
+/// terminated). Returns `Ok(false)` when the walk completed
+/// without emitting any terminator — the caller decides whether
+/// that's an error (top-level) or a fallthrough (inside a Block).
+fn compile_node_list(
+    stmts: &[&Node],
+    bcx: &mut FunctionBuilder,
+) -> Result<bool, JitError> {
+    for node in stmts {
+        match node {
+            Node::ReturnStatement { value: Some(expr), .. } => {
+                let v = lower_expr(expr, bcx)?;
+                bcx.ins().return_(&[v]);
+                return Ok(true);
+            }
+            Node::IfStatement { condition, consequence, alternative, .. } => {
+                lower_if_statement(condition, consequence, alternative.as_deref(), bcx)?;
+                // lower_if_statement enforces that both arms ended
+                // in a return, so the current block is filled and
+                // the if itself counts as a terminator for the
+                // surrounding statement list.
+                return Ok(true);
+            }
+            // Skip statements with no JIT-relevant effect for now;
+            // a future phase will lower let-bindings, expression
+            // statements, etc.
+            _ => continue,
         }
     }
-    Err(JitError::EmptyProgram)
+    Ok(false)
+}
+
+/// RES-102: lower an IfStatement. Both arms must end in a return
+/// in Phase E — see compile_statements docs.
+///
+/// Cranelift block dance:
+///   brif(cond, then_block, &[], else_block, &[])
+///   then_block: lower then-arm; emits return_
+///   else_block: lower else-arm; emits return_
+///
+/// With no block params and no back-edges, both blocks can be
+/// sealed immediately after creation/branch.
+fn lower_if_statement(
+    condition: &Node,
+    consequence: &Node,
+    alternative: Option<&Node>,
+    bcx: &mut FunctionBuilder,
+) -> Result<(), JitError> {
+    let cond_val = lower_expr(condition, bcx)?;
+
+    let then_block = bcx.create_block();
+    let else_block = bcx.create_block();
+
+    bcx.ins().brif(cond_val, then_block, &[], else_block, &[]);
+
+    // then-arm
+    bcx.switch_to_block(then_block);
+    bcx.seal_block(then_block);
+    let then_terminated = lower_block_or_stmt(consequence, bcx)?;
+    if !then_terminated {
+        // Phase E requires both arms to return so the merge block
+        // doesn't need phi nodes. (Future phase will lift this.)
+        return Err(JitError::Unsupported(
+            "if/else arm without a return — Phase E requires both arms to return",
+        ));
+    }
+
+    // else-arm
+    bcx.switch_to_block(else_block);
+    bcx.seal_block(else_block);
+    match alternative {
+        Some(alt) => {
+            let else_terminated = lower_block_or_stmt(alt, bcx)?;
+            if !else_terminated {
+                return Err(JitError::Unsupported(
+                    "if/else arm without a return — Phase E requires both arms to return",
+                ));
+            }
+        }
+        None => {
+            return Err(JitError::Unsupported(
+                "bare `if` without `else` — Phase E requires both arms to return",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Lower a Block, or a single statement (in case `else if` chains
+/// ever land — for now `consequence` is always a Block from the
+/// parser). Recurses into compile_statements so the same set of
+/// statement shapes is supported uniformly.
+/// Lower a Block (typical) or single statement (for `else if`,
+/// where the parser gives a nested IfStatement directly as
+/// `alternative`). Returns Ok(true) when a terminator (return)
+/// was emitted, Ok(false) when the block fell through.
+fn lower_block_or_stmt(node: &Node, bcx: &mut FunctionBuilder) -> Result<bool, JitError> {
+    match node {
+        Node::Block { stmts, .. } => {
+            let refs: Vec<&Node> = stmts.iter().collect();
+            compile_node_list(&refs, bcx)
+        }
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            lower_if_statement(condition, consequence, alternative.as_deref(), bcx)?;
+            Ok(true)
+        }
+        Node::ReturnStatement { value: Some(expr), .. } => {
+            let v = lower_expr(expr, bcx)?;
+            bcx.ins().return_(&[v]);
+            Ok(true)
+        }
+        _ => Err(JitError::Unsupported(node_kind(node))),
+    }
 }
 
 /// Lower an expression to a Cranelift `Value` of type `i64`.
@@ -394,6 +531,85 @@ mod tests {
         // so this is `(2 + 3) < 10` = true → 1.
         let p = parse_program("return 2 + 3 < 10;");
         assert_eq!(run(&p).unwrap(), 1);
+    }
+
+    // ---------- RES-102: if/else with brif ----------
+
+    #[test]
+    fn jit_if_then_returns() {
+        // `if (1 < 2) { return 7; } return 9;` — Phase E requires
+        // both arms to return, so phrase as if-else (this test
+        // documents the natural form users reach for).
+        let p = parse_program("if (1 < 2) { return 7; } else { return 9; }");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_if_else_returns() {
+        let p = parse_program("if (1 > 2) { return 7; } else { return 9; }");
+        assert_eq!(run(&p).unwrap(), 9);
+    }
+
+    #[test]
+    fn jit_if_with_arith_cond() {
+        // The condition exercises both arith (5+5) and comparison
+        // (==) lowerings before reaching the if. true → 1 arm.
+        let p = parse_program("if (5 + 5 == 10) { return 1; } else { return 0; }");
+        assert_eq!(run(&p).unwrap(), 1);
+    }
+
+    #[test]
+    fn jit_if_with_bool_literal_cond() {
+        // BooleanLiteral lowers to iconst 0/1, which is exactly
+        // what brif consumes. No icmp required.
+        let p = parse_program("if (true) { return 42; } else { return 0; }");
+        assert_eq!(run(&p).unwrap(), 42);
+        let p2 = parse_program("if (false) { return 42; } else { return 0; }");
+        assert_eq!(run(&p2).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_nested_if_in_then_arm() {
+        // A nested if inside the then-arm. The inner if must also
+        // have both branches returning per Phase E. This proves
+        // the recursive lower_block_or_stmt handles nested control
+        // flow without specialcasing.
+        let p = parse_program(
+            "if (1 < 2) { if (3 < 4) { return 1; } else { return 2; } } else { return 9; }",
+        );
+        assert_eq!(run(&p).unwrap(), 1);
+    }
+
+    #[test]
+    fn jit_rejects_if_without_else() {
+        // Phase E doesn't yet support fallthrough — bare `if`
+        // (no else) returns Unsupported with a clear descriptor.
+        let p = parse_program("if (1 < 2) { return 7; }");
+        let err = run(&p).unwrap_err();
+        match err {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("bare `if`") || msg.contains("without `else`"),
+                "expected Phase E descriptor, got: {}",
+                msg
+            ),
+            _ => panic!("expected Unsupported, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn jit_rejects_if_arm_without_return() {
+        // `if (cond) { /* no return */ } else { return X; }` is
+        // also Unsupported in Phase E — both arms must return.
+        let p = parse_program("if (1 < 2) { let x = 1; } else { return 9; }");
+        let err = run(&p).unwrap_err();
+        match err {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("without a return"),
+                "expected Phase E without-return descriptor, got: {}",
+                msg
+            ),
+            _ => panic!("expected Unsupported, got {:?}", err),
+        }
     }
 
     #[test]

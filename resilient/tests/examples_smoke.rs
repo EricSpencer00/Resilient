@@ -279,6 +279,42 @@ fn bytecode_jit_runs_comparison() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_if_else() {
+    // RES-102: Phase E adds if/else with cranelift brif. Program
+    // takes the then-arm (3 < 7 is true) and exits via the
+    // arm-local return. Exercises the full block dance:
+    // brif → then_block → return_, plus the dead else_block →
+    // return_ that the verifier still requires.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_102_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "if (3 < 7) {{ return 42; }} else {{ return 0; }}").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("42"),
+        "expected `42` in stdout (if/else then-arm via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching
