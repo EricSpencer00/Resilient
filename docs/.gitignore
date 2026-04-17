@@ -1,0 +1,7 @@
+# Jekyll local-build artifacts
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+Gemfile.lock
+vendor/

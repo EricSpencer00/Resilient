@@ -1,0 +1,62 @@
+title: Resilient
+description: A programming language designed for extreme reliability in embedded and safety-critical systems.
+
+# GitHub Pages serves this repo at username.github.io/Resilient
+# so we set baseurl accordingly. If you later add a custom
+# domain (CNAME file → e.g. resilient.ericspencer.us), set
+# baseurl to "" and url to the new origin.
+baseurl: "/Resilient"
+url: "https://ericspencer00.github.io"
+
+# just-the-docs is the official-blessed Jekyll docs theme on
+# GitHub Pages — sidebar nav, search, syntax highlighting,
+# minimal config. Pinned to a known-good remote_theme so GH
+# Pages can build it without the gem being in the safelist.
+remote_theme: just-the-docs/just-the-docs
+
+# Search across pages.
+search_enabled: true
+search:
+  heading_level: 3
+  previews: 3
+  preview_words_before: 5
+  preview_words_after: 10
+  tokenizer_separator: /[\s\-/]+/
+  rel_url: true
+  button: false
+
+# Repo header link in the top right.
+aux_links:
+  "GitHub":
+    - "https://github.com/EricSpencer00/Resilient"
+aux_links_new_tab: true
+
+# Footer.
+footer_content: 'Resilient is built one ticket at a time. See <a href="https://github.com/EricSpencer00/Resilient/tree/main/.board">.board/</a> for the full ledger.'
+
+# Edit-on-GitHub link under each page.
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/EricSpencer00/Resilient"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"
+
+# Color scheme — light is the default; the theme also supports
+# dark via { color_scheme: dark }.
+color_scheme: light
+
+# Plugin set is what GH Pages whitelists.
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+
+# Don't ship benchmark CSV / Cargo lockfile if anyone drops one
+# in docs/ — Jekyll skips these by default but we name them
+# explicitly so future-us doesn't have to re-discover.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - "*.lock"
+  - vendor/
+  - node_modules/

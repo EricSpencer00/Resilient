@@ -2,6 +2,11 @@
 
 A programming language designed for extreme reliability in embedded and safety-critical systems.
 
+📖 **Docs**: [ericspencer00.github.io/Resilient](https://ericspencer00.github.io/Resilient/)
+&nbsp;·&nbsp; [Onboarding](https://ericspencer00.github.io/Resilient/getting-started)
+&nbsp;·&nbsp; [Design Philosophy](https://ericspencer00.github.io/Resilient/philosophy)
+&nbsp;·&nbsp; [Performance](https://ericspencer00.github.io/Resilient/performance)
+
 ## Core Philosophy
 
 Resilient is a statically-typed, compiled programming language designed from the ground up for extreme reliability in embedded and safety-critical systems. Its core philosophy is built on three pillars:
@@ -186,10 +191,19 @@ real reason (shared profile config, cross-crate testing).
 
 ### Available Examples
 
-- `minimal.rs` - A minimal working example that demonstrates basic functionality
-- `comprehensive.rs` - Demonstrates all key language features in a single example
-- `sensor_example2.rs` - Demonstrates live blocks with sensor readings
-- `self_healing2.rs` - Shows self-healing capabilities
+All in `resilient/examples/`. Each ships with a `.expected.txt`
+sidecar so the smoke tests can verify they still produce the
+documented output.
+
+- `hello.rs` — `println("Hello, world!");`
+- `minimal.rs` — smallest working program with a top-level return
+- `int_math.rs` — arithmetic + integer operators
+- `sensor_monitor.rs` — `live { }` block reading a synthetic sensor
+- `self_healing.rs` — recovery after a transient error inside a live block
+- `nested_array_demo.rs` — multi-dimensional array indexing/assignment
+- `cert_demo.rs` — minimal program whose contract Z3 can discharge,
+  used by `--emit-certificate` (RES-071)
+- `imports_demo/` — multi-file import resolution
 
 ### REPL Commands
 
@@ -198,19 +212,6 @@ real reason (shared profile config, cross-crate testing).
 - `clear` - Clear the screen
 - `examples` - Show example code snippets
 - `typecheck` - Toggle type checking
-
-## Example Programs
-
-### Sensor Reading Example
-
-## Examples
-
-The `new_examples` directory contains working examples of the Resilient language:
-
-- `new_examples/simple.rs` - A minimal hello world program
-- `new_examples/live_block_demo.rs` - Demonstrates live blocks with enhanced logging
-
-> **Note**: If you encounter issues with existing examples in the `examples` directory, use the new examples as reference for the correct syntax and structure.
 
 ## Syntax Requirements
 
