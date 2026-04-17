@@ -123,6 +123,33 @@ z3 -smt2 ./certs/ident_round__decl__0.smt2
 Implies `--typecheck`. Without `--features z3`, no certificates are
 emitted (the cheap folder isn't asked to produce them).
 
+### Embedded runtime (RES-075 Phase A)
+
+The sibling `resilient-runtime/` crate carves out the value layer
++ core ops in a `#![no_std]`-compatible form, ready for a
+Cortex-M class MCU. Phase A only ships the alloc-free types
+(`Value::Int`, `Value::Bool`, plus `add`/`sub`/`mul`/`div`/`eq`
+ops). Float/String/Array/closure variants need allocator support
+and land with RES-101 / `embedded-alloc`.
+
+```bash
+cd resilient-runtime
+cargo build
+cargo test
+```
+
+For a real cross-compile (lands in RES-100):
+
+```bash
+rustup target add thumbv7em-none-eabihf
+cargo build -p resilient-runtime --target thumbv7em-none-eabihf
+```
+
+The `resilient/` crate is unaffected — it stays a single-crate
+project; `resilient-runtime/` is a separate Cargo project alongside
+it. A future ticket can promote both to a workspace if there's a
+real reason (shared profile config, cross-crate testing).
+
 ### Available Examples
 
 - `minimal.rs` - A minimal working example that demonstrates basic functionality

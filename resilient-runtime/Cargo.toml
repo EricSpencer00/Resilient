@@ -1,0 +1,11 @@
+[package]
+name = "resilient-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Minimal #![no_std] runtime types for Resilient — Value enum + core ops, suitable for embedded targets"
+authors = ["Eric Spencer"]
+
+# RES-075 Phase A: alloc-free for now. Vec/String / closures etc.
+# come in RES-101 when embedded-alloc is added.
+
+[dependencies]
