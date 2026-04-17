@@ -91,7 +91,7 @@ the interpreter never sees an ill-typed program.
 
 ---
 
-## Phase 4 — The verifiability payoff (65% → 80%)  ⭐
+## Phase 4 — The verifiability payoff (65% → 80%)  🟡 STARTED
 
 **Goal**: the original pitch becomes true. `requires`/`ensures` are
 proved correct for *all* inputs in their declared range, not just
@@ -99,9 +99,9 @@ the ones the test suite happens to exercise.
 
 This is the phase where Resilient *earns its name*.
 
-| Ticket (future) | Adds |
-|---|---|
-| RES-060 | **G9a bounded verifier** — tiny custom solver for integer-domain contracts over concrete bounds. Rejects `requires x > 0` when a caller passes `-1`. |
+| Ticket | Adds | Status |
+|---|---|---|
+| RES-060 | **G9a constant folder** — tiny brick that discharges tautologies and rejects contradictions in contract clauses. Not a real SMT, but the infrastructure everything else hangs off. | ✅ |
 | RES-061 | **G9b Z3 integration** (optional feature flag `--features z3`) — translate contract AST to SMT-LIB, discharge at compile time, fall back to runtime check on unknown |
 | RES-062 | **Verification certificate** — on success, emit `<file>.vcert` pinning the solver version, the query, and the answer. Commit these alongside source. |
 | RES-063 | Live-block invariants verified symbolically (G10 meets G9) |
