@@ -44,7 +44,7 @@ Shipped: RES-017..037 (everything except G6/G7/G9 bricks).
 
 ---
 
-## Phase 2 — Structured data & error handling (35% → 50%)  🟡 IN PROGRESS
+## Phase 2 — Structured data & error handling (35% → 50%)  ✅ COMPLETE
 
 **Goal**: programs can express real domain logic, not just numeric
 scripts. This is the single most requested class of features by
@@ -55,33 +55,32 @@ realistic example programs.
 | RES-038 | **Structs / records** — user-defined product types, field access `.`, closes G12 | ✅ |
 | RES-039 | **`match` expressions** with literal + identifier + wildcard patterns, closes G13 at MVP | ✅ |
 | RES-043 | **String builtins** — split, trim, contains, to_upper, to_lower | ✅ |
-| RES-040 | **`Result<T, E>` type** — explicit failure handling, no more silent interpreter errors | ⏳ |
-| RES-041 | **`?` propagation operator** on `Result` | ⏳ |
-| RES-042 | **Closures** — `fn(x) -> x + n` with proper lexical scope (needs Environment refactor to `Rc<RefCell<...>>`) | ⏳ |
+| RES-040 | **`Result` type** — explicit failure handling, Ok/Err constructors, is_ok/is_err/unwrap | ✅ |
+| RES-041 | **`?` propagation operator** on `Result` | ✅ |
+| RES-042 | **Closures** — anonymous `fn`, by-value env capture; mutation-sharing deferred to Phase 3 refactor | ✅ |
 
-**Definition of done for Phase 2**: the four broken examples (`self_healing`,
-`self_healing2`, `sensor_example`, `sensor_example2`) run end-to-end
-with green golden-file tests.
-
-**Progress**: 3/6 tickets landed. The data-side of Phase 2 is complete
-(arrays + structs + match). Remaining: error handling (Result/?) and
-closures.
+**Phase 2 closing note**: capture-by-value matches most common
+closure needs (filters, transformers, early-binding of parameters).
+Shared-mutation closures require `Environment = Rc<RefCell<...>>`
+which is folded into Phase 3's AST hardening — doing both refactors
+at once minimizes churn.
 
 ---
 
-## Phase 3 — Real type system (50% → 65%)
+## Phase 3 — Real type system (50% → 65%)  🟡 NEXT
 
 **Goal**: the typechecker becomes load-bearing. Bad programs get
 *rejected* at compile time, not at runtime through string errors.
 
 | Ticket (future) | Adds |
 |---|---|
-| RES-050 | **G6 AST hardening** — one canonical AST module with `Span` on every node, delete the unwired `parser.rs`, migrate to a single source of truth |
+| RES-050 | **G6 AST hardening** — one canonical AST module with `Span` on every node, delete the unwired `parser.rs`, Environment becomes `Rc<RefCell<...>>` (which also unblocks true shared-mutation closures) |
 | RES-051 | **G5 logos lexer** — replace the hand-rolled one once spans are in (makes sense to do these together) |
 | RES-052 | **Typed declarations**: `let x: int = 0;`, `fn f(x: int) -> int`, typed array literals `[int: 1, 2, 3]` |
 | RES-053 | **G7 typechecker rejection**: emit real errors for type mismatches; tests prove `let x = 1 + "s"` fails before runtime |
 | RES-054 | Exhaustiveness checking for `match` — compile-time error if a variant is uncovered |
 | RES-055 | **Generic builtins / simple polymorphism** — `abs<T>(x: T) -> T` where T is `int` or `float` |
+| RES-056 | **Shared-mutation closures** — once Environment is `Rc<RefCell<...>>` via RES-050, rework `Value::Function` to share env. Tests for counter-via-closure pattern. |
 
 **Definition of done for Phase 3**: a type error in any program is
 rejected by `resilient --check file.rs` with a pointed diagnostic;
