@@ -10,3 +10,6 @@ resilient-runtime/target
 # Native benchmark binaries — built by benchmarks/run.sh on demand.
 benchmarks/fib/fib_native
 benchmarks/sum/sum_native
+
+# Ralph-loop session state (local to each Claude Code run)
+.claude/
