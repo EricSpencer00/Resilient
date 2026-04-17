@@ -203,6 +203,11 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::TryExpression(inner) => {
+                let _ = self.check_node(inner)?;
+                Ok(Type::Void)
+            },
+
             Node::Match { scrutinee, arms } => {
                 let _ = self.check_node(scrutinee)?;
                 for (_, body) in arms {

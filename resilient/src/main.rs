@@ -39,6 +39,7 @@ enum Token {
     Match,
     FatArrow,
     Underscore,
+    Question,
     
     // Literals
     Identifier(String),
@@ -257,6 +258,7 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             '.' => Token::Dot,
+            '?' => Token::Question,
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,
@@ -525,6 +527,9 @@ enum Node {
         function: Box<Node>,
         arguments: Vec<Node>,
     },
+    /// RES-041: `expr?` — if the operand is `Ok(v)`, evaluate to `v`;
+    /// if `Err(e)`, return `Err(e)` from the enclosing function.
+    TryExpression(Box<Node>),
     /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
     Match {
         scrutinee: Box<Node>,
@@ -1293,6 +1298,11 @@ impl Parser {
                     self.next_token(); // move onto '.'
                     self.parse_field_access(current_left)
                 },
+                Token::Question => {
+                    // Postfix `?` — consume it and wrap.
+                    self.next_token();
+                    Some(Node::TryExpression(Box::new(current_left)))
+                },
                 _ => Some(current_left),
             };
         }
@@ -1673,6 +1683,7 @@ impl Parser {
             Token::LeftParen => 11,
             Token::LeftBracket => 11,
             Token::Dot => 11,
+            Token::Question => 12,
             _ => 0,
         }
     }
@@ -1692,6 +1703,7 @@ impl Parser {
             Token::LeftParen => 11,
             Token::LeftBracket => 11,
             Token::Dot => 11,
+            Token::Question => 12,
             _ => 0,
         }
     }
@@ -1733,6 +1745,15 @@ enum Value {
         name: String,
         fields: Vec<(String, Value)>,
     },
+    /// RES-040: first-class Result type.
+    ///
+    /// `ok = true` means the payload is the success value.
+    /// `ok = false` means the payload is the error (typically a
+    /// `Value::String`, but any value is allowed).
+    Result {
+        ok: bool,
+        payload: Box<Value>,
+    },
     Return(Box<Value>),
     Void,
 }
@@ -1751,6 +1772,9 @@ impl std::fmt::Debug for Value {
             Value::Array(items) => write!(f, "Array({} items)", items.len()),
             Value::Struct { name, fields } => {
                 write!(f, "Struct({}, {} fields)", name, fields.len())
+            }
+            Value::Result { ok, payload } => {
+                write!(f, "{}({:?})", if *ok { "Ok" } else { "Err" }, payload)
             }
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
@@ -1786,6 +1810,9 @@ impl std::fmt::Display for Value {
                     write!(f, "{}: {}", fname, fval)?;
                 }
                 write!(f, " }}")
+            }
+            Value::Result { ok, payload } => {
+                write!(f, "{}({})", if *ok { "Ok" } else { "Err" }, payload)
             }
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
@@ -1986,6 +2013,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("contains", builtin_contains),
     ("to_upper", builtin_to_upper),
     ("to_lower", builtin_to_lower),
+    ("Ok", builtin_ok),
+    ("Err", builtin_err),
+    ("is_ok", builtin_is_ok),
+    ("is_err", builtin_is_err),
+    ("unwrap", builtin_unwrap),
+    ("unwrap_err", builtin_unwrap_err),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -2079,6 +2112,73 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
         [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `Ok(v)` — wrap a success value as a Result.
+fn builtin_ok(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Result {
+            ok: true,
+            payload: Box::new(v.clone()),
+        }),
+        _ => Err(format!("Ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `Err(e)` — wrap a failure value as a Result.
+fn builtin_err(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Result {
+            ok: false,
+            payload: Box::new(v.clone()),
+        }),
+        _ => Err(format!("Err: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `is_ok(r)` — true iff `r` is an Ok-tagged Result.
+fn builtin_is_ok(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok, .. }] => Ok(Value::Bool(*ok)),
+        [other] => Err(format!("is_ok: expected Result, got {:?}", other)),
+        _ => Err(format!("is_ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `is_err(r)` — true iff `r` is an Err-tagged Result.
+fn builtin_is_err(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok, .. }] => Ok(Value::Bool(!ok)),
+        [other] => Err(format!("is_err: expected Result, got {:?}", other)),
+        _ => Err(format!("is_err: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `unwrap(r)` — return the Ok payload or error at runtime.
+fn builtin_unwrap(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok: true, payload }] => Ok((**payload).clone()),
+        [Value::Result { ok: false, payload }] => {
+            Err(format!("unwrap called on Err({})", payload))
+        }
+        [other] => Err(format!("unwrap: expected Result, got {:?}", other)),
+        _ => Err(format!("unwrap: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `unwrap_err(r)` — return the Err payload or error at runtime.
+fn builtin_unwrap_err(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok: false, payload }] => Ok((**payload).clone()),
+        [Value::Result { ok: true, payload }] => {
+            Err(format!("unwrap_err called on Ok({})", payload))
+        }
+        [other] => Err(format!("unwrap_err: expected Result, got {:?}", other)),
+        _ => Err(format!(
+            "unwrap_err: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -2280,6 +2380,11 @@ impl Interpreter {
             Node::Block(statements) => self.eval_block_statement(statements),
             Node::LetStatement { name, value } => {
                 let val = self.eval(value)?;
+                // RES-041: if the RHS short-circuited (e.g. via `?`),
+                // propagate the Return instead of binding it.
+                if matches!(val, Value::Return(_)) {
+                    return Ok(val);
+                }
                 self.env.set(name.clone(), val);
                 Ok(Value::Void)
             },
@@ -2295,6 +2400,9 @@ impl Interpreter {
             },
             Node::Assignment { name, value } => {
                 let val = self.eval(value)?;
+                if matches!(val, Value::Return(_)) {
+                    return Ok(val);
+                }
                 if self.env.reassign(name, val.clone()) {
                     Ok(Value::Void)
                 } else if self.statics.borrow().contains_key(name) {
@@ -2397,6 +2505,25 @@ impl Interpreter {
                     out.push(self.eval(item)?);
                 }
                 Ok(Value::Array(out))
+            },
+            Node::TryExpression(inner) => {
+                let v = self.eval(inner)?;
+                match v {
+                    Value::Result { ok: true, payload } => Ok(*payload),
+                    Value::Result { ok: false, payload } => {
+                        // Propagate: return Err(payload) from the
+                        // enclosing function via the Value::Return
+                        // short-circuit path already used by `return`.
+                        Ok(Value::Return(Box::new(Value::Result {
+                            ok: false,
+                            payload,
+                        })))
+                    }
+                    other => Err(format!(
+                        "? operator expects a Result, got {:?}",
+                        other
+                    )),
+                }
             },
             Node::Match { scrutinee, arms } => {
                 let sval = self.eval(scrutinee)?;
@@ -3614,6 +3741,81 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- Result type (RES-040) ----------
+
+    #[test]
+    fn result_ok_and_err_construct() {
+        let (p, _e) = parse(r#"
+            let good = Ok(42);
+            let bad = Err("boom");
+            let g_ok = is_ok(good);
+            let b_ok = is_ok(bad);
+            let g = unwrap(good);
+            let b = unwrap_err(bad);
+        "#);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("g_ok").unwrap(), Value::Bool(true)));
+        assert!(matches!(interp.env.get("b_ok").unwrap(), Value::Bool(false)));
+        assert!(matches!(interp.env.get("g").unwrap(), Value::Int(42)));
+        assert!(matches!(interp.env.get("b").unwrap(), Value::String(s) if s == "boom"));
+    }
+
+    #[test]
+    fn unwrap_on_err_errors() {
+        let (p, _e) = parse(r#"let x = unwrap(Err("no"));"#);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("unwrap called on Err"), "{}", err);
+    }
+
+    // ---------- ? propagation (RES-041) ----------
+
+    #[test]
+    fn try_operator_propagates_err() {
+        let src = r#"
+            fn parse_int() { return Err("not a number"); }
+            fn double() {
+                let n = parse_int()?;
+                return Ok(n + n);
+            }
+            let r = double();
+            let was_err = is_err(r);
+            let msg = unwrap_err(r);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("was_err").unwrap(), Value::Bool(true)));
+        assert!(matches!(interp.env.get("msg").unwrap(), Value::String(s) if s == "not a number"));
+    }
+
+    #[test]
+    fn try_operator_extracts_ok() {
+        let src = r#"
+            fn get() { return Ok(7); }
+            fn user() {
+                let n = get()?;
+                return Ok(n * 3);
+            }
+            let r = unwrap(user());
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(21)));
+    }
+
+    #[test]
+    fn try_operator_on_non_result_errors() {
+        let (p, _e) = parse("let x = 42?;");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("? operator expects a Result"), "{}", err);
     }
 
     // ---------- String builtins (RES-043) ----------
