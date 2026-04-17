@@ -2,6 +2,7 @@
 *.
 !*/
 resilient/target
+resilient-runtime/target
 
 # Ralph-loop runtime artifacts (logs grow, STOP is a local kill switch)
 .board/logs/
