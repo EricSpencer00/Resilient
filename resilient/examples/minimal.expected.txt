@@ -1,0 +1,4 @@
+Starting the program...
+The answer is: 42
+Program completed.
+Program executed successfully
