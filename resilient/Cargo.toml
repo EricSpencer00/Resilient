@@ -19,9 +19,19 @@ autoexamples = false
 # and falls back to Z3 only when fold returns Unknown.
 default = []
 z3 = ["dep:z3"]
+# RES-074: opt-in LSP server. Default off so the regular build
+# doesn't pull in tower-lsp/tokio's transitive-dep tree. Enable with:
+#
+#   cargo build --features lsp
+#
+# and run `resilient --lsp` to speak Language Server Protocol over
+# stdio. Editor config examples in LSP.md at repo root.
+lsp = ["dep:tower-lsp", "dep:tokio"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
 logos = "0.13"
 rustyline = "12.0.0"
 z3 = { version = "0.12", optional = true }
+tower-lsp = { version = "0.20", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"], optional = true }

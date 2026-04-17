@@ -17,6 +17,8 @@ mod compiler;
 mod vm;
 #[cfg(feature = "z3")]
 mod verifier_z3;
+#[cfg(feature = "lsp")]
+mod lsp_server;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -3933,6 +3935,7 @@ fn main() {
     let mut emit_cert_dir: Option<PathBuf> = None;
     let mut examples_dir: Option<PathBuf> = None;
     let mut use_vm = false;
+    let mut lsp_mode = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -3958,6 +3961,11 @@ fn main() {
                 // RES-076: route through the bytecode VM instead of
                 // the tree-walking interpreter.
                 use_vm = true;
+            } else if arg == "--lsp" {
+                // RES-074: start the Language Server on stdio. Only
+                // functional when built with `--features lsp`; the
+                // non-feature path prints a helpful message and exits.
+                lsp_mode = true;
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -3989,6 +3997,23 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+    }
+
+    // RES-074: LSP mode takes priority over REPL when --lsp is set.
+    // Without the `lsp` feature, print a helpful pointer and exit.
+    if lsp_mode {
+        #[cfg(feature = "lsp")]
+        {
+            lsp_server::run();
+            return;
+        }
+        #[cfg(not(feature = "lsp"))]
+        {
+            eprintln!(
+                "--lsp requires the `lsp` feature. Rebuild with:\n  cargo build --features lsp"
+            );
+            std::process::exit(1);
         }
     }
 

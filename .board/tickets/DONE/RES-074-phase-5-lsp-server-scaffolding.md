@@ -1,7 +1,7 @@
 ---
 id: RES-074
 title: Phase 5 LSP server scaffolding
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -67,3 +67,44 @@ refactor — we can revisit if we outgrow it.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager
+- 2026-04-17 manager rescope: put LSP code in `main.rs` behind the
+  `lsp` feature flag instead of a separate binary. Avoids the
+  lib/bin refactor.
+- 2026-04-17 executor landed:
+  - Cargo.toml: new `lsp` feature; `tower-lsp = "0.20"` and
+    `tokio = "1"` added as optional deps. Default build unchanged.
+  - New `resilient/src/lsp_server.rs` (~175 lines) implementing
+    `tower_lsp::LanguageServer`:
+    - `initialize` returns `TextDocumentSync::Full` capability.
+    - `did_open` and `did_change` route through
+      `publish_analysis(uri, text)`: parse → typecheck → publish.
+    - Typechecker errors from RES-080 come pre-formatted with
+      `<uri>:<line>:<col>:` prefix — `extract_range_and_message`
+      parses that back into an LSP `Range` and a clean message.
+    - Parser errors land at 0:0 pending parser-span work.
+    - `shutdown` is a no-op.
+    - `run()` builds a tokio runtime and drives the Server on
+      stdin/stdout.
+  - New CLI flag `--lsp` in `main()`. Under `--features lsp` it
+    dispatches to `lsp_server::run()`; without the feature it
+    prints a helpful pointer and exits 1.
+  - Module declared with `#[cfg(feature = "lsp")] mod lsp_server;`
+    so no LSP code is compiled on the default path.
+- 2026-04-17 tests:
+  - 3 new unit tests in `lsp_server::tests` covering the
+    range-extractor heuristic:
+    - parses `<path>:<line>:<col>:` prefix
+    - handles no-prefix gracefully (defaults to 0:0)
+    - handles Windows-style paths with extra `:` characters
+- 2026-04-17 `LSP.md` at repo root with build instructions and
+  Neovim / VS Code editor config examples.
+- 2026-04-17 verification across three feature configs:
+  - default: 211 unit + 1 golden + 11 smoke = 223 tests
+  - `--features z3`: 219 + 1 + 12 = 232
+  - `--features lsp`: 214 + 1 + 11 = 226
+  All three clippy `-- -D warnings` clean.
+- Follow-ups (separate tickets when appropriate):
+  - Parser-error position threading (currently all at 0:0)
+  - Integration smoke test that spawns binary and exchanges LSP
+    messages over Content-Length framing
+  - Hover, completion, go-to-definition
