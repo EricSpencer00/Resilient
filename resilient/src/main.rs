@@ -1981,6 +1981,11 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("push", builtin_push),
     ("pop", builtin_pop),
     ("slice", builtin_slice),
+    ("split", builtin_split),
+    ("trim", builtin_trim),
+    ("contains", builtin_contains),
+    ("to_upper", builtin_to_upper),
+    ("to_lower", builtin_to_lower),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -2074,6 +2079,65 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
         [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `split(s, sep)` — split `s` at every occurrence of `sep`, returning
+/// an array of pieces. Empty `sep` splits into Unicode scalars.
+fn builtin_split(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sep)] => {
+            let parts: Vec<Value> = if sep.is_empty() {
+                s.chars().map(|c| Value::String(c.to_string())).collect()
+            } else {
+                s.split(sep.as_str()).map(|p| Value::String(p.to_string())).collect()
+            };
+            Ok(Value::Array(parts))
+        }
+        [a, b] => Err(format!(
+            "split: expected (string, string), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!("split: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// `trim(s)` — strip leading and trailing ASCII whitespace.
+fn builtin_trim(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.trim().to_string())),
+        [other] => Err(format!("trim: expected string, got {:?}", other)),
+        _ => Err(format!("trim: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `contains(haystack, needle)` — substring test.
+fn builtin_contains(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(h), Value::String(n)] => Ok(Value::Bool(h.contains(n.as_str()))),
+        [a, b] => Err(format!(
+            "contains: expected (string, string), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!("contains: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// `to_upper(s)` — Unicode uppercase.
+fn builtin_to_upper(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.to_uppercase())),
+        [other] => Err(format!("to_upper: expected string, got {:?}", other)),
+        _ => Err(format!("to_upper: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `to_lower(s)` — Unicode lowercase.
+fn builtin_to_lower(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.to_lowercase())),
+        [other] => Err(format!("to_lower: expected string, got {:?}", other)),
+        _ => Err(format!("to_lower: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -3550,6 +3614,43 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- String builtins (RES-043) ----------
+
+    #[test]
+    fn string_builtins_basic() {
+        let (p, _e) = parse(r#"
+            let parts = split("a,b,c", ",");
+            let t = trim("   hi   ");
+            let hasH = contains("hello", "ell");
+            let up = to_upper("Foo");
+            let lo = to_lower("BAR");
+        "#);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("parts").unwrap() {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(&v[1], Value::String(s) if s == "b"));
+            }
+            _ => panic!("expected Array"),
+        }
+        assert!(matches!(interp.env.get("t").unwrap(), Value::String(s) if s == "hi"));
+        assert!(matches!(interp.env.get("hasH").unwrap(), Value::Bool(true)));
+        assert!(matches!(interp.env.get("up").unwrap(), Value::String(s) if s == "FOO"));
+        assert!(matches!(interp.env.get("lo").unwrap(), Value::String(s) if s == "bar"));
+    }
+
+    #[test]
+    fn split_empty_sep_per_char() {
+        let (p, _e) = parse(r#"let cs = split("abc", "");"#);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("cs").unwrap() {
+            Value::Array(v) => assert_eq!(v.len(), 3),
+            _ => panic!("expected Array"),
+        }
     }
 
     // ---------- match (RES-039) ----------
