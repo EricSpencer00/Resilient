@@ -47,6 +47,11 @@ enum Token {
     NotEqual,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
     Greater,
     Less,
     GreaterEqual,
@@ -154,7 +159,7 @@ impl Lexer {
                     self.read_char();
                     Token::And
                 } else {
-                    Token::Unknown('&')
+                    Token::BitAnd
                 }
             },
             '|' => {
@@ -162,9 +167,10 @@ impl Lexer {
                     self.read_char();
                     Token::Or
                 } else {
-                    Token::Unknown('|')
+                    Token::BitOr
                 }
             },
+            '^' => Token::BitXor,
             '/' => {
                 if self.peek_char() == '/' {
                     // Line comment: skip to newline.
@@ -198,6 +204,9 @@ impl Lexer {
                 if self.peek_char() == '=' {
                     self.read_char();
                     Token::GreaterEqual
+                } else if self.peek_char() == '>' {
+                    self.read_char();
+                    Token::ShiftRight
                 } else {
                     Token::Greater
                 }
@@ -206,6 +215,9 @@ impl Lexer {
                 if self.peek_char() == '=' {
                     self.read_char();
                     Token::LessEqual
+                } else if self.peek_char() == '<' {
+                    self.read_char();
+                    Token::ShiftLeft
                 } else {
                     Token::Less
                 }
@@ -982,7 +994,7 @@ impl Parser {
                 self.next_token();
                 // Prefix precedence is higher than any infix operator
                 // so `-1 + 2` parses as `(-1) + 2`, not `-(1 + 2)`.
-                let right = self.parse_expression(7)?;
+                let right = self.parse_expression(11)?;
                 Some(Node::PrefixExpression {
                     operator: op.to_string(),
                     right: Box::new(right),
@@ -1013,7 +1025,9 @@ impl Parser {
             left_expr = match &self.peek_token {
                 Token::Plus | Token::Minus | Token::Multiply | Token::Divide | Token::Modulo |
                 Token::Equal | Token::NotEqual | Token::Less | Token::Greater |
-                Token::LessEqual | Token::GreaterEqual | Token::And | Token::Or => {
+                Token::LessEqual | Token::GreaterEqual | Token::And | Token::Or |
+                Token::BitAnd | Token::BitOr | Token::BitXor |
+                Token::ShiftLeft | Token::ShiftRight => {
                     self.next_token();
                     self.parse_infix_expression(current_left)
                 },
@@ -1037,6 +1051,11 @@ impl Parser {
             Token::Modulo => "%".to_string(),
             Token::And => "&&".to_string(),
             Token::Or => "||".to_string(),
+            Token::BitAnd => "&".to_string(),
+            Token::BitOr => "|".to_string(),
+            Token::BitXor => "^".to_string(),
+            Token::ShiftLeft => "<<".to_string(),
+            Token::ShiftRight => ">>".to_string(),
             Token::Equal => "==".to_string(),
             Token::NotEqual => "!=".to_string(),
             Token::Less => "<".to_string(),
@@ -1107,11 +1126,15 @@ impl Parser {
         match &self.current_token {
             Token::Or => 1,
             Token::And => 2,
-            Token::Equal | Token::NotEqual => 3,
-            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 4,
-            Token::Plus | Token::Minus => 5,
-            Token::Multiply | Token::Divide | Token::Modulo => 6,
-            Token::LeftParen => 7,
+            Token::BitOr => 3,
+            Token::BitXor => 4,
+            Token::BitAnd => 5,
+            Token::Equal | Token::NotEqual => 6,
+            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 7,
+            Token::ShiftLeft | Token::ShiftRight => 8,
+            Token::Plus | Token::Minus => 9,
+            Token::Multiply | Token::Divide | Token::Modulo => 10,
+            Token::LeftParen => 11,
             _ => 0,
         }
     }
@@ -1120,11 +1143,15 @@ impl Parser {
         match &self.peek_token {
             Token::Or => 1,
             Token::And => 2,
-            Token::Equal | Token::NotEqual => 3,
-            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 4,
-            Token::Plus | Token::Minus => 5,
-            Token::Multiply | Token::Divide | Token::Modulo => 6,
-            Token::LeftParen => 7,
+            Token::BitOr => 3,
+            Token::BitXor => 4,
+            Token::BitAnd => 5,
+            Token::Equal | Token::NotEqual => 6,
+            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 7,
+            Token::ShiftLeft | Token::ShiftRight => 8,
+            Token::Plus | Token::Minus => 9,
+            Token::Multiply | Token::Divide | Token::Modulo => 10,
+            Token::LeftParen => 11,
             _ => 0,
         }
     }
@@ -1760,6 +1787,23 @@ impl Interpreter {
                     Err("Modulo by zero".to_string())
                 } else {
                     Ok(Value::Int(left % right))
+                }
+            },
+            "&" => Ok(Value::Int(left & right)),
+            "|" => Ok(Value::Int(left | right)),
+            "^" => Ok(Value::Int(left ^ right)),
+            "<<" => {
+                if !(0..64).contains(&right) {
+                    Err(format!("shift amount out of range: {}", right))
+                } else {
+                    Ok(Value::Int(left << right))
+                }
+            },
+            ">>" => {
+                if !(0..64).contains(&right) {
+                    Err(format!("shift amount out of range: {}", right))
+                } else {
+                    Ok(Value::Int(left >> right))
                 }
             },
             "==" => Ok(Value::Bool(left == right)),
@@ -2465,6 +2509,32 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn bitwise_operators() {
+        let (p, _e) = parse(r#"
+            let a = 0xF0 & 0x33;
+            let b = 0x01 | 0x02;
+            let c = 0xFF ^ 0x0F;
+            let d = 1 << 4;
+            let e = 256 >> 3;
+        "#);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("a").unwrap(), Value::Int(0x30)));
+        assert!(matches!(interp.env.get("b").unwrap(), Value::Int(0x03)));
+        assert!(matches!(interp.env.get("c").unwrap(), Value::Int(0xF0)));
+        assert!(matches!(interp.env.get("d").unwrap(), Value::Int(16)));
+        assert!(matches!(interp.env.get("e").unwrap(), Value::Int(32)));
+    }
+
+    #[test]
+    fn bitwise_shift_out_of_range_errors() {
+        let (p, _e) = parse("let x = 1 << 64;");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("out of range"), "{}", err);
     }
 
     #[test]
