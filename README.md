@@ -118,19 +118,34 @@ See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and example
 
 ## Project Status
 
-This is an MVP (Minimum Viable Product) implementation of the Resilient language. Recent improvements include:
+Active development happens one ticket at a time. See [.board/ROADMAP.md](.board/ROADMAP.md)
+for the goalpost ladder and [.board/tickets/DONE/](.board/tickets/DONE/) for
+the full ledger. Each commit of the form `RES-NNN: summary` closes one ticket.
 
-- Fixed all code warnings for clean compilation
-- Enhanced error messages in the interpreter
-- Improved logging for live blocks and assertions with colorized output
-- Added detailed documentation in SYNTAX.md about language requirements
-- Created helper utilities for running examples
+### What works today
 
-Future improvements will include:
+- Functions (with and without parameters), forward references
+- `let` and `static let` bindings, reassignment
+- Arithmetic, comparison, logical, bitwise, and shift operators
+- Prefix `!` and `-`
+- Hex (`0xFF`) and binary (`0b1010`) integer literals with `_` separators
+- Block `/* */` and line `//` comments
+- `if` / `else`, `while` (with runaway guard)
+- `live { }` self-healing blocks with retry
+- `assert(cond, msg)` with operand values in the error
+- Built-ins: `println`, `print`, `len`, `abs`, `min`, `max`, `sqrt`,
+  `pow`, `floor`, `ceil`
+- Clean `line:col:` error diagnostics
+- 50+ passing tests covering lexer, parser, typechecker, interpreter,
+  and example programs (golden file sidecars in `resilient/examples/`)
+- Zero panic paths in the parser or lexer — every error is recoverable
 
-- Flexible function parameter handling (currently all functions must have parameters)
-- More sophisticated type system
-- Ownership and borrowing model
-- Compiler optimizations
-- Enhanced formal verification
-- Better tooling and IDE support
+### What's next
+
+- G4 (full source spans with snippets / carets)
+- G5 (replace hand-rolled lexer with `logos`)
+- G6 (one canonical AST, retire the unwired `parser.rs`)
+- G7 (real type checker: inference, unification, exhaustiveness)
+- G8–G10 (function contracts, symbolic assert, live-block invariants)
+- G11+ (stdlib, structs, pattern matching, cranelift backend, LSP,
+  `no_std`, self-hosting)
