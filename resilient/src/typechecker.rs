@@ -649,7 +649,7 @@ impl TypeChecker {
                 Ok(result_type)
             },
             
-            Node::LetStatement { name, value, type_annot } => {
+            Node::LetStatement { name, value, type_annot, .. } => {
                 let value_type = self.check_node(value)?;
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
@@ -816,13 +816,13 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
-            Node::WhileStatement { condition, body } => {
+            Node::WhileStatement { condition, body, .. } => {
                 let _ = self.check_node(condition)?;
                 let _ = self.check_node(body)?;
                 Ok(Type::Void)
             },
 
-            Node::StaticLet { name, value } => {
+            Node::StaticLet { name, value, .. } => {
                 let value_type = self.check_node(value)?;
                 self.env.set(name.clone(), value_type);
                 // RES-063: static lets are mutable across calls, so
@@ -832,7 +832,7 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
-            Node::Assignment { name, value } => {
+            Node::Assignment { name, value, .. } => {
                 let _ = self.check_node(value)?;
                 // RES-063: any reassignment kills const-tracking. We
                 // could try to re-track if RHS is foldable, but
@@ -842,7 +842,7 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
             
-            Node::ReturnStatement { value } => {
+            Node::ReturnStatement { value, .. } => {
                 // Bare `return;` has type Void; otherwise pass through
                 // the type of the returned value.
                 match value {
@@ -851,7 +851,7 @@ impl TypeChecker {
                 }
             },
             
-            Node::IfStatement { condition, consequence, alternative } => {
+            Node::IfStatement { condition, consequence, alternative, .. } => {
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!("If condition must be a boolean, got {}", condition_type));

@@ -141,12 +141,12 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
-        Node::ReturnStatement { value: Some(v) } => {
+        Node::ReturnStatement { value: Some(v), .. } => {
             compile_expr(v, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Return, line);
             Ok(())
         }
-        Node::ReturnStatement { value: None } => {
+        Node::ReturnStatement { value: None, .. } => {
             chunk.emit(Op::Return, line);
             Ok(())
         }
@@ -156,7 +156,7 @@ fn compile_stmt(
         Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block(_) => {
             compile_control_flow(node, chunk, locals, next_local, fn_index, line)
         }
-        Node::Assignment { name, value } => {
+        Node::Assignment { name, value, .. } => {
             // RES-083: re-bind an existing local. Compile the RHS,
             // StoreLocal to the known slot. Unknown name is an error.
             compile_expr(value, chunk, locals, fn_index, line)?;
@@ -195,7 +195,7 @@ fn compile_control_flow(
             }
             Ok(())
         }
-        Node::IfStatement { condition, consequence, alternative } => {
+        Node::IfStatement { condition, consequence, alternative, .. } => {
             // cond
             compile_expr(condition, chunk, locals, fn_index, line)?;
             // JumpIfFalse to else-or-end (placeholder 0 offset)
@@ -219,7 +219,7 @@ fn compile_control_flow(
             }
             Ok(())
         }
-        Node::WhileStatement { condition, body } => {
+        Node::WhileStatement { condition, body, .. } => {
             let loop_start = chunk.code.len();
             compile_expr(condition, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
@@ -260,12 +260,12 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
-        Node::ReturnStatement { value: Some(v) } => {
+        Node::ReturnStatement { value: Some(v), .. } => {
             compile_expr(v, chunk, locals, fn_index, line)?;
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
-        Node::ReturnStatement { value: None } => {
+        Node::ReturnStatement { value: None, .. } => {
             // `return;` inside a fn body returns Void — push a Void
             // constant so ReturnFromCall has something to transfer.
             let idx = chunk.add_constant(Value::Void)?;
@@ -279,7 +279,7 @@ fn compile_stmt_in_fn(
         Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block(_) => {
             compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, line)
         }
-        Node::Assignment { name, value } => {
+        Node::Assignment { name, value, .. } => {
             compile_expr(value, chunk, locals, fn_index, line)?;
             let idx = *locals
                 .get(name)
@@ -309,7 +309,7 @@ fn compile_control_flow_in_fn(
             }
             Ok(())
         }
-        Node::IfStatement { condition, consequence, alternative } => {
+        Node::IfStatement { condition, consequence, alternative, .. } => {
             compile_expr(condition, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_stmt_in_fn(consequence, chunk, locals, next_local, fn_index, line)?;
@@ -326,7 +326,7 @@ fn compile_control_flow_in_fn(
             }
             Ok(())
         }
-        Node::WhileStatement { condition, body } => {
+        Node::WhileStatement { condition, body, .. } => {
             let loop_start = chunk.code.len();
             compile_expr(condition, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);

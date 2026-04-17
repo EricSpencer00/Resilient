@@ -541,6 +541,12 @@ enum Node {
         /// Advisory today; enforced in RES-053.
         #[allow(dead_code)]
         type_annot: Option<String>,
+        /// RES-079: span of the statement's originating source range.
+        /// Currently unused at call sites; follow-ups will surface it
+        /// in richer diagnostics (e.g. pointing at just the `let`
+        /// keyword vs the whole enclosing statement).
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-013: `static let NAME = EXPR;` — like let, but stored in a
     /// per-interpreter statics map so the binding survives across
@@ -549,26 +555,36 @@ enum Node {
     StaticLet {
         name: String,
         value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-017: re-bind an existing variable. Fails at runtime if the
     /// name has not been declared with `let` or `static let`.
     Assignment {
         name: String,
         value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     ReturnStatement {
         /// `None` for a bare `return;`
         value: Option<Box<Node>>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     IfStatement {
         condition: Box<Node>,
         consequence: Box<Node>,
         alternative: Option<Box<Node>>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-023: `while COND { BODY }`. Body re-evaluated until COND is falsy.
     WhileStatement {
         condition: Box<Node>,
         body: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-037: `for NAME in EXPR { BODY }`. `EXPR` must evaluate to an
     /// array; `NAME` is bound to each element in order.
@@ -576,6 +592,8 @@ enum Node {
         name: String,
         iterable: Box<Node>,
         body: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     ExpressionStatement(Box<Node>),
     /// RES-078: identifiers carry source span so diagnostics can
@@ -840,6 +858,7 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
         let name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             _ => unreachable!("parse_assignment only dispatched for Identifier"),
@@ -853,9 +872,10 @@ impl Parser {
         Node::Assignment {
             name,
             value: Box::new(value),
+            span: stmt_span,
         }
     }
-    
+
     fn parse_function(&mut self) -> Node {
         self.next_token(); // Skip 'fn'
         
@@ -1067,6 +1087,7 @@ impl Parser {
     /// the `static` keyword and enforcing that `let` follows.
     /// `for NAME in EXPR { BODY }`
     fn parse_for_in_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'for'
         let name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
@@ -1084,6 +1105,7 @@ impl Parser {
                 name,
                 iterable: Box::new(Node::ArrayLiteral(Vec::new())),
                 body: Box::new(Node::Block(Vec::new())),
+                span: stmt_span,
             };
         }
         self.next_token(); // skip 'in'
@@ -1097,6 +1119,7 @@ impl Parser {
                 name,
                 iterable: Box::new(iterable),
                 body: Box::new(Node::Block(Vec::new())),
+                span: stmt_span,
             };
         }
         let body = self.parse_block_statement();
@@ -1104,12 +1127,14 @@ impl Parser {
             name,
             iterable: Box::new(iterable),
             body: Box::new(body),
+            span: stmt_span,
         }
     }
 
     /// `while COND { BODY }` — same parsing shape as `if` (both `while (c)`
     /// and `while c` forms), minus the `else` branch.
     fn parse_while_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'while'
 
         let condition = if self.current_token == Token::LeftParen {
@@ -1135,6 +1160,7 @@ impl Parser {
             return Node::WhileStatement {
                 condition: Box::new(condition),
                 body: Box::new(Node::Block(Vec::new())),
+                span: stmt_span,
             };
         }
 
@@ -1142,10 +1168,12 @@ impl Parser {
         Node::WhileStatement {
             condition: Box::new(condition),
             body: Box::new(body),
+            span: stmt_span,
         }
     }
 
     fn parse_static_let_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'static'
         if self.current_token != Token::Let {
             let tok = self.current_token.clone();
@@ -1153,18 +1181,24 @@ impl Parser {
             return Node::StaticLet {
                 name: String::new(),
                 value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
+                span: stmt_span,
             };
         }
         // Delegate to parse_let_statement and re-wrap. parse_let_statement
         // returns a Node::LetStatement.
         let inner = self.parse_let_statement();
         match inner {
-            Node::LetStatement { name, value, .. } => Node::StaticLet { name, value },
+            Node::LetStatement { name, value, span, .. } => Node::StaticLet { name, value, span },
             other => other, // error paths return a degenerate LetStatement
         }
     }
 
     fn parse_let_statement(&mut self) -> Node {
+        // RES-079: capture span of the `let` keyword BEFORE we
+        // advance. The parse method's end position would otherwise
+        // be wherever the lexer landed after the semicolon — the
+        // wrong thing to attribute the statement to.
+        let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'let'
 
         let name = match &self.current_token {
@@ -1176,6 +1210,7 @@ impl Parser {
                     name: String::new(),
                     value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
                     type_annot: None,
+                    span: stmt_span,
                 };
             }
         };
@@ -1209,6 +1244,7 @@ impl Parser {
                 name,
                 value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
                 type_annot,
+                span: stmt_span,
             };
         }
 
@@ -1224,9 +1260,10 @@ impl Parser {
             name,
             value: Box::new(value),
             type_annot,
+            span: stmt_span,
         }
     }
-    
+
     /// RES-073: `use "path/to/file.res";` — emits `Node::Use { path }`.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
@@ -1249,6 +1286,7 @@ impl Parser {
     }
 
     fn parse_return_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'return'
 
         // Bare `return;` or `return}` → no expression.
@@ -1256,7 +1294,7 @@ impl Parser {
             self.current_token,
             Token::Semicolon | Token::RightBrace | Token::Eof
         ) {
-            return Node::ReturnStatement { value: None };
+            return Node::ReturnStatement { value: None, span: stmt_span };
         }
 
         let value = match self.parse_expression(0) {
@@ -1273,7 +1311,7 @@ impl Parser {
             self.next_token(); // Skip to semicolon
         }
 
-        Node::ReturnStatement { value }
+        Node::ReturnStatement { value, span: stmt_span }
     }
     
     fn parse_live_block(&mut self) -> Node {
@@ -1347,6 +1385,7 @@ impl Parser {
     }
     
     fn parse_if_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'if'
 
         // Handle both `if (condition)` and `if condition` forms.
@@ -1387,6 +1426,7 @@ impl Parser {
                 condition: Box::new(condition),
                 consequence: Box::new(Node::Block(Vec::new())),
                 alternative: None,
+                span: stmt_span,
             };
         }
 
@@ -1411,9 +1451,10 @@ impl Parser {
             condition: Box::new(condition),
             consequence: Box::new(consequence),
             alternative,
+            span: stmt_span,
         }
     }
-    
+
     fn parse_expression_statement(&mut self) -> Option<Node> {
         let expr = self.parse_expression(0)?;
         
@@ -2804,7 +2845,7 @@ impl Interpreter {
                 self.env.set(name.clone(), val);
                 Ok(Value::Void)
             },
-            Node::StaticLet { name, value } => {
+            Node::StaticLet { name, value, .. } => {
                 // Initialize only once. Subsequent executions of the
                 // same declaration are no-ops (the value persists in
                 // self.statics across function calls).
@@ -2814,7 +2855,7 @@ impl Interpreter {
                 }
                 Ok(Value::Void)
             },
-            Node::Assignment { name, value } => {
+            Node::Assignment { name, value, .. } => {
                 let val = self.eval(value)?;
                 if matches!(val, Value::Return(_)) {
                     return Ok(val);
@@ -2828,14 +2869,14 @@ impl Interpreter {
                     Err(format!("Cannot assign to undeclared variable '{}'", name))
                 }
             },
-            Node::ReturnStatement { value } => {
+            Node::ReturnStatement { value, .. } => {
                 let val = match value {
                     Some(expr) => self.eval(expr)?,
                     None => Value::Void,
                 };
                 Ok(Value::Return(Box::new(val)))
             },
-            Node::ForInStatement { name, iterable, body } => {
+            Node::ForInStatement { name, iterable, body, .. } => {
                 let iter_val = self.eval(iterable)?;
                 let items = match iter_val {
                     Value::Array(v) => v,
@@ -2853,7 +2894,7 @@ impl Interpreter {
                 }
                 Ok(Value::Void)
             },
-            Node::WhileStatement { condition, body } => {
+            Node::WhileStatement { condition, body, .. } => {
                 // Cap iterations as a safety net so a buggy loop can't
                 // freeze the interpreter. 1M is big enough for
                 // realistic work and small enough to catch runaways.
@@ -2877,7 +2918,7 @@ impl Interpreter {
                 }
                 Ok(Value::Void)
             },
-            Node::IfStatement { condition, consequence, alternative } => {
+            Node::IfStatement { condition, consequence, alternative, .. } => {
                 let condition_value = self.eval(condition)?;
                 if self.is_truthy(&condition_value) {
                     self.eval(consequence)
@@ -4690,7 +4731,7 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors);
         match p {
             Node::Program(stmts) => match &stmts[0].node {
-                Node::LetStatement { name, value, type_annot } => {
+                Node::LetStatement { name, value, type_annot, .. } => {
                     assert_eq!(name, "x");
                     assert_eq!(type_annot.as_deref(), Some("int"));
                     assert!(matches!(**value, Node::IntegerLiteral { value: 42, .. }));
@@ -5841,7 +5882,7 @@ mod tests {
             Node::Program(stmts) => match &stmts[0].node {
                 Node::Function { body, .. } => match body.as_ref() {
                     Node::Block(inner) => match &inner[0] {
-                        Node::ReturnStatement { value } => assert!(value.is_none()),
+                        Node::ReturnStatement { value, .. } => assert!(value.is_none()),
                         other => panic!("expected ReturnStatement, got {:?}", other),
                     },
                     other => panic!("expected Block, got {:?}", other),
@@ -6085,6 +6126,22 @@ mod tests {
             "legacy shim should use <unknown> prefix, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn let_statement_spans_track_source_line() {
+        // RES-079: the inner LetStatement span matches the line of
+        // its source origin. Statement 1 is on line 1, statement 2
+        // on line 2.
+        let src = "let x = 1;\nlet y = 2;";
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty());
+        let Node::Program(stmts) = &program else { panic!("expected Program"); };
+        let Node::LetStatement { span: s0, .. } = &stmts[0].node else { panic!(); };
+        let Node::LetStatement { span: s1, .. } = &stmts[1].node else { panic!(); };
+        assert!(s0.start.line >= 1, "s0 line: {}", s0.start.line);
+        assert!(s1.start.line >= 2, "s1 line: {}", s1.start.line);
+        assert!(s1.start.line > s0.start.line);
     }
 
     #[test]

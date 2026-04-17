@@ -1,7 +1,7 @@
 ---
 id: RES-079
 title: G6 spans on core statement nodes (closes G6 🟡→ ✅ for statements)
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -67,3 +67,33 @@ expression-variant work can be filed as RES-084 after this ships.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - 7 statement variants gain a `span: span::Span` field, each
+    marked `#[allow(dead_code)]` since they aren't read yet:
+    `LetStatement`, `StaticLet`, `Assignment`, `ReturnStatement`,
+    `IfStatement`, `WhileStatement`, `ForInStatement`.
+  - Each of the 7 matching `parse_*` methods captures
+    `let stmt_span = self.span_at_current();` **before** the first
+    `next_token` advance, so the span reflects the originating
+    keyword line rather than wherever the lexer landed after the
+    terminator. Error-recovery constructions in the same methods
+    reuse `stmt_span` so even degenerate paths produce usable
+    spans.
+  - ~24 destructure sites updated: `{ name, value, .. }` pattern
+    added to every match site across `main.rs`, `typechecker.rs`,
+    `compiler.rs`. `StaticLet` construction at `parse_static_let`
+    pulls the span through from the inner LetStatement so the
+    `static let` location is still accurate.
+- 2026-04-17 tests: new `let_statement_spans_track_source_line`
+  unit test parses `let x = 1;\nlet y = 2;` and asserts the first
+  statement has `span.start.line >= 1`, the second has
+  `span.start.line >= 2`, and that `s1.start.line > s0.start.line`
+  — ordering is preserved.
+- 2026-04-17 verification: 209 unit + 1 golden + 11 smoke = 221
+  tests default; 217 + 1 + 12 = 230 with `--features z3`. Clippy
+  clean both ways.
+- 2026-04-17 ROADMAP.md G6 cell updated: statement spans done.
+  Expression variants (PrefixExpression, InfixExpression,
+  CallExpression, ArrayLiteral, IndexExpression, IndexAssignment,
+  FieldAccess, FieldAssignment, MatchExpression) remain as a
+  future RES-084 follow-up — file at appropriate time.
