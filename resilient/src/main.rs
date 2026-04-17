@@ -56,6 +56,10 @@ enum Token {
     
     // Other
     Eof,
+    /// A character the lexer did not recognize. Emitted instead of
+    /// panicking so the parser can report a graceful diagnostic. The
+    /// `char` payload is the offending character, for the error message.
+    Unknown(char),
 }
 
 // Lexer for tokenizing Resilient source code
@@ -143,7 +147,10 @@ impl Lexer {
                     self.read_char();
                     Token::NotEqual
                 } else {
-                    panic!("Unexpected character: !");
+                    // Bare `!` (prefix logical-not) isn't supported yet;
+                    // emit Unknown so the parser surfaces a graceful error
+                    // instead of panicking.
+                    Token::Unknown('!')
                 }
             },
             '(' => Token::LeftParen,
@@ -180,7 +187,11 @@ impl Lexer {
                 } else if self.is_digit(self.ch) {
                     return self.read_number();
                 } else {
-                    panic!("Unexpected character: {}", self.ch);
+                    // Unknown character: emit a token the parser can
+                    // route through `record_error` and keep going.
+                    let unknown = self.ch;
+                    self.read_char();
+                    return Token::Unknown(unknown);
                 }
             }
         };
@@ -370,6 +381,10 @@ impl Parser {
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
             Token::If => Some(self.parse_if_statement()),
+            Token::Unknown(ch) => {
+                self.record_error(format!("Unexpected character '{}'", ch));
+                None
+            }
             _ => self.parse_expression_statement(),
         }
     }
@@ -599,40 +614,58 @@ impl Parser {
     
     fn parse_if_statement(&mut self) -> Node {
         self.next_token(); // Skip 'if'
-        
-        // Handle both if (condition) and if condition forms
+
+        // Handle both `if (condition)` and `if condition` forms.
         let condition = if self.current_token == Token::LeftParen {
             self.next_token(); // Skip '('
-            let expr = self.parse_expression(0).unwrap();
-            
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+
             if self.current_token != Token::RightParen {
-                panic!("Expected ')' after if condition");
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ')' after if condition, found {:?}",
+                    tok
+                ));
+            } else {
+                self.next_token(); // Skip ')'
             }
-            self.next_token(); // Skip ')'
             expr
         } else {
-            self.parse_expression(0).unwrap()
+            self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false))
         };
-        
+
         if self.current_token != Token::LeftBrace {
-            panic!("Expected '{{' after if condition");
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' after if condition, found {:?}",
+                tok
+            ));
+            // Recover by returning a skeleton `if` with an empty body so
+            // the rest of the file can still be parsed.
+            return Node::IfStatement {
+                condition: Box::new(condition),
+                consequence: Box::new(Node::Block(Vec::new())),
+                alternative: None,
+            };
         }
-        
+
         let consequence = self.parse_block_statement();
-        
+
         let alternative = if self.peek_token == Token::Else {
             self.next_token(); // Move to 'else'
             self.next_token(); // Skip 'else'
-            
+
             if self.current_token != Token::LeftBrace {
-                panic!("Expected '{{' after 'else'");
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected '{{' after 'else', found {:?}", tok));
+                None
+            } else {
+                Some(Box::new(self.parse_block_statement()))
             }
-            
-            Some(Box::new(self.parse_block_statement()))
         } else {
             None
         };
-        
+
         Node::IfStatement {
             condition: Box::new(condition),
             consequence: Box::new(consequence),
@@ -662,7 +695,11 @@ impl Parser {
                 self.next_token(); // Skip '('
                 let expr = self.parse_expression(0);
                 if self.current_token != Token::RightParen {
-                    panic!("Expected ')'");
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ')' closing parenthesized expression, found {:?}",
+                        tok
+                    ));
                 }
                 expr
             },
@@ -743,11 +780,15 @@ impl Parser {
         }
         
         if self.peek_token != Token::RightParen {
-            panic!("Expected ')' after arguments");
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected ')' after call arguments, found {:?}",
+                tok
+            ));
+        } else {
+            self.next_token(); // Skip to ')'
         }
-        
-        self.next_token(); // Skip to ')'
-        
+
         args
     }
     
@@ -1821,6 +1862,23 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parser_recovers_from_missing_if_brace() {
+        // RES-009: before this ticket, `if x == 1 foo();` (no `{` after
+        // the condition) panicked the whole interpreter. Now it should
+        // record a parse error and keep going.
+        let (_program, errors) = parse("fn f() { if x == 1 x; }");
+        assert!(
+            !errors.is_empty(),
+            "expected a parse error for missing `{{`"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("Expected '{'")),
+            "expected a message naming the missing brace, got {:?}",
+            errors
+        );
     }
 
     #[test]
