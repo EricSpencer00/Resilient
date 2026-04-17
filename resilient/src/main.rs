@@ -167,8 +167,26 @@ impl Lexer {
             },
             '/' => {
                 if self.peek_char() == '/' {
-                    // Skip comment line
+                    // Line comment: skip to newline.
                     while self.ch != '\n' && self.ch != '\0' {
+                        self.read_char();
+                    }
+                    return self.next_token();
+                } else if self.peek_char() == '*' {
+                    // Block comment: skip to '*/' (non-nesting).
+                    self.read_char(); // consume first '*'
+                    self.read_char(); // advance past it
+                    loop {
+                        if self.ch == '\0' {
+                            // Unterminated block comment — record a lexer
+                            // error and stop; return Eof so parser stops.
+                            return Token::Unknown('*');
+                        }
+                        if self.ch == '*' && self.peek_char() == '/' {
+                            self.read_char(); // '*'
+                            self.read_char(); // '/'
+                            break;
+                        }
                         self.read_char();
                     }
                     return self.next_token();
@@ -2377,6 +2395,23 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn block_comments_are_stripped() {
+        let src = "let /* inline */ x = /* another */ 42; /* trailing */";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(42)));
+    }
+
+    #[test]
+    fn block_comment_spanning_lines() {
+        let src = "let x = 1;\n/* line two\nand three */\nlet y = 2;";
+        let (_p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
     }
 
     #[test]
