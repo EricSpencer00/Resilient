@@ -1,0 +1,43 @@
+---
+id: RES-116
+title: Interpreter runtime errors print `file:line:col:` prefix
+state: OPEN
+priority: P2
+goalpost: G6
+created: 2026-04-17
+owner: executor
+---
+
+## Summary
+RES-080 got statement-level spans into the typechecker. The
+interpreter (tree-walker) still prints bare error messages
+(`Runtime error: division by zero`). The VM got the same treatment
+in RES-091/092 via `chunk.line_info`; the interpreter has even better
+data available (AST spans, post-RES-088) and should surface them.
+
+## Acceptance criteria
+- Every `RResult::Err(msg)` path in `main.rs` `interpret_*`
+  functions is widened to `RResult::ErrAt(span, msg)` (new variant
+  or boxed struct — whichever is less churn).
+- The driver formats errors as
+  `filename:line:col: Runtime error: <msg>` using the span's
+  start `Pos`.
+- Bare `RResult::Err` calls in library paths that lack a span
+  (e.g. builtin failures invoked indirectly) fall back to the
+  current no-prefix format rather than a fake span.
+- Existing `*.expected.txt` goldens update where runtime errors
+  appear — one file, `self_healing.expected.txt`, currently asserts
+  on an error string.
+- Unit tests: one per runtime error class (divide-by-zero, array
+  OOB, missing function) verifying the new prefix appears.
+- Commit message: `RES-116: interpreter runtime errors carry spans`.
+
+## Notes
+- Don't change the public `RResult` alias yet if it's aliased in
+  `resilient-runtime` — the interpreter can use a richer internal
+  type and lower to the runtime's simpler type at the boundary.
+- Performance: this path is cold (error case only), no need to
+  sweat boxing costs.
+
+## Log
+- 2026-04-17 created by manager

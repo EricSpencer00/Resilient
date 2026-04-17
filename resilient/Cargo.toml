@@ -37,10 +37,20 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 # code instead of going through the tree walker / bytecode VM.
 # Phase A only ships the scaffolding; RES-096+ adds AST lowering.
 jit = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-native", "dep:cranelift-module"]
+# RES-108: opt-in logos-based lexer (G5 foundation). Default off so the
+# hand-rolled scanner stays authoritative until RES-109 benchmarks land.
+# Enable with:
+#
+#   cargo build --features logos-lexer
+#
+# which routes `Lexer::new(src)` through `lexer_logos` instead of the
+# hand-rolled scanner. A parity test in the unit-test module cross-
+# checks the two token streams on every example in `resilient/examples/`.
+logos-lexer = ["dep:logos"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
-logos = "0.13"
+logos = { version = "0.14", optional = true }
 rustyline = "12.0.0"
 z3 = { version = "0.12", optional = true }
 tower-lsp = { version = "0.20", optional = true }

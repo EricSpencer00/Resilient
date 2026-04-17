@@ -21,6 +21,11 @@ mod verifier_z3;
 mod lsp_server;
 #[cfg(feature = "jit")]
 mod jit_backend;
+// RES-108: opt-in logos-based lexer. See module docs; the feature
+// flag gates the routing so the legacy hand-rolled scanner stays
+// authoritative until RES-109 benchmarks land.
+#[cfg(feature = "logos-lexer")]
+mod lexer_logos;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -122,22 +127,54 @@ struct Lexer {
     /// token begin?".
     last_token_line: usize,
     last_token_column: usize,
+    /// RES-108: when the `logos-lexer` feature is enabled, `Lexer::new`
+    /// pre-scans the full input via the logos-derived scanner into a
+    /// cached token stream. Each `next_token` call pops the next
+    /// `(Token, Span)` from here instead of driving the hand-rolled
+    /// state machine above. When `None` (or when the feature is off),
+    /// the legacy path is used.
+    #[cfg(feature = "logos-lexer")]
+    logos_tokens: Option<std::vec::IntoIter<(Token, span::Span)>>,
 }
 
 impl Lexer {
     fn new(input: String) -> Self {
-        let mut lexer = Lexer {
-            input: input.chars().collect(),
-            position: 0,
-            read_position: 0,
-            ch: '\0',
-            line: 1,
-            column: 0,
-            last_token_line: 1,
-            last_token_column: 1,
-        };
-        lexer.read_char();
-        lexer
+        #[cfg(feature = "logos-lexer")]
+        {
+            // RES-108: under the `logos-lexer` feature, pre-tokenize
+            // the entire input through the logos-based scanner.
+            // Subsequent `next_token` calls drain the cached stream;
+            // the legacy scan state (`input`, `position`, etc.) stays
+            // initialized so diagnostics that reach into fields like
+            // `last_token_line` still work.
+            let tokens = lexer_logos::tokenize(&input);
+            Lexer {
+                input: input.chars().collect(),
+                position: 0,
+                read_position: 0,
+                ch: '\0',
+                line: 1,
+                column: 0,
+                last_token_line: 1,
+                last_token_column: 1,
+                logos_tokens: Some(tokens.into_iter()),
+            }
+        }
+        #[cfg(not(feature = "logos-lexer"))]
+        {
+            let mut lexer = Lexer {
+                input: input.chars().collect(),
+                position: 0,
+                read_position: 0,
+                ch: '\0',
+                line: 1,
+                column: 0,
+                last_token_line: 1,
+                last_token_column: 1,
+            };
+            lexer.read_char();
+            lexer
+        }
     }
 
     fn read_char(&mut self) {
@@ -165,6 +202,22 @@ impl Lexer {
     }
     
     fn next_token(&mut self) -> Token {
+        // RES-108: under the `logos-lexer` feature, drain the pre-
+        // scanned stream. Each pop also updates the legacy line/col
+        // trackers so downstream code that inspects `last_token_line`
+        // / `last_token_column` (e.g. the parser's error-position
+        // helpers) keeps working transparently.
+        #[cfg(feature = "logos-lexer")]
+        if let Some(iter) = self.logos_tokens.as_mut() {
+            if let Some((tok, span)) = iter.next() {
+                self.last_token_line = span.start.line;
+                self.last_token_column = span.start.column;
+                self.line = span.end.line;
+                self.column = span.end.column;
+                return tok;
+            }
+            return Token::Eof;
+        }
         self.skip_whitespace();
         // Capture where this token STARTS so `Parser` can attribute
         // errors to the correct file:line:col.
@@ -4204,6 +4257,116 @@ mod tests {
             }
         }
         out
+    }
+
+    // RES-108: drive the hand-rolled scanner directly, bypassing the
+    // `logos-lexer` feature routing in `Lexer::new`. Only used by the
+    // parity tests below — downstream code always goes through
+    // `Lexer::new`.
+    #[cfg(feature = "logos-lexer")]
+    fn legacy_tokenize_with_spans(input: &str) -> Vec<(Token, span::Span)> {
+        let mut lex = Lexer {
+            input: input.chars().collect(),
+            position: 0,
+            read_position: 0,
+            ch: '\0',
+            line: 1,
+            column: 0,
+            last_token_line: 1,
+            last_token_column: 1,
+            logos_tokens: None,
+        };
+        lex.read_char();
+        let mut out = Vec::new();
+        loop {
+            let (tok, span) = lex.next_token_with_span();
+            let is_eof = matches!(tok, Token::Eof);
+            out.push((tok, span));
+            if is_eof {
+                break;
+            }
+        }
+        out
+    }
+
+    /// RES-108: parity harness — every `.rs` example in
+    /// `resilient/examples/` must produce identical `(Token, line:col)`
+    /// streams from the legacy hand-rolled lexer and the logos-based
+    /// one. `Span::offset` is deliberately excluded from the comparison
+    /// because the two implementations represent it differently (the
+    /// hand-rolled lexer currently pins `start.offset = 0`); everything
+    /// else — token kind, token payload, and line:col positions — must
+    /// match character-for-character.
+    #[cfg(feature = "logos-lexer")]
+    #[test]
+    fn lexer_parity_on_all_examples() {
+        use std::fs;
+
+        let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let entries = fs::read_dir(&examples_dir)
+            .expect("examples/ directory is present in the resilient crate");
+
+        let mut checked = 0usize;
+        for entry in entries {
+            let entry = entry.expect("readable dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let src = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+
+            let legacy = legacy_tokenize_with_spans(&src);
+            let logos = crate::lexer_logos::tokenize(&src);
+
+            assert_eq!(
+                legacy.len(),
+                logos.len(),
+                "{}: token count differs — legacy={}, logos={}",
+                path.display(),
+                legacy.len(),
+                logos.len(),
+            );
+
+            for (i, (l, r)) in legacy.iter().zip(logos.iter()).enumerate() {
+                assert_eq!(
+                    l.0,
+                    r.0,
+                    "{}: token #{} differs — legacy={:?}, logos={:?}",
+                    path.display(),
+                    i,
+                    l.0,
+                    r.0,
+                );
+                assert_eq!(
+                    (l.1.start.line, l.1.start.column),
+                    (r.1.start.line, r.1.start.column),
+                    "{}: token #{} ({:?}) start position differs — legacy={:?}, logos={:?}",
+                    path.display(),
+                    i,
+                    l.0,
+                    (l.1.start.line, l.1.start.column),
+                    (r.1.start.line, r.1.start.column),
+                );
+                assert_eq!(
+                    (l.1.end.line, l.1.end.column),
+                    (r.1.end.line, r.1.end.column),
+                    "{}: token #{} ({:?}) end position differs — legacy={:?}, logos={:?}",
+                    path.display(),
+                    i,
+                    l.0,
+                    (l.1.end.line, l.1.end.column),
+                    (r.1.end.line, r.1.end.column),
+                );
+            }
+            checked += 1;
+        }
+
+        assert!(
+            checked > 0,
+            "no .rs examples found under {}",
+            examples_dir.display(),
+        );
     }
 
     // ---------- Lexer ----------
