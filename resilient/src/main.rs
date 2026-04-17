@@ -1575,6 +1575,10 @@ impl Parser {
             self.next_token();
             if self.current_token == Token::Comma {
                 self.next_token();
+                // Trailing comma before } is allowed.
+                if self.current_token == Token::RightBrace {
+                    break;
+                }
             } else if self.current_token == Token::RightBrace {
                 break;
             } else {
@@ -1746,7 +1750,11 @@ impl Parser {
             items.push(first);
         }
         while self.peek_token == Token::Comma {
-            self.next_token(); // to current item's last token
+            self.next_token(); // to ','
+            // Trailing comma before `]` is allowed.
+            if self.peek_token == Token::RightBracket {
+                break;
+            }
             self.next_token(); // skip ','
             if let Some(next) = self.parse_expression(0) {
                 items.push(next);

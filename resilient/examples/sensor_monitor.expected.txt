@@ -1,0 +1,6 @@
+low:   2
+mid:   1
+high:  1
+alert: 1
+processed: 5
+Program executed successfully
