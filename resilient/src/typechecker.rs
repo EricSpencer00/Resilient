@@ -195,6 +195,12 @@ pub struct TypeChecker {
     /// RES-061: top-level function name → its parameters + contract clauses.
     /// Populated by check_program's first pass; consulted by CallExpression.
     contract_table: HashMap<String, ContractInfo>,
+    /// RES-063: identifier → known constant integer value. Populated when
+    /// `let NAME = <foldable expr>;` is checked. Invalidated on
+    /// reassignment or shadowing with a non-foldable value. Used by the
+    /// CallExpression contract-fold pass so `let n = 5; pos(n)` is
+    /// equivalent to `pos(5)` for verification purposes.
+    const_bindings: HashMap<String, i64>,
 }
 
 impl TypeChecker {
@@ -298,6 +304,7 @@ impl TypeChecker {
         TypeChecker {
             env,
             contract_table: HashMap::new(),
+            const_bindings: HashMap::new(),
         }
     }
     
@@ -460,6 +467,18 @@ impl TypeChecker {
                     value_type
                 };
                 self.env.set(name.clone(), bind_type);
+                // RES-063: if the RHS is a foldable integer constant,
+                // remember the value so future call sites can use it.
+                // Otherwise REMOVE any prior binding (shadowing kills
+                // the old constant).
+                let no_b: HashMap<String, i64> = HashMap::new();
+                if let Some(v) = fold_const_i64(value, &no_b)
+                    .or_else(|| fold_const_i64(value, &self.const_bindings))
+                {
+                    self.const_bindings.insert(name.clone(), v);
+                } else {
+                    self.const_bindings.remove(name);
+                }
                 Ok(Type::Void)
             },
 
@@ -607,15 +626,20 @@ impl TypeChecker {
             Node::StaticLet { name, value } => {
                 let value_type = self.check_node(value)?;
                 self.env.set(name.clone(), value_type);
+                // RES-063: static lets are mutable across calls, so
+                // they're never safe to treat as compile-time constants
+                // for verification.
+                self.const_bindings.remove(name);
                 Ok(Type::Void)
             },
 
-            Node::Assignment { value, .. } => {
-                // Assignment is allowed at runtime; static type check
-                // just ensures the RHS type-checks. Per-name existence
-                // is enforced by the interpreter. Real type-equality
-                // checks land with a proper typechecker (G7).
+            Node::Assignment { name, value } => {
                 let _ = self.check_node(value)?;
+                // RES-063: any reassignment kills const-tracking. We
+                // could try to re-track if RHS is foldable, but
+                // mid-function mutation is rare and the conservative
+                // choice keeps the verifier sound.
+                self.const_bindings.remove(name);
                 Ok(Type::Void)
             },
             
@@ -774,20 +798,17 @@ impl TypeChecker {
             Node::CallExpression { function, arguments } => {
                 let func_type = self.check_node(function)?;
 
-                // RES-061: if the callee is a known top-level fn with
-                // contracts, try to fold each requires clause with the
-                // call's arguments substituted for parameters.
+                // RES-061 + RES-063: if the callee is a known top-level
+                // fn with contracts, fold each requires clause with the
+                // call's arguments substituted for parameters. Arguments
+                // can be literal expressions OR identifiers that resolve
+                // to a constant via const_bindings.
                 if let Node::Identifier(callee_name) = function.as_ref()
                     && let Some(info) = self.contract_table.get(callee_name).cloned()
                 {
-                    // Build a (param_name → constant value) map for
-                    // every argument we can fold. Any non-foldable
-                    // argument leaves that param unbound, so the
-                    // contract folder gives up gracefully.
                     let mut bindings: HashMap<String, i64> = HashMap::new();
-                    let no_b: HashMap<String, i64> = HashMap::new();
                     for ((_ty, pname), arg) in info.parameters.iter().zip(arguments.iter()) {
-                        if let Some(v) = fold_const_i64(arg, &no_b) {
+                        if let Some(v) = fold_const_i64(arg, &self.const_bindings) {
                             bindings.insert(pname.clone(), v);
                         }
                     }

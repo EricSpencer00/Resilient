@@ -3880,6 +3880,62 @@ mod tests {
         assert!(err.contains("invalid"), "{}", err);
     }
 
+    // ---------- Const let-binding tracking (RES-063) ----------
+
+    #[test]
+    fn const_let_satisfies_contract() {
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let n = 5;
+            let r = pos(n);
+        "#).unwrap();
+    }
+
+    #[test]
+    fn const_let_violates_contract() {
+        let err = typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let bad = 0;
+            let r = pos(bad);
+        "#).unwrap_err();
+        assert!(err.contains("Contract violation"), "got: {}", err);
+    }
+
+    #[test]
+    fn const_chain_through_arithmetic() {
+        // n is 5, then m is 2*5 = 10 (foldable), then call.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let n = 5;
+            let m = n * 2;
+            let r = pos(m);
+        "#).unwrap();
+    }
+
+    #[test]
+    fn reassignment_kills_const_tracking() {
+        // After `n = read()` (non-foldable), n is no longer constant —
+        // even if we then assign 0, the verifier conservatively gives
+        // up rather than risk being unsound. So pos(n) should NOT be
+        // rejected, just left for runtime.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let n = 5;
+            n = 7;          // killed; verifier gives up
+            let r = pos(n); // not rejected, runtime check
+        "#).unwrap();
+    }
+
+    #[test]
+    fn shadowing_with_non_const_kills_tracking() {
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let n = 5;
+            let n = 10 / 2;  // foldable, still a constant
+            let r = pos(n);
+        "#).unwrap();
+    }
+
     // ---------- Call-site contract fold (RES-061) ----------
 
     #[test]
