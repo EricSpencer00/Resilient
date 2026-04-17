@@ -22,6 +22,16 @@ pub enum Type {
     Struct(String),
     Void,
     Any, // Used for untyped variables during inference
+    /// RES-121: fresh inference variable (Hindley-Milner). Produced
+    /// by the inference walker (RES-120, when it lands) and
+    /// eliminated by `unify::Substitution::apply`. The `u32` is a
+    /// globally-unique id minted from a monotonic counter; IDs have
+    /// no intrinsic meaning beyond identity.
+    ///
+    /// Currently only the `unify` module's unit tests construct this
+    /// variant; the `dead_code` allow goes away when RES-120 lands.
+    #[allow(dead_code)]
+    Var(u32),
 }
 
 impl std::fmt::Display for Type {
@@ -46,6 +56,7 @@ impl std::fmt::Display for Type {
             Type::Struct(n) => write!(f, "{}", n),
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
+            Type::Var(id) => write!(f, "?t{}", id),
         }
     }
 }

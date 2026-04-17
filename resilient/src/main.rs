@@ -26,6 +26,9 @@ mod jit_backend;
 // authoritative until RES-109 benchmarks land.
 #[cfg(feature = "logos-lexer")]
 mod lexer_logos;
+// RES-121: Hindley-Milner unification + occurs check. Unconditionally
+// compiled; consumed by the inference walker when RES-120 lands.
+mod unify;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
