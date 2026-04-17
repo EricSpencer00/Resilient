@@ -1,7 +1,7 @@
 ---
 id: RES-098
 title: resilient-runtime adds embedded-alloc + Float/String Value variants
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -64,3 +64,45 @@ selected at link time) opts into the richer variants.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `resilient-runtime/Cargo.toml`: new `alloc` feature
+    (default off) + optional `embedded-alloc = "0.5"` dep gated
+    under it.
+  - `lib.rs`:
+    - `#[cfg(feature = "alloc")] extern crate alloc;` plus
+      `use alloc::string::String;`. Needed in BOTH test and
+      production builds even though std re-exports alloc — the
+      `extern crate` is the bit that makes it linkable.
+    - `Value` gains `Float(f64)` (always available — no allocator
+      needed) and `String(alloc::string::String)` (gated on
+      `alloc`). Dropped `Eq` derive (f64 lacks it) and
+      `Copy` derive (String can't be Copy).
+    - `Value::add/sub/mul/div/eq` extended:
+      - Float arithmetic uses native f64 ops; no overflow concept.
+      - Float div produces inf/NaN per IEEE-754 (no error).
+      - Float eq uses `to_bits` so NaN equals itself (matches the
+        bytecode VM's constant-pool dedup).
+      - String + String concatenates (alloc only).
+      - String + String == compares as Eq.
+      - Mixed int/float and int/string remain TypeMismatch.
+- 2026-04-17 tests:
+  - 7 RES-075 tests still pass.
+  - 4 new RES-098 always-on Float tests cover arithmetic,
+    division-by-zero-yields-inf, NaN-equals-itself, mixed-with-int
+    rejection.
+  - 3 alloc-gated tests cover string concat, string eq,
+    string-doesn't-subtract.
+  - Total: 11 tests on default features, **14 tests on `--features alloc`**.
+- 2026-04-17 verification across four config combinations:
+  - host (default, no alloc): build/test/clippy clean
+  - host `--features alloc`: build/test/clippy clean
+  - cross (`--target thumbv7em-none-eabihf`, no alloc): build/clippy clean
+  - cross `--target thumbv7em-none-eabihf --features alloc`:
+    build/clippy clean (pulls in `linked_list_allocator` +
+    `critical-section` + `embedded-alloc` transitively)
+- README "Embedded runtime" section updated with both feature
+  configs + a Cortex-M `#[global_allocator]` example showing how
+  embedded users wire `embedded_alloc::LlffHeap`.
+- The lib does NOT pick a `#[global_allocator]` — that's the
+  binary's responsibility. Keeps `resilient-runtime` reusable
+  across allocator choices.

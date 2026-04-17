@@ -23,16 +23,41 @@
 // the trait shape. Document that the names ARE intentional.
 #![allow(clippy::should_implement_trait)]
 
-/// A Resilient runtime value. Phase A subset only.
+// RES-098: pull in the `alloc` crate when the `alloc` feature
+// is on. Needed in both test and production builds — even when
+// std is available, `alloc::string::String` requires the crate
+// to be linked.
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+#[cfg(feature = "alloc")]
+use alloc::string::String;
+
+/// A Resilient runtime value.
 ///
 /// Wrap-on-overflow arithmetic semantics match the bytecode VM
 /// (`vm.rs` in the main crate uses `i64::wrapping_add` etc.); this
 /// keeps user-visible semantics identical regardless of which
 /// backend executes the program.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variants:
+/// - `Int(i64)` and `Bool(bool)` always available (RES-075 Phase A).
+/// - `Float(f64)` always available — no allocator needed for
+///   stack-only doubles (RES-098).
+/// - `String(alloc::string::String)` only when `--features alloc`
+///   is on (RES-098). Embedded users wire a `#[global_allocator]`
+///   (e.g. `embedded-alloc::LlffHeap`) at the binary level.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
     Bool(bool),
+    /// RES-098: f64 lives on the stack, no allocator required.
+    /// `f64` doesn't impl Eq, so `Value` drops the Eq derive.
+    Float(f64),
+    /// RES-098: heap-allocated string. Gated on `alloc` feature
+    /// because `String` requires `extern crate alloc`.
+    #[cfg(feature = "alloc")]
+    String(String),
 }
 
 /// Errors the runtime can surface from a single op. Mirrors the
@@ -48,46 +73,74 @@ pub enum RuntimeError {
 }
 
 impl Value {
-    /// `lhs + rhs` for two Int values. Wrap-on-overflow.
+    /// `lhs + rhs`.
+    /// - `Int + Int`: wrapping i64 add.
+    /// - `Float + Float`: f64 add (no overflow concept).
+    /// - `String + String` (alloc only): concatenation.
+    ///
+    /// Mixed-type combinations are a `TypeMismatch` — promotion is
+    /// the caller's job.
     pub fn add(self, rhs: Value) -> Result<Value, RuntimeError> {
         match (self, rhs) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(b))),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+            #[cfg(feature = "alloc")]
+            (Value::String(mut a), Value::String(b)) => {
+                a.push_str(&b);
+                Ok(Value::String(a))
+            }
             _ => Err(RuntimeError::TypeMismatch("add")),
         }
     }
 
-    /// `lhs - rhs` for two Int values. Wrap-on-overflow.
+    /// `lhs - rhs`.
+    /// - `Int - Int`: wrapping i64 sub.
+    /// - `Float - Float`: f64 sub.
     pub fn sub(self, rhs: Value) -> Result<Value, RuntimeError> {
         match (self, rhs) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_sub(b))),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
             _ => Err(RuntimeError::TypeMismatch("sub")),
         }
     }
 
-    /// `lhs * rhs` for two Int values. Wrap-on-overflow.
+    /// `lhs * rhs`.
+    /// - `Int * Int`: wrapping i64 mul.
+    /// - `Float * Float`: f64 mul.
     pub fn mul(self, rhs: Value) -> Result<Value, RuntimeError> {
         match (self, rhs) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_mul(b))),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
             _ => Err(RuntimeError::TypeMismatch("mul")),
         }
     }
 
-    /// `lhs / rhs` for two Int values. Returns DivideByZero if
-    /// `rhs` is 0.
+    /// `lhs / rhs`.
+    /// - `Int / Int`: errors on `rhs == 0`.
+    /// - `Float / Float`: produces inf or NaN per IEEE-754, never
+    ///   errors. (Matches what the bytecode VM would do once Float
+    ///   ops land there.)
     pub fn div(self, rhs: Value) -> Result<Value, RuntimeError> {
         match (self, rhs) {
             (Value::Int(_), Value::Int(0)) => Err(RuntimeError::DivideByZero),
             (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
             _ => Err(RuntimeError::TypeMismatch("div")),
         }
     }
 
-    /// `lhs == rhs`. Bool-Bool and Int-Int compare; mixed types
-    /// are a TypeMismatch (matches the VM's strict comparison).
+    /// `lhs == rhs`. Same-type compares; mixed types are a
+    /// TypeMismatch (matches the VM's strict comparison).
+    /// Float equality uses bit comparison (`to_bits`) so NaN is
+    /// equal to itself — consistent with the constant-pool dedup
+    /// in the bytecode VM.
     pub fn eq(self, rhs: Value) -> Result<Value, RuntimeError> {
         match (self, rhs) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a == b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a.to_bits() == b.to_bits())),
+            #[cfg(feature = "alloc")]
+            (Value::String(a), Value::String(b)) => Ok(Value::Bool(a == b)),
             _ => Err(RuntimeError::TypeMismatch("eq")),
         }
     }
@@ -145,5 +198,75 @@ mod tests {
     fn mixed_eq_is_type_mismatch() {
         let err = Value::Int(1).eq(Value::Bool(true)).unwrap_err();
         assert_eq!(err, RuntimeError::TypeMismatch("eq"));
+    }
+
+    // ---------- RES-098: Float (always available) ----------
+
+    #[test]
+    fn float_arithmetic_round_trips() {
+        let a = Value::Float(2.5);
+        let b = Value::Float(1.5);
+        assert_eq!(a.clone().add(b.clone()).unwrap(), Value::Float(4.0));
+        assert_eq!(a.clone().sub(b.clone()).unwrap(), Value::Float(1.0));
+        assert_eq!(a.clone().mul(b.clone()).unwrap(), Value::Float(3.75));
+        assert_eq!(Value::Float(10.0).div(Value::Float(4.0)).unwrap(), Value::Float(2.5));
+    }
+
+    #[test]
+    fn float_division_by_zero_yields_inf_not_error() {
+        // IEEE-754 div doesn't error — produces inf. Matches the
+        // way the bytecode VM will eventually treat float ops.
+        let r = Value::Float(1.0).div(Value::Float(0.0)).unwrap();
+        match r {
+            Value::Float(v) => assert!(v.is_infinite()),
+            other => panic!("expected Float(inf), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn float_eq_uses_bit_compare_so_nan_equals_itself() {
+        let nan = Value::Float(f64::NAN);
+        let r = nan.clone().eq(nan).unwrap();
+        assert_eq!(r, Value::Bool(true));
+    }
+
+    #[test]
+    fn mixed_int_float_is_type_mismatch() {
+        let err = Value::Int(1).add(Value::Float(2.0)).unwrap_err();
+        assert_eq!(err, RuntimeError::TypeMismatch("add"));
+    }
+
+    // ---------- RES-098: String (gated on `alloc` feature) ----------
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn string_concat() {
+        let a = Value::String(String::from("hello, "));
+        let b = Value::String(String::from("world"));
+        let r = a.add(b).unwrap();
+        match r {
+            Value::String(s) => assert_eq!(s, "hello, world"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn string_eq() {
+        assert_eq!(
+            Value::String(String::from("x")).eq(Value::String(String::from("x"))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            Value::String(String::from("x")).eq(Value::String(String::from("y"))).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn string_does_not_subtract() {
+        let err = Value::String(String::from("a")).sub(Value::String(String::from("b"))).unwrap_err();
+        assert_eq!(err, RuntimeError::TypeMismatch("sub"));
     }
 }

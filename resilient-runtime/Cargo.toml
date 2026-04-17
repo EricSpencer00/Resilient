@@ -5,7 +5,13 @@ edition = "2024"
 description = "Minimal #![no_std] runtime types for Resilient — Value enum + core ops, suitable for embedded targets"
 authors = ["Eric Spencer"]
 
-# RES-075 Phase A: alloc-free for now. Vec/String / closures etc.
-# come in RES-101 when embedded-alloc is added.
+[features]
+default = []
+# RES-098: opt-in heap-using variants. Pulls in `alloc` (host) or
+# `embedded-alloc` (Cortex-M / similar) so Value::String can carry
+# an actual `alloc::string::String`. Without this feature the lib
+# is allocation-free.
+alloc = ["dep:embedded-alloc"]
 
 [dependencies]
+embedded-alloc = { version = "0.5", optional = true }

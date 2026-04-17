@@ -123,38 +123,61 @@ z3 -smt2 ./certs/ident_round__decl__0.smt2
 Implies `--typecheck`. Without `--features z3`, no certificates are
 emitted (the cheap folder isn't asked to produce them).
 
-### Embedded runtime (RES-075 + RES-097)
+### Embedded runtime (RES-075 + RES-097 + RES-098)
 
 The sibling `resilient-runtime/` crate carves out the value layer
 + core ops in a `#![no_std]`-compatible form, ready for a
-Cortex-M class MCU. RES-075 Phase A shipped the alloc-free types
-(`Value::Int`, `Value::Bool`, plus `add`/`sub`/`mul`/`div`/`eq`
-ops); RES-097 verified the cross-compile. Float/String/Array/
-closure variants need allocator support and land with RES-098 /
-`embedded-alloc`.
+Cortex-M class MCU. RES-075 Phase A shipped the alloc-free
+`Value::Int`/`Value::Bool` types; RES-097 verified the
+cross-compile; RES-098 added an opt-in `alloc` feature for
+`Value::Float` (always available — stack-only) and `Value::String`
+(behind the feature).
 
 ```bash
-# Host build + 7 unit tests
+# Host build, default features (alloc-free) — 11 unit tests
 cd resilient-runtime
 cargo build
 cargo test
+
+# Host build with alloc — 14 unit tests (adds Float + String coverage)
+cargo build --features alloc
+cargo test  --features alloc
 ```
 
 #### Verified cross-compile
 
 `resilient-runtime` builds for the `thumbv7em-none-eabihf` target
-(Cortex-M4F class MCU) without missing-symbol errors:
+(Cortex-M4F class MCU) in both feature configs:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-cd resilient-runtime
+
+# Default (alloc-free) — Cortex-M4F has native i64 instruction
+# support, no compiler_builtins shim needed.
 cargo build --target thumbv7em-none-eabihf
 cargo clippy --target thumbv7em-none-eabihf -- -D warnings
+
+# With --features alloc, embedded-alloc 0.5 is pulled in.
+# The lib does NOT pick a #[global_allocator] — that's the
+# binary's responsibility (LlffHeap from embedded-alloc is the
+# common choice for Cortex-M).
+cargo build --target thumbv7em-none-eabihf --features alloc
+cargo clippy --target thumbv7em-none-eabihf --features alloc -- -D warnings
 ```
 
-The Phase A subset uses only `i64::wrapping_*` and the raw `/`
-operator — both are no_std-clean and have native Cortex-M4F
-backing. No `compiler_builtins` shim needed.
+Embedded users wire the allocator in their binary's `main()`:
+
+```rust
+use embedded_alloc::LlffHeap as Heap;
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
+
+fn main() -> ! {
+    // initialize HEAP with a fixed-size memory pool, then use
+    // resilient_runtime::Value::String / Float freely.
+    loop {}
+}
+```
 
 The `resilient/` crate is unaffected — it stays a single-crate
 project; `resilient-runtime/` is a separate Cargo project alongside
