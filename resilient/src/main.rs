@@ -1133,14 +1133,25 @@ fn stringify_for_concat(v: &Value) -> Option<String> {
 // language's minimal stdlib until a proper module system arrives.
 
 fn register_builtins(env: &mut Environment) {
-    env.set(
-        "println".to_string(),
-        Value::Builtin {
-            name: "println",
-            func: builtin_println,
-        },
-    );
+    for (name, func) in BUILTINS {
+        env.set(
+            (*name).to_string(),
+            Value::Builtin {
+                name,
+                func: *func,
+            },
+        );
+    }
 }
+
+/// Canonical list of every native function visible in a fresh
+/// Resilient program.
+const BUILTINS: &[(&str, BuiltinFn)] = &[
+    ("println", builtin_println),
+    ("abs", builtin_abs),
+    ("min", builtin_min),
+    ("max", builtin_max),
+];
 
 /// Print the single argument followed by a newline and return `Void`.
 ///
@@ -1163,6 +1174,40 @@ fn builtin_println(args: &[Value]) -> RResult<Value> {
             "println expects 0 or 1 argument, got {}",
             many.len()
         )),
+    }
+}
+
+/// `abs(x)` — absolute value for `int` and `float`.
+fn builtin_abs(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.abs())),
+        [Value::Float(f)] => Ok(Value::Float(f.abs())),
+        [other] => Err(format!("abs: expected int or float, got {:?}", other)),
+        _ => Err(format!("abs: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `min(a, b)` — smaller of two numeric values. Coerces int↔float.
+fn builtin_min(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int((*a).min(*b))),
+        [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a.min(*b))),
+        [Value::Int(a), Value::Float(b)] => Ok(Value::Float((*a as f64).min(*b))),
+        [Value::Float(a), Value::Int(b)] => Ok(Value::Float(a.min(*b as f64))),
+        [a, b] => Err(format!("min: expected numeric args, got {:?} and {:?}", a, b)),
+        _ => Err(format!("min: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// `max(a, b)` — larger of two numeric values. Coerces int↔float.
+fn builtin_max(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int((*a).max(*b))),
+        [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a.max(*b))),
+        [Value::Int(a), Value::Float(b)] => Ok(Value::Float((*a as f64).max(*b))),
+        [Value::Float(a), Value::Int(b)] => Ok(Value::Float(a.max(*b as f64))),
+        [a, b] => Err(format!("max: expected numeric args, got {:?} and {:?}", a, b)),
+        _ => Err(format!("max: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -2143,6 +2188,32 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn math_builtins_abs_min_max() {
+        let src = r#"
+            let a = abs(-5);
+            let b = abs(-3.5);
+            let c = min(3, 7);
+            let d = max(3.0, 7);
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let get = |n: &str| interp.env.get(n).unwrap();
+        assert!(matches!(get("a"), Value::Int(5)));
+        assert!(matches!(get("b"), Value::Float(v) if (v - 3.5).abs() < 1e-9));
+        assert!(matches!(get("c"), Value::Int(3)));
+        assert!(matches!(get("d"), Value::Float(v) if (v - 7.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn math_builtins_arity_checks() {
+        let e_abs = builtin_abs(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(e_abs.contains("expected 1"), "{}", e_abs);
+        let e_min = builtin_min(&[Value::Int(1)]).unwrap_err();
+        assert!(e_min.contains("expected 2"), "{}", e_min);
     }
 
     #[test]
