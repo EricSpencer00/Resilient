@@ -22,11 +22,11 @@ time, commit it, and only then move the post.
 ### Foundation
 | # | Goalpost | Status |
 |---|---|---|
-| **G1** | Green build | ✅ RES-001, clippy clean RES-007 |
-| **G2** | Test harness | ✅ RES-002 (19 tests), RES-003 (`println`), RES-006 (golden framework), RES-008 (`string+`), RES-011 (bare return), RES-009/010 (no parser/lexer panics) |
+| **G1** | Green build | ✅ RES-001, RES-007 |
+| **G2** | Test harness | ✅ 46 unit + 1 golden + 4 smoke. RES-002 / 003 / 006 / 008 / 011 / 009 / 010 / 016 all landed. |
 | **G3** | Drop dummy parameters | ✅ RES-004 |
-| **G4** | Diagnostics — phase 1 done, phase 2 open | 🟡 graceful errors landed (RES-009, RES-010); source spans still RES-005 |
-| **G5** | Proper lexer via `logos` | ⏳ pending |
+| **G4** | Diagnostics | ✅ RES-005 (line:col), RES-009 + RES-010 + RES-016 (no parser/lexer panics), RES-028 (assert shows operands) |
+| **G5** | Proper lexer via `logos` | ⏳ pending — current lexer is hand-rolled but solid |
 
 ### Language sanity
 | # | Goalpost | Status |
@@ -41,22 +41,39 @@ time, commit it, and only then move the post.
 | **G9** | Symbolic assert (Z3 or custom bounded verifier for int domain) | ⏳ |
 | **G10** | Live-block invariants re-checked on every retry | ⏳ |
 
-### Post-G10 — extended ladder
-(Added 2026-04-16 once G1–G3 landed. These move the ultimate goalpost
-closer to "real production language for embedded safety-critical work.")
-
-| # | Goalpost | Success criterion |
+### Stdlib / ergonomics / ecosystem
+| # | Goalpost | Status |
 |---|---|---|
-| **G11** | Stdlib primitives | `print`, `read_line`, math (`abs`, `min`, `max`, `sqrt`), collections stubs — all registered as builtins, all tested. |
-| **G12** | Structs / records | User-defined product types with named fields; field access `.`; lowered in typechecker; round-tripped in tests. |
-| **G13** | Pattern matching | `match value { pattern => expr, ... }` with literal, identifier, wildcard patterns. Exhaustiveness checked at compile time. |
-| **G14** | Static type errors are language-level | Typechecker is *the* source of truth — type mismatches rejected at compile time, not at interpreter runtime. |
-| **G15** | Cranelift backend | Emit machine code for a restricted core; `cargo run -- --compile hello.rs` writes `hello.o`. |
-| **G16** | `no_std` / Cortex-M embedded target | Runtime strippable so a minimal Resilient program can link and boot on a QEMU-hosted Cortex-M. |
-| **G17** | Language Server Protocol | Basic LSP over stdin/stdout; provides diagnostics and hover types. |
-| **G18** | Effect tracking | Function signatures declare I/O, non-determinism, and "can panic" effects; typechecker enforces them transitively. |
-| **G19** | Proof-carrying assertions | Export the SMT queries generated in G9 as a verification certificate; re-check them with an independent solver. |
-| **G20** | Self-hosting | Write a Resilient program that exercises enough of the language to be plausibly checked by its own verifier. |
+| **G11** | Stdlib primitives | 🟡 RES-019 (abs/min/max), RES-020 (print/sqrt/pow/floor/ceil), RES-022 (len). Next: collections, file I/O, input. |
+| **G12** | Structs / records | ⏳ |
+| **G13** | Pattern matching (`match`) | ⏳ |
+| **G14** | Static type errors at compile time | ⏳ |
+| **G15** | Cranelift backend | ⏳ |
+| **G16** | `no_std` / Cortex-M embedded target | ⏳ |
+| **G17** | Language Server Protocol | ⏳ |
+| **G18** | Effect tracking | ⏳ |
+| **G19** | Proof-carrying assertions | ⏳ |
+| **G20** | Self-hosting | ⏳ |
+
+### New between G4 and G5 (core-language improvements landed in session 2)
+
+Not assigned their own goalpost but worth listing, since each is a
+language-level feature a user would see:
+
+- **Assignment**: `x = expr` (RES-017)
+- **Forward references**: caller/callee order doesn't matter (RES-018)
+- **Modulo operator** `%` (RES-015)
+- **Prefix operators** `!` and `-` (RES-012)
+- **Logical operators** `&&` / `||` (RES-021)
+- **Bitwise operators** `& | ^ << >>` (RES-029)
+- **String comparisons** `< > <= >=` + `len()` builtin (RES-022)
+- **While loops** with runaway guard (RES-023)
+- **Block comments** `/* */` (RES-024)
+- **Hex/binary integer literals** with `_` separators (RES-025)
+- **`static let`** persistent bindings across calls (RES-013)
+- **Bare `return;`** (RES-011)
+- **Pratt-parser invariant fix** (RES-014)
+- **Non-zero exit on error** (RES-027)
 
 ## Moving the post
 
@@ -86,3 +103,9 @@ bottom — the ladder grows indefinitely.
 - 2026-04-16 — RES-009 + RES-010 landed: no parser/lexer panic can crash
   the binary. Unknown characters and unrecognized syntax now produce red
   "Parser error" diagnostics and let the driver exit cleanly.
+- 2026-04-16 — session 2: 15 more tickets landed (RES-012 through RES-030).
+  G4 fully closed, G11 kicked off. Every parser/lexer panic eliminated
+  (RES-016). Full operator suite — prefix, arithmetic, comparison, logical,
+  bitwise, shifts. `while` loops. `static let`. Assignment. Forward
+  references. Block comments. Hex/binary literals. Non-zero exit on error.
+  46 unit + 1 golden + 4 smoke tests, clippy clean. Docs synced.
