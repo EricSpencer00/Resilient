@@ -104,6 +104,8 @@ This is the phase where Resilient *earns its name*.
 | RES-060 | **G9a constant folder** — discharges tautologies and rejects contradictions in contract clauses with no free variables. | ✅ |
 | RES-061 | **G9b call-site fold** — substitutes literal arguments for parameters, then folds. `divide(10, 0)` is rejected at compile time when `divide` requires `b != 0`. **First real symbolic verification.** | ✅ |
 | RES-062 | **Flagship example** `sensor_monitor.rs` exercising every Phase 1–3 feature plus contracts; pinned by golden test. | ✅ |
+| RES-063 | **Const-let propagation** — verifier follows `let n = 5;` through to `pos(n)`, treating n as constant. | ✅ |
+| RES-064 | **Flow-sensitive if-branch assumptions** — `if x == 0 { divide(10, x); }` rejected at compile time. First control-flow-aware verification. | ✅ |
 | RES-061 | **G9b Z3 integration** (optional feature flag `--features z3`) — translate contract AST to SMT-LIB, discharge at compile time, fall back to runtime check on unknown |
 | RES-062 | **Verification certificate** — on success, emit `<file>.vcert` pinning the solver version, the query, and the answer. Commit these alongside source. |
 | RES-063 | Live-block invariants verified symbolically (G10 meets G9) |
