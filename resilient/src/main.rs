@@ -1865,6 +1865,25 @@ mod tests {
     }
 
     #[test]
+    fn lexer_emits_unknown_instead_of_panicking_on_dot() {
+        // RES-010: a stray `.` used to hit `panic!("Unexpected character: .")`.
+        // Now it comes out as Token::Unknown('.') and the parser keeps going.
+        let tokens = tokenize(". 1.5");
+        assert_eq!(
+            tokens[0],
+            Token::Unknown('.'),
+            "expected Token::Unknown('.'), got {:?}",
+            tokens[0]
+        );
+        // And the following valid float still lexes.
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::FloatLiteral(f) if *f == 1.5)),
+            "expected FloatLiteral(1.5) to follow, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
     fn parser_recovers_from_missing_if_brace() {
         // RES-009: before this ticket, `if x == 1 foo();` (no `{` after
         // the condition) panicked the whole interpreter. Now it should

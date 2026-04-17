@@ -1,7 +1,7 @@
 ---
 id: RES-010
 title: Fix lexer panic on `.` outside float literals
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G5
 created: 2026-04-16
@@ -38,6 +38,26 @@ access design decisions in G12).
   so the parser can recover.
 - For G12 (structs), `.` will be a real token with precedence; keep
   this fix minimal so that future work doesn't have to un-break it.
+
+## Resolution
+Subsumed by RES-009: the generic "unexpected character" lexer panic
+(which covers `.` as one of its cases) was replaced there with a new
+`Token::Unknown(char)` variant and a `parse_statement` recovery arm.
+
+Ticket closed with a focused verification test:
+
+- `lexer_emits_unknown_instead_of_panicking_on_dot` tokenizes `". 1.5"`
+  and asserts the first token is `Token::Unknown('.')` and that the
+  following `FloatLiteral(1.5)` still lexes correctly.
+
+Live run:
+```
+$ cargo run -- examples/comprehensive.rs
+Parser error: Unexpected character '.'
+Parser error: Expected '{' after if condition, found FloatLiteral(0.2)
+...
+(clean exit, no panic)
+```
 
 ## Log
 - 2026-04-16 created by manager
