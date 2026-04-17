@@ -3707,6 +3707,7 @@ fn main() {
     let mut type_check = false;
     let mut audit = false;
     let mut emit_cert_dir: Option<PathBuf> = None;
+    let mut examples_dir: Option<PathBuf> = None;
     let mut filename = "";
 
     // Simple argument parsing
@@ -3728,6 +3729,17 @@ fn main() {
                 emit_cert_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--emit-certificate=") {
                 emit_cert_dir = Some(PathBuf::from(dir));
+            } else if arg == "--examples-dir" {
+                // RES-026: --examples-dir <DIR> for the REPL's
+                // `examples` command.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --examples-dir requires a directory argument");
+                    std::process::exit(2);
+                }
+                examples_dir = Some(PathBuf::from(&args[i]));
+            } else if let Some(dir) = arg.strip_prefix("--examples-dir=") {
+                examples_dir = Some(PathBuf::from(dir));
             } else {
                 filename = arg;
             }
@@ -3751,8 +3763,10 @@ fn main() {
         }
     }
 
-    // Start the enhanced REPL if no file was provided
-    let mut enhanced_repl = repl::EnhancedREPL::new();
+    // Start the enhanced REPL if no file was provided. RES-026:
+    // pass through --examples-dir so the `examples` command can list
+    // real files instead of the hardcoded snippets.
+    let mut enhanced_repl = repl::EnhancedREPL::with_examples_dir(examples_dir);
     if let Err(e) = enhanced_repl.run() {
         eprintln!("REPL error: {}", e);
         std::process::exit(1);
