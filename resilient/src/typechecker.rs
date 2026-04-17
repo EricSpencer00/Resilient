@@ -405,8 +405,29 @@ impl TypeChecker {
                     }
                 }
 
+                // RES-065: push each requires clause's extractable
+                // assumption into const_bindings so interior call
+                // sites can use them. This is the inter-procedural
+                // chaining step.
+                let mut pushed_assumptions: Vec<(String, Option<i64>)> = Vec::new();
+                for clause in requires {
+                    if let Some((aname, av)) = extract_eq_assumption(clause) {
+                        let prev = self.const_bindings.get(&aname).copied();
+                        self.const_bindings.insert(aname.clone(), av);
+                        pushed_assumptions.push((aname, prev));
+                    }
+                }
+
                 // Check function body
                 let body_type = self.check_node(body)?;
+
+                // Restore const_bindings to its pre-body state.
+                for (aname, prev) in pushed_assumptions.into_iter().rev() {
+                    match prev {
+                        Some(v) => { self.const_bindings.insert(aname, v); }
+                        None => { self.const_bindings.remove(&aname); }
+                    }
+                }
 
                 // Restore original environment
                 std::mem::swap(&mut self.env, &mut function_env);

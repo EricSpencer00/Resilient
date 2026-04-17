@@ -3880,6 +3880,61 @@ mod tests {
         assert!(err.contains("invalid"), "{}", err);
     }
 
+    // ---------- Caller-requires propagation (RES-065) ----------
+
+    #[test]
+    fn caller_requires_chains_to_callee() {
+        // pos requires x > 0; caller requires n == 5; pos(n) holds
+        // because 5 > 0 is statically true.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int n) requires n == 5 {
+                let r = pos(n);
+            }
+        "#).unwrap();
+    }
+
+    #[test]
+    fn caller_requires_violates_callee_caught() {
+        // caller asserts n == 0; calls pos(n); pos requires x > 0;
+        // 0 > 0 is false → reject.
+        let err = typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int n) requires n == 0 {
+                let r = pos(n);
+            }
+        "#).unwrap_err();
+        assert!(err.contains("Contract violation"), "got: {}", err);
+    }
+
+    #[test]
+    fn caller_without_requires_still_works() {
+        // No assumptions to propagate; call still folds normally.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int n) {
+                let r = pos(5);
+            }
+        "#).unwrap();
+    }
+
+    #[test]
+    fn caller_requires_does_not_leak_across_functions() {
+        // The assumption is restored at end of body, so a later fn
+        // sees an unconstrained n.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn first(int n) requires n == 5 {
+                let a = pos(n);
+            }
+            fn second(int n) {
+                // n is unconstrained here — pos(n) must fall to runtime,
+                // not be rejected by stale assumptions.
+                let b = pos(n);
+            }
+        "#).unwrap();
+    }
+
     // ---------- Flow-sensitive if-branch assumptions (RES-064) ----------
 
     #[test]
