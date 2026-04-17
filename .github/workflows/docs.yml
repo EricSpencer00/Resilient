@@ -31,7 +31,9 @@ jobs:
         with:
           ruby-version: "3.3"
           bundler-cache: true
-          working-directory: docs
+          # Gemfile lives at the repo root (not docs/) so the build
+          # step's `bundle exec` can find it. setup-ruby reads the
+          # Gemfile from cwd by default — no working-directory needed.
 
       - name: Build with Jekyll
         run: bundle exec jekyll build --source docs --destination _site --baseurl "/Resilient"
