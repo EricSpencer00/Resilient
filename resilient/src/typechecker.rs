@@ -194,6 +194,15 @@ impl TypeChecker {
                 self.env.set(name.clone(), value_type);
                 Ok(Type::Void)
             },
+
+            Node::Assignment { value, .. } => {
+                // Assignment is allowed at runtime; static type check
+                // just ensures the RHS type-checks. Per-name existence
+                // is enforced by the interpreter. Real type-equality
+                // checks land with a proper typechecker (G7).
+                let _ = self.check_node(value)?;
+                Ok(Type::Void)
+            },
             
             Node::ReturnStatement { value } => {
                 // Bare `return;` has type Void; otherwise pass through

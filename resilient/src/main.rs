@@ -321,6 +321,12 @@ enum Node {
         name: String,
         value: Box<Node>,
     },
+    /// RES-017: re-bind an existing variable. Fails at runtime if the
+    /// name has not been declared with `let` (or, later, declared static).
+    Assignment {
+        name: String,
+        value: Box<Node>,
+    },
     ReturnStatement {
         /// `None` for a bare `return;`
         value: Option<Box<Node>>,
@@ -428,7 +434,29 @@ impl Parser {
                 self.record_error(format!("Unexpected character '{}'", ch));
                 None
             }
+            // Assignment: `IDENT = EXPR;` — disambiguated from an
+            // expression statement by looking ahead for `=`.
+            Token::Identifier(_) if self.peek_token == Token::Assign => {
+                Some(self.parse_assignment())
+            }
             _ => self.parse_expression_statement(),
+        }
+    }
+
+    fn parse_assignment(&mut self) -> Node {
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => unreachable!("parse_assignment only dispatched for Identifier"),
+        };
+        self.next_token(); // move onto '='
+        self.next_token(); // skip '=' to first token of RHS
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+        Node::Assignment {
+            name,
+            value: Box::new(value),
         }
     }
     
@@ -1033,6 +1061,20 @@ impl Environment {
     fn set(&mut self, name: String, value: Value) {
         self.store.insert(name, value);
     }
+
+    /// Update `name` in the frame where it was first defined. Returns
+    /// `true` if the name was found and updated, `false` if it doesn't
+    /// exist anywhere in the chain.
+    fn reassign(&mut self, name: &str, value: Value) -> bool {
+        if self.store.contains_key(name) {
+            self.store.insert(name.to_string(), value);
+            true
+        } else if let Some(outer) = self.outer.as_mut() {
+            outer.reassign(name, value)
+        } else {
+            false
+        }
+    }
 }
 
 /// Textual form of a value for string concatenation (`+` with at least one
@@ -1119,6 +1161,18 @@ impl Interpreter {
             Node::LetStatement { name, value } => {
                 let val = self.eval(value)?;
                 self.env.set(name.clone(), val);
+                Ok(Value::Void)
+            },
+            Node::Assignment { name, value } => {
+                // Must target an already-declared name. Walk the env
+                // chain and update where it was first defined.
+                let val = self.eval(value)?;
+                if !self.env.reassign(name, val.clone()) {
+                    return Err(format!(
+                        "Cannot assign to undeclared variable '{}'",
+                        name
+                    ));
+                }
                 Ok(Value::Void)
             },
             Node::ReturnStatement { value } => {
@@ -2014,6 +2068,30 @@ mod tests {
             tokens.iter().any(|t| matches!(t, Token::FloatLiteral(f) if *f == 1.5)),
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
+        );
+    }
+
+    #[test]
+    fn assignment_updates_variable() {
+        let (p, errors) = parse("let x = 1; x = 42;");
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("x").unwrap() {
+            Value::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assignment_to_undeclared_errors() {
+        let (p, _e) = parse("x = 42;");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(
+            err.contains("Cannot assign to undeclared variable"),
+            "err was: {}",
+            err
         );
     }
 
