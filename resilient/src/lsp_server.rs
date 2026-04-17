@@ -39,17 +39,18 @@ impl Backend {
     async fn publish_analysis(&self, uri: Url, text: String) {
         let mut diagnostics = Vec::new();
 
-        // Step 1: parse. Each parser error string is published as a
-        // diagnostic at line 0 since the hand-rolled parser doesn't
-        // expose its error positions as structured data yet. Good
-        // enough to prove the pipeline; follow-up can thread them.
+        // Step 1: parse. Parser::record_error formats errors with a
+        // bare `<line>:<col>:` prefix; route them through
+        // extract_range_and_message (RES-089) so they land at the
+        // right LSP Range instead of the file's first character.
         let (program, parser_errors) = parse(&text);
         for err in &parser_errors {
+            let (range, pretty) = extract_range_and_message(err);
             diagnostics.push(Diagnostic {
-                range: point_range(0, 0),
+                range,
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("resilient-parser".into()),
-                message: err.clone(),
+                message: pretty,
                 ..Default::default()
             });
         }
@@ -85,17 +86,25 @@ fn point_range(line_0based: u32, col_0based: u32) -> Range {
     Range::new(pos, pos)
 }
 
-/// Parse the RES-080 `<path>:<line>:<col>: <rest>` prefix out of an
-/// error string. Returns a zero-width `Range` at that position plus
-/// the remaining message (or a zero-zero range + the original
+/// Parse a `<line>:<col>:` or `<path>:<line>:<col>:` prefix out of
+/// an error string. Returns a zero-width `Range` at that position
+/// plus the remaining message (or a zero-zero range + the original
 /// message if parsing fails).
+///
+/// Recognizes both forms used in this codebase:
+/// - RES-080 typechecker errors: `<path>:<line>:<col>: <rest>`
+/// - RES-089 parser errors: `<line>:<col>: <rest>` (no path)
 fn extract_range_and_message(err: &str) -> (Range, String) {
-    // Find the FIRST colon after the last `/` or whitespace (so we
-    // don't split on drive letters on Windows). Cheap heuristic:
-    // find the first `:` whose remainder parses as `<uint>:<uint>:`.
+    // RES-089: try the bare `<line>:<col>:` form first. This catches
+    // parser errors emitted by `Parser::record_error`.
+    if let Some(parsed) = parse_bare_line_col(err) {
+        return parsed;
+    }
+
+    // Fall back to `<anything>:<line>:<col>:` form (typechecker).
+    // Find the FIRST colon after which `<uint>:<uint>:` follows.
     for (i, _) in err.match_indices(':') {
         let rest = &err[i + 1..];
-        // rest should start with "LINE:COL: MESSAGE"
         let mut parts = rest.splitn(3, ':');
         let line_s = parts.next().unwrap_or("");
         let col_s = parts.next().unwrap_or("");
@@ -107,6 +116,22 @@ fn extract_range_and_message(err: &str) -> (Range, String) {
         }
     }
     (point_range(0, 0), err.to_string())
+}
+
+/// RES-089: parse a bare `<line>:<col>: <message>` prefix (no
+/// preceding path). Returns None if the input doesn't fit that
+/// shape exactly.
+fn parse_bare_line_col(err: &str) -> Option<(Range, String)> {
+    let mut parts = err.splitn(3, ':');
+    let line_s = parts.next()?;
+    let col_s = parts.next()?;
+    let msg = parts.next()?;
+    let line: u32 = line_s.trim().parse().ok()?;
+    let col: u32 = col_s.trim().parse().ok()?;
+    Some((
+        point_range(line.saturating_sub(1), col.saturating_sub(1)),
+        msg.trim().to_string(),
+    ))
 }
 
 #[tower_lsp::async_trait]
@@ -187,6 +212,18 @@ mod tests {
         assert_eq!(range.start.line, 0);
         assert_eq!(range.start.character, 0);
         assert_eq!(msg, err);
+    }
+
+    #[test]
+    fn extract_parses_bare_line_col_prefix() {
+        // RES-089: parser errors come back as `<line>:<col>: <msg>`
+        // with no path prefix. The extractor must pick up the bare
+        // form and produce a 0-indexed Range.
+        let err = "3:5: Unexpected token";
+        let (range, msg) = extract_range_and_message(err);
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, 4);
+        assert_eq!(msg, "Unexpected token");
     }
 
     #[test]
