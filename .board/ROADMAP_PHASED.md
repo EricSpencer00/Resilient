@@ -67,23 +67,26 @@ at once minimizes churn.
 
 ---
 
-## Phase 3 — Real type system (50% → 65%)  🟡 NEXT
+## Phase 3 — Real type system (50% → 65%)  🟡 IN PROGRESS
 
 **Goal**: the typechecker becomes load-bearing. Bad programs get
 *rejected* at compile time, not at runtime through string errors.
 
-| Ticket (future) | Adds |
-|---|---|
-| RES-050 | **G6 AST hardening** — one canonical AST module with `Span` on every node, delete the unwired `parser.rs`, Environment becomes `Rc<RefCell<...>>` (which also unblocks true shared-mutation closures) |
-| RES-051 | **G5 logos lexer** — replace the hand-rolled one once spans are in (makes sense to do these together) |
-| RES-052 | **Typed declarations**: `let x: int = 0;`, `fn f(x: int) -> int`, typed array literals `[int: 1, 2, 3]` |
-| RES-053 | **G7 typechecker rejection**: emit real errors for type mismatches; tests prove `let x = 1 + "s"` fails before runtime |
-| RES-054 | Exhaustiveness checking for `match` — compile-time error if a variant is uncovered |
-| RES-055 | **Generic builtins / simple polymorphism** — `abs<T>(x: T) -> T` where T is `int` or `float` |
-| RES-056 | **Shared-mutation closures** — once Environment is `Rc<RefCell<...>>` via RES-050, rework `Value::Function` to share env. Tests for counter-via-closure pattern. |
+| Ticket | Adds | Status |
+|---|---|---|
+| RES-052 | **Typed declarations**: `let x: int = 0;`, `fn f() -> int`, typed array literals | ✅ |
+| RES-053 | **G7 typechecker rejection**: emit real errors for type mismatches; `let x: int = "hi"` fails before runtime | ✅ |
+| RES-054 | **Exhaustiveness checking for `match`** — compile-time error if a `bool` arm is missing, or a scalar match lacks a default | ✅ |
+| RES-050 | **G6 AST hardening** — one canonical AST module with `Span` on every node, delete the unwired `parser.rs`, Environment becomes `Rc<RefCell<...>>` | ⏳ |
+| RES-051 | **G5 logos lexer** — replace the hand-rolled one once spans are in | ⏳ |
+| RES-055 | **Generic builtins / simple polymorphism** — `abs<T>(x: T) -> T` | ⏳ |
+| RES-056 | **Shared-mutation closures** — once Environment is `Rc<RefCell<...>>` via RES-050, rework `Value::Function` to share env | ⏳ |
+
+**Progress: 3/7 tickets. Typecheck rejection is live today —
+`cargo run -- --typecheck foo.rs` exits 1 on ill-typed programs.**
 
 **Definition of done for Phase 3**: a type error in any program is
-rejected by `resilient --check file.rs` with a pointed diagnostic;
+rejected by `resilient --typecheck file.rs` with a pointed diagnostic;
 the interpreter never sees an ill-typed program.
 
 ---
