@@ -1182,6 +1182,7 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("pow", builtin_pow),
     ("floor", builtin_floor),
     ("ceil", builtin_ceil),
+    ("len", builtin_len),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -1275,6 +1276,15 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
         [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `len(s)` — length of a string, in Unicode scalars (not bytes). Returns int.
+fn builtin_len(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Int(s.chars().count() as i64)),
+        [other] => Err(format!("len: expected string, got {:?}", other)),
+        _ => Err(format!("len: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -1642,10 +1652,16 @@ impl Interpreter {
     }
     
     fn eval_string_infix_expression(&mut self, operator: &str, left: String, right: String) -> RResult<Value> {
+        // Lexicographic comparison for <, >, <=, >= matches the standard
+        // behavior users expect from strings in most languages.
         match operator {
             "+" => Ok(Value::String(format!("{}{}", left, right))),
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
+            "<" => Ok(Value::Bool(left < right)),
+            ">" => Ok(Value::Bool(left > right)),
+            "<=" => Ok(Value::Bool(left <= right)),
+            ">=" => Ok(Value::Bool(left >= right)),
             _ => Err(format!("Unknown operator: {} {} {}", left, operator, right)),
         }
     }
@@ -2291,6 +2307,24 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn string_comparisons() {
+        let (p, _e) = parse(r#"
+            let a = "apple" < "banana";
+            let b = "abc" == "abc";
+            let c = "xy" >= "xz";
+            let d = len("héllo");
+        "#);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let g = |n: &str| interp.env.get(n).unwrap();
+        assert!(matches!(g("a"), Value::Bool(true)));
+        assert!(matches!(g("b"), Value::Bool(true)));
+        assert!(matches!(g("c"), Value::Bool(false)));
+        // "héllo" is 5 Unicode scalars.
+        assert!(matches!(g("d"), Value::Int(5)));
     }
 
     #[test]
