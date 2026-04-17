@@ -149,7 +149,7 @@ impl TypeChecker {
                 Ok(return_type)
             },
             
-            Node::LiveBlock { body } => {
+            Node::LiveBlock { body, .. } => {
                 // Live blocks preserve the type of their body
                 self.check_node(body)
             },

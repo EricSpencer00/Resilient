@@ -32,6 +32,7 @@ enum Token {
     In,
     Requires,
     Ensures,
+    Invariant,
     
     // Literals
     Identifier(String),
@@ -271,6 +272,7 @@ impl Lexer {
                         "in" => Token::In,
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
+                        "invariant" => Token::Invariant,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -426,6 +428,10 @@ enum Node {
     },
     LiveBlock {
         body: Box<Node>,
+        /// RES-036: zero or more invariant expressions checked after
+        /// every iteration of the body. A failing invariant triggers
+        /// the same retry path as a body-level error.
+        invariants: Vec<Node>,
     },
     Assert {
         condition: Box<Node>,
@@ -1005,19 +1011,31 @@ impl Parser {
     
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
-        
+
+        // RES-036: zero or more `invariant EXPR` clauses between `live`
+        // and `{`.
+        let mut invariants = Vec::new();
+        while self.current_token == Token::Invariant {
+            self.next_token(); // skip `invariant`
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+            self.next_token(); // move past last token of the expression
+            invariants.push(expr);
+        }
+
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after 'live', found {:?}", tok));
             return Node::LiveBlock {
                 body: Box::new(Node::Block(Vec::new())),
+                invariants,
             };
         }
 
         let body = self.parse_block_statement();
-        
+
         Node::LiveBlock {
             body: Box::new(body),
+            invariants,
         }
     }
     
@@ -1827,7 +1845,7 @@ impl Interpreter {
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
             },
-            Node::LiveBlock { body } => self.eval_live_block(body),
+            Node::LiveBlock { body, invariants } => self.eval_live_block(body, invariants),
             Node::Assert { condition, message } => self.eval_assert(condition, message),
             Node::Block(statements) => self.eval_block_statement(statements),
             Node::LetStatement { name, value } => {
@@ -2051,39 +2069,67 @@ impl Interpreter {
         Ok(result)
     }
     
-    fn eval_live_block(&mut self, body: &Node) -> RResult<Value> {
+    fn eval_live_block(&mut self, body: &Node, invariants: &[Node]) -> RResult<Value> {
         const MAX_RETRIES: usize = 3;
         let mut retry_count = 0;
-        
+
         // Create a snapshot of the environment
         let env_snapshot = self.env.clone();
-        
+
         // Log the start of live block execution
         eprintln!("\x1B[36m[LIVE BLOCK] Starting execution of live block\x1B[0m");
-        
+
         // Try to evaluate the body with multiple retries
         loop {
-            match self.eval(body) {
+            // RES-036: treat an invariant failure as the same class of
+            // recoverable error the retry loop already handles. The
+            // body eval either succeeds or returns Err; then we check
+            // each invariant and convert a false result into an Err.
+            let outcome = self.eval(body).and_then(|value| {
+                for clause in invariants {
+                    let v = self.eval(clause)?;
+                    if !self.is_truthy(&v) {
+                        return Err(format!(
+                            "Invariant violation in live block: {} failed",
+                            format_contract_expr(clause)
+                        ));
+                    }
+                }
+                Ok(value)
+            });
+
+            match outcome {
                 Ok(value) => {
                     eprintln!("\x1B[32m[LIVE BLOCK] Successfully executed live block\x1B[0m");
-                    return Ok(value)
-                },
+                    return Ok(value);
+                }
                 Err(error) => {
                     retry_count += 1;
-                    
-                    // Log the error with more context and colorized output
-                    eprintln!("\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m", 
-                              retry_count, MAX_RETRIES, error);
-                    
+
+                    eprintln!(
+                        "\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m",
+                        retry_count, MAX_RETRIES, error
+                    );
+
                     if retry_count >= MAX_RETRIES {
-                        eprintln!("\x1B[31m[LIVE BLOCK] Maximum retry attempts reached, propagating error\x1B[0m");
-                        return Err(format!("Live block failed after {} attempts: {}", MAX_RETRIES, error));
+                        eprintln!(
+                            "\x1B[31m[LIVE BLOCK] Maximum retry attempts reached, propagating error\x1B[0m"
+                        );
+                        return Err(format!(
+                            "Live block failed after {} attempts: {}",
+                            MAX_RETRIES, error
+                        ));
                     }
-                    
-                    eprintln!("\x1B[36m[LIVE BLOCK] Restoring environment to last known good state\x1B[0m");
-                    eprintln!("\x1B[36m[LIVE BLOCK] Retrying execution (attempt {}/{})\x1B[0m", 
-                              retry_count + 1, MAX_RETRIES);
-                    
+
+                    eprintln!(
+                        "\x1B[36m[LIVE BLOCK] Restoring environment to last known good state\x1B[0m"
+                    );
+                    eprintln!(
+                        "\x1B[36m[LIVE BLOCK] Retrying execution (attempt {}/{})\x1B[0m",
+                        retry_count + 1,
+                        MAX_RETRIES
+                    );
+
                     // Restore the environment from the snapshot
                     self.env = env_snapshot.clone();
                 }
@@ -3035,6 +3081,64 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- Live-block invariants (RES-036) ----------
+
+    #[test]
+    fn live_block_with_passing_invariant() {
+        let src = r#"
+            let fuel = 100;
+            live invariant fuel >= 0 {
+                fuel = fuel - 10;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("fuel").unwrap(), Value::Int(90)));
+    }
+
+    #[test]
+    fn live_block_invariant_violation_retries_then_fails() {
+        // This body ALWAYS leaves fuel negative. After three retries
+        // the block gives up with an invariant-violation error.
+        let src = r#"
+            let fuel = 5;
+            live invariant fuel >= 0 {
+                fuel = fuel - 100;
+            }
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(
+            err.contains("Invariant violation") && err.contains("fuel >= 0"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn live_block_multiple_invariants() {
+        let src = r#"
+            let x = 5;
+            let y = 10;
+            live
+                invariant x >= 0
+                invariant y > x
+            {
+                x = x + 1;
+                y = y + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(6)));
+        assert!(matches!(interp.env.get("y").unwrap(), Value::Int(11)));
     }
 
     // ---------- for..in (RES-037) ----------
