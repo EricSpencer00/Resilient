@@ -77,7 +77,7 @@ at once minimizes churn.
 | RES-052 | **Typed declarations**: `let x: int = 0;`, `fn f() -> int`, typed array literals | ✅ |
 | RES-053 | **G7 typechecker rejection**: emit real errors for type mismatches; `let x: int = "hi"` fails before runtime | ✅ |
 | RES-054 | **Exhaustiveness checking for `match`** — compile-time error if a `bool` arm is missing, or a scalar match lacks a default | ✅ |
-| RES-050 | **G6 AST hardening** — one canonical AST module with `Span` on every node, delete the unwired `parser.rs`, Environment becomes `Rc<RefCell<...>>` | ⏳ |
+| RES-050 | **G6 partial — Environment refactor** to `Rc<RefCell<...>>`. fib(25) gets 7.3× faster, recursion self-bind hack removed, eval_program one-pass instead of two, live blocks keep deep snapshot semantics. AST consolidation + `Span` on every node still pending. | 🟡 |
 | RES-051 | **G5 logos lexer** — replace the hand-rolled one once spans are in | ⏳ |
 | RES-055 | **Generic builtins / simple polymorphism** — `abs<T>(x: T) -> T` | ⏳ |
 | RES-056 | **Shared-mutation closures** — once Environment is `Rc<RefCell<...>>` via RES-050, rework `Value::Function` to share env | ⏳ |
