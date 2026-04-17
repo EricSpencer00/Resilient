@@ -3419,7 +3419,7 @@ impl Interpreter {
         // RES-077: statements are now Spanned<Node>; deref via .node.
         for statement in statements {
             if matches!(statement.node, Node::Function { .. }) {
-                self.eval(&statement.node)?;
+                self.eval(&statement.node).map_err(|e| decorate_runtime_error(e, &statement.span))?;
             }
         }
 
@@ -3428,7 +3428,12 @@ impl Interpreter {
             if matches!(statement.node, Node::Function { .. }) {
                 continue;
             }
-            result = self.eval(&statement.node)?;
+            // RES-116: decorate runtime errors with the statement's
+            // source span so `execute_file` can reformat them as
+            // `filename:line:col: Runtime error: <msg>` — matching the
+            // VM's RES-091/092 output shape.
+            result = self.eval(&statement.node)
+                .map_err(|e| decorate_runtime_error(e, &statement.span))?;
             if let Value::Return(value) = result {
                 return Ok(*value);
             }
@@ -3997,6 +4002,65 @@ fn start_repl() -> RustylineResult<()> {
     Ok(())
 }
 
+/// RES-116: tag a raw interpreter error string with the enclosing
+/// statement's `line:col:` prefix so `execute_file` can reformat it
+/// into the full `filename:line:col: Runtime error: <msg>` shape.
+///
+/// Errors already carrying a `line:col:` prefix pass through
+/// untouched — this happens when an inner call (another statement
+/// executed via the builtin path or a nested block) already did the
+/// decoration and the outer statement shouldn't double-wrap.
+fn decorate_runtime_error(msg: String, span: &span::Span) -> String {
+    if has_line_col_prefix(&msg) {
+        msg
+    } else {
+        format!("{}:{}: {}", span.start.line, span.start.column, msg)
+    }
+}
+
+/// True if `msg` starts with `<digits>:<digits>:` — the sentinel shape
+/// produced by `decorate_runtime_error` and the typechecker's
+/// line:col: prefix (RES-080).
+fn has_line_col_prefix(msg: &str) -> bool {
+    let mut it = msg.chars();
+    let mut saw_digit = false;
+    for c in it.by_ref() {
+        if c.is_ascii_digit() {
+            saw_digit = true;
+        } else if c == ':' && saw_digit {
+            break;
+        } else {
+            return false;
+        }
+    }
+    if !saw_digit {
+        return false;
+    }
+    // Now expect another digits:... segment
+    saw_digit = false;
+    for c in it {
+        if c.is_ascii_digit() {
+            saw_digit = true;
+        } else {
+            return c == ':' && saw_digit;
+        }
+    }
+    false
+}
+
+/// RES-116: format an interpreter runtime error for the driver's
+/// stderr channel. Errors decorated by `decorate_runtime_error` get
+/// the full `filename:line:col: Runtime error: <msg>` prefix; un-
+/// decorated errors (e.g. pre-statement-evaluation issues that never
+/// reached `eval_program`) fall back to a bare `Runtime error: <msg>`.
+fn format_interpreter_error(filename: &str, err: &str) -> String {
+    if has_line_col_prefix(err) {
+        format!("{}:{}", filename, err.replacen(": ", ": Runtime error: ", 1))
+    } else {
+        format!("Runtime error: {}", err)
+    }
+}
+
 /// RES-073: shared parse helper. Returns the parsed program plus any
 /// parser error strings collected along the way. Used by both the
 /// driver and `imports::expand_uses`.
@@ -4151,7 +4215,15 @@ fn execute_file(
     }
 
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
-    interpreter.eval(&program)?;
+    // RES-116: runtime errors from the tree-walker now carry a
+    // `line:col:` prefix (applied in `eval_program`). Reshape that
+    // here into `filename:line:col: Runtime error: <msg>` so the
+    // driver's output matches the VM's RES-091 shape and is
+    // editor-clickable. Un-decorated errors fall back to the older
+    // bare `Runtime error: <msg>` format.
+    interpreter
+        .eval(&program)
+        .map_err(|e| format_interpreter_error(filename, &e))?;
 
     Ok(())
 }
@@ -6867,5 +6939,93 @@ mod tests {
             panic!("expected Array");
         };
         assert!(matches!(items[1], Value::Int(42)));
+    }
+
+    // --- RES-116: interpreter runtime errors carry line:col: spans ---
+
+    /// Execute `src` through the tree-walker and return the `Err`
+    /// string. Panics if the program runs without error. Shared by
+    /// the three runtime-error-class tests below.
+    fn interp_err(src: &str) -> String {
+        let (program, parser_errs) = parse(src);
+        assert!(
+            parser_errs.is_empty(),
+            "test source failed to parse: {:?}",
+            parser_errs
+        );
+        let mut interp = Interpreter::new();
+        match interp.eval(&program) {
+            Ok(_) => panic!("expected runtime error, got Ok"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn runtime_error_divide_by_zero_has_line_col_prefix() {
+        // Line 1: function def; line 2: divide; the call happens on
+        // line 5. The driver's span decoration reports the TOP-LEVEL
+        // statement's line, so we expect line 5 (the `boom(0);` call).
+        let src = "fn boom(int n) {\n    let r = 100 / n;\n    return r;\n}\nboom(0);";
+        let e = interp_err(src);
+        assert!(
+            has_line_col_prefix(&e),
+            "expected `line:col:` prefix, got: {:?}",
+            e
+        );
+        assert!(e.contains("Division by zero"), "got: {:?}", e);
+        assert!(e.starts_with("5:"), "expected line 5 prefix, got: {:?}", e);
+    }
+
+    #[test]
+    fn runtime_error_array_oob_has_line_col_prefix() {
+        // `let a = [1];` on line 1, OOB read on line 2.
+        let src = "let a = [1];\nlet b = a[7];";
+        let e = interp_err(src);
+        assert!(
+            has_line_col_prefix(&e),
+            "expected `line:col:` prefix, got: {:?}",
+            e
+        );
+        assert!(e.starts_with("2:"), "expected line 2 prefix, got: {:?}", e);
+    }
+
+    #[test]
+    fn runtime_error_unknown_function_has_line_col_prefix() {
+        // Unknown function call on line 3.
+        let src = "let a = 1;\nlet b = 2;\nnot_a_real_fn(a, b);";
+        let e = interp_err(src);
+        assert!(
+            has_line_col_prefix(&e),
+            "expected `line:col:` prefix, got: {:?}",
+            e
+        );
+        assert!(e.starts_with("3:"), "expected line 3 prefix, got: {:?}", e);
+    }
+
+    #[test]
+    fn has_line_col_prefix_accepts_decimal_forms() {
+        assert!(has_line_col_prefix("1:1: foo"));
+        assert!(has_line_col_prefix("12:34: bar"));
+    }
+
+    #[test]
+    fn has_line_col_prefix_rejects_non_span_forms() {
+        assert!(!has_line_col_prefix("Runtime error: division by zero"));
+        assert!(!has_line_col_prefix("abc:1:1: bad"));
+        assert!(!has_line_col_prefix(":1: bad"));
+        assert!(!has_line_col_prefix("1:: bad"));
+        assert!(!has_line_col_prefix(""));
+    }
+
+    #[test]
+    fn format_interpreter_error_shapes_decorated_msg() {
+        let out = format_interpreter_error("/tmp/foo.rs", "2:7: Division by zero");
+        assert_eq!(out, "/tmp/foo.rs:2:7: Runtime error: Division by zero");
+    }
+
+    #[test]
+    fn format_interpreter_error_falls_back_when_undecorated() {
+        let out = format_interpreter_error("/tmp/foo.rs", "something went wrong");
+        assert_eq!(out, "Runtime error: something went wrong");
     }
 }
