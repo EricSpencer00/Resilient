@@ -859,6 +859,20 @@ impl Environment {
     }
 }
 
+/// Textual form of a value for string concatenation (`+` with at least one
+/// string operand). Returns `None` for values that should NOT be implicitly
+/// coerced (functions, builtins, void, returns). Strings come back as their
+/// raw contents — *without* the surrounding quotes that `Display` adds.
+fn stringify_for_concat(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Int(i) => Some(i.to_string()),
+        Value::Float(f) => Some(f.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 // ---------- Builtins ----------
 //
 // Native functions registered into every Interpreter's top-level
@@ -1094,6 +1108,20 @@ impl Interpreter {
     }
     
     fn eval_infix_expression(&mut self, operator: &str, left: Value, right: Value) -> RResult<Value> {
+        // String + <primitive> coercion (RES-008): when `+` has a string on
+        // either side and the other side is a primitive (int / float / bool),
+        // coerce the primitive to its textual form and concatenate. This only
+        // applies to `+` — other operators keep their strict behavior.
+        if operator == "+"
+            && (matches!(left, Value::String(_)) || matches!(right, Value::String(_)))
+            && let (Some(ls), Some(rs)) = (
+                stringify_for_concat(&left),
+                stringify_for_concat(&right),
+            )
+        {
+            return Ok(Value::String(format!("{ls}{rs}")));
+        }
+
         match (left.clone(), right.clone()) {
             (Value::Int(l), Value::Int(r)) => self.eval_integer_infix_expression(operator, l, r),
             (Value::Float(l), Value::Float(r)) => self.eval_float_infix_expression(operator, l, r),
@@ -1728,6 +1756,53 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    #[test]
+    fn string_plus_int_coerces() {
+        // RES-008: `"x=" + 42` → `"x=42"`
+        let (program, errors) = parse(r#"let s = "x=" + 42;"#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        match interp.env.get("s").unwrap() {
+            Value::String(s) => assert_eq!(s, "x=42"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_plus_string_coerces() {
+        let (program, _errors) = parse(r#"let s = 1 + "x";"#);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        match interp.env.get("s").unwrap() {
+            Value::String(s) => assert_eq!(s, "1x"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_plus_bool_coerces() {
+        let (program, _errors) = parse(r#"let s = "on=" + true;"#);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        match interp.env.get("s").unwrap() {
+            Value::String(s) => assert_eq!(s, "on=true"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_plus_int_still_arithmetic() {
+        // Regression: make sure coercion didn't hijack pure-int `+`.
+        let (program, _errors) = parse("let n = 1 + 2;");
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        match interp.env.get("n").unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
+        }
     }
 
     #[test]

@@ -35,22 +35,24 @@ fn hello_rs_prints_greeting() {
 }
 
 #[test]
-fn minimal_rs_calls_println_successfully() {
-    // RES-003 criterion: minimal.rs must no longer fail on an undefined
-    // `println`. It still fails later on `"msg" + int` (string + int
-    // coercion is not in scope — that's a follow-up ticket), so we
-    // assert on the first `println` call having worked.
+fn minimal_rs_runs_end_to_end() {
+    // After RES-003 (println) and RES-008 (string+primitive coercion)
+    // minimal.rs runs to completion.
     let (stdout, stderr, _code) = run_example("minimal.rs");
     assert!(
         !stderr.contains("Parser error"),
         "unexpected parser error:\n{stderr}"
     );
     assert!(
-        !stderr.contains("Identifier not found: println"),
-        "println is still undefined:\n{stderr}"
+        stdout.contains("Starting the program"),
+        "missing starting println:\n{stdout}"
     );
     assert!(
-        stdout.contains("Starting the program"),
-        "expected first println output in stdout, got:\nstdout={stdout}\nstderr={stderr}"
+        stdout.contains("The answer is: 42"),
+        "expected coerced concatenation result, got:\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Program completed"),
+        "missing completion println:\n{stdout}"
     );
 }
