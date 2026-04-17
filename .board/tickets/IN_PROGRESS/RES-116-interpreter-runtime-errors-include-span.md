@@ -1,7 +1,7 @@
 ---
 id: RES-116
 title: Interpreter runtime errors print `file:line:col:` prefix
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G6
 created: 2026-04-17
@@ -41,3 +41,4 @@ data available (AST spans, post-RES-088) and should surface them.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
