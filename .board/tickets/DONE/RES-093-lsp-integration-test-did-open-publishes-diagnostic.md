@@ -1,7 +1,7 @@
 ---
 id: RES-093
 title: LSP integration test — didOpen publishes diagnostics
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -73,3 +73,32 @@ no new infrastructure. Adds a second test in the same file.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - New `read_until` helper in `tests/lsp_smoke.rs` that loops
+    over framed messages until a predicate matches or a deadline
+    fires. Lets the test skip past initialize-response / log
+    notifications.
+  - New `lsp_did_open_publishes_diagnostics` test:
+    1. Spawns binary with --lsp.
+    2. Sends `initialize` (id=1), drains the response.
+    3. Sends `initialized` notification.
+    4. Sends `textDocument/didOpen` with a 3-line program where
+       line 3 is `let bad: int = "hi";` (RES-053 type rule).
+    5. Reads framed messages until one contains
+       `"method":"textDocument/publishDiagnostics"`. 5-second
+       deadline.
+    6. Substring-asserts on the notification body:
+       - contains `"diagnostics"` array key
+       - contains `"line":2` (source line 3, 0-indexed)
+       - contains the typechecker error wording
+         (`let bad: int` or `string`)
+    7. Sends `exit` and waits for clean shutdown within 3s.
+  - Reuses `frame()`, `read_one_message()`, `bin()` from RES-090
+    — no new helpers / deps.
+- 2026-04-17 verification across three feature configs:
+  - default: 217 unit + 1 golden + 11 smoke = 229 tests
+  - `--features z3`: 225 + 1 + 12 = 238 tests
+  - `--features lsp`: 221 + 1 + 11 + 2 lsp_smoke = 235 tests
+  All three `cargo clippy -- -D warnings` clean.
+- LSP track is now end-to-end validated: handshake (RES-090) +
+  full diagnostic publication (this ticket).

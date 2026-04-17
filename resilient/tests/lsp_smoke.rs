@@ -155,3 +155,111 @@ fn lsp_initialize_round_trip() {
         }
     }
 }
+
+/// Read framed messages until one matches `predicate`, or the
+/// `deadline` passes. Used by the didOpen test to skip past the
+/// `initialize` response and any informational `window/logMessage`
+/// notifications before reaching `publishDiagnostics`.
+fn read_until<R: Read>(
+    r: &mut R,
+    predicate: impl Fn(&str) -> bool,
+    deadline: Instant,
+) -> Result<String, String> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for matching LSP message".into());
+        }
+        let body = read_one_message(r, deadline)?;
+        if predicate(&body) {
+            return Ok(body);
+        }
+        // else: skip and keep reading
+    }
+}
+
+#[test]
+fn lsp_did_open_publishes_diagnostics() {
+    // RES-093: full didOpen → publishDiagnostics flow.
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // Step 1: initialize handshake.
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    stdin.write_all(frame(init).as_bytes()).expect("write initialize");
+    stdin.flush().ok();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // Drain the initialize response (id=1).
+    let _init_resp = read_one_message(&mut stdout, deadline).expect("read initialize response");
+
+    // Step 2: initialized notification.
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).expect("write initialized");
+
+    // Step 3: didOpen with a 3-line program where line 3 is a known
+    // type error. The typechecker rejects `let bad: int = "hi";`
+    // (RES-053), and RES-080 prefixes the message with `<uri>:3:5:`.
+    let did_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_test.rs","languageId":"resilient","version":1,"text":"let a = 1;\nlet b = 2;\nlet bad: int = \"hi\";"}}}"#;
+    stdin.write_all(frame(did_open).as_bytes()).expect("write didOpen");
+    stdin.flush().ok();
+
+    // Step 4: read until publishDiagnostics arrives. Skip log
+    // messages or anything else the server might emit first.
+    let diag_body = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read publishDiagnostics");
+
+    // Substring assertions on the notification body.
+    assert!(
+        diag_body.contains(r#""diagnostics""#),
+        "missing diagnostics array in: {diag_body}"
+    );
+    // Source line 3 → 0-indexed LSP line 2. Allow `"line":2` or
+    // `"line": 2` (whitespace tolerance).
+    let has_line_2 = diag_body.contains(r#""line":2"#)
+        || diag_body.contains(r#""line": 2"#);
+    assert!(
+        has_line_2,
+        "expected `\"line\":2` (source line 3, 0-indexed) in: {diag_body}"
+    );
+    // The typechecker error wording mentions `let bad: int` per
+    // RES-053. RES-080 prefixes it with the URI; the LSP
+    // extractor strips that prefix back off, so the published
+    // message should contain `let bad: int` somewhere.
+    assert!(
+        diag_body.contains("let bad: int") || diag_body.contains("string"),
+        "expected typechecker-error wording in: {diag_body}"
+    );
+
+    // Step 5: clean shutdown.
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    let _ = stdin.write_all(frame(exit).as_bytes());
+    drop(stdin);
+
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > exit_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("LSP server did not exit within 3s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+    }
+}
