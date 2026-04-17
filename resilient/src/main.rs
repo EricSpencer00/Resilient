@@ -28,6 +28,8 @@ enum Token {
     Return,
     Static,
     While,
+    Requires,
+    Ensures,
     
     // Literals
     Identifier(String),
@@ -263,6 +265,8 @@ impl Lexer {
                         "return" => Token::Return,
                         "static" => Token::Static,
                         "while" => Token::While,
+                        "requires" => Token::Requires,
+                        "ensures" => Token::Ensures,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -408,6 +412,13 @@ enum Node {
         name: String,
         parameters: Vec<(String, String)>, // (type, name)
         body: Box<Node>,
+        /// RES-035: pre-condition clauses, checked on entry. Each is a
+        /// boolean expression over the parameters.
+        requires: Vec<Node>,
+        /// RES-035: post-condition clauses, checked on exit. The
+        /// special identifier `result` is bound to the return value
+        /// inside each clause's env.
+        ensures: Vec<Node>,
     },
     LiveBlock {
         body: Box<Node>,
@@ -661,44 +672,84 @@ impl Parser {
                     name,
                     parameters: Vec::new(),
                     body: Box::new(Node::Block(Vec::new())),
+                    requires: Vec::new(),
+                    ensures: Vec::new(),
                 };
             }
-            
+
             let body = self.parse_block_statement();
             return Node::Function {
                 name,
                 parameters: Vec::new(),
                 body: Box::new(body),
+                requires: Vec::new(),
+                ensures: Vec::new(),
             };
         }
-        
+
         self.next_token(); // Skip '('
-        
+
         let parameters = self.parse_function_parameters();
-        
+
+        // RES-035: between the parameter list and the body, accept any
+        // number of `requires EXPR` and `ensures EXPR` clauses, in any
+        // order. Each clause parses as a single expression.
+        let (requires, ensures) = self.parse_function_contracts();
+
         if self.current_token != Token::LeftBrace {
             self.record_error(format!("Expected '{{' after function parameters for '{}'", name));
             // Try to recover by skipping to the opening brace
             while self.current_token != Token::LeftBrace && self.current_token != Token::Eof {
                 self.next_token();
             }
-            
+
             if self.current_token == Token::Eof {
                 return Node::Function {
                     name,
                     parameters,
                     body: Box::new(Node::Block(Vec::new())),
+                    requires,
+                    ensures,
                 };
             }
         }
-        
+
         let body = self.parse_block_statement();
-        
+
         Node::Function {
             name,
             parameters,
             body: Box::new(body),
+            requires,
+            ensures,
         }
+    }
+
+    /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses. On
+    /// entry current_token is whatever followed the parameter list's
+    /// `)`; on exit it's the `{` that starts the body (or whatever
+    /// caused parsing to give up).
+    fn parse_function_contracts(&mut self) -> (Vec<Node>, Vec<Node>) {
+        let mut requires = Vec::new();
+        let mut ensures = Vec::new();
+        loop {
+            match self.current_token {
+                Token::Requires => {
+                    self.next_token(); // skip `requires`
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+                    self.next_token(); // move past last token of expression
+                    requires.push(expr);
+                }
+                Token::Ensures => {
+                    self.next_token();
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+                    self.next_token();
+                    ensures.push(expr);
+                }
+                _ => break,
+            }
+        }
+        (requires, ensures)
     }
     
     fn parse_function_parameters(&mut self) -> Vec<(String, String)> {
@@ -1288,6 +1339,12 @@ enum Value {
         parameters: Vec<(String, String)>,
         body: Box<Node>,
         env: Environment,
+        /// RES-035: pre-conditions propagated into the runtime Value so
+        /// apply_function can check them. Empty when absent.
+        requires: Vec<Node>,
+        ensures: Vec<Node>,
+        /// Function name — used for better contract-violation messages.
+        name: String,
     },
     /// Native function. `name` is the identifier it was registered as,
     /// for diagnostics only.
@@ -1399,6 +1456,42 @@ impl Environment {
         } else {
             false
         }
+    }
+}
+
+/// Human-readable rendering of a contract clause for the error message.
+/// Deliberately lossy: we just want the user to recognize which clause
+/// fired, not reconstruct the full AST.
+fn format_contract_expr(node: &Node) -> String {
+    match node {
+        Node::Identifier(s) => s.clone(),
+        Node::IntegerLiteral(n) => n.to_string(),
+        Node::FloatLiteral(f) => f.to_string(),
+        Node::StringLiteral(s) => format!("{:?}", s),
+        Node::BooleanLiteral(b) => b.to_string(),
+        Node::PrefixExpression { operator, right } => {
+            format!("{}{}", operator, format_contract_expr(right))
+        }
+        Node::InfixExpression { left, operator, right } => {
+            format!(
+                "{} {} {}",
+                format_contract_expr(left),
+                operator,
+                format_contract_expr(right)
+            )
+        }
+        Node::CallExpression { function, arguments } => {
+            let args: Vec<String> = arguments.iter().map(format_contract_expr).collect();
+            format!("{}({})", format_contract_expr(function), args.join(", "))
+        }
+        Node::IndexExpression { target, index } => {
+            format!(
+                "{}[{}]",
+                format_contract_expr(target),
+                format_contract_expr(index)
+            )
+        }
+        _ => "<expr>".to_string(),
     }
 }
 
@@ -1611,11 +1704,14 @@ impl Interpreter {
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
-            Node::Function { name, parameters, body } => {
+            Node::Function { name, parameters, body, requires, ensures } => {
                 let func = Value::Function {
                     parameters: parameters.clone(),
                     body: body.clone(),
                     env: self.env.clone(),
+                    requires: requires.clone(),
+                    ensures: ensures.clone(),
+                    name: name.clone(),
                 };
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
@@ -2085,7 +2181,7 @@ impl Interpreter {
     
     fn apply_function(&mut self, func: Value, args: Vec<Value>) -> RResult<Value> {
         match func {
-            Value::Function { parameters, body, env } => {
+            Value::Function { parameters, body, env, requires, ensures, name } => {
                 let mut extended_env = Environment::new_enclosed(env);
 
                 for (i, (_, param_name)) in parameters.iter().enumerate() {
@@ -2098,13 +2194,49 @@ impl Interpreter {
                     env: extended_env,
                     statics: self.statics.clone(),
                 };
-                let result = interpreter.eval(&body)?;
 
-                if let Value::Return(value) = result {
-                    Ok(*value)
-                } else {
-                    Ok(result)
+                // RES-035: check each `requires` clause BEFORE running
+                // the body. Parameters are already in scope; anything
+                // else (e.g. `static` bindings, closed-over vars) is
+                // reachable just like inside the body.
+                for clause in &requires {
+                    let v = interpreter.eval(clause)?;
+                    if !interpreter.is_truthy(&v) {
+                        return Err(format!(
+                            "Contract violation in fn {}: requires {} failed",
+                            name,
+                            format_contract_expr(clause)
+                        ));
+                    }
                 }
+
+                let body_result = interpreter.eval(&body)?;
+                let return_value = if let Value::Return(v) = body_result {
+                    *v
+                } else {
+                    body_result
+                };
+
+                // RES-035: check each `ensures` clause AFTER, with the
+                // special identifier `result` bound to the return value.
+                if !ensures.is_empty() {
+                    interpreter
+                        .env
+                        .set("result".to_string(), return_value.clone());
+                    for clause in &ensures {
+                        let v = interpreter.eval(clause)?;
+                        if !interpreter.is_truthy(&v) {
+                            return Err(format!(
+                                "Contract violation in fn {}: ensures {} failed (result = {})",
+                                name,
+                                format_contract_expr(clause),
+                                return_value
+                            ));
+                        }
+                    }
+                }
+
+                Ok(return_value)
             }
             Value::Builtin { func, .. } => func(&args),
             _ => Err(format!("Not a function: {}", func)),
@@ -2711,6 +2843,106 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    // ---------- Function contracts (RES-035) ----------
+
+    #[test]
+    fn contract_requires_valid_passes() {
+        let src = r#"
+            fn divide(int a, int b)
+                requires b != 0
+            {
+                return a / b;
+            }
+            let x = divide(10, 2);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(5)));
+    }
+
+    #[test]
+    fn contract_requires_violation_errors() {
+        let src = r#"
+            fn divide(int a, int b)
+                requires b != 0
+            {
+                return a / b;
+            }
+            let x = divide(10, 0);
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(
+            err.contains("Contract violation") && err.contains("requires"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn contract_ensures_valid_passes() {
+        let src = r#"
+            fn double(int n)
+                ensures result == n * 2
+            {
+                return n + n;
+            }
+            let x = double(7);
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(14)));
+    }
+
+    #[test]
+    fn contract_ensures_violation_errors() {
+        let src = r#"
+            fn broken_double(int n)
+                ensures result == n * 2
+            {
+                return n + 1;
+            }
+            let x = broken_double(7);
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(
+            err.contains("Contract violation") && err.contains("ensures"),
+            "unexpected error: {}",
+            err
+        );
+        assert!(
+            err.contains("result = 8"),
+            "expected result value in error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn contract_multiple_clauses() {
+        let src = r#"
+            fn clamped(int n, int lo, int hi)
+                requires lo <= hi
+                requires n >= lo
+                requires n <= hi
+                ensures result == n
+            {
+                return n;
+            }
+            let x = clamped(5, 0, 10);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(5)));
     }
 
     #[test]

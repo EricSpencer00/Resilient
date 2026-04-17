@@ -1,7 +1,7 @@
 ---
 id: RES-035
 title: Function contracts (`requires` / `ensures`)
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G8
 created: 2026-04-16

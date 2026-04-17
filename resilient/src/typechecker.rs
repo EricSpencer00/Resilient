@@ -116,7 +116,7 @@ impl TypeChecker {
         match node {
             Node::Program(_statements) => self.check_program(node),
             
-            Node::Function { name, parameters, body } => {
+            Node::Function { name, parameters, body, .. } => {
                 let mut param_types = Vec::new();
                 
                 // Create a new enclosed environment for function body
