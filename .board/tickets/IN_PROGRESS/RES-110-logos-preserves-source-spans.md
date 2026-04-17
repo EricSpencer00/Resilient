@@ -1,7 +1,7 @@
 ---
 id: RES-110
 title: logos lexer preserves source spans compatible with `span.rs`
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G5
 created: 2026-04-17
@@ -39,3 +39,4 @@ from a pre-computed line-start index.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
