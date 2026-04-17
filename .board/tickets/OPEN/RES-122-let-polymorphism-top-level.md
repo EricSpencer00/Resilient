@@ -41,3 +41,30 @@ rabbit hole we don't need yet.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed and bailed by executor (blocked — see Attempt 1)
+
+## Attempt 1 failed
+
+Blocked: this ticket builds on `infer.rs` (from RES-120) and the
+`fn<T>` syntax (from RES-124). Neither is in place on `main`.
+
+- RES-120 (HM inference prototype) is currently in OPEN with a
+  `## Clarification needed` note (blocked on RES-119's Diagnostic
+  scaffolding and an absent NodeId).
+- RES-124 (generic `fn<T>` declarations) is further down the queue
+  and also depends on RES-120.
+
+The first acceptance criterion reads "`infer.rs` gains a
+`generalize(env: &TypeEnv, ty: Type) -> Scheme` helper" — there is
+no `infer.rs` on `main` to gain anything.
+
+## Clarification needed
+
+Re-open once RES-120 and RES-124 have landed. Landing this ticket
+without them would require building the entire inference walker +
+generic-fn parser inside one iteration, which is the opposite of the
+ticket's "keep THIS ticket minimal" guidance in similar wording from
+RES-120.
+
+No code changes landed — only the ticket state toggle and this
+clarification note.
