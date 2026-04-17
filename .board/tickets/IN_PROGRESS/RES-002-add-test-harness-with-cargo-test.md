@@ -1,7 +1,7 @@
 ---
 id: RES-002
 title: Add test harness with cargo test
-state: OPEN
+state: IN_PROGRESS
 priority: P0
 goalpost: G2
 created: 2026-04-16
@@ -36,3 +36,4 @@ a test harness so every subsequent ticket can add regression coverage.
 
 ## Log
 - 2026-04-16 created by session 0
+- 2026-04-16 claimed by executor
