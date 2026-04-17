@@ -2578,6 +2578,57 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// RES-034: write `value` into `items` at the path described by
+/// `indices`. `indices[0]` indexes the outermost array; the last
+/// index targets the leaf cell that gets replaced. Bounds errors
+/// name the depth (1-indexed) where the out-of-range access occurred
+/// so users can tell `m[2][0]` (outer) from `m[0][5]` (inner).
+fn replace_at_path(
+    items: &mut [Value],
+    indices: &[i64],
+    value: Value,
+) -> RResult<()> {
+    fn recurse(
+        items: &mut [Value],
+        indices: &[i64],
+        value: Value,
+        depth: usize,
+    ) -> RResult<()> {
+        let (i, rest) = match indices.split_first() {
+            Some(pair) => pair,
+            None => unreachable!("replace_at_path called with zero indices"),
+        };
+        if *i < 0 || (*i as usize) >= items.len() {
+            return Err(format!(
+                "Index {} out of bounds for array of length {} at dim {}",
+                i,
+                items.len(),
+                depth
+            ));
+        }
+        if rest.is_empty() {
+            items[*i as usize] = value;
+            return Ok(());
+        }
+        // Need to dive into the inner array. Move it out, recurse on
+        // the inner Vec, then put the rebuilt array back. Cloning is
+        // unnecessary because `items[i]` will be overwritten with
+        // exactly the same Value::Array variant once the inner call
+        // returns.
+        let mut inner = std::mem::replace(&mut items[*i as usize], Value::Void);
+        let Value::Array(inner_items) = &mut inner else {
+            return Err(format!(
+                "Cannot index into non-array at dim {}: {:?}",
+                depth, inner
+            ));
+        };
+        let result = recurse(inner_items, rest, value, depth + 1);
+        items[*i as usize] = inner;
+        result
+    }
+    recurse(items, indices, value, 1)
+}
+
 /// `abs(x)` — absolute value for `int` and `float`.
 fn builtin_abs(args: &[Value]) -> RResult<Value> {
     match args {
@@ -2935,35 +2986,60 @@ impl Interpreter {
                 }
             },
             Node::IndexAssignment { target, index, value } => {
-                // target must be an identifier (restricted form for now).
-                let name = match target.as_ref() {
-                    Node::Identifier(n) => n.clone(),
-                    _ => return Err("Index assignment target must be an identifier".to_string()),
+                // RES-034: walk the LHS chain to support a[i][j]...[k] = v.
+                // The parser builds nested IndexExpression nodes; descend
+                // through them collecting each index (root-to-leaf order)
+                // and the root identifier name.
+                let mut indices_rev: Vec<&Node> = vec![index];
+                let mut cursor: &Node = target;
+                let root_name = loop {
+                    match cursor {
+                        Node::Identifier(n) => break n.clone(),
+                        Node::IndexExpression { target: inner_t, index: inner_i } => {
+                            indices_rev.push(inner_i);
+                            cursor = inner_t;
+                        }
+                        _ => {
+                            return Err(
+                                "Index assignment target must be an identifier".to_string()
+                            );
+                        }
+                    }
                 };
-                let index_val = self.eval(index)?;
+                // We collected leaf-first; reverse to root-first so
+                // path[0] indexes the outermost array.
+                indices_rev.reverse();
+                let path_exprs = indices_rev;
+
+                // Evaluate the RHS first so any side effects there
+                // happen before we start mutating the array.
                 let new_val = self.eval(value)?;
-                let Value::Int(i) = index_val else {
-                    return Err(format!("Array index must be int, got {:?}", index_val));
-                };
-                // Read, modify, write. This relies on Environment storing
-                // arrays by value; true aliasing would need Rc/RefCell
-                // and is tracked as a future ticket.
-                let current = self
-                    .env
-                    .get(&name)
-                    .ok_or_else(|| format!("Identifier not found: {}", name))?;
-                let Value::Array(mut items) = current else {
-                    return Err(format!("Cannot index-assign into non-array '{}'", name));
-                };
-                if i < 0 || (i as usize) >= items.len() {
-                    return Err(format!(
-                        "Index {} out of bounds for array of length {}",
-                        i,
-                        items.len()
-                    ));
+                // Then evaluate every index expression in source order.
+                let mut path_indices: Vec<i64> = Vec::with_capacity(path_exprs.len());
+                for idx_expr in &path_exprs {
+                    let idx_val = self.eval(idx_expr)?;
+                    let Value::Int(i) = idx_val else {
+                        return Err(format!("Array index must be int, got {:?}", idx_val));
+                    };
+                    path_indices.push(i);
                 }
-                items[i as usize] = new_val;
-                let _ = self.env.reassign(&name, Value::Array(items));
+
+                // Read–modify–write. `env.get` returns a clone, so the
+                // mutation is local until we `reassign` the new root
+                // value — that preserves value semantics for sibling
+                // bindings.
+                let root = self
+                    .env
+                    .get(&root_name)
+                    .ok_or_else(|| format!("Identifier not found: {}", root_name))?;
+                let Value::Array(mut items) = root else {
+                    return Err(format!(
+                        "Cannot index-assign into non-array '{}'",
+                        root_name
+                    ));
+                };
+                replace_at_path(&mut items, &path_indices, new_val)?;
+                let _ = self.env.reassign(&root_name, Value::Array(items));
                 Ok(Value::Void)
             },
         }
@@ -5804,5 +5880,90 @@ mod tests {
             Value::Int(7) => {}
             other => panic!("max: expected Int(7), got {:?}", other),
         }
+    }
+
+    // ---------- RES-034: nested index assignment ----------
+
+    /// Read `m[i][j]` and assert it is `Value::Int(expected)`.
+    fn nested_int(m: &Value, i: usize, j: usize) -> i64 {
+        let Value::Array(rows) = m else { panic!("expected outer Array, got {:?}", m); };
+        let Value::Array(row) = &rows[i] else { panic!("expected inner Array at row {}, got {:?}", i, rows[i]); };
+        match &row[j] {
+            Value::Int(v) => *v,
+            other => panic!("expected Int at [{}][{}], got {:?}", i, j, other),
+        }
+    }
+
+    #[test]
+    fn nested_index_assignment_writes_leaf_cell() {
+        // RES-034: a[i][j] = v should mutate exactly the addressed cell.
+        let (p, errors) = parse("let m = [[1, 2], [3, 4]]; m[1][0] = 9;");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let m = interp.env.get("m").unwrap();
+        assert_eq!(nested_int(&m, 1, 0), 9);
+    }
+
+    #[test]
+    fn nested_index_assignment_leaves_siblings_untouched() {
+        // RES-034: writing m[0][1] must not disturb m[0][0], m[1][*], etc.
+        let (p, _e) = parse("let m = [[1, 2], [3, 4]]; m[0][1] = 9;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let m = interp.env.get("m").unwrap();
+        assert_eq!(nested_int(&m, 0, 0), 1);
+        assert_eq!(nested_int(&m, 0, 1), 9);
+        assert_eq!(nested_int(&m, 1, 0), 3);
+        assert_eq!(nested_int(&m, 1, 1), 4);
+    }
+
+    #[test]
+    fn nested_index_assignment_outer_out_of_bounds_errors_cleanly() {
+        // RES-034: outer index out of range must be a clean error,
+        // not a panic. Bounds error names the depth.
+        let (p, _e) = parse("let m = [[1, 2], [3, 4]]; m[2][0] = 9;");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("out of bounds"), "got: {}", err);
+        assert!(err.contains("dim 1"), "should name outer dim: {}", err);
+    }
+
+    #[test]
+    fn nested_index_assignment_inner_out_of_bounds_errors_cleanly() {
+        // RES-034: inner index out of range names the inner dim so the
+        // user can tell which dimension blew up.
+        let (p, _e) = parse("let m = [[1, 2]]; m[0][5] = 9;");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("out of bounds"), "got: {}", err);
+        assert!(err.contains("dim 2"), "should name inner dim: {}", err);
+    }
+
+    #[test]
+    fn three_deep_nested_index_assignment() {
+        // RES-034: descent works at arbitrary depth, not just 2.
+        let (p, _e) = parse("let m = [[[1], [2]], [[3], [4]]]; m[1][0][0] = 99;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let m = interp.env.get("m").unwrap();
+        let Value::Array(outer) = &m else { panic!("outer"); };
+        let Value::Array(mid) = &outer[1] else { panic!("mid"); };
+        let Value::Array(leaf) = &mid[0] else { panic!("leaf"); };
+        assert!(matches!(leaf[0], Value::Int(99)));
+    }
+
+    #[test]
+    fn single_dim_index_assignment_still_works() {
+        // RES-034 regression: the single-index path must still work
+        // (it's the same code path now, and we shouldn't break the
+        // common case while generalizing).
+        let (p, _e) = parse("let a = [1, 2, 3]; a[1] = 42;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let Value::Array(items) = interp.env.get("a").unwrap() else {
+            panic!("expected Array");
+        };
+        assert!(matches!(items[1], Value::Int(42)));
     }
 }

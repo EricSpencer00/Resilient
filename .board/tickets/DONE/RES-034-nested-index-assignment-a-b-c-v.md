@@ -1,7 +1,7 @@
 ---
 id: RES-034
 title: Nested index assignment a[b][c] = v
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G12
 created: 2026-04-16
@@ -58,3 +58,33 @@ tickets.
 ## Log
 - 2026-04-16 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - Interpreter `Node::IndexAssignment` arm rewritten: walks the LHS
+    chain (a series of nested `IndexExpression`s) collecting every
+    index expr until it hits the root `Identifier`. Original
+    "must be an identifier" error preserved as the fallback for non-
+    `IndexExpression` LHS shapes (e.g. `(some + expr)[i] = v`).
+  - New free function `replace_at_path(&mut [Value], &[i64], Value)
+    -> RResult<()>` recurses through the array tree using
+    `std::mem::replace` to avoid cloning the inner Vec on each level.
+    Bounds errors include `at dim {N}` so users can tell outer-vs-
+    inner failures apart.
+  - Evaluation order preserved: RHS evaluated first, then index exprs
+    in source order (root-to-leaf), then read-modify-write.
+- 2026-04-17 tests: 6 new unit tests in `main.rs` mod tests:
+  - `nested_index_assignment_writes_leaf_cell`: 2D mutation
+  - `nested_index_assignment_leaves_siblings_untouched`: confirms
+    only the addressed cell changes (regression guard against
+    accidental aliasing)
+  - `nested_index_assignment_outer_out_of_bounds_errors_cleanly`
+    (mentions "dim 1")
+  - `nested_index_assignment_inner_out_of_bounds_errors_cleanly`
+    (mentions "dim 2")
+  - `three_deep_nested_index_assignment`: arbitrary depth
+  - `single_dim_index_assignment_still_works`: 1D regression guard
+  - Plus `examples/nested_array_demo.rs` + `.expected.txt` golden
+    proving 2x3 matrix mutation end-to-end.
+- 2026-04-17 verification: 165 unit + 1 golden + 6 smoke = 172 tests
+  default; 173+1+7 = 181 with `--features z3`. `cargo build`,
+  `cargo clippy -- -D warnings` clean both ways. Manual run of the
+  demo file prints `1\n2\n3\n4\n99\n6` as expected.
