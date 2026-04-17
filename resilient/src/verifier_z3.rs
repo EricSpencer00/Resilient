@@ -53,13 +53,40 @@ pub fn prove_with_certificate(
     expr: &Node,
     bindings: &HashMap<String, i64>,
 ) -> (Option<bool>, Option<ProofCertificate>) {
+    let (verdict, cert, _cx) = prove_with_certificate_and_counterexample(expr, bindings);
+    (verdict, cert)
+}
+
+/// RES-136: full diagnostic version of `prove_with_certificate`.
+/// Returns a third slot — a formatted counterexample — populated
+/// when the negated formula is *satisfiable* (i.e. there is an
+/// assignment that falsifies the clause). Callers that surface a
+/// "could not prove" or "contract cannot hold" diagnostic to the
+/// user can append this string to the error message.
+///
+/// The counterexample is `Some(...)` only when:
+///   - The verdict is `Some(false)` (the clause is a contradiction —
+///     any assignment falsifies it), OR
+///   - The verdict is `None` (undecidable — at least one concrete
+///     assignment was found to falsify the clause).
+///
+/// For `Some(true)` tautology proofs there is no counterexample and
+/// the slot is `None`.
+///
+/// Format matches the ticket (`a = -1, b = 0`): identifier bindings
+/// comma-separated, in deterministic BTreeSet order. Variables with
+/// no assignment in the model are omitted — Z3 may elide them.
+pub fn prove_with_certificate_and_counterexample(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>) {
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
 
     // Translate the expression to a Z3 boolean.
     let formula = match translate_bool(&ctx, expr, bindings) {
         Some(f) => f,
-        None => return (None, None),
+        None => return (None, None, None),
     };
 
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
@@ -67,7 +94,20 @@ pub fn prove_with_certificate(
     let solver = z3::Solver::new(&ctx);
     let negated = formula.not();
     solver.assert(&negated);
-    let tautology = matches!(solver.check(), z3::SatResult::Unsat);
+    let check = solver.check();
+    let tautology = matches!(check, z3::SatResult::Unsat);
+
+    // RES-136: extract a counterexample whenever the negated formula
+    // is satisfiable — the model is an assignment that falsifies the
+    // clause, which is what a user needs to see to debug a failing
+    // contract. We harvest it eagerly so the later contradiction
+    // check (which reuses a fresh solver) doesn't need to re-derive
+    // it.
+    let counterexample = if matches!(check, z3::SatResult::Sat) {
+        extract_counterexample(&ctx, &solver, expr, bindings)
+    } else {
+        None
+    };
 
     if tautology {
         // Build a self-contained re-verifiable SMT-LIB2 file.
@@ -99,7 +139,7 @@ pub fn prove_with_certificate(
         smt2.push_str(&format!("(assert {})\n", negated));
         smt2.push_str("(check-sat)\n");
 
-        return (Some(true), Some(ProofCertificate { smt2 }));
+        return (Some(true), Some(ProofCertificate { smt2 }), None);
     }
 
     // Contradiction check: is `formula` unsatisfiable? If yes, the
@@ -109,10 +149,49 @@ pub fn prove_with_certificate(
     let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
 
     if contradiction {
-        return (Some(false), None);
+        return (Some(false), None, counterexample);
     }
 
-    (None, None)
+    (None, None, counterexample)
+}
+
+/// RES-136: harvest identifier assignments from a satisfied Z3
+/// solver and format them as `name = value, name = value`. Only
+/// integer identifiers the translator could produce are consulted.
+///
+/// We evaluate each identifier as an `Int` (the translator models
+/// every free variable as `Int::new_const(name)`), request
+/// model_completion=false so Z3 can legitimately return "not
+/// constrained" — variables it didn't assign are silently dropped
+/// per the ticket. Constants already pinned via `bindings` are also
+/// dropped: echoing back input isn't useful diagnostic output.
+fn extract_counterexample(
+    ctx: &z3::Context,
+    solver: &z3::Solver<'_>,
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<String> {
+    let model = solver.get_model()?;
+    let mut idents: BTreeSet<String> = BTreeSet::new();
+    collect_int_identifiers(expr, &mut idents);
+
+    let mut parts: Vec<String> = Vec::new();
+    for name in &idents {
+        if bindings.contains_key(name) {
+            continue;
+        }
+        let var = Int::new_const(ctx, name.as_str());
+        if let Some(v) = model.eval(&var, false)
+            && let Some(n) = v.as_i64()
+        {
+            parts.push(format!("{} = {}", name, n));
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 /// Walk the AST collecting every identifier that the integer or boolean
@@ -362,5 +441,107 @@ mod tests {
             span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), None);
+    }
+
+    // --- RES-136: counterexample extraction from Z3 models ---
+
+    /// Build `Node::Identifier { name }` with a default span.
+    fn ident(name: &str) -> Node {
+        Node::Identifier { name: name.to_string(), span: crate::span::Span::default() }
+    }
+
+    /// Build `Node::IntegerLiteral { value }` with a default span.
+    fn int(value: i64) -> Node {
+        Node::IntegerLiteral { value, span: crate::span::Span::default() }
+    }
+
+    /// Build `left OP right` with a default span.
+    fn infix(left: Node, op: &str, right: Node) -> Node {
+        Node::InfixExpression {
+            left: Box::new(left),
+            operator: op.to_string(),
+            right: Box::new(right),
+            span: crate::span::Span::default(),
+        }
+    }
+
+    #[test]
+    fn verifier_emits_counterexample_for_contradiction() {
+        // `x > 5 && x < 0` — a strict contradiction. Verdict is
+        // Some(false); counterexample is Z3's arbitrary witness to
+        // the negation (anything not satisfying both conjuncts).
+        let no_b = HashMap::new();
+        let expr = infix(
+            infix(ident("x"), ">", int(5)),
+            "&&",
+            infix(ident("x"), "<", int(0)),
+        );
+        let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, Some(false));
+        let cx = cx.expect("contradiction must surface a counterexample");
+        assert!(cx.contains("x ="), "counterexample should name `x`; got: {:?}", cx);
+    }
+
+    #[test]
+    fn verifier_emits_counterexample_for_undecidable() {
+        // `x > 0` — undecidable (neither always true nor always
+        // false). Verdict is None; counterexample is a concrete
+        // assignment where the clause fails — any x <= 0.
+        let no_b = HashMap::new();
+        let expr = infix(ident("x"), ">", int(0));
+        let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, None);
+        let cx = cx.expect("undecidable clause must surface a counterexample");
+        assert!(cx.contains("x ="), "counterexample should name `x`; got: {:?}", cx);
+    }
+
+    #[test]
+    fn verifier_omits_counterexample_for_tautology() {
+        // `x + 0 == x` — tautology. No counterexample expected.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, Some(true));
+        assert!(cx.is_none(), "tautology should have no counterexample, got: {:?}", cx);
+    }
+
+    #[test]
+    fn counterexample_omits_bound_identifiers() {
+        // `n > 10` with `n` bound to 5: verdict is Some(false) and
+        // the counterexample should NOT re-echo the pinned binding
+        // (it's uninformative to print what the user already told us).
+        let mut bindings = HashMap::new();
+        bindings.insert("n".to_string(), 5);
+        let expr = infix(ident("n"), ">", int(10));
+        let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &bindings);
+        assert_eq!(verdict, Some(false));
+        // No free variables → no counterexample content.
+        assert!(
+            cx.as_deref().map(|s| !s.contains("n =")).unwrap_or(true),
+            "bound identifier should not appear in counterexample: {:?}",
+            cx,
+        );
+    }
+
+    #[test]
+    fn counterexample_names_multiple_free_identifiers() {
+        // `a > 0 && b < 0` — undecidable.
+        // Negation: `a <= 0 || b >= 0`. Z3 may only need to assign
+        // one of the variables to satisfy a disjunction, so we
+        // accept a counterexample that mentions at least one.
+        let no_b = HashMap::new();
+        let expr = infix(
+            infix(ident("a"), ">", int(0)),
+            "&&",
+            infix(ident("b"), "<", int(0)),
+        );
+        let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, None);
+        let cx = cx.expect("undecidable clause must surface a counterexample");
+        assert!(
+            cx.contains("a =") || cx.contains("b ="),
+            "counterexample should name at least one free var; got: {:?}",
+            cx,
+        );
     }
 }

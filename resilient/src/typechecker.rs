@@ -280,21 +280,25 @@ fn z3_prove(_expr: &Node, _bindings: &HashMap<String, i64>) -> Option<bool> {
 }
 
 /// RES-071: like `z3_prove`, but also returns an SMT-LIB2 certificate
-/// when the proof succeeds. Without `--features z3`, returns `(None, None)`.
+/// when the proof succeeds. RES-136: additionally returns a formatted
+/// counterexample whenever the negated formula is satisfiable (the
+/// `Some(false)` and `None` verdict cases), for use in verifier error
+/// diagnostics. Without `--features z3`, returns `(None, None, None)`.
 #[cfg(feature = "z3")]
 fn z3_prove_with_cert(
     expr: &Node,
     bindings: &HashMap<String, i64>,
-) -> (Option<bool>, Option<String>) {
-    let (verdict, cert) = crate::verifier_z3::prove_with_certificate(expr, bindings);
-    (verdict, cert.map(|c| c.smt2))
+) -> (Option<bool>, Option<String>, Option<String>) {
+    let (verdict, cert, cx) =
+        crate::verifier_z3::prove_with_certificate_and_counterexample(expr, bindings);
+    (verdict, cert.map(|c| c.smt2), cx)
 }
 #[cfg(not(feature = "z3"))]
 fn z3_prove_with_cert(
     _expr: &Node,
     _bindings: &HashMap<String, i64>,
-) -> (Option<bool>, Option<String>) {
-    (None, None)
+) -> (Option<bool>, Option<String>, Option<String>) {
+    (None, None, None)
 }
 
 /// RES-071: a single SMT-LIB2 proof certificate that the typechecker
@@ -536,11 +540,16 @@ impl TypeChecker {
                     // Cheap folder first; fall back to Z3 (RES-067)
                     // for universal tautology / contradiction proofs.
                     let mut verdict = fold_const_bool(clause, &no_bindings);
+                    // RES-136: slot for Z3's counterexample if it
+                    // runs and finds a satisfying model for the
+                    // negated clause. Only meaningful when we take
+                    // the Z3 branch below.
+                    let mut decl_counterexample: Option<String> = None;
                     if verdict.is_none() {
                         // RES-071: capture the SMT-LIB2 certificate
                         // alongside the verdict so the driver can dump
                         // it to disk if --emit-certificate is set.
-                        let (v, cert) = z3_prove_with_cert(clause, &no_bindings);
+                        let (v, cert, cx) = z3_prove_with_cert(clause, &no_bindings);
                         verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
@@ -553,13 +562,21 @@ impl TypeChecker {
                                 });
                             }
                         }
+                        decl_counterexample = cx;
                     }
                     match verdict {
                         Some(false) => {
-                            return Err(format!(
+                            // RES-136: include the Z3 counterexample
+                            // (if any) so the user sees a concrete
+                            // assignment that falsifies the clause.
+                            let base = format!(
                                 "fn {}: contract can never hold (statically false clause)",
                                 name
-                            ));
+                            );
+                            return Err(match decl_counterexample {
+                                Some(cx) => format!("{} — counterexample: {}", base, cx),
+                                None => base,
+                            });
                         }
                         Some(true) => {
                             self.stats.requires_tautology += 1;
@@ -1061,11 +1078,14 @@ impl TypeChecker {
                     for (clause_idx, clause) in info.requires.iter().enumerate() {
                         // Try the cheap hand-rolled folder first.
                         let mut verdict = fold_const_bool(clause, &bindings);
+                        // RES-136: slot for Z3's counterexample; only
+                        // populated if Z3 runs (folder came back None).
+                        let mut call_counterexample: Option<String> = None;
                         // RES-067: if undecidable, fall back to Z3
                         // (only when the binary was built --features z3).
                         if verdict.is_none() {
                             // RES-071: also capture certificate.
-                            let (v, cert) = z3_prove_with_cert(clause, &bindings);
+                            let (v, cert, cx) = z3_prove_with_cert(clause, &bindings);
                             verdict = v;
                             if verdict.is_some() {
                                 self.stats.requires_discharged_by_z3 += 1;
@@ -1080,13 +1100,20 @@ impl TypeChecker {
                                     smt2,
                                 });
                             }
+                            call_counterexample = cx;
                         }
                         match verdict {
                             Some(false) => {
-                                return Err(format!(
+                                // RES-136: append counterexample when
+                                // Z3 found one.
+                                let base = format!(
                                     "Contract violation: call to fn {} would fail `requires` clause at compile time",
                                     callee_name
-                                ));
+                                );
+                                return Err(match call_counterexample {
+                                    Some(cx) => format!("{} — counterexample: {}", base, cx),
+                                    None => base,
+                                });
                             }
                             Some(true) => {
                                 self.stats.requires_discharged_at_compile += 1;
