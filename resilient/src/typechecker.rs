@@ -189,7 +189,7 @@ impl TypeChecker {
                 Ok(result_type)
             },
             
-            Node::LetStatement { name, value } => {
+            Node::LetStatement { name, value, .. } => {
                 let value_type = self.check_node(value)?;
                 self.env.set(name.clone(), value_type);
                 Ok(Type::Void)

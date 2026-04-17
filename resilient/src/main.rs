@@ -38,6 +38,7 @@ enum Token {
     Dot,
     Match,
     FatArrow,
+    Arrow,
     Underscore,
     Question,
     
@@ -168,7 +169,14 @@ impl Lexer {
                 }
             },
             '+' => Token::Plus,
-            '-' => Token::Minus,
+            '-' => {
+                if self.peek_char() == '>' {
+                    self.read_char();
+                    Token::Arrow
+                } else {
+                    Token::Minus
+                }
+            },
             '*' => Token::Multiply,
             '%' => Token::Modulo,
             '&' => {
@@ -456,6 +464,9 @@ enum Node {
         /// special identifier `result` is bound to the return value
         /// inside each clause's env.
         ensures: Vec<Node>,
+        /// RES-052: optional `-> TYPE` return-type annotation. Advisory.
+        #[allow(dead_code)]
+        return_type: Option<String>,
     },
     LiveBlock {
         body: Box<Node>,
@@ -472,6 +483,10 @@ enum Node {
     LetStatement {
         name: String,
         value: Box<Node>,
+        /// RES-052: optional type annotation, e.g. `let x: int = 0;`.
+        /// Advisory today; enforced in RES-053.
+        #[allow(dead_code)]
+        type_annot: Option<String>,
     },
     /// RES-013: `static let NAME = EXPR;` — like let, but stored in a
     /// per-interpreter statics map so the binding survives across
@@ -539,6 +554,8 @@ enum Node {
         body: Box<Node>,
         requires: Vec<Node>,
         ensures: Vec<Node>,
+        #[allow(dead_code)]
+        return_type: Option<String>,
     },
     /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
     Match {
@@ -775,6 +792,7 @@ impl Parser {
                     body: Box::new(Node::Block(Vec::new())),
                     requires: Vec::new(),
                     ensures: Vec::new(),
+                    return_type: None,
                 };
             }
 
@@ -785,12 +803,16 @@ impl Parser {
                 body: Box::new(body),
                 requires: Vec::new(),
                 ensures: Vec::new(),
+                return_type: None,
             };
         }
 
         self.next_token(); // Skip '('
 
         let parameters = self.parse_function_parameters();
+
+        // RES-052: optional `-> TYPE` return type, BEFORE contracts.
+        let return_type = self.parse_optional_return_type();
 
         // RES-035: between the parameter list and the body, accept any
         // number of `requires EXPR` and `ensures EXPR` clauses, in any
@@ -811,6 +833,7 @@ impl Parser {
                     body: Box::new(Node::Block(Vec::new())),
                     requires,
                     ensures,
+                    return_type,
                 };
             }
         }
@@ -823,7 +846,27 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            return_type,
         }
+    }
+
+    /// Parse an optional `-> TYPE`. If present, current_token advances
+    /// past the type identifier. If absent, no tokens are consumed.
+    fn parse_optional_return_type(&mut self) -> Option<String> {
+        if self.current_token != Token::Arrow {
+            return None;
+        }
+        self.next_token(); // skip '->'
+        let ty = match &self.current_token {
+            Token::Identifier(t) => Some(t.clone()),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected type name after '->', found {:?}", tok));
+                None
+            }
+        };
+        self.next_token(); // skip type identifier
+        ty
     }
 
     /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses. On
@@ -1016,7 +1059,7 @@ impl Parser {
         // returns a Node::LetStatement.
         let inner = self.parse_let_statement();
         match inner {
-            Node::LetStatement { name, value } => Node::StaticLet { name, value },
+            Node::LetStatement { name, value, .. } => Node::StaticLet { name, value },
             other => other, // error paths return a degenerate LetStatement
         }
     }
@@ -1032,11 +1075,29 @@ impl Parser {
                 return Node::LetStatement {
                     name: String::new(),
                     value: Box::new(Node::IntegerLiteral(0)),
+                    type_annot: None,
                 };
             }
         };
 
         self.next_token(); // Skip name
+
+        // RES-052: optional `: TYPE` annotation.
+        let type_annot = if self.current_token == Token::Colon {
+            self.next_token(); // skip ':'
+            let ty = match &self.current_token {
+                Token::Identifier(t) => Some(t.clone()),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!("Expected type name after ':', found {:?}", tok));
+                    None
+                }
+            };
+            self.next_token(); // skip type
+            ty
+        } else {
+            None
+        };
 
         if self.current_token != Token::Assign {
             let tok = self.current_token.clone();
@@ -1047,20 +1108,22 @@ impl Parser {
             return Node::LetStatement {
                 name,
                 value: Box::new(Node::IntegerLiteral(0)),
+                type_annot,
             };
         }
 
         self.next_token(); // Skip '='
-        
+
         let value = self.parse_expression(0).unwrap();
-        
+
         if self.peek_token == Token::Semicolon {
             self.next_token(); // Skip to semicolon
         }
-        
+
         Node::LetStatement {
             name,
             value: Box::new(value),
+            type_annot,
         }
     }
     
@@ -1526,8 +1589,7 @@ impl Parser {
         Node::StructLiteral { name, fields }
     }
 
-    /// Parse an anonymous `fn(params) { body }`. current_token is `fn`
-    /// on entry; on exit it's `}`.
+    /// Parse an anonymous `fn(params) -> TYPE? requires/ensures? { body }`.
     fn parse_function_literal(&mut self) -> Node {
         self.next_token(); // skip 'fn'
         if self.current_token != Token::LeftParen {
@@ -1541,10 +1603,12 @@ impl Parser {
                 body: Box::new(Node::Block(Vec::new())),
                 requires: Vec::new(),
                 ensures: Vec::new(),
+                return_type: None,
             };
         }
         self.next_token(); // skip '('
         let parameters = self.parse_function_parameters();
+        let return_type = self.parse_optional_return_type();
         let (requires, ensures) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -1557,6 +1621,7 @@ impl Parser {
                 body: Box::new(Node::Block(Vec::new())),
                 requires,
                 ensures,
+                return_type,
             };
         }
         let body = self.parse_block_statement();
@@ -1565,6 +1630,7 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            return_type,
         }
     }
 
@@ -2416,7 +2482,7 @@ impl Interpreter {
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
-            Node::Function { name, parameters, body, requires, ensures } => {
+            Node::Function { name, parameters, body, requires, ensures, .. } => {
                 let func = Value::Function {
                     parameters: parameters.clone(),
                     body: body.clone(),
@@ -2431,7 +2497,7 @@ impl Interpreter {
             Node::LiveBlock { body, invariants } => self.eval_live_block(body, invariants),
             Node::Assert { condition, message } => self.eval_assert(condition, message),
             Node::Block(statements) => self.eval_block_statement(statements),
-            Node::LetStatement { name, value } => {
+            Node::LetStatement { name, value, .. } => {
                 let val = self.eval(value)?;
                 // RES-041: if the RHS short-circuited (e.g. via `?`),
                 // propagate the Return instead of binding it.
@@ -2559,7 +2625,7 @@ impl Interpreter {
                 }
                 Ok(Value::Array(out))
             },
-            Node::FunctionLiteral { parameters, body, requires, ensures } => {
+            Node::FunctionLiteral { parameters, body, requires, ensures, .. } => {
                 Ok(Value::Function {
                     parameters: parameters.clone(),
                     body: body.clone(),
@@ -3599,7 +3665,7 @@ mod tests {
             Node::Program(stmts) => {
                 assert_eq!(stmts.len(), 1);
                 match &stmts[0] {
-                    Node::LetStatement { name, value } => {
+                    Node::LetStatement { name, value, .. } => {
                         assert_eq!(name, "x");
                         assert!(matches!(**value, Node::IntegerLiteral(42)));
                     }
@@ -3804,6 +3870,70 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- Typed declarations (RES-052) ----------
+
+    #[test]
+    fn typed_let_parses_and_records_annotation() {
+        let (p, errors) = parse("let x: int = 42;");
+        assert!(errors.is_empty(), "{:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0] {
+                Node::LetStatement { name, value, type_annot } => {
+                    assert_eq!(name, "x");
+                    assert_eq!(type_annot.as_deref(), Some("int"));
+                    assert!(matches!(**value, Node::IntegerLiteral(42)));
+                }
+                other => panic!("expected LetStatement, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn typed_let_still_executes() {
+        let (p, _e) = parse("let x: int = 42; let y = x + 1;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("y").unwrap(), Value::Int(43)));
+    }
+
+    #[test]
+    fn fn_with_return_type_parses() {
+        let src = r#"
+            fn add(int a, int b) -> int {
+                return a + b;
+            }
+            let r = add(2, 3);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        // Find the Function node to check its return_type.
+        match p {
+            Node::Program(stmts) => match &stmts[0] {
+                Node::Function { name, return_type, .. } => {
+                    assert_eq!(name, "add");
+                    assert_eq!(return_type.as_deref(), Some("int"));
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn return_type_on_anonymous_fn() {
+        let (p, errors) = parse("let f = fn(int x) -> int { return x + 1; };");
+        assert!(errors.is_empty(), "{:?}", errors);
+        // Execute and confirm behavior is unchanged.
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        // Also confirm it behaves callably.
+        let (p2, _e) = parse("let f = fn(int x) -> int { return x + 1; }; let r = f(10);");
+        let mut interp2 = Interpreter::new();
+        interp2.eval(&p2).unwrap();
+        assert!(matches!(interp2.env.get("r").unwrap(), Value::Int(11)));
     }
 
     // ---------- First-class functions (RES-042) ----------
