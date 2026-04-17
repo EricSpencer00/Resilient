@@ -33,19 +33,19 @@ time, commit it, and only then move the post.
 |---|---|---|
 | **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | ⏳ |
 | **G7** | Real type checker (inference, unification, exhaustiveness) | ⏳ |
-| **G8** | Function contracts (`requires` / `ensures`) at runtime | ⏳ |
+| **G8** | Function contracts (`requires` / `ensures`) at runtime | ✅ RES-035 |
 
 ### Verifiability
 | # | Goalpost | Status |
 |---|---|---|
-| **G9** | Symbolic assert (Z3 or custom bounded verifier for int domain) | ⏳ |
-| **G10** | Live-block invariants re-checked on every retry | ⏳ |
+| **G9** | Symbolic assert (Z3 or custom bounded verifier for int domain) | ⏳ — **NEXT strategic milestone** |
+| **G10** | Live-block invariants re-checked on every retry | ✅ RES-036 |
 
 ### Stdlib / ergonomics / ecosystem
 | # | Goalpost | Status |
 |---|---|---|
-| **G11** | Stdlib primitives | 🟡 RES-019 (abs/min/max), RES-020 (print/sqrt/pow/floor/ceil), RES-022 (len). Next: collections, file I/O, input. |
-| **G12** | Structs / records | ⏳ |
+| **G11** | Stdlib primitives | 🟡 13 builtins: println, print, abs, min, max, sqrt, pow, floor, ceil, len, push, pop, slice. Next: file I/O, input, string utilities. |
+| **G12** | Arrays + structs / records | 🟡 Arrays landed (RES-032, RES-033, RES-037). Structs pending. |
 | **G13** | Pattern matching (`match`) | ⏳ |
 | **G14** | Static type errors at compile time | ⏳ |
 | **G15** | Cranelift backend | ⏳ |
@@ -109,3 +109,10 @@ bottom — the ladder grows indefinitely.
   bitwise, shifts. `while` loops. `static let`. Assignment. Forward
   references. Block comments. Hex/binary literals. Non-zero exit on error.
   46 unit + 1 golden + 4 smoke tests, clippy clean. Docs synced.
+- 2026-04-16 — session 3: arrays (RES-032), push/pop/slice (RES-033),
+  for..in (RES-037), function contracts (RES-035 closes G8), live-block
+  invariants (RES-036 closes G10). The language now has: composite data,
+  ergonomic iteration, and — critically — both function-level and
+  block-level correctness conditions. That's the foundation the G9
+  SMT layer will run on. Also: GitHub Actions CI is wired up.
+  69 unit + 1 golden + 4 smoke, clippy clean.
