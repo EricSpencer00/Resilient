@@ -12,6 +12,9 @@ mod typechecker;
 mod repl;
 mod span;
 mod imports;
+mod bytecode;
+mod compiler;
+mod vm;
 #[cfg(feature = "z3")]
 mod verifier_z3;
 
@@ -3694,6 +3697,7 @@ fn execute_file(
     type_check: bool,
     audit: bool,
     emit_cert_dir: Option<&Path>,
+    use_vm: bool,
 ) -> RResult<()> {
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
@@ -3758,6 +3762,20 @@ fn execute_file(
         }
     }
 
+    if use_vm {
+        // RES-076: bytecode VM path. Compile the AST, run the chunk,
+        // print the resulting value (mirroring the tree walker's
+        // behavior for non-Void results so the smoke test sees `14`
+        // when running `let x = 2 + 3 * 4; return x;`).
+        let chunk = compiler::compile(&program)
+            .map_err(|e| format!("VM compile error: {}", e))?;
+        let result = vm::run(&chunk).map_err(|e| format!("VM runtime error: {}", e))?;
+        if !matches!(result, Value::Void) {
+            println!("{}", result);
+        }
+        return Ok(());
+    }
+
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
     interpreter.eval(&program)?;
 
@@ -3810,6 +3828,7 @@ fn main() {
     let mut audit = false;
     let mut emit_cert_dir: Option<PathBuf> = None;
     let mut examples_dir: Option<PathBuf> = None;
+    let mut use_vm = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -3831,6 +3850,10 @@ fn main() {
                 emit_cert_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--emit-certificate=") {
                 emit_cert_dir = Some(PathBuf::from(dir));
+            } else if arg == "--vm" {
+                // RES-076: route through the bytecode VM instead of
+                // the tree-walking interpreter.
+                use_vm = true;
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -3852,7 +3875,7 @@ fn main() {
             // Execute a file. RES-027: a failed run exits non-zero so
             // `run_examples.sh` / CI / ops tooling can distinguish
             // success from failure without parsing stdout.
-            match execute_file(filename, type_check, audit, emit_cert_dir.as_deref()) {
+            match execute_file(filename, type_check, audit, emit_cert_dir.as_deref(), use_vm) {
                 Ok(_) => {
                     println!("Program executed successfully");
                     return;

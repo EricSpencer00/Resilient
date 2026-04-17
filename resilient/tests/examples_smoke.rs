@@ -113,6 +113,63 @@ fn emit_certificate_writes_reverifiable_smt2() {
 }
 
 #[test]
+fn bytecode_vm_runs_arithmetic_and_let() {
+    // RES-076: --vm routes the program through the bytecode VM
+    // instead of the tree-walking interpreter. The same result is
+    // printed; this proves the foundation pipeline (compile + run)
+    // works end-to-end for the subset the FOUNDATION ticket covers.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_076_smoke_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "let x = 2 + 3 * 4;").unwrap();
+        writeln!(f, "return x;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("14"),
+        "expected `14` in stdout (2 + 3 * 4); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn bytecode_vm_rejects_unsupported_construct_cleanly() {
+    // RES-076: anything outside the FOUNDATION subset (e.g. `if`)
+    // returns `CompileError::Unsupported(...)` and the driver
+    // wraps it as `VM compile error: ...` and exits non-zero.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_076_unsupp_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "if true {{ let x = 1; }}").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(0), "unsupported VM input must fail");
+    assert!(
+        stderr.contains("VM compile error") || stderr.contains("unsupported"),
+        "expected VM compile-error diagnostic; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn typecheck_error_prefixes_path_and_line() {
     // RES-080: --typecheck on a file with a type error on line 3
     // must produce stderr containing `<tempfile>:3:` prefix so users
