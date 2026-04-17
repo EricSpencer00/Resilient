@@ -244,6 +244,41 @@ fn bytecode_jit_runs_division() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_comparison() {
+    // RES-100: Phase D extends the JIT to icmp + bool literals.
+    // `return 7 == 7;` exercises icmp + uextend → driver gets 1
+    // back as i64. Joins the existing arith + division smokes in
+    // covering the end-to-end JIT path for a third op family.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_100_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "return 7 == 7;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("1"),
+        "expected `1` in stdout (7 == 7 via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching

@@ -146,9 +146,15 @@ fn top_level_return_expr(program: &Node) -> Result<&Node, JitError> {
 fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError> {
     match node {
         Node::IntegerLiteral { value, .. } => Ok(bcx.ins().iconst(types::I64, *value)),
-        // RES-099: lower all four signed integer infix ops. Same
-        // recursive shape — recurse on left + right, then emit the
-        // matching Cranelift instruction.
+        // RES-100: bool literals lower to i64 0/1 — matches how
+        // the bytecode VM materializes booleans, so the JIT result
+        // is identical when the program runs on either backend.
+        Node::BooleanLiteral { value, .. } => {
+            Ok(bcx.ins().iconst(types::I64, if *value { 1 } else { 0 }))
+        }
+        // RES-099: lower all four signed integer infix ops + RES-100:
+        // the six comparison ops. Same recursive shape — recurse on
+        // left + right, then emit the matching Cranelift instruction.
         // Note: `sdiv`/`srem` exhibit UB at the IR level when rhs == 0;
         // a future ticket should emit a runtime check that traps or
         // returns a sentinel. For now this matches what the bytecode
@@ -157,9 +163,12 @@ fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError>
             let op_str = operator.as_str();
             // Validate first so we can short-circuit Unsupported
             // before recursing into the operands.
-            if !matches!(op_str, "+" | "-" | "*" | "/" | "%") {
+            if !matches!(
+                op_str,
+                "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">="
+            ) {
                 return Err(JitError::Unsupported(
-                    "infix operator other than +,-,*,/,%",
+                    "infix operator other than +,-,*,/,%,==,!=,<,<=,>,>=",
                 ));
             }
             let l = lower_expr(left, bcx)?;
@@ -170,7 +179,23 @@ fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError>
                 "*" => bcx.ins().imul(l, r),
                 "/" => bcx.ins().sdiv(l, r),
                 "%" => bcx.ins().srem(l, r),
-                _ => unreachable!("validated above"),
+                // RES-100: comparisons return Cranelift's i8 0/1.
+                // uextend widens to i64 so the function signature
+                // (returns i64) stays uniform regardless of which
+                // op the user wrote.
+                cmp => {
+                    let cc = match cmp {
+                        "==" => IntCC::Equal,
+                        "!=" => IntCC::NotEqual,
+                        "<" => IntCC::SignedLessThan,
+                        "<=" => IntCC::SignedLessThanOrEqual,
+                        ">" => IntCC::SignedGreaterThan,
+                        ">=" => IntCC::SignedGreaterThanOrEqual,
+                        _ => unreachable!("validated above"),
+                    };
+                    let raw = bcx.ins().icmp(cc, l, r);
+                    bcx.ins().uextend(types::I64, raw)
+                }
             })
         }
         _ => Err(JitError::Unsupported(node_kind(node))),
@@ -241,19 +266,19 @@ mod tests {
         );
     }
 
-    // RES-099 closed Phase C — Sub/Mul/Div/Mod all work now.
-    // The "still unsupported" surface is comparison ops (`<`, `==`,
-    // etc.), prefix ops, identifiers, and so on. This test pins
-    // that the Unsupported descriptor still names what's missing
-    // for users who reach for, e.g., `<`.
+    // RES-100 closed Phase D — comparison ops work now too.
+    // What's still unsupported at the expression level: prefix
+    // ops (`-x`, `!x`), identifiers, calls, blocks. This test
+    // pins one of those (prefix `-`) so the descriptor list keeps
+    // being a useful diagnostic for users.
     #[test]
-    fn jit_rejects_comparison_for_now() {
-        let p = parse_program("return 5 < 3;");
+    fn jit_rejects_prefix_for_now() {
+        let p = parse_program("return -5;");
         let err = run(&p).unwrap_err();
         match err {
             JitError::Unsupported(msg) => assert!(
-                msg.contains("+,-,*,/,%"),
-                "expected the descriptor to list the supported set, got: {}",
+                msg.contains("Prefix"),
+                "expected node-kind in descriptor, got: {}",
                 msg
             ),
             _ => panic!("expected Unsupported, got {:?}", err),
@@ -302,6 +327,73 @@ mod tests {
         // within their precedence tier.
         let p = parse_program("return 20 / 4 * 3 - 2 + 1;");
         assert_eq!(run(&p).unwrap(), 14);
+    }
+
+    // ---------- RES-100: comparisons + bool literals ----------
+
+    #[test]
+    fn jit_lt_returns_zero_for_false() {
+        // 5 < 3 is false → Cranelift's icmp returns 0, uextend
+        // widens to i64(0).
+        let p = parse_program("return 5 < 3;");
+        assert_eq!(run(&p).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_lt_returns_one_for_true() {
+        let p = parse_program("return 3 < 5;");
+        assert_eq!(run(&p).unwrap(), 1);
+    }
+
+    #[test]
+    fn jit_eq_int() {
+        let true_case = parse_program("return 7 == 7;");
+        assert_eq!(run(&true_case).unwrap(), 1);
+        let false_case = parse_program("return 7 == 8;");
+        assert_eq!(run(&false_case).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_ne_int() {
+        let true_case = parse_program("return 1 != 2;");
+        assert_eq!(run(&true_case).unwrap(), 1);
+        let false_case = parse_program("return 1 != 1;");
+        assert_eq!(run(&false_case).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_le_ge_boundary_equality() {
+        // <= and >= must each return 1 at boundary equality and
+        // 0 just past the boundary.
+        let le = parse_program("return 5 <= 5;");
+        assert_eq!(run(&le).unwrap(), 1);
+        let ge = parse_program("return 5 >= 5;");
+        assert_eq!(run(&ge).unwrap(), 1);
+        let le_strict = parse_program("return 6 <= 5;");
+        assert_eq!(run(&le_strict).unwrap(), 0);
+        let ge_strict = parse_program("return 4 >= 5;");
+        assert_eq!(run(&ge_strict).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_bool_literal_true() {
+        let p = parse_program("return true;");
+        assert_eq!(run(&p).unwrap(), 1);
+    }
+
+    #[test]
+    fn jit_bool_literal_false() {
+        let p = parse_program("return false;");
+        assert_eq!(run(&p).unwrap(), 0);
+    }
+
+    #[test]
+    fn jit_compare_with_arith() {
+        // Composes the RES-099 arith lowerings with the new
+        // comparison lowering. Pratt: `+` binds tighter than `<`,
+        // so this is `(2 + 3) < 10` = true → 1.
+        let p = parse_program("return 2 + 3 < 10;");
+        assert_eq!(run(&p).unwrap(), 1);
     }
 
     #[test]
