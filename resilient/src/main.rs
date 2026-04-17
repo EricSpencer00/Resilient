@@ -4237,10 +4237,12 @@ mod tests {
             .into_iter()
             .filter(|t| matches!(t, Token::IntLiteral(_) | Token::FloatLiteral(_)))
             .collect();
-        assert_eq!(
-            literals,
-            vec![Token::IntLiteral(42), Token::FloatLiteral(3.14)]
-        );
+        // 3.14 is chosen as a typical-looking float for the lexer test,
+        // NOT as the math constant PI. clippy 1.91+ flags it as
+        // approx_constant; the lint is irrelevant for tokenizer fixtures.
+        #[allow(clippy::approx_constant)]
+        let expected = vec![Token::IntLiteral(42), Token::FloatLiteral(3.14)];
+        assert_eq!(literals, expected);
     }
 
     #[test]
@@ -6366,7 +6368,7 @@ mod tests {
         let (program, errors) = parse("fn f() { let x = 1; let y = 2; }");
         assert!(errors.is_empty());
         let Node::Program(stmts) = &program else { panic!() };
-        let Node::Function { body, span: fn_span, .. } = &stmts[0].node else { panic!() };
+        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
         let Node::Block { stmts: inner, span: block_span } = body.as_ref() else {
             panic!("expected Block");
         };
@@ -6400,7 +6402,7 @@ mod tests {
         let (program, _) = parse("fn f() { let x = ok(1)?; return x; }");
         // Walk into the fn body to find the `?` expression.
         let Node::Program(stmts) = &program else { panic!() };
-        let Node::Function { body, span: fn_span, .. } = &stmts[0].node else { panic!() };
+        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
         let Node::Block { stmts: inner, .. } = body.as_ref() else { panic!() };
         let Node::LetStatement { value, .. } = &inner[0] else { panic!() };
         let Node::TryExpression { span, .. } = value.as_ref() else {

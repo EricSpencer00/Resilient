@@ -146,20 +146,32 @@ fn top_level_return_expr(program: &Node) -> Result<&Node, JitError> {
 fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError> {
     match node {
         Node::IntegerLiteral { value, .. } => Ok(bcx.ins().iconst(types::I64, *value)),
-        Node::InfixExpression { left, operator, right, .. } if operator == "+" => {
+        // RES-099: lower all four signed integer infix ops. Same
+        // recursive shape — recurse on left + right, then emit the
+        // matching Cranelift instruction.
+        // Note: `sdiv`/`srem` exhibit UB at the IR level when rhs == 0;
+        // a future ticket should emit a runtime check that traps or
+        // returns a sentinel. For now this matches what the bytecode
+        // VM does WITHOUT line attribution on the JIT path.
+        Node::InfixExpression { left, operator, right, .. } => {
+            let op_str = operator.as_str();
+            // Validate first so we can short-circuit Unsupported
+            // before recursing into the operands.
+            if !matches!(op_str, "+" | "-" | "*" | "/" | "%") {
+                return Err(JitError::Unsupported(
+                    "infix operator other than +,-,*,/,%",
+                ));
+            }
             let l = lower_expr(left, bcx)?;
             let r = lower_expr(right, bcx)?;
-            Ok(bcx.ins().iadd(l, r))
-        }
-        Node::InfixExpression { operator, .. } => {
-            // The `+` arm above is the only operator Phase B supports.
-            // Future tickets add `-`/`*`/`/`/`%`. Surface a clean
-            // Unsupported with the operator name in the error.
-            // Convert &String to a stable static via leak avoidance:
-            // the error variant only carries `&'static str`, so we
-            // collapse all non-+ operators to a single descriptor.
-            let _ = operator; // intentionally unused — descriptor below
-            Err(JitError::Unsupported("infix operator other than +"))
+            Ok(match op_str {
+                "+" => bcx.ins().iadd(l, r),
+                "-" => bcx.ins().isub(l, r),
+                "*" => bcx.ins().imul(l, r),
+                "/" => bcx.ins().sdiv(l, r),
+                "%" => bcx.ins().srem(l, r),
+                _ => unreachable!("validated above"),
+            })
         }
         _ => Err(JitError::Unsupported(node_kind(node))),
     }
@@ -229,16 +241,67 @@ mod tests {
         );
     }
 
+    // RES-099 closed Phase C — Sub/Mul/Div/Mod all work now.
+    // The "still unsupported" surface is comparison ops (`<`, `==`,
+    // etc.), prefix ops, identifiers, and so on. This test pins
+    // that the Unsupported descriptor still names what's missing
+    // for users who reach for, e.g., `<`.
     #[test]
-    fn jit_rejects_subtraction_for_now() {
-        // Only `+` is wired in Phase B; other infix ops return
-        // Unsupported with a clear descriptor.
-        let p = parse_program("return 5 - 3;");
+    fn jit_rejects_comparison_for_now() {
+        let p = parse_program("return 5 < 3;");
         let err = run(&p).unwrap_err();
         match err {
-            JitError::Unsupported(msg) => assert!(msg.contains("+"), "got: {}", msg),
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("+,-,*,/,%"),
+                "expected the descriptor to list the supported set, got: {}",
+                msg
+            ),
             _ => panic!("expected Unsupported, got {:?}", err),
         }
+    }
+
+    // ---------- RES-099: Sub/Mul/Div/Mod ----------
+
+    #[test]
+    fn jit_subtraction() {
+        let p = parse_program("return 10 - 3;");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_multiplication() {
+        let p = parse_program("return 6 * 7;");
+        assert_eq!(run(&p).unwrap(), 42);
+    }
+
+    #[test]
+    fn jit_division() {
+        let p = parse_program("return 100 / 4;");
+        assert_eq!(run(&p).unwrap(), 25);
+    }
+
+    #[test]
+    fn jit_modulo() {
+        let p = parse_program("return 17 % 5;");
+        assert_eq!(run(&p).unwrap(), 2);
+    }
+
+    #[test]
+    fn jit_arith_chain_respects_precedence() {
+        // Pratt precedence: `*` binds tighter than `+`, so this
+        // parses as `2 + (3 * 4)` = 14. Exercises composition of
+        // two different ops without needing explicit grouping.
+        let p = parse_program("return 2 + 3 * 4;");
+        assert_eq!(run(&p).unwrap(), 14);
+    }
+
+    #[test]
+    fn jit_arith_chain_all_four_ops() {
+        // 20 / 4 = 5; 5 * 3 = 15; 15 - 2 = 13; 13 + 1 = 14.
+        // Verifies sdiv/imul/isub/iadd compose left-to-right
+        // within their precedence tier.
+        let p = parse_program("return 20 / 4 * 3 - 2 + 1;");
+        assert_eq!(run(&p).unwrap(), 14);
     }
 
     #[test]

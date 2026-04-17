@@ -66,3 +66,19 @@ the fib bench follow after that.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor: lower_expr extended with isub/imul/sdiv/srem;
+  validate-first-then-recurse pattern short-circuits Unsupported
+  before walking operands. Six new unit tests added in
+  jit_backend::tests covering each op + a Pratt-precedence chain +
+  a full four-op chain. The jit_rejects_subtraction_for_now test
+  was repurposed → jit_rejects_comparison_for_now (subtraction
+  works now; comparison ops are still the boundary). Smoke test
+  bytecode_jit_runs_division added to tests/examples_smoke.rs:
+  `return 100 / 4;` → driver prints 25, exits 0.
+  Pre-existing clippy regressions from rust 1.91.0 fixed in
+  passing (one approx_constant on a 3.14 lexer literal, two
+  unused fn_span bindings in test code) so the matrix stays
+  green. All four feature configs pass cargo test + clippy -D.
+  Gap noted: sdiv/srem on rhs == 0 is UB at the IR level — a
+  future ticket should emit a runtime check, since RES-091's VM
+  line attribution doesn't apply on the JIT path yet.

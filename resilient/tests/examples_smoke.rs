@@ -210,6 +210,40 @@ fn bytecode_jit_runs_arithmetic_program() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_division() {
+    // RES-099: Phase C extends the JIT to Sub/Mul/Div/Mod.
+    // `return 100 / 4;` exercises sdiv end-to-end (parse →
+    // lower → cranelift → native code → driver prints).
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_099_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "return 100 / 4;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("25"),
+        "expected `25` in stdout (100 / 4 via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching
