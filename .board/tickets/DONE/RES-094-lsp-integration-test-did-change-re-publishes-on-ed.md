@@ -1,7 +1,7 @@
 ---
 id: RES-094
 title: LSP integration test — didChange re-publishes diagnostics
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -65,3 +65,24 @@ editors care about.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - New `lsp_did_change_republishes_diagnostics` test in
+    `tests/lsp_smoke.rs`. Reuses every helper from RES-090 +
+    RES-093 (`frame`, `read_one_message`, `read_until`, `bin`).
+  - Three-phase flow:
+    1. didOpen `let x = 1;` → assert publishDiagnostics with
+       `"diagnostics":[]` (empty / clean signal).
+    2. didChange to `let bad: int = "hi";` (version 2) →
+       assert non-empty diagnostics + typechecker wording.
+    3. didChange revert to `let x = 1;` (version 3) → assert
+       empty diagnostics again (proves stale errors clear).
+  - Each phase uses a 5-second deadline.
+  - Clean shutdown via `exit` notification within 3s.
+- 2026-04-17 verification across three feature configs:
+  - default: 217 unit + 1 golden + 11 smoke = 229 tests
+  - `--features z3`: 225 + 1 + 12 = 238 tests
+  - `--features lsp`: 221 + 1 + 11 + 3 lsp_smoke = 236 tests
+  All three `cargo clippy -- -D warnings` clean.
+- LSP track now has end-to-end coverage of all three editor-
+  facing paths: handshake (RES-090), didOpen (RES-093),
+  didChange (this ticket).
