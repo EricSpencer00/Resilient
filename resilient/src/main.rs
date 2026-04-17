@@ -3872,6 +3872,80 @@ mod tests {
         assert!(err.contains("invalid"), "{}", err);
     }
 
+    // ---------- Typechecker rejection (RES-053) ----------
+
+    fn typecheck_src(src: &str) -> Result<(), String> {
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        typechecker::TypeChecker::new().check_program(&program).map(|_| ())
+    }
+
+    #[test]
+    fn typecheck_rejects_let_annot_mismatch() {
+        let err = typecheck_src(r#"let x: int = "hi";"#).unwrap_err();
+        assert!(
+            err.contains("let x: int") && err.contains("string"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_matching_let_annot() {
+        typecheck_src("let x: int = 42;").unwrap();
+        typecheck_src(r#"let s: string = "hi";"#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_int_plus_bool() {
+        let err = typecheck_src("let x = 1 + true;").unwrap_err();
+        assert!(err.contains("Cannot apply"), "unexpected: {}", err);
+    }
+
+    #[test]
+    fn typecheck_rejects_fn_return_type_mismatch() {
+        let err = typecheck_src(r#"fn f() -> int { return "hi"; }"#).unwrap_err();
+        assert!(
+            err.contains("return type mismatch"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_well_typed_fn() {
+        typecheck_src("fn add(int a, int b) -> int { return a + b; }").unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_calling_a_non_function() {
+        // 42() -> error because 42 has type Int, not a function.
+        let err = typecheck_src("let x = 42; let y = x(0);").unwrap_err();
+        assert!(
+            err.contains("Cannot call non-function"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_rejects_bitwise_on_float() {
+        let err = typecheck_src("let x = 1.5 & 2;").unwrap_err();
+        assert!(err.contains("Bitwise"), "unexpected: {}", err);
+    }
+
+    #[test]
+    fn typecheck_accepts_string_plus_int_coercion() {
+        // RES-008 compatibility.
+        typecheck_src(r#"let s = "n=" + 42;"#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_try_on_non_result() {
+        let err = typecheck_src("let x = 42?;").unwrap_err();
+        assert!(err.contains("? operator"), "unexpected: {}", err);
+    }
+
     // ---------- Typed declarations (RES-052) ----------
 
     #[test]

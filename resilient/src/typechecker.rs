@@ -12,6 +12,14 @@ pub enum Type {
         params: Vec<Type>,
         return_type: Box<Type>,
     },
+    /// RES-053: Array — element type not tracked at MVP (typed arrays
+    /// land with RES-055 / generics).
+    Array,
+    /// RES-053: Result<T, E> — payload types not tracked at MVP.
+    Result,
+    /// RES-053: user-defined record by name. Field types looked up
+    /// against the struct table when G7 goes deeper.
+    Struct(String),
     Void,
     Any, // Used for untyped variables during inference
 }
@@ -33,10 +41,19 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, ") -> {}", return_type)
             },
+            Type::Array => write!(f, "array"),
+            Type::Result => write!(f, "Result"),
+            Type::Struct(n) => write!(f, "{}", n),
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
         }
     }
+}
+
+/// RES-053: Two types are compatible if they're equal or if either is
+/// Any. Used everywhere we need "same type, or we don't know yet."
+fn compatible(a: &Type, b: &Type) -> bool {
+    a == b || matches!(a, Type::Any) || matches!(b, Type::Any)
 }
 
 // Environment for storing type information
@@ -87,13 +104,101 @@ pub struct TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut env = TypeEnvironment::new();
-        
-        // Add built-in functions
-        env.set("println".to_string(), Type::Function { 
-            params: vec![Type::Any], 
-            return_type: Box::new(Type::Void) 
+
+        // Built-in function signatures. Any-typed parameters keep the
+        // type checker permissive for heterogeneous inputs until real
+        // generics arrive (RES-055).
+        let fn_any_to_void = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Void),
+        };
+        let fn_any_any_to_any = || Type::Function {
+            params: vec![Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        };
+        let fn_any_to_any = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Any),
+        };
+        let fn_any_to_result = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Result),
+        };
+        let fn_result_to_bool = || Type::Function {
+            params: vec![Type::Result],
+            return_type: Box::new(Type::Bool),
+        };
+        let fn_result_to_any = || Type::Function {
+            params: vec![Type::Result],
+            return_type: Box::new(Type::Any),
+        };
+
+        // I/O
+        env.set("println".to_string(), fn_any_to_void());
+        env.set("print".to_string(), fn_any_to_void());
+
+        // Math (single-arg — int/float passed as Any)
+        env.set("abs".to_string(), fn_any_to_any());
+        env.set("sqrt".to_string(), fn_any_to_any());
+        env.set("floor".to_string(), fn_any_to_any());
+        env.set("ceil".to_string(), fn_any_to_any());
+        env.set("min".to_string(), fn_any_any_to_any());
+        env.set("max".to_string(), fn_any_any_to_any());
+        env.set("pow".to_string(), fn_any_any_to_any());
+
+        // len: any -> int
+        env.set(
+            "len".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
+
+        // Array builtins: any -> array / (array,int,int) -> array
+        env.set("push".to_string(), Type::Function {
+            params: vec![Type::Array, Type::Any],
+            return_type: Box::new(Type::Array),
         });
-        
+        env.set("pop".to_string(), Type::Function {
+            params: vec![Type::Array],
+            return_type: Box::new(Type::Array),
+        });
+        env.set("slice".to_string(), Type::Function {
+            params: vec![Type::Array, Type::Int, Type::Int],
+            return_type: Box::new(Type::Array),
+        });
+
+        // String builtins
+        env.set("split".to_string(), Type::Function {
+            params: vec![Type::String, Type::String],
+            return_type: Box::new(Type::Array),
+        });
+        env.set("trim".to_string(), Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::String),
+        });
+        env.set("contains".to_string(), Type::Function {
+            params: vec![Type::String, Type::String],
+            return_type: Box::new(Type::Bool),
+        });
+        env.set("to_upper".to_string(), Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::String),
+        });
+        env.set("to_lower".to_string(), Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::String),
+        });
+
+        // Result builtins
+        env.set("Ok".to_string(), fn_any_to_result());
+        env.set("Err".to_string(), fn_any_to_result());
+        env.set("is_ok".to_string(), fn_result_to_bool());
+        env.set("is_err".to_string(), fn_result_to_bool());
+        env.set("unwrap".to_string(), fn_result_to_any());
+        env.set("unwrap_err".to_string(), fn_result_to_any());
+
         TypeChecker { env }
     }
     
@@ -116,37 +221,51 @@ impl TypeChecker {
         match node {
             Node::Program(_statements) => self.check_program(node),
             
-            Node::Function { name, parameters, body, .. } => {
+            Node::Function { name, parameters, body, return_type: declared_rt, .. } => {
                 let mut param_types = Vec::new();
-                
+
                 // Create a new enclosed environment for function body
                 let mut function_env = TypeEnvironment::new_enclosed(self.env.clone());
-                
+
                 // Add parameter types to environment
                 for (param_type_name, param_name) in parameters {
                     let param_type = self.parse_type_name(param_type_name)?;
                     param_types.push(param_type.clone());
                     function_env.set(param_name.clone(), param_type);
                 }
-                
+
                 // Temporarily swap environments
                 std::mem::swap(&mut self.env, &mut function_env);
-                
+
                 // Check function body
-                let return_type = self.check_node(body)?;
-                
+                let body_type = self.check_node(body)?;
+
                 // Restore original environment
                 std::mem::swap(&mut self.env, &mut function_env);
-                
+
+                // RES-053: enforce declared return type against body.
+                let effective_rt = if let Some(rt_name) = declared_rt {
+                    let declared = self.parse_type_name(rt_name)?;
+                    if !compatible(&declared, &body_type) {
+                        return Err(format!(
+                            "fn {}: return type mismatch — declared {}, body produces {}",
+                            name, declared, body_type
+                        ));
+                    }
+                    declared
+                } else {
+                    body_type
+                };
+
                 // Register function in current environment
                 let func_type = Type::Function {
                     params: param_types,
-                    return_type: Box::new(return_type.clone()),
+                    return_type: Box::new(effective_rt.clone()),
                 };
-                
+
                 self.env.set(name.clone(), func_type);
-                
-                Ok(return_type)
+
+                Ok(effective_rt)
             },
             
             Node::LiveBlock { body, .. } => {
@@ -189,9 +308,23 @@ impl TypeChecker {
                 Ok(result_type)
             },
             
-            Node::LetStatement { name, value, .. } => {
+            Node::LetStatement { name, value, type_annot } => {
                 let value_type = self.check_node(value)?;
-                self.env.set(name.clone(), value_type);
+                // RES-053: enforce `let x: T = value` — reject if value's
+                // type isn't compatible with the declared annotation.
+                let bind_type = if let Some(ty_name) = type_annot {
+                    let declared = self.parse_type_name(ty_name)?;
+                    if !compatible(&declared, &value_type) {
+                        return Err(format!(
+                            "let {}: {} — value has type {}",
+                            name, declared, value_type
+                        ));
+                    }
+                    declared
+                } else {
+                    value_type
+                };
+                self.env.set(name.clone(), bind_type);
                 Ok(Type::Void)
             },
 
@@ -199,40 +332,65 @@ impl TypeChecker {
                 for item in items {
                     let _ = self.check_node(item)?;
                 }
-                // MVP: array has no element type; real types land with G7.
-                Ok(Type::Void)
+                Ok(Type::Array)
             },
 
             Node::TryExpression(inner) => {
-                let _ = self.check_node(inner)?;
-                Ok(Type::Void)
+                let inner_type = self.check_node(inner)?;
+                // `?` expects a Result and unwraps to Any at MVP (we
+                // don't track Ok's payload type yet).
+                if !compatible(&inner_type, &Type::Result) {
+                    return Err(format!(
+                        "? operator expects a Result, got {}",
+                        inner_type
+                    ));
+                }
+                Ok(Type::Any)
             },
 
-            Node::FunctionLiteral { body, .. } => {
-                let _ = self.check_node(body)?;
-                Ok(Type::Void)
+            Node::FunctionLiteral { parameters, body, .. } => {
+                // Evaluate the body's type in a child env with params
+                // bound, just like named Function.
+                let mut param_types = Vec::new();
+                let mut fn_env = TypeEnvironment::new_enclosed(self.env.clone());
+                for (tname, pname) in parameters {
+                    let ty = self.parse_type_name(tname)?;
+                    param_types.push(ty.clone());
+                    fn_env.set(pname.clone(), ty);
+                }
+                std::mem::swap(&mut self.env, &mut fn_env);
+                let body_type = self.check_node(body)?;
+                std::mem::swap(&mut self.env, &mut fn_env);
+                Ok(Type::Function {
+                    params: param_types,
+                    return_type: Box::new(body_type),
+                })
             },
 
             Node::Match { scrutinee, arms } => {
                 let _ = self.check_node(scrutinee)?;
+                // Each arm's body is checked, but we don't unify arms
+                // at MVP — match's overall type is Any so downstream
+                // usage stays permissive.
                 for (_, body) in arms {
                     let _ = self.check_node(body)?;
                 }
-                Ok(Type::Void)
+                Ok(Type::Any)
             },
 
             Node::StructDecl { .. } => Ok(Type::Void),
 
-            Node::StructLiteral { fields, .. } => {
+            Node::StructLiteral { name, fields } => {
                 for (_, e) in fields {
                     let _ = self.check_node(e)?;
                 }
-                Ok(Type::Void)
+                Ok(Type::Struct(name.clone()))
             },
 
             Node::FieldAccess { target, .. } => {
                 let _ = self.check_node(target)?;
-                Ok(Type::Void)
+                // Field types not tracked at MVP.
+                Ok(Type::Any)
             },
 
             Node::FieldAssignment { target, value, .. } => {
@@ -244,7 +402,8 @@ impl TypeChecker {
             Node::IndexExpression { target, index } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
-                Ok(Type::Void)
+                // Element type not tracked at MVP.
+                Ok(Type::Any)
             },
 
             Node::IndexAssignment { target, index, value } => {
@@ -352,33 +511,83 @@ impl TypeChecker {
             Node::InfixExpression { left, operator, right } => {
                 let left_type = self.check_node(left)?;
                 let right_type = self.check_node(right)?;
-                
+
+                let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Float | Type::Any);
+                let is_bool = |t: &Type| matches!(t, Type::Bool | Type::Any);
+
                 match operator.as_str() {
-                    "+" | "-" | "*" | "/" => {
-                        // Numeric operations
-                        if (left_type == Type::Int || left_type == Type::Float || left_type == Type::Any) &&
-                           (right_type == Type::Int || right_type == Type::Float || right_type == Type::Any) {
-                            // If either operand is a float, the result is a float
+                    "+" => {
+                        // String-plus-primitive coercion (RES-008): if
+                        // either side is a string, the result is a string.
+                        if left_type == Type::String || right_type == Type::String {
+                            return Ok(Type::String);
+                        }
+                        // Array concat.
+                        if compatible(&left_type, &Type::Array)
+                            && compatible(&right_type, &Type::Array)
+                        {
+                            return Ok(Type::Array);
+                        }
+                        if is_numeric(&left_type) && is_numeric(&right_type) {
                             if left_type == Type::Float || right_type == Type::Float {
                                 Ok(Type::Float)
                             } else {
                                 Ok(Type::Int)
                             }
-                        } else if operator == "+" && (left_type == Type::String || right_type == Type::String) {
-                            // String concatenation
-                            Ok(Type::String)
                         } else {
-                            Err(format!("Cannot apply '{}' to {} and {}", operator, left_type, right_type))
+                            Err(format!(
+                                "Cannot apply '+' to {} and {}",
+                                left_type, right_type
+                            ))
                         }
-                    },
-                    "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                        // Comparison operations always return a boolean
-                        if (left_type == right_type) || left_type == Type::Any || right_type == Type::Any {
+                    }
+                    "-" | "*" | "/" | "%" => {
+                        if is_numeric(&left_type) && is_numeric(&right_type) {
+                            if left_type == Type::Float || right_type == Type::Float {
+                                Ok(Type::Float)
+                            } else {
+                                Ok(Type::Int)
+                            }
+                        } else {
+                            Err(format!(
+                                "Cannot apply '{}' to {} and {}",
+                                operator, left_type, right_type
+                            ))
+                        }
+                    }
+                    "&" | "|" | "^" | "<<" | ">>" => {
+                        // Bitwise operators are int-only.
+                        if compatible(&left_type, &Type::Int)
+                            && compatible(&right_type, &Type::Int)
+                        {
+                            Ok(Type::Int)
+                        } else {
+                            Err(format!(
+                                "Bitwise '{}' requires int operands, got {} and {}",
+                                operator, left_type, right_type
+                            ))
+                        }
+                    }
+                    "&&" | "||" => {
+                        if is_bool(&left_type) && is_bool(&right_type) {
                             Ok(Type::Bool)
                         } else {
-                            Err(format!("Cannot compare {} and {}", left_type, right_type))
+                            Err(format!(
+                                "Logical '{}' requires bool operands, got {} and {}",
+                                operator, left_type, right_type
+                            ))
                         }
-                    },
+                    }
+                    "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+                        if compatible(&left_type, &right_type) {
+                            Ok(Type::Bool)
+                        } else {
+                            Err(format!(
+                                "Cannot compare {} and {}",
+                                left_type, right_type
+                            ))
+                        }
+                    }
                     _ => Err(format!("Unknown infix operator: {}", operator)),
                 }
             },
@@ -423,8 +632,13 @@ impl TypeChecker {
             "string" => Ok(Type::String),
             "bool" => Ok(Type::Bool),
             "void" => Ok(Type::Void),
+            "Result" => Ok(Type::Result),
+            "array" => Ok(Type::Array),
             "" => Ok(Type::Any), // Empty type name means "any" for now
-            _ => Err(format!("Unknown type: {}", name)),
+            // RES-053: any other identifier is assumed to be a
+            // user-defined struct. G7 will register struct decls and
+            // reject unknown type names, but at MVP we're permissive.
+            other => Ok(Type::Struct(other.to_string())),
         }
     }
 }
