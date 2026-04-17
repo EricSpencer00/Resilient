@@ -1,7 +1,7 @@
 ---
 id: RES-014
 title: Fix Pratt parser current-token invariant
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G4
 created: 2026-04-16

@@ -588,22 +588,34 @@ impl Parser {
         self.next_token(); // Skip 'assert'
         
         if self.current_token != Token::LeftParen {
-            panic!("Expected '(' after 'assert'");
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '(' after 'assert', found {:?}", tok));
+            return Node::Assert {
+                condition: Box::new(Node::BooleanLiteral(true)),
+                message: None,
+            };
         }
-        
+
         self.next_token(); // Skip '('
-        
-        let condition = self.parse_expression(0).unwrap();
-        
+
+        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+        self.next_token(); // RES-014: advance past last token of expression
+
         let message = if self.current_token == Token::Comma {
             self.next_token(); // Skip ','
-            Some(Box::new(self.parse_expression(0).unwrap()))
+            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral(String::new()));
+            self.next_token(); // advance past last token of message expression
+            Some(Box::new(msg))
         } else {
             None
         };
-        
+
         if self.current_token != Token::RightParen {
-            panic!("Expected ')' after assert condition");
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected ')' after assert condition, found {:?}",
+                tok
+            ));
         }
         
         Node::Assert {
@@ -616,9 +628,14 @@ impl Parser {
         self.next_token(); // Skip 'if'
 
         // Handle both `if (condition)` and `if condition` forms.
+        //
+        // RES-014 invariant note: `parse_expression` leaves `current_token`
+        // pointing at the *last token it consumed*. So after the call we
+        // must advance once to move past the expression's tail.
         let condition = if self.current_token == Token::LeftParen {
             self.next_token(); // Skip '('
             let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            self.next_token(); // Advance past last-token-of-expression
 
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
@@ -631,7 +648,9 @@ impl Parser {
             }
             expr
         } else {
-            self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false))
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            self.next_token(); // Advance past last-token-of-expression
+            expr
         };
 
         if self.current_token != Token::LeftBrace {
@@ -708,18 +727,23 @@ impl Parser {
         
         // Parse infix expressions
         while self.peek_token != Token::Semicolon && precedence < self.peek_precedence() {
+            let Some(current_left) = left_expr else {
+                // No prefix expression to build on; stop trying to
+                // fold infix operators into nothing.
+                return None;
+            };
             left_expr = match &self.peek_token {
                 Token::Plus | Token::Minus | Token::Multiply | Token::Divide |
                 Token::Equal | Token::NotEqual | Token::Less | Token::Greater |
                 Token::LessEqual | Token::GreaterEqual => {
                     self.next_token();
-                    self.parse_infix_expression(left_expr.unwrap())
+                    self.parse_infix_expression(current_left)
                 },
                 Token::LeftParen => {
                     self.next_token();
-                    self.parse_call_expression(left_expr.unwrap())
+                    self.parse_call_expression(current_left)
                 },
-                _ => left_expr,
+                _ => Some(current_left),
             };
         }
         
@@ -1881,6 +1905,22 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn parser_if_with_infix_condition() {
+        // RES-014: `if call_expr() < 0.5 { ... }` used to report
+        // "Expected '{' after if condition, found FloatLiteral(0.5)"
+        // because parse_expression left current_token on the last
+        // literal of the condition.
+        let (_p, errors) = parse("fn f() { if 1 < 2 { let x = 1; } }");
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn parser_if_with_function_call_comparison() {
+        let (_p, errors) = parse("fn f() { if add(1, 2) == 3 { let x = 1; } }");
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
     }
 
     #[test]
