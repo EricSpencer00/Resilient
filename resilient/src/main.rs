@@ -1594,6 +1594,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("floor", builtin_floor),
     ("ceil", builtin_ceil),
     ("len", builtin_len),
+    ("push", builtin_push),
+    ("pop", builtin_pop),
+    ("slice", builtin_slice),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -1687,6 +1690,60 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
         [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `push(arr, x)` — returns a new array with `x` appended. The input
+/// array is not mutated (pass-by-value semantics).
+fn builtin_push(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), x] => {
+            let mut out = items.clone();
+            out.push(x.clone());
+            Ok(Value::Array(out))
+        }
+        [other, _] => Err(format!("push: expected array as first arg, got {:?}", other)),
+        _ => Err(format!("push: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// `pop(arr)` — returns a new array without the last element. Errors on empty.
+fn builtin_pop(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                Err("pop: cannot pop from an empty array".to_string())
+            } else {
+                let mut out = items.clone();
+                out.pop();
+                Ok(Value::Array(out))
+            }
+        }
+        [other] => Err(format!("pop: expected array, got {:?}", other)),
+        _ => Err(format!("pop: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `slice(arr, start, end)` — half-open range `[start, end)`, returning a new array.
+fn builtin_slice(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(start), Value::Int(end)] => {
+            let len = items.len() as i64;
+            if *start < 0 || *end < 0 || *start > len || *end > len || *start > *end {
+                return Err(format!(
+                    "slice: range [{}, {}) is invalid for array of length {}",
+                    start, end, len
+                ));
+            }
+            let s = *start as usize;
+            let e = *end as usize;
+            Ok(Value::Array(items[s..e].to_vec()))
+        }
+        [a, b, c] => Err(format!(
+            "slice: expected (array, int, int), got ({:?}, {:?}, {:?})",
+            a, b, c
+        )),
+        _ => Err(format!("slice: expected 3 arguments, got {}", args.len())),
     }
 }
 
@@ -2915,6 +2972,69 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    // ---------- Array builtins (RES-033) ----------
+
+    #[test]
+    fn push_returns_new_array() {
+        let (p, _e) = parse("let a = [1, 2]; let b = push(a, 3);");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("b").unwrap() {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[2], Value::Int(3)));
+            }
+            other => panic!("{:?}", other),
+        }
+        // original untouched
+        match interp.env.get("a").unwrap() {
+            Value::Array(v) => assert_eq!(v.len(), 2),
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn pop_returns_shorter_array() {
+        let (p, _e) = parse("let a = [1, 2, 3]; let b = pop(a);");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("b").unwrap() {
+            Value::Array(v) => assert_eq!(v.len(), 2),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn pop_empty_errors() {
+        let (p, _e) = parse("let a = []; let b = pop(a);");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("empty"), "{}", err);
+    }
+
+    #[test]
+    fn slice_returns_subrange() {
+        let (p, _e) = parse("let a = [10, 20, 30, 40]; let b = slice(a, 1, 3);");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("b").unwrap() {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(v[0], Value::Int(20)));
+                assert!(matches!(v[1], Value::Int(30)));
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_out_of_range_errors() {
+        let (p, _e) = parse("let a = [1]; let b = slice(a, 0, 5);");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("invalid"), "{}", err);
     }
 
     // ---------- for..in (RES-037) ----------

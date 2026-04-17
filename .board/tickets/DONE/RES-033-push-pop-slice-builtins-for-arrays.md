@@ -1,7 +1,7 @@
 ---
 id: RES-033
 title: `push`, `pop`, `slice` builtins for arrays
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G11
 created: 2026-04-16
