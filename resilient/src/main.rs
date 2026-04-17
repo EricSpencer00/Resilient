@@ -62,6 +62,8 @@ enum Token {
     RightParen,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     Comma,
     Semicolon,
     Colon,
@@ -234,6 +236,8 @@ impl Lexer {
             ')' => Token::RightParen,
             '{' => Token::LeftBrace,
             '}' => Token::RightBrace,
+            '[' => Token::LeftBracket,
+            ']' => Token::RightBracket,
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,
@@ -464,6 +468,19 @@ enum Node {
         function: Box<Node>,
         arguments: Vec<Node>,
     },
+    /// RES-032: `[e1, e2, e3]` array literal.
+    ArrayLiteral(Vec<Node>),
+    /// RES-032: `a[i]` read.
+    IndexExpression {
+        target: Box<Node>,
+        index: Box<Node>,
+    },
+    /// RES-032: `a[i] = expr` write.
+    IndexAssignment {
+        target: Box<Node>,
+        index: Box<Node>,
+        value: Box<Node>,
+    },
 }
 
 // Parser for creating AST from tokens
@@ -550,7 +567,46 @@ impl Parser {
             Token::Identifier(_) if self.peek_token == Token::Assign => {
                 Some(self.parse_assignment())
             }
+            // Index assignment: `IDENT[...] = EXPR;` — handled by parsing
+            // the left-hand side as an expression (which becomes an
+            // IndexExpression), then checking for `=`.
+            Token::Identifier(_) if self.peek_token == Token::LeftBracket => {
+                Some(self.parse_maybe_index_assignment())
+            }
             _ => self.parse_expression_statement(),
+        }
+    }
+
+    /// Parse either `IDENT[...] = EXPR;` (index assignment) or fall
+    /// through to a plain expression statement if no `=` follows the
+    /// index. Entered with current_token = the leading Identifier.
+    fn parse_maybe_index_assignment(&mut self) -> Node {
+        // Parse the index expression (which consumes IDENT, [, index, ]).
+        let lhs = self
+            .parse_expression(0)
+            .unwrap_or(Node::IntegerLiteral(0));
+        // If this is an assignment, peek should be `=`.
+        if self.peek_token == Token::Assign {
+            self.next_token(); // move onto '='
+            self.next_token(); // skip '=' to first token of RHS
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+            if self.peek_token == Token::Semicolon {
+                self.next_token();
+            }
+            // Destructure the IndexExpression we just built.
+            match lhs {
+                Node::IndexExpression { target, index } => Node::IndexAssignment {
+                    target,
+                    index,
+                    value: Box::new(value),
+                },
+                _ => Node::ExpressionStatement(Box::new(lhs)),
+            }
+        } else {
+            if self.peek_token == Token::Semicolon {
+                self.next_token();
+            }
+            Node::ExpressionStatement(Box::new(lhs))
         }
     }
 
@@ -1012,6 +1068,7 @@ impl Parser {
                 }
                 expr
             },
+            Token::LeftBracket => Some(self.parse_array_literal()),
             _ => None,
         };
         
@@ -1034,6 +1091,10 @@ impl Parser {
                 Token::LeftParen => {
                     self.next_token();
                     self.parse_call_expression(current_left)
+                },
+                Token::LeftBracket => {
+                    self.next_token(); // move onto '['
+                    self.parse_index_expression(current_left)
                 },
                 _ => Some(current_left),
             };
@@ -1121,7 +1182,61 @@ impl Parser {
 
         args
     }
-    
+
+    /// Parse `[e1, e2, ...]`. current_token is `[` on entry; on exit
+    /// current_token is `]`.
+    fn parse_array_literal(&mut self) -> Node {
+        let mut items = Vec::new();
+        if self.peek_token == Token::RightBracket {
+            self.next_token(); // to ]
+            return Node::ArrayLiteral(items);
+        }
+        self.next_token(); // skip '['
+        if let Some(first) = self.parse_expression(0) {
+            items.push(first);
+        }
+        while self.peek_token == Token::Comma {
+            self.next_token(); // to current item's last token
+            self.next_token(); // skip ','
+            if let Some(next) = self.parse_expression(0) {
+                items.push(next);
+            }
+        }
+        if self.peek_token != Token::RightBracket {
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected ']' to close array literal, found {:?}",
+                tok
+            ));
+        } else {
+            self.next_token(); // to ]
+        }
+        Node::ArrayLiteral(items)
+    }
+
+    /// Parse `target[index]`. current_token is `[` on entry; on exit
+    /// current_token is `]`.
+    fn parse_index_expression(&mut self, target: Node) -> Option<Node> {
+        self.next_token(); // skip '['
+        let index = self.parse_expression(0)?;
+        if self.peek_token != Token::RightBracket {
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected ']' to close index expression, found {:?}",
+                tok
+            ));
+            return Some(Node::IndexExpression {
+                target: Box::new(target),
+                index: Box::new(index),
+            });
+        }
+        self.next_token(); // to ]
+        Some(Node::IndexExpression {
+            target: Box::new(target),
+            index: Box::new(index),
+        })
+    }
+
     fn current_precedence(&self) -> u8 {
         match &self.current_token {
             Token::Or => 1,
@@ -1135,6 +1250,7 @@ impl Parser {
             Token::Plus | Token::Minus => 9,
             Token::Multiply | Token::Divide | Token::Modulo => 10,
             Token::LeftParen => 11,
+            Token::LeftBracket => 11,
             _ => 0,
         }
     }
@@ -1152,6 +1268,7 @@ impl Parser {
             Token::Plus | Token::Minus => 9,
             Token::Multiply | Token::Divide | Token::Modulo => 10,
             Token::LeftParen => 11,
+            Token::LeftBracket => 11,
             _ => 0,
         }
     }
@@ -1178,6 +1295,9 @@ enum Value {
         name: &'static str,
         func: BuiltinFn,
     },
+    /// RES-032: dynamic array. Mixed types allowed at runtime until a
+    /// real type system (G7) can enforce a single element type.
+    Array(Vec<Value>),
     Return(Box<Value>),
     Void,
 }
@@ -1193,6 +1313,7 @@ impl std::fmt::Debug for Value {
                 write!(f, "Function({} params)", parameters.len())
             }
             Value::Builtin { name, .. } => write!(f, "Builtin({})", name),
+            Value::Array(items) => write!(f, "Array({} items)", items.len()),
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
         }
@@ -1208,6 +1329,16 @@ impl std::fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Function { .. } => write!(f, "<function>"),
             Value::Builtin { name, .. } => write!(f, "<builtin {}>", name),
+            Value::Array(items) => {
+                write!(f, "[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
         }
@@ -1412,11 +1543,13 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
     }
 }
 
-/// `len(s)` — length of a string, in Unicode scalars (not bytes). Returns int.
+/// `len(x)` — element count. For strings: Unicode scalar count (not bytes).
+/// For arrays: number of items.
 fn builtin_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::Int(s.chars().count() as i64)),
-        [other] => Err(format!("len: expected string, got {:?}", other)),
+        [Value::Array(items)] => Ok(Value::Int(items.len() as i64)),
+        [other] => Err(format!("len: expected string or array, got {:?}", other)),
         _ => Err(format!("len: expected 1 argument, got {}", args.len())),
     }
 }
@@ -1584,6 +1717,67 @@ impl Interpreter {
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(func, args)
+            },
+            Node::ArrayLiteral(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.eval(item)?);
+                }
+                Ok(Value::Array(out))
+            },
+            Node::IndexExpression { target, index } => {
+                let target_val = self.eval(target)?;
+                let index_val = self.eval(index)?;
+                match (target_val, index_val) {
+                    (Value::Array(items), Value::Int(i)) => {
+                        if i < 0 || (i as usize) >= items.len() {
+                            Err(format!(
+                                "Index {} out of bounds for array of length {}",
+                                i,
+                                items.len()
+                            ))
+                        } else {
+                            Ok(items[i as usize].clone())
+                        }
+                    }
+                    (Value::Array(_), other) => Err(format!(
+                        "Array index must be int, got {:?}",
+                        other
+                    )),
+                    (other, _) => Err(format!("Cannot index {:?}", other)),
+                }
+            },
+            Node::IndexAssignment { target, index, value } => {
+                // target must be an identifier (restricted form for now).
+                let name = match target.as_ref() {
+                    Node::Identifier(n) => n.clone(),
+                    _ => return Err("Index assignment target must be an identifier".to_string()),
+                };
+                let index_val = self.eval(index)?;
+                let new_val = self.eval(value)?;
+                let Value::Int(i) = index_val else {
+                    return Err(format!("Array index must be int, got {:?}", index_val));
+                };
+                // Read, modify, write. This relies on Environment storing
+                // arrays by value; true aliasing would need Rc/RefCell
+                // and is tracked as a future ticket.
+                let current = self
+                    .env
+                    .get(&name)
+                    .ok_or_else(|| format!("Identifier not found: {}", name))?;
+                let Value::Array(mut items) = current else {
+                    return Err(format!("Cannot index-assign into non-array '{}'", name));
+                };
+                if i < 0 || (i as usize) >= items.len() {
+                    return Err(format!(
+                        "Index {} out of bounds for array of length {}",
+                        i,
+                        items.len()
+                    ));
+                }
+                items[i as usize] = new_val;
+                let _ = self.env.reassign(&name, Value::Array(items));
+                Ok(Value::Void)
             },
         }
     }
@@ -1757,6 +1951,14 @@ impl Interpreter {
             )
         {
             return Ok(Value::String(format!("{ls}{rs}")));
+        }
+
+        // Array concat: `[1,2] + [3]` → `[1,2,3]`. Only for `+`.
+        if operator == "+"
+            && let (Value::Array(mut l), Value::Array(r)) = (left.clone(), right.clone())
+        {
+            l.extend(r);
+            return Ok(Value::Array(l));
         }
 
         match (left.clone(), right.clone()) {
@@ -2509,6 +2711,69 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn array_literal_and_index() {
+        let (p, errors) = parse("let a = [10, 20, 30]; let b = a[1];");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("b").unwrap(), Value::Int(20)));
+    }
+
+    #[test]
+    fn array_index_assignment() {
+        let src = "let a = [1, 2, 3]; a[0] = 99;";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("a").unwrap() {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(items[0], Value::Int(99)));
+                assert!(matches!(items[1], Value::Int(2)));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_out_of_bounds_errors() {
+        let (p, _e) = parse("let a = [1]; let b = a[5];");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("out of bounds"), "{}", err);
+    }
+
+    #[test]
+    fn array_concat_and_len() {
+        let (p, _e) = parse("let a = [1,2] + [3,4,5]; let n = len(a);");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("n").unwrap(), Value::Int(5)));
+        match interp.env.get("a").unwrap() {
+            Value::Array(items) => assert_eq!(items.len(), 5),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_array_literal() {
+        let (p, errors) = parse("let a = []; let n = len(a);");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("n").unwrap(), Value::Int(0)));
+    }
+
+    #[test]
+    fn nested_array() {
+        let (p, _e) = parse("let m = [[1,2],[3,4]]; let x = m[1][0];");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(3)));
     }
 
     #[test]

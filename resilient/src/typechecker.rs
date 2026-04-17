@@ -195,6 +195,27 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::ArrayLiteral(items) => {
+                for item in items {
+                    let _ = self.check_node(item)?;
+                }
+                // MVP: array has no element type; real types land with G7.
+                Ok(Type::Void)
+            },
+
+            Node::IndexExpression { target, index } => {
+                let _ = self.check_node(target)?;
+                let _ = self.check_node(index)?;
+                Ok(Type::Void)
+            },
+
+            Node::IndexAssignment { target, index, value } => {
+                let _ = self.check_node(target)?;
+                let _ = self.check_node(index)?;
+                let _ = self.check_node(value)?;
+                Ok(Type::Void)
+            },
+
             Node::WhileStatement { condition, body } => {
                 let _ = self.check_node(condition)?;
                 let _ = self.check_node(body)?;
