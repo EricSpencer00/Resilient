@@ -3131,7 +3131,31 @@ impl Interpreter {
     fn apply_function(&mut self, func: Value, args: Vec<Value>) -> RResult<Value> {
         match func {
             Value::Function { parameters, body, env, requires, ensures, name } => {
-                let mut extended_env = Environment::new_enclosed(env);
+                let mut extended_env = Environment::new_enclosed(env.clone());
+
+                // Self-bind: make recursive lookups inside the body
+                // resolve to THIS function value. Without this, a
+                // function captured before its own re-definition (the
+                // common case for top-level fns hoisted by eval_program)
+                // would lose its own name on recursion.
+                //
+                // The fully correct fix is `Environment = Rc<RefCell<...>>`
+                // so the captured env stays live as bindings change. That's
+                // tracked as RES-050. This patch is the minimum needed
+                // for recursion to work today.
+                if !name.is_empty() && name != "<anon>" {
+                    extended_env.set(
+                        name.clone(),
+                        Value::Function {
+                            parameters: parameters.clone(),
+                            body: body.clone(),
+                            env: env.clone(),
+                            requires: requires.clone(),
+                            ensures: ensures.clone(),
+                            name: name.clone(),
+                        },
+                    );
+                }
 
                 for (i, (_, param_name)) in parameters.iter().enumerate() {
                     if i < args.len() {
@@ -5060,6 +5084,26 @@ mod tests {
         assert!(e_abs.contains("expected 1"), "{}", e_abs);
         let e_min = builtin_min(&[Value::Int(1)]).unwrap_err();
         assert!(e_min.contains("expected 2"), "{}", e_min);
+    }
+
+    #[test]
+    fn recursive_function_with_params() {
+        // Regression for the apply_function self-bind fix: a fn with
+        // params that recursively calls itself used to fail with
+        // "Identifier not found: <fn name>" because the captured env
+        // didn't include the function's own re-bound version.
+        let src = r#"
+            fn fib(int n) {
+                if n < 2 { return n; }
+                return fib(n - 1) + fib(n - 2);
+            }
+            let r = fib(10);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(55)));
     }
 
     #[test]
