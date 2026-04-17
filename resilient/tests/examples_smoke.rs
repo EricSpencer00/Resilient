@@ -176,15 +176,51 @@ fn bytecode_vm_runs_fn_call() {
 }
 
 #[test]
+fn bytecode_vm_runs_recursive_fib() {
+    // RES-083: with control flow landed, fib becomes runnable under
+    // --vm. This is the capstone smoke test that exercises Call +
+    // ReturnFromCall + JumpIfFalse + back-patched forward/backward
+    // offsets + comparison ops + recursion, all in one program.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_083_smoke_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "fn fib(int n) {{").unwrap();
+        writeln!(f, "    if n <= 1 {{ return n; }}").unwrap();
+        writeln!(f, "    return fib(n - 1) + fib(n - 2);").unwrap();
+        writeln!(f, "}}").unwrap();
+        writeln!(f, "fib(10);").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm fib path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("55"),
+        "expected fib(10)=55 in stdout; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn bytecode_vm_rejects_unsupported_construct_cleanly() {
-    // RES-076: anything outside the FOUNDATION subset (e.g. `if`)
-    // returns `CompileError::Unsupported(...)` and the driver
-    // wraps it as `VM compile error: ...` and exits non-zero.
+    // RES-076: anything outside the supported subset returns
+    // `CompileError::Unsupported(...)` and the driver wraps it as
+    // `VM compile error: ...` and exits non-zero. `for .. in` is
+    // still out of scope after RES-083 — use it as the canary.
     use std::io::Write;
     let tmp = std::env::temp_dir().join(format!("res_076_unsupp_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
-        writeln!(f, "if true {{ let x = 1; }}").unwrap();
+        writeln!(f, "for x in [1, 2, 3] {{ let y = x; }}").unwrap();
     }
     let output = Command::new(bin())
         .arg("--vm")

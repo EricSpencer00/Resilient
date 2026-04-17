@@ -33,6 +33,8 @@ pub enum VmError {
     /// RES-081: call stack depth exceeded a safety cap (defense
     /// against runaway recursion — infinite fib etc.).
     CallStackOverflow,
+    /// RES-083: a jump's target PC fell outside the current chunk.
+    JumpOutOfBounds,
 }
 
 impl std::fmt::Display for VmError {
@@ -46,6 +48,7 @@ impl std::fmt::Display for VmError {
             VmError::FunctionOutOfBounds(i) => write!(f, "vm: function {} out of bounds", i),
             VmError::CallStackUnderflow => write!(f, "vm: call stack underflow"),
             VmError::CallStackOverflow => write!(f, "vm: call stack overflow (>1024 frames)"),
+            VmError::JumpOutOfBounds => write!(f, "vm: jump target out of bounds"),
         }
     }
 }
@@ -222,6 +225,59 @@ pub fn run(program: &Program) -> Result<Value, VmError> {
                 locals.truncate(popped.locals_base);
                 stack.push(ret);
             }
+            Op::Jump(offset) => {
+                let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
+                if new_pc < 0 || (new_pc as usize) > chunk.code.len() {
+                    return Err(VmError::JumpOutOfBounds);
+                }
+                frames[frame_idx].pc = new_pc as usize;
+            }
+            Op::JumpIfFalse(offset) => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let is_falsy = match v {
+                    Value::Bool(b) => !b,
+                    Value::Int(i) => i == 0,
+                    _ => return Err(VmError::TypeMismatch("JumpIfFalse")),
+                };
+                if is_falsy {
+                    let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
+                    if new_pc < 0 || (new_pc as usize) > chunk.code.len() {
+                        return Err(VmError::JumpOutOfBounds);
+                    }
+                    frames[frame_idx].pc = new_pc as usize;
+                }
+            }
+            Op::Eq => {
+                let (a, b) = pop_two_ints(&mut stack, "Eq")?;
+                stack.push(Value::Bool(a == b));
+            }
+            Op::Neq => {
+                let (a, b) = pop_two_ints(&mut stack, "Neq")?;
+                stack.push(Value::Bool(a != b));
+            }
+            Op::Lt => {
+                let (a, b) = pop_two_ints(&mut stack, "Lt")?;
+                stack.push(Value::Bool(a < b));
+            }
+            Op::Le => {
+                let (a, b) = pop_two_ints(&mut stack, "Le")?;
+                stack.push(Value::Bool(a <= b));
+            }
+            Op::Gt => {
+                let (a, b) = pop_two_ints(&mut stack, "Gt")?;
+                stack.push(Value::Bool(a > b));
+            }
+            Op::Ge => {
+                let (a, b) = pop_two_ints(&mut stack, "Ge")?;
+                stack.push(Value::Bool(a >= b));
+            }
+            Op::Not => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let Value::Bool(b) = v else {
+                    return Err(VmError::TypeMismatch("Not"));
+                };
+                stack.push(Value::Bool(!b));
+            }
             Op::Return => {
                 return Ok(stack.pop().unwrap_or(Value::Void));
             }
@@ -370,6 +426,104 @@ mod tests {
         main.line_info.push(1);
         let p = Program { main, functions: vec![runaway] };
         assert_eq!(run(&p).unwrap_err(), VmError::CallStackOverflow);
+    }
+
+    // ---------- RES-083 tests ----------
+
+    #[test]
+    fn if_true_picks_consequence() {
+        assert_int(compile_run("if true { 1; } else { 2; }").unwrap(), 1);
+    }
+
+    #[test]
+    fn if_false_picks_alternative() {
+        assert_int(compile_run("if false { 1; } else { 2; }").unwrap(), 2);
+    }
+
+    #[test]
+    fn if_without_else_and_false_cond_leaves_void() {
+        // No value pushed — top-level Return sees an empty stack.
+        let result = compile_run("if false { let x = 1; }").unwrap();
+        assert!(matches!(result, Value::Void), "got {:?}", result);
+    }
+
+    #[test]
+    fn while_counting_loop_accumulates() {
+        // i=0; sum=0; while i<5 { sum=sum+i; i=i+1; } sum;  →  0+1+2+3+4 = 10
+        let src = "let i = 0; let sum = 0; while i < 5 { sum = sum + i; i = i + 1; } sum;";
+        assert_int(compile_run(src).unwrap(), 10);
+    }
+
+    #[test]
+    fn recursive_fib_ten_is_fifty_five() {
+        // The payoff test — recursion + branching together.
+        let src = "fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(10);";
+        assert_int(compile_run(src).unwrap(), 55);
+    }
+
+    #[test]
+    fn comparison_ops_produce_bool() {
+        // Use `if` to inspect the comparison result — we don't have
+        // a public Bool probe, but `if 3 < 5 { 1; } else { 0; }` tells
+        // us 1 iff Lt evaluated to true.
+        assert_int(compile_run("if 3 < 5 { 1; } else { 0; }").unwrap(), 1);
+        assert_int(compile_run("if 5 < 3 { 1; } else { 0; }").unwrap(), 0);
+        assert_int(compile_run("if 5 == 5 { 1; } else { 0; }").unwrap(), 1);
+        assert_int(compile_run("if 5 != 5 { 1; } else { 0; }").unwrap(), 0);
+    }
+
+    #[test]
+    fn logical_and_short_circuits() {
+        // `false && <anything>` evaluates to false without evaluating rhs.
+        // We can't directly observe short-circuit without side effects,
+        // but we can at least confirm the result shape matches for
+        // both paths.
+        assert_int(
+            compile_run("if true && true { 1; } else { 0; }").unwrap(),
+            1,
+        );
+        assert_int(
+            compile_run("if true && false { 1; } else { 0; }").unwrap(),
+            0,
+        );
+        assert_int(
+            compile_run("if false && true { 1; } else { 0; }").unwrap(),
+            0,
+        );
+    }
+
+    #[test]
+    fn logical_or_short_circuits() {
+        assert_int(
+            compile_run("if true || false { 1; } else { 0; }").unwrap(),
+            1,
+        );
+        assert_int(
+            compile_run("if false || true { 1; } else { 0; }").unwrap(),
+            1,
+        );
+        assert_int(
+            compile_run("if false || false { 1; } else { 0; }").unwrap(),
+            0,
+        );
+    }
+
+    #[test]
+    fn not_negates_boolean() {
+        assert_int(compile_run("if !false { 1; } else { 0; }").unwrap(), 1);
+        assert_int(compile_run("if !true { 1; } else { 0; }").unwrap(), 0);
+    }
+
+    #[test]
+    fn for_in_is_still_unsupported() {
+        // RES-083 explicitly scoped `for-in` out.
+        let (program, _) = crate::parse("for x in [1,2,3] { let y = x; }");
+        let err = crate::compiler::compile(&program).unwrap_err();
+        assert!(
+            matches!(err, crate::bytecode::CompileError::Unsupported(_)),
+            "{:?}",
+            err
+        );
     }
 
     #[test]

@@ -153,11 +153,84 @@ fn compile_stmt(
         Node::ExpressionStatement(inner) => {
             compile_expr(inner, chunk, locals, fn_index, line)
         }
+        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block(_) => {
+            compile_control_flow(node, chunk, locals, next_local, fn_index, line)
+        }
+        Node::Assignment { name, value } => {
+            // RES-083: re-bind an existing local. Compile the RHS,
+            // StoreLocal to the known slot. Unknown name is an error.
+            compile_expr(value, chunk, locals, fn_index, line)?;
+            let idx = *locals
+                .get(name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
         Node::Function { .. } => {
             // Top-level fn decl already handled in pass 2. Skipping
             // here would be a no-op, but we should never see one —
             // the caller filters them out before calling us.
             Err(CompileError::Unsupported("nested function decl"))
+        }
+        other => Err(CompileError::Unsupported(node_kind(other))),
+    }
+}
+
+/// RES-083: compile if/while/block statements that share the same
+/// locals environment as the enclosing scope. `Block` is flattened:
+/// its inner statements are compiled inline (no new scope frame yet
+/// — matches the tree walker's semantics).
+fn compile_control_flow(
+    node: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    line: u32,
+) -> Result<(), CompileError> {
+    match node {
+        Node::Block(stmts) => {
+            for s in stmts {
+                compile_stmt(s, chunk, locals, next_local, fn_index, line)?;
+            }
+            Ok(())
+        }
+        Node::IfStatement { condition, consequence, alternative } => {
+            // cond
+            compile_expr(condition, chunk, locals, fn_index, line)?;
+            // JumpIfFalse to else-or-end (placeholder 0 offset)
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            // consequence
+            compile_stmt(consequence, chunk, locals, next_local, fn_index, line)?;
+            if let Some(alt) = alternative {
+                // Unconditional jump past the else branch
+                let jmp_end = chunk.emit(Op::Jump(0), line);
+                // JumpIfFalse lands here (start of else)
+                let else_target = chunk.code.len();
+                chunk.patch_jump(jif, else_target)?;
+                compile_stmt(alt, chunk, locals, next_local, fn_index, line)?;
+                // And the skip-over-else lands here (end)
+                let end = chunk.code.len();
+                chunk.patch_jump(jmp_end, end)?;
+            } else {
+                // No else — JumpIfFalse lands after the consequence.
+                let end = chunk.code.len();
+                chunk.patch_jump(jif, end)?;
+            }
+            Ok(())
+        }
+        Node::WhileStatement { condition, body } => {
+            let loop_start = chunk.code.len();
+            compile_expr(condition, chunk, locals, fn_index, line)?;
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            compile_stmt(body, chunk, locals, next_local, fn_index, line)?;
+            // Unconditional loop back to cond
+            let jmp = chunk.emit(Op::Jump(0), line);
+            chunk.patch_jump(jmp, loop_start)?;
+            // JumpIfFalse lands after the loop
+            let end = chunk.code.len();
+            chunk.patch_jump(jif, end)?;
+            Ok(())
         }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -203,6 +276,67 @@ fn compile_stmt_in_fn(
         Node::ExpressionStatement(inner) => {
             compile_expr(inner, chunk, locals, fn_index, line)
         }
+        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block(_) => {
+            compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, line)
+        }
+        Node::Assignment { name, value } => {
+            compile_expr(value, chunk, locals, fn_index, line)?;
+            let idx = *locals
+                .get(name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        other => Err(CompileError::Unsupported(node_kind(other))),
+    }
+}
+
+/// Same as `compile_control_flow` but routes nested statements
+/// through `compile_stmt_in_fn` so `return` inside a branch emits
+/// `ReturnFromCall`. This is the version used by function bodies.
+fn compile_control_flow_in_fn(
+    node: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    line: u32,
+) -> Result<(), CompileError> {
+    match node {
+        Node::Block(stmts) => {
+            for s in stmts {
+                compile_stmt_in_fn(s, chunk, locals, next_local, fn_index, line)?;
+            }
+            Ok(())
+        }
+        Node::IfStatement { condition, consequence, alternative } => {
+            compile_expr(condition, chunk, locals, fn_index, line)?;
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            compile_stmt_in_fn(consequence, chunk, locals, next_local, fn_index, line)?;
+            if let Some(alt) = alternative {
+                let jmp_end = chunk.emit(Op::Jump(0), line);
+                let else_target = chunk.code.len();
+                chunk.patch_jump(jif, else_target)?;
+                compile_stmt_in_fn(alt, chunk, locals, next_local, fn_index, line)?;
+                let end = chunk.code.len();
+                chunk.patch_jump(jmp_end, end)?;
+            } else {
+                let end = chunk.code.len();
+                chunk.patch_jump(jif, end)?;
+            }
+            Ok(())
+        }
+        Node::WhileStatement { condition, body } => {
+            let loop_start = chunk.code.len();
+            compile_expr(condition, chunk, locals, fn_index, line)?;
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            compile_stmt_in_fn(body, chunk, locals, next_local, fn_index, line)?;
+            let jmp = chunk.emit(Op::Jump(0), line);
+            chunk.patch_jump(jmp, loop_start)?;
+            let end = chunk.code.len();
+            chunk.patch_jump(jif, end)?;
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -220,6 +354,12 @@ fn compile_expr(
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
+        // RES-083: boolean literals.
+        Node::BooleanLiteral(b) => {
+            let idx = chunk.add_constant(Value::Bool(*b))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
         Node::Identifier(name) => {
             let idx = *locals
                 .get(name)
@@ -232,6 +372,45 @@ fn compile_expr(
             chunk.emit(Op::Neg, line);
             Ok(())
         }
+        // RES-083: logical negation.
+        Node::PrefixExpression { operator, right } if operator == "!" => {
+            compile_expr(right, chunk, locals, fn_index, line)?;
+            chunk.emit(Op::Not, line);
+            Ok(())
+        }
+        // RES-083: short-circuit && desugars to `if lhs { rhs } else { false }`.
+        Node::InfixExpression { left, operator, right } if operator == "&&" => {
+            compile_expr(left, chunk, locals, fn_index, line)?;
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            compile_expr(right, chunk, locals, fn_index, line)?;
+            let jmp_end = chunk.emit(Op::Jump(0), line);
+            // false branch
+            let false_target = chunk.code.len();
+            chunk.patch_jump(jif, false_target)?;
+            let false_const = chunk.add_constant(Value::Bool(false))?;
+            chunk.emit(Op::Const(false_const), line);
+            let end = chunk.code.len();
+            chunk.patch_jump(jmp_end, end)?;
+            Ok(())
+        }
+        // RES-083: short-circuit || desugars to `if !lhs { rhs } else { true }`.
+        Node::InfixExpression { left, operator, right } if operator == "||" => {
+            compile_expr(left, chunk, locals, fn_index, line)?;
+            // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
+            chunk.emit(Op::Not, line);
+            let jif = chunk.emit(Op::JumpIfFalse(0), line);
+            // lhs was falsy → evaluate rhs
+            compile_expr(right, chunk, locals, fn_index, line)?;
+            let jmp_end = chunk.emit(Op::Jump(0), line);
+            // true branch
+            let true_target = chunk.code.len();
+            chunk.patch_jump(jif, true_target)?;
+            let true_const = chunk.add_constant(Value::Bool(true))?;
+            chunk.emit(Op::Const(true_const), line);
+            let end = chunk.code.len();
+            chunk.patch_jump(jmp_end, end)?;
+            Ok(())
+        }
         Node::InfixExpression { left, operator, right } => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             compile_expr(right, chunk, locals, fn_index, line)?;
@@ -241,6 +420,13 @@ fn compile_expr(
                 "*" => Op::Mul,
                 "/" => Op::Div,
                 "%" => Op::Mod,
+                // RES-083: comparison ops produce Value::Bool.
+                "==" => Op::Eq,
+                "!=" => Op::Neq,
+                "<" => Op::Lt,
+                "<=" => Op::Le,
+                ">" => Op::Gt,
+                ">=" => Op::Ge,
                 _ => return Err(CompileError::Unsupported("non-arithmetic operator")),
             };
             chunk.emit(op, line);
@@ -355,7 +541,10 @@ mod tests {
 
     #[test]
     fn compile_unsupported_construct_is_clean_error() {
-        let p = parse_one("if true { let x = 1; }");
+        // `for .. in` is still out of scope after RES-083. Use it as
+        // the stand-in for "unsupported construct" — if we ever
+        // support for-in too, pick a different canary.
+        let p = parse_one("for x in [1, 2, 3] { let y = x; }");
         let err = compile(&p).unwrap_err();
         assert!(matches!(err, CompileError::Unsupported(_)), "{:?}", err);
     }

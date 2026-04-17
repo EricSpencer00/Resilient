@@ -1,7 +1,7 @@
 ---
 id: RES-083
 title: VM control flow if while for
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G15
 created: 2026-04-17
@@ -83,3 +83,52 @@ ops); that stays a follow-up.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - **New ops**: `Jump(i16)`, `JumpIfFalse(i16)`, `Eq`, `Neq`, `Lt`,
+    `Le`, `Gt`, `Ge`, `Not`. Offsets are signed relative to the PC
+    *after* the op, so positive jumps forward and negative loops back.
+  - **`Chunk::patch_jump(idx, target_pc)`** helper back-patches a
+    previously-emitted jump. Returns `CompileError::JumpOutOfRange`
+    if the delta doesn't fit in `i16`.
+  - **Compiler**:
+    - `Node::BooleanLiteral(b)` → `Const` with `Value::Bool(b)`.
+    - `Node::PrefixExpression "!"` → `Not`.
+    - Comparison infix `==`/`!=`/`<`/`<=`/`>`/`>=` → respective op.
+    - `&&` desugars to `if lhs { rhs } else { false }`, `||` to
+      `if !lhs { rhs } else { true }`. Short-circuit via two patched
+      jumps plus a `Const(Bool)` landing.
+    - `Node::IfStatement` and `Node::WhileStatement` emit the standard
+      pre-patch-then-patch pattern. `Node::Block` is flattened
+      inline (no new scope frame — matches interpreter semantics).
+    - `Node::Assignment` gains a minimal path: compile RHS, lookup
+      existing local by name, emit `StoreLocal`. Unknown name →
+      `UnknownIdentifier`.
+    - Both `compile_stmt` and `compile_stmt_in_fn` get parallel
+      control-flow routing so `return` inside a branch correctly
+      emits `ReturnFromCall` when inside a fn body.
+  - **VM**: dispatch loop handles all new ops. Jump target is
+    checked against `chunk.code.len()`; out-of-bounds → clean
+    `VmError::JumpOutOfBounds`. `JumpIfFalse` accepts `Bool` and
+    `Int(0)` as falsy; other types → `TypeMismatch("JumpIfFalse")`.
+  - `for .. in` deliberately remains unsupported — the existing
+    "unsupported construct" smoke test was updated to use `for-in`
+    as its canary since `if` is now supported.
+- 2026-04-17 tests: **10 new VM tests**:
+  - `if true`/`if false` pick right branch
+  - `if` without else leaves Void on empty stack
+  - `while` counting loop accumulates (0+1+2+3+4 = 10), exercising
+    `Assignment` + backward jump
+  - **`recursive_fib_ten_is_fifty_five`** — the payoff test
+  - comparison ops produce Bool (probed via `if`)
+  - short-circuit `&&` and `||` over three boolean combinations each
+  - `!` negates bool
+  - `for .. in` still returns `CompileError::Unsupported`
+- 2026-04-17 smoke: `bytecode_vm_runs_recursive_fib` writes a temp
+  file with `fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(10);`, runs `--vm`, asserts stdout
+  contains `55`.
+- 2026-04-17 manual verification: `cargo run -- --vm /tmp/r83_fib.rs`
+  on the same source prints `55`.
+- 2026-04-17 verification: 206 unit + 1 golden + 11 smoke = 218
+  tests default; 214 + 1 + 12 = 227 with `--features z3`. Clippy
+  clean both ways. **The VM can now run fib — RES-082's 3×
+  microbench is unblocked.**

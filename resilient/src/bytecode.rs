@@ -53,6 +53,28 @@ pub enum Op {
     /// top-level `return;` at program scope emits `Return`; a
     /// `return;` inside a `fn` body emits `ReturnFromCall`.
     ReturnFromCall,
+    /// RES-083: unconditional relative jump. The target PC is
+    /// `(pc_after_this_op) + offset`; positive offsets jump forward,
+    /// negative offsets loop backward.
+    Jump(i16),
+    /// RES-083: pop the operand stack; if the value is "falsy"
+    /// (`Bool(false)` or `Int(0)`), apply the relative jump.
+    /// Otherwise fall through. Non-bool/non-int → TypeMismatch.
+    JumpIfFalse(i16),
+    /// RES-083: pop two ints (or bools), push `Value::Bool(lhs == rhs)`.
+    Eq,
+    /// RES-083: pop two ints, push `Value::Bool(lhs != rhs)`.
+    Neq,
+    /// RES-083: pop two ints, push `Value::Bool(lhs < rhs)`.
+    Lt,
+    /// RES-083: pop two ints, push `Value::Bool(lhs <= rhs)`.
+    Le,
+    /// RES-083: pop two ints, push `Value::Bool(lhs > rhs)`.
+    Gt,
+    /// RES-083: pop two ints, push `Value::Bool(lhs >= rhs)`.
+    Ge,
+    /// RES-083: pop a bool, push its negation. Non-bool → TypeMismatch.
+    Not,
     /// Halt execution. The top of the operand stack (if any) is the
     /// program's return value; an empty stack returns `Value::Void`.
     Return,
@@ -104,6 +126,26 @@ impl Chunk {
         self.code.push(op);
         self.line_info.push(line);
         idx
+    }
+
+    /// RES-083: back-patch a previously-emitted `Jump`/`JumpIfFalse`
+    /// so it lands at `target_pc`. The op MUST already be a Jump or
+    /// JumpIfFalse at `patch_idx`, and the offset must fit in `i16`.
+    pub fn patch_jump(&mut self, patch_idx: usize, target_pc: usize) -> Result<(), CompileError> {
+        // Offset is relative to the PC *after* the jump.
+        let pc_after = (patch_idx + 1) as isize;
+        let offset = (target_pc as isize) - pc_after;
+        let offset: i16 = offset
+            .try_into()
+            .map_err(|_| CompileError::JumpOutOfRange)?;
+        match &mut self.code[patch_idx] {
+            Op::Jump(o) => *o = offset,
+            Op::JumpIfFalse(o) => *o = offset,
+            other => {
+                panic!("patch_jump called on non-jump op: {:?}", other);
+            }
+        }
+        Ok(())
     }
 
     /// Intern a `Value` constant; returns the index for `Op::Const`.
@@ -158,6 +200,8 @@ pub enum CompileError {
         expected: u8,
         got: usize,
     },
+    /// RES-083: a jump target is more than `i16::MAX` bytes away.
+    JumpOutOfRange,
 }
 
 impl std::fmt::Display for CompileError {
@@ -179,6 +223,9 @@ impl std::fmt::Display for CompileError {
                 "bytecode compile: call to {} has {} args, expected {}",
                 callee, got, expected
             ),
+            CompileError::JumpOutOfRange => {
+                write!(f, "bytecode compile: jump target further than i16::MAX")
+            }
         }
     }
 }
