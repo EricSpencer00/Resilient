@@ -19,6 +19,8 @@ mod vm;
 mod verifier_z3;
 #[cfg(feature = "lsp")]
 mod lsp_server;
+#[cfg(feature = "jit")]
+mod jit_backend;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -3916,6 +3918,7 @@ fn execute_file(
     audit: bool,
     emit_cert_dir: Option<&Path>,
     use_vm: bool,
+    use_jit: bool,
 ) -> RResult<()> {
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
@@ -3976,6 +3979,29 @@ fn execute_file(
                 "\x1B[36mWrote {} verification certificate(s) to {}\x1B[0m",
                 n,
                 dir.display()
+            );
+        }
+    }
+
+    if use_jit {
+        // RES-072 Phase A: Cranelift JIT path. Stub today; RES-096+
+        // will add real AST lowering. Surfaces a clean error
+        // through the same `<file>: ...` shape as the VM (RES-095)
+        // so the user knows the JIT isn't implemented yet without
+        // a panic or opaque message.
+        #[cfg(feature = "jit")]
+        {
+            let result = jit_backend::run(&program)
+                .map_err(|e| format!("{}: {}", filename, e))?;
+            println!("{}", result);
+            return Ok(());
+        }
+        #[cfg(not(feature = "jit"))]
+        {
+            return Err(
+                "--jit requires the `jit` feature. Rebuild with:\n  \
+                 cargo build --features jit"
+                    .to_string(),
             );
         }
     }
@@ -4057,6 +4083,7 @@ fn main() {
     let mut emit_cert_dir: Option<PathBuf> = None;
     let mut examples_dir: Option<PathBuf> = None;
     let mut use_vm = false;
+    let mut use_jit = false;
     let mut lsp_mode = false;
     let mut filename = "";
 
@@ -4083,6 +4110,10 @@ fn main() {
                 // RES-076: route through the bytecode VM instead of
                 // the tree-walking interpreter.
                 use_vm = true;
+            } else if arg == "--jit" {
+                // RES-072: route through the Cranelift JIT backend.
+                // Phase A is a stub — RES-096+ adds real lowering.
+                use_jit = true;
             } else if arg == "--lsp" {
                 // RES-074: start the Language Server on stdio. Only
                 // functional when built with `--features lsp`; the
@@ -4109,7 +4140,14 @@ fn main() {
             // Execute a file. RES-027: a failed run exits non-zero so
             // `run_examples.sh` / CI / ops tooling can distinguish
             // success from failure without parsing stdout.
-            match execute_file(filename, type_check, audit, emit_cert_dir.as_deref(), use_vm) {
+            match execute_file(
+                filename,
+                type_check,
+                audit,
+                emit_cert_dir.as_deref(),
+                use_vm,
+                use_jit,
+            ) {
                 Ok(_) => {
                     println!("Program executed successfully");
                     return;

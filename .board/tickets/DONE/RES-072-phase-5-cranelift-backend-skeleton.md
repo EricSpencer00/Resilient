@@ -1,7 +1,7 @@
 ---
 id: RES-072
 title: Phase 5 Cranelift backend skeleton
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -65,3 +65,45 @@ reviewable. Mirrors how RES-074 LSP landed in stages.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager
+- 2026-04-17 manager rescope: Phase A only (deps + flag + stub).
+  Real lowering split into RES-096+ follow-ups.
+- 2026-04-17 executor landed Phase A:
+  - Cargo.toml: new `jit` feature with optional cranelift +
+    cranelift-jit deps (~150 transitive crates, ~14s cold build).
+    Default builds untouched.
+  - New `resilient/src/jit_backend.rs` (gated on `jit` feature):
+    - `pub fn run(_program: &Node) -> Result<i64, JitError>` —
+      stub returning `Unsupported("jit not implemented yet —
+      RES-096+ adds AST lowering")`.
+    - `JitError::Unsupported(&'static str)` enum + Display impl.
+    - Imports `cranelift::prelude::*` and `cranelift_jit::*` at
+      module level (with `#[allow(unused_imports)]`) so the build
+      verifies the deps link cleanly. Real use lands with RES-096.
+  - main.rs: new `--jit` driver flag. Under `--features jit` it
+    dispatches to `jit_backend::run` and surfaces errors as
+    `<filename>: <error>` (RES-095 shape). Without the feature it
+    prints "rebuild with --features jit" and exits 1 (mirrors
+    RES-074 LSP pattern).
+  - 2 unit tests in `jit_backend::tests`:
+    - `run_returns_unsupported_until_res_096`: confirms the stub
+      returns Unsupported with a message pointing at RES-096.
+    - `jit_error_display_is_descriptive`: Display formatting check.
+- 2026-04-17 manual verification:
+  - `cargo build` (default) → `--jit prog.rs` prints
+    `--jit requires the jit feature. Rebuild with: cargo build
+    --features jit`, exits 1.
+  - `cargo run --features jit -- --jit prog.rs` prints
+    `Error: prog.rs: jit: unsupported: jit not implemented yet —
+    RES-096+ adds AST lowering`, exits 1.
+- 2026-04-17 verification across four feature configs:
+  - default: 217 unit + 1 golden + 12 smoke = 230 tests
+  - `--features z3`: 225 + 1 + 13 = 239 tests
+  - `--features lsp`: 221 + 1 + 12 + 3 lsp_smoke = 237 tests
+  - `--features jit`: 219 + 1 + 12 = 232 tests
+  All four `cargo clippy -- -D warnings` clean.
+- 2026-04-17 follow-up tickets queued:
+  - RES-096 — lower IntegerLiteral + Add to native, prove a real
+    JIT-compiled function returns the right value.
+  - RES-097 — add control flow + function calls to the JIT.
+  - RES-098 — JIT'd `main() -> int` runner end-to-end.
+  - RES-099 — fib(25) under `--jit` for the perf comparison.
