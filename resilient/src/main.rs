@@ -530,6 +530,16 @@ enum Node {
     /// RES-041: `expr?` — if the operand is `Ok(v)`, evaluate to `v`;
     /// if `Err(e)`, return `Err(e)` from the enclosing function.
     TryExpression(Box<Node>),
+    /// RES-042: anonymous fn expression. Unlike `Node::Function`, this
+    /// node is not bound to a name — it evaluates to a `Value::Function`
+    /// directly. Captures its defining env by value, matching existing
+    /// named-fn semantics.
+    FunctionLiteral {
+        parameters: Vec<(String, String)>,
+        body: Box<Node>,
+        requires: Vec<Node>,
+        ensures: Vec<Node>,
+    },
     /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
     Match {
         scrutinee: Box<Node>,
@@ -1267,6 +1277,7 @@ impl Parser {
             Token::LeftBracket => Some(self.parse_array_literal()),
             Token::New => Some(self.parse_struct_literal()),
             Token::Match => Some(self.parse_match_expression()),
+            Token::Function => Some(self.parse_function_literal()),
             _ => None,
         };
         
@@ -1513,6 +1524,48 @@ impl Parser {
             }
         }
         Node::StructLiteral { name, fields }
+    }
+
+    /// Parse an anonymous `fn(params) { body }`. current_token is `fn`
+    /// on entry; on exit it's `}`.
+    fn parse_function_literal(&mut self) -> Node {
+        self.next_token(); // skip 'fn'
+        if self.current_token != Token::LeftParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '(' after anonymous 'fn', found {:?}",
+                tok
+            ));
+            return Node::FunctionLiteral {
+                parameters: Vec::new(),
+                body: Box::new(Node::Block(Vec::new())),
+                requires: Vec::new(),
+                ensures: Vec::new(),
+            };
+        }
+        self.next_token(); // skip '('
+        let parameters = self.parse_function_parameters();
+        let (requires, ensures) = self.parse_function_contracts();
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' in anonymous fn, found {:?}",
+                tok
+            ));
+            return Node::FunctionLiteral {
+                parameters,
+                body: Box::new(Node::Block(Vec::new())),
+                requires,
+                ensures,
+            };
+        }
+        let body = self.parse_block_statement();
+        Node::FunctionLiteral {
+            parameters,
+            body: Box::new(body),
+            requires,
+            ensures,
+        }
     }
 
     /// Parse `match SCRUTINEE { PATTERN => EXPR, ... }`. Current token
@@ -2505,6 +2558,16 @@ impl Interpreter {
                     out.push(self.eval(item)?);
                 }
                 Ok(Value::Array(out))
+            },
+            Node::FunctionLiteral { parameters, body, requires, ensures } => {
+                Ok(Value::Function {
+                    parameters: parameters.clone(),
+                    body: body.clone(),
+                    env: self.env.clone(),
+                    requires: requires.clone(),
+                    ensures: ensures.clone(),
+                    name: "<anon>".to_string(),
+                })
             },
             Node::TryExpression(inner) => {
                 let v = self.eval(inner)?;
@@ -3741,6 +3804,52 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- First-class functions (RES-042) ----------
+
+    #[test]
+    fn anonymous_fn_called_inline() {
+        let (p, errors) = parse("let add = fn(int a, int b) { return a + b; }; let r = add(2, 3);");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(5)));
+    }
+
+    #[test]
+    fn closure_captures_enclosing_variable() {
+        let src = r#"
+            fn make_adder(int n) {
+                return fn(int x) { return x + n; };
+            }
+            let add5 = make_adder(5);
+            let r = add5(10);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(15)));
+    }
+
+    #[test]
+    fn anonymous_fn_can_have_contracts() {
+        // The anonymous-fn form inherits the full fn parser, including
+        // requires/ensures.
+        let src = r#"
+            let safe_div = fn(int a, int b)
+                requires b != 0
+            {
+                return a / b;
+            };
+            let r = safe_div(20, 5);
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(4)));
     }
 
     // ---------- Result type (RES-040) ----------
