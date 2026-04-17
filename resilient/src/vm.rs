@@ -35,6 +35,25 @@ pub enum VmError {
     CallStackOverflow,
     /// RES-083: a jump's target PC fell outside the current chunk.
     JumpOutOfBounds,
+    /// RES-091: wraps any other variant with the source line of the
+    /// instruction that produced it. Lets the user see
+    /// `vm: divide by zero (line 5)` instead of unattributed errors.
+    AtLine {
+        line: u32,
+        kind: Box<VmError>,
+    },
+}
+
+impl VmError {
+    /// RES-091: strip any `AtLine` wrappers and return the underlying
+    /// error variant. Tests that match on the *kind* of error
+    /// (without caring about location) call this first.
+    pub fn kind(&self) -> &VmError {
+        match self {
+            VmError::AtLine { kind, .. } => kind.kind(),
+            other => other,
+        }
+    }
 }
 
 impl std::fmt::Display for VmError {
@@ -49,11 +68,28 @@ impl std::fmt::Display for VmError {
             VmError::CallStackUnderflow => write!(f, "vm: call stack underflow"),
             VmError::CallStackOverflow => write!(f, "vm: call stack overflow (>1024 frames)"),
             VmError::JumpOutOfBounds => write!(f, "vm: jump target out of bounds"),
+            VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
         }
     }
 }
 
 impl std::error::Error for VmError {}
+
+/// RES-091: wrap a runtime error with the source line of the
+/// instruction at `pc`. If `line_info` is shorter than `pc` (which
+/// shouldn't happen for well-formed chunks but defensive code is
+/// cheap), or the recorded line is 0 (sentinel for "synthetic"),
+/// pass the error through unchanged.
+fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
+    // pc was already incremented past the failing op when the error
+    // fired, so look back one step for the offending instruction's
+    // line.
+    let op_pc = pc.saturating_sub(1);
+    match line_info.get(op_pc) {
+        Some(&line) if line > 0 => VmError::AtLine { line, kind: Box::new(e) },
+        _ => e,
+    }
+}
 
 /// Cap on concurrent call frames. Prevents unbounded native-stack
 /// growth on pathologically-recursive input (test case for
@@ -78,7 +114,41 @@ struct CallFrame {
 
 /// Run a compiled program. Returns the value left on the operand
 /// stack when the outer `Op::Return` fires (`Value::Void` if empty).
+///
+/// RES-091: errors are wrapped with `VmError::AtLine` carrying the
+/// source line of the failing instruction (looked up via
+/// `chunk.line_info`). The wrapping happens once at the outer return,
+/// using the `(chunk_idx, pc)` snapshot taken at the top of each
+/// dispatch iteration — keeps every inner `?` and `return Err(...)`
+/// site untouched.
 pub fn run(program: &Program) -> Result<Value, VmError> {
+    // Sentinel for "no failure attributable yet" — main chunk @ pc 0.
+    let mut last_pc: (usize, usize) = (usize::MAX, 0);
+    match run_inner(program, &mut last_pc) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let line_info: &[u32] = if last_pc.0 == usize::MAX {
+                &program.main.line_info
+            } else {
+                program
+                    .functions
+                    .get(last_pc.0)
+                    .map(|f| f.chunk.line_info.as_slice())
+                    .unwrap_or(&[])
+            };
+            Err(err_at(line_info, last_pc.1, e))
+        }
+    }
+}
+
+/// RES-091: the original dispatch loop, factored out so `run` can
+/// wrap any returned error with source-line info. `last_pc` is
+/// updated at the top of every iteration so the outer wrapper knows
+/// which instruction was about to execute when the failure fired.
+fn run_inner(
+    program: &Program,
+    last_pc: &mut (usize, usize),
+) -> Result<Value, VmError> {
     let mut stack: Vec<Value> = Vec::with_capacity(64);
     let mut locals: Vec<Value> = Vec::new();
     let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
@@ -102,6 +172,10 @@ pub fn run(program: &Program) -> Result<Value, VmError> {
             };
             (chunk, f.pc)
         };
+        // RES-091: snapshot which (chunk, pc) is about to be
+        // attempted. After pc-advance we add 1, so err_at's
+        // `saturating_sub(1)` lands back on this op.
+        *last_pc = (frames[frame_idx].chunk_idx, pc + 1);
         if pc >= chunk.code.len() {
             // Ran off the end without an explicit return. Treat as
             // an implicit Return / ReturnFromCall depending on
@@ -350,8 +424,33 @@ mod tests {
     }
 
     #[test]
+    fn divide_by_zero_error_includes_source_line() {
+        // RES-091: the runtime error wraps the underlying kind with
+        // VmError::AtLine carrying the source line. Display should
+        // print `(line N)` suffix.
+        let err = compile_run("let x = 10 / 0;").unwrap_err();
+        let display = err.to_string();
+        assert!(
+            display.contains("divide by zero"),
+            "missing divide-by-zero text: {}",
+            display
+        );
+        assert!(
+            display.contains("line "),
+            "missing line attribution: {}",
+            display
+        );
+        // The kind() helper still returns the raw variant for tests
+        // that match on kind.
+        assert_eq!(err.kind(), &VmError::DivideByZero);
+    }
+
+    #[test]
     fn divide_by_zero_is_clean_error() {
-        assert_eq!(compile_run("10 / 0;").unwrap_err(), VmError::DivideByZero);
+        // RES-091: errors are now wrapped with line info, so compare
+        // on the inner kind via VmError::kind().
+        let err = compile_run("10 / 0;").unwrap_err();
+        assert_eq!(err.kind(), &VmError::DivideByZero);
     }
 
     #[test]
@@ -360,7 +459,8 @@ mod tests {
             &[Value::Int(1), Value::String("x".into())],
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
         );
-        assert_eq!(run(&p).unwrap_err(), VmError::TypeMismatch("Add"));
+        let err = run(&p).unwrap_err();
+        assert_eq!(err.kind(), &VmError::TypeMismatch("Add"));
     }
 
     #[test]
@@ -425,7 +525,8 @@ mod tests {
         main.line_info.push(1);
         main.line_info.push(1);
         let p = Program { main, functions: vec![runaway] };
-        assert_eq!(run(&p).unwrap_err(), VmError::CallStackOverflow);
+        let err = run(&p).unwrap_err();
+        assert_eq!(err.kind(), &VmError::CallStackOverflow);
     }
 
     // ---------- RES-083 tests ----------
