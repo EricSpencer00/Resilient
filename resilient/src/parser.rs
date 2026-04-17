@@ -81,7 +81,7 @@ impl Parser {
             }
             
             // Try to recover from errors by skipping to next statement
-            if self.errors.len() > 0 {
+            if !self.errors.is_empty() {
                 self.synchronize();
             }
             
@@ -417,7 +417,7 @@ impl Parser {
             Some(expr) => expr,
             None => {
                 return Err(ParseError {
-                    message: format!("Expected condition expression in assert statement"),
+                    message: "Expected condition expression in assert statement".to_string(),
                     token: self.current_token.clone(),
                     line: self.line,
                     column: self.column,
@@ -432,7 +432,7 @@ impl Parser {
                 Some(expr) => Some(Box::new(expr)),
                 None => {
                     return Err(ParseError {
-                        message: format!("Expected message expression after comma in assert statement"),
+                        message: "Expected message expression after comma in assert statement".to_string(),
                         token: self.current_token.clone(),
                         line: self.line,
                         column: self.column,
@@ -476,7 +476,7 @@ impl Parser {
                 Some(expr) => expr,
                 None => {
                     return Err(ParseError {
-                        message: format!("Expected condition expression after 'if ('"),
+                        message: "Expected condition expression after 'if ('".to_string(),
                         token: self.current_token.clone(),
                         line: self.line,
                         column: self.column,
@@ -501,7 +501,7 @@ impl Parser {
                 Some(expr) => expr,
                 None => {
                     return Err(ParseError {
-                        message: format!("Expected condition expression after 'if'"),
+                        message: "Expected condition expression after 'if'".to_string(),
                         token: self.current_token.clone(),
                         line: self.line,
                         column: self.column,

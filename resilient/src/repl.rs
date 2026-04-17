@@ -40,10 +40,10 @@ impl EnhancedREPL {
         let mut rl = DefaultEditor::new()?;
         
         // Load command history
-        if self.history_path.exists() {
-            if let Err(err) = rl.load_history(&self.history_path) {
-                eprintln!("Error loading history: {}", err);
-            }
+        if self.history_path.exists()
+            && let Err(err) = rl.load_history(&self.history_path)
+        {
+            eprintln!("Error loading history: {}", err);
         }
         
         println!("{}Resilient Programming Language REPL (v0.1.0){}",

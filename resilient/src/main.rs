@@ -254,7 +254,7 @@ impl Lexer {
     }
     
     fn is_digit(&self, ch: char) -> bool {
-        ch.is_digit(10)
+        ch.is_ascii_digit()
     }
     
     fn skip_whitespace(&mut self) {
@@ -596,8 +596,7 @@ impl Parser {
             self.next_token(); // Skip ')'
             expr
         } else {
-            let expr = self.parse_expression(0).unwrap();
-            expr
+            self.parse_expression(0).unwrap()
         };
         
         if self.current_token != Token::LeftBrace {
@@ -1078,7 +1077,7 @@ impl Interpreter {
             Value::Bool(b) => Ok(Value::Bool(!b)),
             Value::Int(0) => Ok(Value::Bool(true)),
             Value::Int(_) => Ok(Value::Bool(false)),
-            Value::Float(f) if f == 0.0 => Ok(Value::Bool(true)),
+            Value::Float(0.0) => Ok(Value::Bool(true)),
             Value::Float(_) => Ok(Value::Bool(false)),
             Value::String(s) if s.is_empty() => Ok(Value::Bool(true)),
             Value::String(_) => Ok(Value::Bool(false)),
@@ -1228,12 +1227,12 @@ fn start_repl() -> RustylineResult<()> {
         Err(_) => Path::new(".resilient_history").to_path_buf(),
     };
     
-    if history_path.exists() {
-        if let Err(err) = rl.load_history(&history_path) {
-            eprintln!("Error loading history: {}", err);
-        }
+    if history_path.exists()
+        && let Err(err) = rl.load_history(&history_path)
+    {
+        eprintln!("Error loading history: {}", err);
     }
-    
+
     println!("Resilient Programming Language REPL (v0.1.0)");
     println!("Type 'exit' to quit, 'help' for command list");
     
@@ -1532,11 +1531,11 @@ fn main() {
     
     // Simple argument parsing
     if args.len() > 1 {
-        for i in 1..args.len() {
-            if args[i] == "--typecheck" || args[i] == "-t" {
+        for arg in args.iter().skip(1) {
+            if arg == "--typecheck" || arg == "-t" {
                 type_check = true;
             } else {
-                filename = &args[i];
+                filename = arg;
             }
         }
         
