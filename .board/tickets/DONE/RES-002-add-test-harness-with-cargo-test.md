@@ -1,7 +1,7 @@
 ---
 id: RES-002
 title: Add test harness with cargo test
-state: IN_PROGRESS
+state: DONE
 priority: P0
 goalpost: G2
 created: 2026-04-16
@@ -34,6 +34,25 @@ a test harness so every subsequent ticket can add regression coverage.
   tests under `tests/` for example runs.
 - Do NOT fix the dummy-parameter limitation in this ticket — that's RES-004.
 
+## Resolution
+- Added `#[cfg(test)] mod tests` in `resilient/src/main.rs` with 8 unit
+  tests covering lexer (4), parser (2), typechecker (1), interpreter (1).
+- Added `resilient/tests/examples_smoke.rs` with 2 integration tests
+  that spawn the compiled binary and assert `hello.rs` / `minimal.rs`
+  parse (pending RES-003 for full output assertions).
+- `Cargo.toml`: `autoexamples = false` so Cargo does not try to compile
+  `examples/*.rs` as Rust source — those are Resilient-language files.
+
+Verification:
+```
+$ cargo test
+running 8 tests ... test result: ok. 8 passed
+running 2 tests ... test result: ok. 2 passed
+```
+
+Build and tests are both warning-free.
+
 ## Log
 - 2026-04-16 created by session 0
-- 2026-04-16 claimed by executor
+- 2026-04-16 claimed by executor (ralph loop, before it was parked)
+- 2026-04-16 landed by this session

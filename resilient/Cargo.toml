@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "A programming language designed for extreme reliability in embedded and safety-critical systems"
 authors = ["Eric Spencer"]
+# `examples/*.rs` holds Resilient-language source files (they use the `.rs`
+# extension for editor support), not Rust. Disable Cargo's auto-discovery so
+# it doesn't try to build them as Rust examples.
+autoexamples = false
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

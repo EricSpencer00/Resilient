@@ -1488,3 +1488,154 @@ fn main() {
         eprintln!("REPL error: {}", e);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lex the entire input into a Vec<Token>, stopping at (and including) Eof.
+    fn tokenize(input: &str) -> Vec<Token> {
+        let mut lexer = Lexer::new(input.to_string());
+        let mut out = Vec::new();
+        loop {
+            let tok = lexer.next_token();
+            let is_eof = matches!(tok, Token::Eof);
+            out.push(tok);
+            if is_eof {
+                break;
+            }
+        }
+        out
+    }
+
+    // ---------- Lexer ----------
+
+    #[test]
+    fn lexer_handles_identifier_adjacent_to_paren() {
+        // Regression for RES-001: the old lexer swallowed the character
+        // after every identifier, so `fn add_one(` lost the `(`.
+        let tokens = tokenize("fn add_one(int x) {}");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Function,
+                Token::Identifier("add_one".into()),
+                Token::LeftParen,
+                Token::Identifier("int".into()),
+                Token::Identifier("x".into()),
+                Token::RightParen,
+                Token::LeftBrace,
+                Token::RightBrace,
+                Token::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexer_distinguishes_int_and_float() {
+        let tokens = tokenize("let x = 42; let y = 3.14;");
+        // Grab the literals in order.
+        let literals: Vec<_> = tokens
+            .into_iter()
+            .filter(|t| matches!(t, Token::IntLiteral(_) | Token::FloatLiteral(_)))
+            .collect();
+        assert_eq!(
+            literals,
+            vec![Token::IntLiteral(42), Token::FloatLiteral(3.14)]
+        );
+    }
+
+    #[test]
+    fn lexer_recognizes_keywords_and_operators() {
+        let tokens = tokenize("if true { return; } else { assert(x == 1); }");
+        assert!(tokens.contains(&Token::If));
+        assert!(tokens.contains(&Token::Else));
+        assert!(tokens.contains(&Token::Return));
+        assert!(tokens.contains(&Token::Assert));
+        assert!(tokens.contains(&Token::BoolLiteral(true)));
+        assert!(tokens.contains(&Token::Equal));
+    }
+
+    #[test]
+    fn lexer_parses_string_literals_with_escapes() {
+        let tokens = tokenize(r#"let s = "hi\n";"#);
+        let has_string = tokens
+            .iter()
+            .any(|t| matches!(t, Token::StringLiteral(s) if s == "hi\n"));
+        assert!(has_string, "expected StringLiteral(\"hi\\n\") in {:?}", tokens);
+    }
+
+    // ---------- Parser ----------
+
+    fn parse(input: &str) -> (Node, Vec<String>) {
+        let lexer = Lexer::new(input.to_string());
+        let mut parser = Parser::new(lexer);
+        let program = parser.parse_program();
+        (program, parser.errors)
+    }
+
+    #[test]
+    fn parser_let_statement_produces_expected_shape() {
+        let (program, errors) = parse("let x = 42;");
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        match program {
+            Node::Program(stmts) => {
+                assert_eq!(stmts.len(), 1);
+                match &stmts[0] {
+                    Node::LetStatement { name, value } => {
+                        assert_eq!(name, "x");
+                        assert!(matches!(**value, Node::IntegerLiteral(42)));
+                    }
+                    other => panic!("expected LetStatement, got {:?}", other),
+                }
+            }
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_function_with_parameters_roundtrips() {
+        let (program, errors) = parse("fn add(int a, int b) { return a + b; }");
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        match program {
+            Node::Program(stmts) => match &stmts[0] {
+                Node::Function { name, parameters, .. } => {
+                    assert_eq!(name, "add");
+                    assert_eq!(
+                        parameters,
+                        &vec![
+                            ("int".to_string(), "a".to_string()),
+                            ("int".to_string(), "b".to_string())
+                        ]
+                    );
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    // ---------- Typechecker ----------
+
+    #[test]
+    fn typechecker_accepts_valid_program() {
+        let (program, errors) = parse("let x = 42; let y = x + 1;");
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let mut tc = typechecker::TypeChecker::new();
+        assert!(tc.check_program(&program).is_ok());
+    }
+
+    // ---------- Interpreter ----------
+
+    #[test]
+    fn interpreter_evaluates_let_and_arithmetic() {
+        let (program, errors) = parse("let x = 40; let y = x + 2;");
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("eval should succeed");
+        match interp.env.get("y").expect("y defined") {
+            Value::Int(v) => assert_eq!(v, 42),
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+}
