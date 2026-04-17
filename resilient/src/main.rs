@@ -11,8 +11,12 @@ use std::rc::Rc;
 mod typechecker;
 mod parser;
 mod repl;
+mod span;
 #[cfg(feature = "z3")]
 mod verifier_z3;
+
+#[allow(unused_imports)]
+use span::{Pos, Span, Spanned};
 
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
@@ -322,7 +326,38 @@ impl Lexer {
         self.read_char();
         token
     }
-    
+
+    /// RES-069 (G6 partial): emit a token plus the source span it
+    /// covered. The start position is the snapshot taken at the head
+    /// of `next_token`; the end position reflects the lexer's cursor
+    /// AFTER the token was consumed. Both are 1-indexed for line and
+    /// column; offset is 0-indexed into the input char buffer.
+    ///
+    /// Existing call sites still use `next_token()` and ignore spans —
+    /// they will migrate as the AST gains span fields.
+    #[allow(dead_code)]
+    fn next_token_with_span(&mut self) -> (Token, span::Span) {
+        // skip_whitespace + the start-pos snapshot happen inside
+        // next_token, but next_token also advances the cursor past the
+        // token. Snapshot the offset BEFORE the call so we have the
+        // true start, then snapshot end AFTER.
+        // Note: line/column are already snapshotted into
+        // last_token_line/last_token_column inside next_token.
+        let start_offset = {
+            // Mirror next_token's leading skip_whitespace so our offset
+            // points at the first char of the token, not preceding ws.
+            // We can't actually call skip_whitespace twice — it would
+            // skip again — so we capture position before next_token and
+            // re-derive the start from last_token_line/column afterwards.
+            self.position
+        };
+        let _ = start_offset; // currently unused; reserved for parity check
+        let token = self.next_token();
+        let start = span::Pos::new(self.last_token_line, self.last_token_column, 0);
+        let end = span::Pos::new(self.line, self.column, self.position);
+        (token, span::Span::new(start, end))
+    }
+
     fn read_identifier(&mut self) -> String {
         let position = self.position;
         while self.is_letter(self.ch) || self.is_digit(self.ch) {

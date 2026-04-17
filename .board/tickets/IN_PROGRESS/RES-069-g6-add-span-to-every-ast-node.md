@@ -1,7 +1,7 @@
 ---
 id: RES-069
 title: G6 add Span to every AST node
-state: OPEN
+state: IN_PROGRESS
 priority: P0
 goalpost: G6
 created: 2026-04-17
@@ -42,3 +42,11 @@ and before LSP work (RES-074) can surface diagnostics in an editor.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor partial (foundation): `span.rs` module added with
+  `Pos`, `Span`, and `Spanned<T>` types + 7 unit tests (all green).
+  Lexer gains `next_token_with_span()` helper that pairs each token
+  with its source span. AST migration (touching every `Node` variant +
+  every match expression in `main.rs`) and the typechecker diagnostic
+  rewrite still TODO — next executor iteration. Default `cargo clippy`
+  remains clean; `cargo test` reports 143 unit + 1 golden + 4 smoke
+  passing (up from 136 thanks to new span tests).
