@@ -632,7 +632,7 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
             
-            Node::Block(statements) => {
+            Node::Block { stmts: statements, .. } => {
                 let mut result_type = Type::Void;
                 
                 // Create a new enclosed environment for block
@@ -895,7 +895,7 @@ impl TypeChecker {
                 Ok(consequence_type)
             },
             
-            Node::ExpressionStatement(expr) => {
+            Node::ExpressionStatement { expr, .. } => {
                 self.check_node(expr)
             },
             

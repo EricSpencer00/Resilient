@@ -535,7 +535,13 @@ enum Node {
         condition: Box<Node>,
         message: Option<Box<Node>>,
     },
-    Block(Vec<Node>),
+    /// RES-087: converted from tuple form so it can carry the span
+    /// of the opening `{` (consumed in follow-ups).
+    Block {
+        stmts: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     LetStatement {
         name: String,
         value: Box<Node>,
@@ -597,7 +603,13 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
-    ExpressionStatement(Box<Node>),
+    /// RES-087: converted from tuple form so it can carry a span
+    /// matching the wrapped expression's starting token.
+    ExpressionStatement {
+        expr: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-078: identifiers carry source span so diagnostics can
     /// point at the referenced name.
     Identifier {
@@ -890,13 +902,19 @@ impl Parser {
                     value: Box::new(value),
                     span,
                 },
-                _ => Node::ExpressionStatement(Box::new(lhs)),
+                _ => Node::ExpressionStatement {
+                    expr: Box::new(lhs),
+                    span: span::Span::default(),
+                },
             }
         } else {
             if self.peek_token == Token::Semicolon {
                 self.next_token();
             }
-            Node::ExpressionStatement(Box::new(lhs))
+            Node::ExpressionStatement {
+                expr: Box::new(lhs),
+                span: span::Span::default(),
+            }
         }
     }
 
@@ -952,7 +970,7 @@ impl Parser {
                 return Node::Function {
                     name,
                     parameters: Vec::new(),
-                    body: Box::new(Node::Block(Vec::new())),
+                    body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                     requires: Vec::new(),
                     ensures: Vec::new(),
                     return_type: None,
@@ -993,7 +1011,7 @@ impl Parser {
                 return Node::Function {
                     name,
                     parameters,
-                    body: Box::new(Node::Block(Vec::new())),
+                    body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                     requires,
                     ensures,
                     return_type,
@@ -1111,18 +1129,20 @@ impl Parser {
     }
     
     fn parse_block_statement(&mut self) -> Node {
+        // RES-087: capture the `{` token's span before advancing.
+        let brace_span = self.span_at_current();
         let mut statements = Vec::new();
-        
+
         self.next_token(); // Skip '{'
-        
+
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             if let Some(stmt) = self.parse_statement() {
                 statements.push(stmt);
             }
             self.next_token();
         }
-        
-        Node::Block(statements)
+
+        Node::Block { stmts: statements, span: brace_span }
     }
     
     /// `static let NAME = EXPR;` — parsed into a StaticLet node. The
@@ -1147,7 +1167,7 @@ impl Parser {
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() }),
-                body: Box::new(Node::Block(Vec::new())),
+                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 span: stmt_span,
             };
         }
@@ -1161,7 +1181,7 @@ impl Parser {
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(iterable),
-                body: Box::new(Node::Block(Vec::new())),
+                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 span: stmt_span,
             };
         }
@@ -1202,7 +1222,7 @@ impl Parser {
             self.record_error(format!("Expected '{{' after while condition, found {:?}", tok));
             return Node::WhileStatement {
                 condition: Box::new(condition),
-                body: Box::new(Node::Block(Vec::new())),
+                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 span: stmt_span,
             };
         }
@@ -1374,7 +1394,7 @@ impl Parser {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after 'live', found {:?}", tok));
             return Node::LiveBlock {
-                body: Box::new(Node::Block(Vec::new())),
+                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 invariants,
             };
         }
@@ -1467,7 +1487,7 @@ impl Parser {
             // the rest of the file can still be parsed.
             return Node::IfStatement {
                 condition: Box::new(condition),
-                consequence: Box::new(Node::Block(Vec::new())),
+                consequence: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 alternative: None,
                 span: stmt_span,
             };
@@ -1499,13 +1519,16 @@ impl Parser {
     }
 
     fn parse_expression_statement(&mut self) -> Option<Node> {
+        // RES-087: capture the span at the statement's first token
+        // before parse_expression advances past it.
+        let stmt_span = self.span_at_current();
         let expr = self.parse_expression(0)?;
-        
+
         if self.peek_token == Token::Semicolon {
             self.next_token(); // Skip to semicolon
         }
-        
-        Some(Node::ExpressionStatement(Box::new(expr)))
+
+        Some(Node::ExpressionStatement { expr: Box::new(expr), span: stmt_span })
     }
     
     /// RES-078: build a single-position `Span` from the lexer's
@@ -1839,7 +1862,7 @@ impl Parser {
             ));
             return Node::FunctionLiteral {
                 parameters: Vec::new(),
-                body: Box::new(Node::Block(Vec::new())),
+                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 return_type: None,
@@ -1857,7 +1880,7 @@ impl Parser {
             ));
             return Node::FunctionLiteral {
                 parameters,
-                body: Box::new(Node::Block(Vec::new())),
+                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 requires,
                 ensures,
                 return_type,
@@ -2903,7 +2926,7 @@ impl Interpreter {
             },
             Node::LiveBlock { body, invariants } => self.eval_live_block(body, invariants),
             Node::Assert { condition, message } => self.eval_assert(condition, message),
-            Node::Block(statements) => self.eval_block_statement(statements),
+            Node::Block { stmts: statements, .. } => self.eval_block_statement(statements),
             Node::LetStatement { name, value, .. } => {
                 let val = self.eval(value)?;
                 // RES-041: if the RHS short-circuited (e.g. via `?`),
@@ -2997,7 +3020,7 @@ impl Interpreter {
                     Ok(Value::Void)
                 }
             },
-            Node::ExpressionStatement(expr) => self.eval(expr),
+            Node::ExpressionStatement { expr, .. } => self.eval(expr),
             Node::Identifier { name, .. } => {
                 if let Some(value) = self.env.get(name) {
                     Ok(value)
@@ -5973,7 +5996,7 @@ mod tests {
         match program {
             Node::Program(stmts) => match &stmts[0].node {
                 Node::Function { body, .. } => match body.as_ref() {
-                    Node::Block(inner) => match &inner[0] {
+                    Node::Block { stmts: inner, .. } => match &inner[0] {
                         Node::ReturnStatement { value, .. } => assert!(value.is_none()),
                         other => panic!("expected ReturnStatement, got {:?}", other),
                     },
@@ -6221,13 +6244,36 @@ mod tests {
     }
 
     #[test]
+    fn block_and_expression_statement_carry_spans() {
+        // RES-087: Block and ExpressionStatement are struct variants
+        // now. Parse a fn body + confirm both have populated spans.
+        let (program, errors) = parse("fn f() { let x = 1; let y = 2; }");
+        assert!(errors.is_empty());
+        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Block { stmts: inner, span: block_span } = body.as_ref() else {
+            panic!("expected Block");
+        };
+        assert_eq!(inner.len(), 2);
+        assert!(block_span.start.line >= 1, "block span: {:?}", block_span);
+
+        // ExpressionStatement: `1 + 2;` at top level
+        let (program, _) = parse("1 + 2;");
+        let Node::Program(stmts) = &program else { panic!() };
+        let Node::ExpressionStatement { expr: _, span } = &stmts[0].node else {
+            panic!("expected ExpressionStatement");
+        };
+        assert!(span.start.line >= 1, "expr-stmt span: {:?}", span);
+    }
+
+    #[test]
     fn array_literal_and_try_carry_spans() {
         // RES-086: ArrayLiteral and TryExpression are struct variants
         // now. Confirm both parse sites populate their spans.
         let (program, errors) = parse("[1, 2, 3];");
         assert!(errors.is_empty());
         let Node::Program(stmts) = &program else { panic!() };
-        let Node::ExpressionStatement(expr) = &stmts[0].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[0].node else { panic!() };
         let Node::ArrayLiteral { items, span } = expr.as_ref() else {
             panic!("expected ArrayLiteral, got {:?}", expr);
         };
@@ -6239,7 +6285,7 @@ mod tests {
         // Walk into the fn body to find the `?` expression.
         let Node::Program(stmts) = &program else { panic!() };
         let Node::Function { body, .. } = &stmts[0].node else { panic!() };
-        let Node::Block(inner) = body.as_ref() else { panic!() };
+        let Node::Block { stmts: inner, .. } = body.as_ref() else { panic!() };
         let Node::LetStatement { value, .. } = &inner[0] else { panic!() };
         let Node::TryExpression { span, .. } = value.as_ref() else {
             panic!("expected TryExpression, got {:?}", value);
@@ -6257,13 +6303,13 @@ mod tests {
         assert!(errors.is_empty(), "parse errors: {:?}", errors);
         let Node::Program(stmts) = &program else { panic!() };
         // stmt 1: `a[0];` expression statement wrapping IndexExpression
-        let Node::ExpressionStatement(expr) = &stmts[1].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[1].node else { panic!() };
         let Node::IndexExpression { span, .. } = expr.as_ref() else {
             panic!("expected IndexExpression");
         };
         assert!(span.start.line >= 1, "index span: {:?}", span);
         // stmt 3: `b.len;` expression statement wrapping FieldAccess
-        let Node::ExpressionStatement(expr) = &stmts[3].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[3].node else { panic!() };
         let Node::FieldAccess { span, .. } = expr.as_ref() else {
             panic!("expected FieldAccess");
         };
@@ -6278,7 +6324,7 @@ mod tests {
         let (program, errors) = parse("1 + 2;");
         assert!(errors.is_empty());
         let Node::Program(stmts) = &program else { panic!() };
-        let Node::ExpressionStatement(expr) = &stmts[0].node else {
+        let Node::ExpressionStatement { expr, .. } = &stmts[0].node else {
             panic!("expected ExpressionStatement, got {:?}", stmts[0].node);
         };
         let Node::InfixExpression { operator, span, .. } = expr.as_ref() else {
@@ -6295,12 +6341,12 @@ mod tests {
         let (program, _) = parse("fn f() { return 1; }\n!true;\nf();");
         let Node::Program(stmts) = &program else { panic!() };
         // stmt 0 is the fn decl; stmt 1 is the !true expression
-        let Node::ExpressionStatement(expr) = &stmts[1].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[1].node else { panic!() };
         let Node::PrefixExpression { operator, span, .. } = expr.as_ref() else { panic!() };
         assert_eq!(operator, "!");
         assert!(span.start.line >= 1);
         // stmt 2 is the call f()
-        let Node::ExpressionStatement(expr) = &stmts[2].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[2].node else { panic!() };
         let Node::CallExpression { span, .. } = expr.as_ref() else { panic!() };
         assert!(span.start.line >= 1);
     }

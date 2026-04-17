@@ -65,11 +65,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 locals.insert(pname.clone(), next_local);
                 next_local += 1;
             }
-            // Function bodies are `Node::Block(stmts)` today. Walk
+            // Function bodies are `Node::Block { stmts, .. }` today. Walk
             // the inner statements; emit a trailing ReturnFromCall so
             // a body that fell through produces Void to the caller.
             let inner = match body.as_ref() {
-                Node::Block(b) => b,
+                Node::Block { stmts: b, .. } => b,
                 single => std::slice::from_ref(single),
             };
             for stmt in inner {
@@ -150,10 +150,10 @@ fn compile_stmt(
             chunk.emit(Op::Return, line);
             Ok(())
         }
-        Node::ExpressionStatement(inner) => {
+        Node::ExpressionStatement { expr: inner, .. } => {
             compile_expr(inner, chunk, locals, fn_index, line)
         }
-        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block(_) => {
+        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block { .. } => {
             compile_control_flow(node, chunk, locals, next_local, fn_index, line)
         }
         Node::Assignment { name, value, .. } => {
@@ -189,7 +189,7 @@ fn compile_control_flow(
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
-        Node::Block(stmts) => {
+        Node::Block { stmts, .. } => {
             for s in stmts {
                 compile_stmt(s, chunk, locals, next_local, fn_index, line)?;
             }
@@ -273,10 +273,10 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
-        Node::ExpressionStatement(inner) => {
+        Node::ExpressionStatement { expr: inner, .. } => {
             compile_expr(inner, chunk, locals, fn_index, line)
         }
-        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block(_) => {
+        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block { .. } => {
             compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, line)
         }
         Node::Assignment { name, value, .. } => {
@@ -303,7 +303,7 @@ fn compile_control_flow_in_fn(
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
-        Node::Block(stmts) => {
+        Node::Block { stmts, .. } => {
             for s in stmts {
                 compile_stmt_in_fn(s, chunk, locals, next_local, fn_index, line)?;
             }
@@ -464,7 +464,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::Function { .. } => "Function",
         Node::LiveBlock { .. } => "LiveBlock",
         Node::Assert { .. } => "Assert",
-        Node::Block(_) => "Block",
+        Node::Block { .. } => "Block",
         Node::LetStatement { .. } => "LetStatement",
         Node::StaticLet { .. } => "StaticLet",
         Node::Assignment { .. } => "Assignment",
@@ -472,7 +472,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::IfStatement { .. } => "IfStatement",
         Node::WhileStatement { .. } => "WhileStatement",
         Node::ForInStatement { .. } => "ForInStatement",
-        Node::ExpressionStatement(_) => "ExpressionStatement",
+        Node::ExpressionStatement { .. } => "ExpressionStatement",
         Node::Identifier { .. } => "Identifier",
         Node::IntegerLiteral { .. } => "IntegerLiteral",
         Node::FloatLiteral { .. } => "FloatLiteral",

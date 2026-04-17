@@ -1,7 +1,7 @@
 ---
 id: RES-087
 title: G6 convert ExpressionStatement + Block to struct variants
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -56,3 +56,35 @@ when the time comes.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `Node::Block(Vec<Node>)` →
+    `Node::Block { stmts: Vec<Node>, span: Span }`.
+  - `Node::ExpressionStatement(Box<Node>)` →
+    `Node::ExpressionStatement { expr: Box<Node>, span: Span }`.
+  - Both `span` fields `#[allow(dead_code)]` matching the
+    convention.
+  - `parse_block_statement` captures the `{` token's span before
+    advancing.
+  - `parse_expression_statement` captures the current-token span
+    before parsing.
+  - `parse_maybe_index_assignment` and other ExpressionStatement
+    construction sites use `Span::default()` for synthetic nodes.
+  - All ~33 destructure / construction sites updated across
+    `main.rs`, `typechecker.rs`, `compiler.rs` via targeted sed
+    + hand-patches for the construction sites.
+- 2026-04-17 tests:
+  - `block_and_expression_statement_carry_spans` parses
+    `fn f() { let x = 1; let y = 2; }`, asserts the inner Block
+    has 2 stmts and a non-default span; then parses `1 + 2;`,
+    asserts the wrapping ExpressionStatement has a non-default
+    span.
+- 2026-04-17 verification across three feature configs:
+  - default: 214 unit + 1 golden + 11 smoke = 226 tests
+  - `--features z3`: 222 + 1 + 12 = 235
+  - `--features lsp`: 217 + 1 + 11 = 229
+  All three `cargo clippy -- -D warnings` clean.
+- ROADMAP G6 cell updated. Tuple-variant work is now COMPLETE.
+  Remaining for full G6 closure: structural variants
+  (`Match`, `StructLiteral`, `FunctionLiteral`, `Function`,
+  `LiveBlock`, `Assert`, `StructDecl`, `Use`) — file as RES-088
+  when ready.
