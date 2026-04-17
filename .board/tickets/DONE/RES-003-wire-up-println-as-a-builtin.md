@@ -1,7 +1,7 @@
 ---
 id: RES-003
 title: Wire up println as a builtin
-state: OPEN
+state: DONE
 priority: P0
 goalpost: G2
 created: 2026-04-16
@@ -36,6 +36,33 @@ blocks integration tests.
 - Register `println` as a `Value::Builtin(fn(&[Value]) -> RResult<Value>)`
   or whatever existing pattern the interpreter uses for first-class
   functions. If none exists yet, add a minimal `Builtin` variant.
+
+## Resolution
+- Added a `Value::Builtin { name, func }` variant with `type BuiltinFn
+  = fn(&[Value]) -> RResult<Value>` signature.
+- `Interpreter::new()` now calls `register_builtins(&mut env)` which
+  inserts `println` into the top-level environment.
+- `apply_function` dispatches on the new variant.
+- `builtin_println` accepts 0 or 1 argument; strings print without
+  surrounding quotes, other values go through `Display`; returns `Void`.
+- Value needed a manual `Debug` impl because `BuiltinFn` doesn't play
+  with derive in a useful way; kept Debug output concise.
+- Two new unit tests confirm `println` is registered and the
+  too-many-args case errors predictably.
+- Integration test `hello_rs_prints_greeting` now asserts on stdout.
+
+Verification:
+```
+$ cargo run --quiet -- examples/hello.rs
+Hello, Resilient world!
+Program executed successfully
+$ cargo test
+running 10 tests ... test result: ok. 10 passed
+running 2 tests ... test result: ok. 2 passed
+```
+
+`minimal.rs` still errors on `"msg" + int` (string+int concatenation);
+that is a separate follow-up (ticket to be minted).
 
 ## Log
 - 2026-04-16 created by session 0

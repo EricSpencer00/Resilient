@@ -760,8 +760,11 @@ impl Parser {
     }
 }
 
+// Signature for native Rust functions exposed to the interpreter.
+type BuiltinFn = fn(&[Value]) -> RResult<Value>;
+
 // Value types for our interpreter
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Value {
     Int(i64),
     Float(f64),
@@ -772,8 +775,31 @@ enum Value {
         body: Box<Node>,
         env: Environment,
     },
+    /// Native function. `name` is the identifier it was registered as,
+    /// for diagnostics only.
+    Builtin {
+        name: &'static str,
+        func: BuiltinFn,
+    },
     Return(Box<Value>),
     Void,
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Value::Int(i) => write!(f, "Int({})", i),
+            Value::Float(fl) => write!(f, "Float({})", fl),
+            Value::String(s) => write!(f, "String({:?})", s),
+            Value::Bool(b) => write!(f, "Bool({})", b),
+            Value::Function { parameters, .. } => {
+                write!(f, "Function({} params)", parameters.len())
+            }
+            Value::Builtin { name, .. } => write!(f, "Builtin({})", name),
+            Value::Return(v) => write!(f, "Return({:?})", v),
+            Value::Void => write!(f, "Void"),
+        }
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -784,6 +810,7 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Function { .. } => write!(f, "<function>"),
+            Value::Builtin { name, .. } => write!(f, "<builtin {}>", name),
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
         }
@@ -833,6 +860,46 @@ impl Environment {
     }
 }
 
+// ---------- Builtins ----------
+//
+// Native functions registered into every Interpreter's top-level
+// environment. Keep this list small and predictable — it is the
+// language's minimal stdlib until a proper module system arrives.
+
+fn register_builtins(env: &mut Environment) {
+    env.set(
+        "println".to_string(),
+        Value::Builtin {
+            name: "println",
+            func: builtin_println,
+        },
+    );
+}
+
+/// Print the single argument followed by a newline and return `Void`.
+///
+/// Strings print without surrounding quotes (so `println("hi")` writes
+/// `hi`, not `"hi"`). Other values print via their `Display` impl.
+fn builtin_println(args: &[Value]) -> RResult<Value> {
+    match args {
+        [] => {
+            println!();
+            Ok(Value::Void)
+        }
+        [single] => {
+            match single {
+                Value::String(s) => println!("{}", s),
+                other => println!("{}", other),
+            }
+            Ok(Value::Void)
+        }
+        many => Err(format!(
+            "println expects 0 or 1 argument, got {}",
+            many.len()
+        )),
+    }
+}
+
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
@@ -840,9 +907,9 @@ struct Interpreter {
 
 impl Interpreter {
     fn new() -> Self {
-        Interpreter {
-            env: Environment::new(),
-        }
+        let mut env = Environment::new();
+        register_builtins(&mut env);
+        Interpreter { env }
     }
     
     fn eval(&mut self, node: &Node) -> RResult<Value> {
@@ -1115,22 +1182,23 @@ impl Interpreter {
         match func {
             Value::Function { parameters, body, env } => {
                 let mut extended_env = Environment::new_enclosed(env);
-                
+
                 for (i, (_, param_name)) in parameters.iter().enumerate() {
                     if i < args.len() {
                         extended_env.set(param_name.clone(), args[i].clone());
                     }
                 }
-                
+
                 let mut interpreter = Interpreter { env: extended_env };
                 let result = interpreter.eval(&body)?;
-                
+
                 if let Value::Return(value) = result {
                     Ok(*value)
                 } else {
                     Ok(result)
                 }
-            },
+            }
+            Value::Builtin { func, .. } => func(&args),
             _ => Err(format!("Not a function: {}", func)),
         }
     }
@@ -1626,6 +1694,22 @@ mod tests {
     }
 
     // ---------- Interpreter ----------
+
+    #[test]
+    fn interpreter_has_println_registered() {
+        // RES-003 contract: every fresh Interpreter has `println` callable.
+        let interp = Interpreter::new();
+        match interp.env.get("println") {
+            Some(Value::Builtin { name, .. }) => assert_eq!(name, "println"),
+            other => panic!("expected Builtin(println), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_println_rejects_too_many_args() {
+        let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
 
     #[test]
     fn interpreter_evaluates_let_and_arithmetic() {
