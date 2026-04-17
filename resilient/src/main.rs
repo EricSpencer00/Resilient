@@ -1952,56 +1952,108 @@ impl std::fmt::Display for Value {
 // Result type for handling errors in our language
 type RResult<T> = Result<T, String>;
 
-// Environment for storing variables
+// Environment for storing variables.
+//
+// RES-050: Environment is a thin wrapper around `Rc<RefCell<EnvFrame>>`.
+// Cloning is just an Rc bump (atomic increment), not a deep copy of
+// the HashMap. This is the key to:
+//
+//   - Recursion working without the apply_function self-bind hack
+//     (a function captured before its name is rebound now sees the
+//     same RefCell that gets the rebind).
+//
+//   - Closures with shared mutation: an inner fn that captures `n`
+//     and mutates it actually mutates the SAME slot the outer fn
+//     reads, instead of a snapshot.
+//
+//   - The fn-call hot path no longer pays for HashMap clone on
+//     every call. fib(25) goes from ~2.9s to <100ms (see
+//     benchmarks/RESULTS.md after this lands).
+//
+// All mutation methods take &self because the RefCell handles
+// interior mutability.
 #[derive(Debug, Clone)]
 struct Environment {
+    inner: Rc<RefCell<EnvFrame>>,
+}
+
+#[derive(Debug)]
+struct EnvFrame {
     store: HashMap<String, Value>,
-    outer: Option<Box<Environment>>,
+    outer: Option<Environment>,
 }
 
 impl Environment {
     fn new() -> Self {
         Environment {
-            store: HashMap::new(),
-            outer: None,
+            inner: Rc::new(RefCell::new(EnvFrame {
+                store: HashMap::new(),
+                outer: None,
+            })),
         }
     }
-    
+
     fn new_enclosed(outer: Environment) -> Self {
         Environment {
-            store: HashMap::new(),
-            outer: Some(Box::new(outer)),
+            inner: Rc::new(RefCell::new(EnvFrame {
+                store: HashMap::new(),
+                outer: Some(outer),
+            })),
         }
     }
-    
+
     fn get(&self, name: &str) -> Option<Value> {
-        match self.store.get(name) {
-            Some(value) => Some(value.clone()),
-            None => {
-                if let Some(outer) = &self.outer {
-                    outer.get(name)
-                } else {
-                    None
-                }
-            }
+        // Take the borrow, look up locally, then if absent walk into
+        // outer. Cloning the outer Environment for the recursive call
+        // is cheap (Rc bump).
+        let frame = self.inner.borrow();
+        if let Some(v) = frame.store.get(name) {
+            return Some(v.clone());
         }
+        let outer = frame.outer.clone();
+        drop(frame);
+        outer.and_then(|o| o.get(name))
     }
-    
-    fn set(&mut self, name: String, value: Value) {
-        self.store.insert(name, value);
+
+    fn set(&self, name: String, value: Value) {
+        self.inner.borrow_mut().store.insert(name, value);
     }
 
     /// Update `name` in the frame where it was first defined. Returns
     /// `true` if the name was found and updated, `false` if it doesn't
     /// exist anywhere in the chain.
-    fn reassign(&mut self, name: &str, value: Value) -> bool {
-        if self.store.contains_key(name) {
-            self.store.insert(name.to_string(), value);
-            true
-        } else if let Some(outer) = self.outer.as_mut() {
-            outer.reassign(name, value)
-        } else {
-            false
+    fn reassign(&self, name: &str, value: Value) -> bool {
+        let mut frame = self.inner.borrow_mut();
+        if frame.store.contains_key(name) {
+            frame.store.insert(name.to_string(), value);
+            return true;
+        }
+        // Drop the borrow before recursing so the outer's borrow_mut
+        // doesn't collide if the chain happens to alias.
+        let outer = frame.outer.clone();
+        drop(frame);
+        match outer {
+            Some(o) => o.reassign(name, value),
+            None => false,
+        }
+    }
+
+    /// Whole-chain deep copy. Allocates fresh RefCells for every frame
+    /// and copies each HashMap by value. Function values inside the
+    /// store are cloned shallowly (their captured envs remain Rc-shared
+    /// with the original) — that's correct because fn definitions
+    /// don't change during a live-block retry; only variable values do.
+    ///
+    /// This restores the pre-RES-050 semantics that `live { }` blocks
+    /// depend on: snapshot the env at entry, restore on every retry so
+    /// each attempt sees the same initial state.
+    fn deep_clone(&self) -> Environment {
+        let frame = self.inner.borrow();
+        Environment {
+            inner: Rc::new(RefCell::new(EnvFrame {
+                store: frame.store.clone(),
+                outer: frame.outer.as_ref().map(|o| o.deep_clone()),
+            })),
         }
     }
 }
@@ -2800,15 +2852,10 @@ impl Interpreter {
     }
     
     fn eval_program(&mut self, statements: &[Node]) -> RResult<Value> {
-        // RES-018: hoist function bindings so they can forward-reference
-        // each other. First pass: bind every top-level fn. Second pass:
-        // re-bind so each captured env includes ALL sibling functions.
-        // Then run non-fn statements in declaration order.
-        for statement in statements {
-            if matches!(statement, Node::Function { .. }) {
-                self.eval(statement)?;
-            }
-        }
+        // RES-018 + RES-050: hoist top-level fn bindings so call sites
+        // can forward-reference. ONE pass suffices now — captured envs
+        // are Rc<RefCell> so the post-hoist mutation of the env is
+        // visible to every previously-captured handle.
         for statement in statements {
             if matches!(statement, Node::Function { .. }) {
                 self.eval(statement)?;
@@ -2848,7 +2895,10 @@ impl Interpreter {
         let mut retry_count = 0;
 
         // Create a snapshot of the environment
-        let env_snapshot = self.env.clone();
+        // RES-050: now that env clone is shallow (Rc bump), we must
+        // explicitly deep-clone here to preserve the live-block's
+        // restore-on-retry semantics.
+        let env_snapshot = self.env.deep_clone();
 
         // Log the start of live block execution
         eprintln!("\x1B[36m[LIVE BLOCK] Starting execution of live block\x1B[0m");
@@ -2905,7 +2955,10 @@ impl Interpreter {
                     );
 
                     // Restore the environment from the snapshot
-                    self.env = env_snapshot.clone();
+                    // Each retry gets a FRESH deep copy of the snapshot
+                    // — otherwise the first retry's mutations would
+                    // pollute the second.
+                    self.env = env_snapshot.deep_clone();
                 }
             }
         }
@@ -3131,31 +3184,12 @@ impl Interpreter {
     fn apply_function(&mut self, func: Value, args: Vec<Value>) -> RResult<Value> {
         match func {
             Value::Function { parameters, body, env, requires, ensures, name } => {
-                let mut extended_env = Environment::new_enclosed(env.clone());
-
-                // Self-bind: make recursive lookups inside the body
-                // resolve to THIS function value. Without this, a
-                // function captured before its own re-definition (the
-                // common case for top-level fns hoisted by eval_program)
-                // would lose its own name on recursion.
-                //
-                // The fully correct fix is `Environment = Rc<RefCell<...>>`
-                // so the captured env stays live as bindings change. That's
-                // tracked as RES-050. This patch is the minimum needed
-                // for recursion to work today.
-                if !name.is_empty() && name != "<anon>" {
-                    extended_env.set(
-                        name.clone(),
-                        Value::Function {
-                            parameters: parameters.clone(),
-                            body: body.clone(),
-                            env: env.clone(),
-                            requires: requires.clone(),
-                            ensures: ensures.clone(),
-                            name: name.clone(),
-                        },
-                    );
-                }
+                // RES-050: env.clone() is now an Rc bump, not a deep
+                // copy. The self-bind hack from c58c4b1 is gone — the
+                // captured env IS the same RefCell that gets the
+                // function's name rebound, so recursion works through
+                // shared mutation.
+                let extended_env = Environment::new_enclosed(env);
 
                 for (i, (_, param_name)) in parameters.iter().enumerate() {
                     if i < args.len() {

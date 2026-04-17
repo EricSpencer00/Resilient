@@ -6,9 +6,13 @@ timings against five other languages on three workloads.
 > **TL;DR.** Resilient is a tree-walking interpreter, not a JIT or a
 > compiler — so it's slower than every comparison language on
 > CPU-bound work. The interesting story isn't "is Resilient fast?"
-> (it isn't). The interesting story is **how much speed you trade for
-> contract verification you can ship**, and where the bottlenecks
-> actually live in a stripped-down embedded-style runtime.
+> The interesting story is **how much speed you trade for contract
+> verification you can ship**, and where the bottlenecks actually live.
+
+After the **RES-050 environment refactor** (Rc<RefCell<...>>),
+function-call-heavy workloads got 7-15× faster. fib(25) is now
+~400 ms instead of ~2.9 s, and the gap between Resilient and the
+rest is mostly closed for tight arithmetic loops.
 
 ---
 
@@ -59,23 +63,23 @@ and recursion.
 
 | Language | Mean | Slowdown vs Rust |
 |---|---:|---:|
-| Rust (native -O) | **2.8 ms** | 1.00× |
-| Lua | 7.8 ms | 2.78× |
-| Python 3 | 33.5 ms | 12.0× |
-| Node.js | 62.8 ms | 22.5× |
-| Ruby | 72.5 ms | 26.0× |
-| **Resilient** | **2,908 ms** | **~1041×** |
+| Rust (native -O) | **1.2 ms** | 1.00× |
+| Lua | 7.7 ms | 6.4× |
+| Python 3 | 32.7 ms | 27× |
+| Node.js | 63.3 ms | 52× |
+| Ruby | 74.1 ms | 61× |
+| **Resilient** | **397.9 ms** | **328×** |
 
-This is the bad case for our interpreter: every fn call clones the
-captured environment, allocates a new `Environment` struct, walks
-the env chain on every identifier lookup, and pays for the
-`apply_function` self-bind clone (the recursion fix shipped in
-`c58c4b1`). With 2^25 ≈ 33M calls, the per-call overhead dominates
-totally.
+**Before RES-050: 2,908 ms (1041×). After: 398 ms (328×). ~7.3× faster.**
 
-The fix is well-understood — `Environment = Rc<RefCell<...>>` would
-remove most of the cloning (tracked as RES-050). A bytecode VM (or
-Cranelift, RES-070) would close most of the rest of the gap.
+The remaining ~300× to native is roughly evenly split between:
+
+- AST walking (every fn call re-walks the body)
+- Dynamic dispatch on every `Node` variant
+- HashMap lookups for identifier resolution
+
+A bytecode VM would close most of the dispatch + walk gap; cranelift
+(RES-070) would close most of the rest.
 
 ### 2. sum 1..100,000 — while-loop accumulator
 
@@ -84,16 +88,17 @@ and arithmetic overhead.
 
 | Language | Mean | Slowdown vs Rust |
 |---|---:|---:|
-| Rust (native -O) | **2.4 ms** | 1.00× |
-| Lua | 3.8 ms | 1.58× |
-| Python 3 | 33.9 ms | 14.1× |
-| **Resilient** | **49.8 ms** | **20.6×** |
-| Node.js | 62.6 ms | 25.9× |
-| Ruby | 66.6 ms | 27.6× |
+| Rust (native -O) | **2.3 ms** | 1.00× |
+| Lua | 4.8 ms | 2.1× |
+| Python 3 | 39.0 ms | 17× |
+| **Resilient** | **49.6 ms** | **21×** |
+| Node.js | 63.9 ms | 27× |
+| Ruby | 69.2 ms | 30× |
 
-**Surprise**: on this workload Resilient beats both Node.js and
-Ruby. The loop-and-arithmetic path is tight in our interpreter; the
-penalty hits when fn calls multiply.
+This workload doesn't touch the fn-call path so the env refactor
+didn't move it. Resilient sits in Python's neighborhood, beats
+Node and Ruby. The remaining gap to Lua is mostly arithmetic
+dispatch through the AST.
 
 ### 3. Contract overhead — 100k `requires` checks
 
@@ -102,33 +107,36 @@ function.
 
 | Variant | Mean | Overhead |
 |---|---:|---:|
-| `Resilient (no contract)` | 1,885 ms | baseline |
-| `Resilient + requires`     | 2,049 ms | **+9%** (~1.5 µs / call) |
+| `Resilient (no contract)` | 128.6 ms | baseline |
+| `Resilient + requires`     | 155.5 ms | **+21%** (~270 ns / call) |
 
 A static `--audit` showed 100% of these call sites are statically
 discharged, which means **the runtime check is provably redundant**
-— the optimizer could elide it entirely. Tracked as RES-068
-("optimize-out runtime checks for statically-discharged contracts").
-Even today, 9% is a modest tax for a feature that catches design
-bugs at compile time.
+— the optimizer could elide it entirely (RES-068).
+
+The before-refactor numbers were 1,885 ms / 2,049 ms — both improved
+~14× from the env refactor. The relative overhead grew from 9% to
+21% because the baseline shrank faster than the absolute check cost.
+Eliding proven-safe checks (RES-068) would zero this out.
 
 ---
 
 ## Honest framing
 
 - **Throughput**: Resilient loses to every language with a JIT or AOT
-  compiler. As an interpreter the language is in Lua's neighborhood
-  for arithmetic and well behind for fn-heavy code.
+  compiler. As an interpreter the language is in Lua/Python's
+  neighborhood for arithmetic and well behind for fn-heavy code.
 - **What it's optimized for**: not throughput. It's optimized for
   **provable correctness** of contract clauses. The `--audit` flag
   shows what's been proven; the Z3 backend (`--features z3`) extends
-  the proofs to universal cases. None of the comparison languages do
-  this.
-- **Hot paths to attack**: env cloning in `apply_function`, no
-  bytecode (every call re-walks the AST), no inline caching for
-  identifiers. RES-050 (shared env via `Rc<RefCell<>>`) is the next
-  obvious win; RES-070 (Cranelift backend) would close most of the
-  remaining gap to native.
+  the proofs to universal cases. None of the comparison languages
+  do this.
+- **Hot paths still to attack**: every fn call still re-walks the AST
+  (no bytecode), every identifier lookup walks the env chain (no
+  inline caching), every operator dispatches through a `match` on
+  Node variants. RES-068 (elide proven-safe runtime checks) would
+  zero out contract overhead. RES-070 (Cranelift backend) would
+  close most of the remaining gap to native.
 
 ---
 
