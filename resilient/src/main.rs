@@ -474,24 +474,39 @@ impl Parser {
         while self.current_token != Token::RightParen {
             let param_type = match &self.current_token {
                 Token::Identifier(typ) => typ.clone(),
-                _ => panic!("Expected parameter type"),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!("Expected parameter type, found {:?}", tok));
+                    // Recover: bail out of the loop; caller will see RightParen
+                    // or Eof and stop.
+                    break;
+                }
             };
-            
+
             self.next_token(); // Skip type
-            
+
             let param_name = match &self.current_token {
                 Token::Identifier(name) => name.clone(),
-                _ => panic!("Expected parameter name"),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!("Expected parameter name, found {:?}", tok));
+                    break;
+                }
             };
-            
+
             parameters.push((param_type, param_name));
-            
+
             self.next_token(); // Skip name
-            
+
             if self.current_token == Token::Comma {
                 self.next_token(); // Skip ','
             } else if self.current_token != Token::RightParen {
-                panic!("Expected ',' or ')' after parameter");
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ',' or ')' after parameter, found {:?}",
+                    tok
+                ));
+                break;
             }
         }
         
@@ -516,18 +531,33 @@ impl Parser {
     
     fn parse_let_statement(&mut self) -> Node {
         self.next_token(); // Skip 'let'
-        
+
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
-            _ => panic!("Expected identifier after 'let'"),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'let', found {:?}", tok));
+                return Node::LetStatement {
+                    name: String::new(),
+                    value: Box::new(Node::IntegerLiteral(0)),
+                };
+            }
         };
-        
+
         self.next_token(); // Skip name
-        
+
         if self.current_token != Token::Assign {
-            panic!("Expected '=' after identifier in let statement");
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after identifier '{}' in let statement, found {:?}",
+                name, tok
+            ));
+            return Node::LetStatement {
+                name,
+                value: Box::new(Node::IntegerLiteral(0)),
+            };
         }
-        
+
         self.next_token(); // Skip '='
         
         let value = self.parse_expression(0).unwrap();
@@ -574,9 +604,13 @@ impl Parser {
         self.next_token(); // Skip 'live'
         
         if self.current_token != Token::LeftBrace {
-            panic!("Expected '{{' after 'live'");
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after 'live', found {:?}", tok));
+            return Node::LiveBlock {
+                body: Box::new(Node::Block(Vec::new())),
+            };
         }
-        
+
         let body = self.parse_block_statement();
         
         Node::LiveBlock {
@@ -775,7 +809,13 @@ impl Parser {
             Token::Greater => ">".to_string(),
             Token::LessEqual => "<=".to_string(),
             Token::GreaterEqual => ">=".to_string(),
-            _ => panic!("Invalid operator"),
+            _ => {
+                // Unreachable in practice (the caller only dispatches
+                // known operator tokens), but better to report than panic.
+                let tok = self.current_token.clone();
+                self.record_error(format!("Internal: unexpected operator token {:?}", tok));
+                return None;
+            }
         };
         
         let precedence = self.current_precedence();
