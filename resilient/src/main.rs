@@ -28,6 +28,8 @@ enum Token {
     Return,
     Static,
     While,
+    For,
+    In,
     Requires,
     Ensures,
     
@@ -265,6 +267,8 @@ impl Lexer {
                         "return" => Token::Return,
                         "static" => Token::Static,
                         "while" => Token::While,
+                        "for" => Token::For,
+                        "in" => Token::In,
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
                         "true" => Token::BoolLiteral(true),
@@ -460,6 +464,13 @@ enum Node {
         condition: Box<Node>,
         body: Box<Node>,
     },
+    /// RES-037: `for NAME in EXPR { BODY }`. `EXPR` must evaluate to an
+    /// array; `NAME` is bound to each element in order.
+    ForInStatement {
+        name: String,
+        iterable: Box<Node>,
+        body: Box<Node>,
+    },
     ExpressionStatement(Box<Node>),
     Identifier(String),
     IntegerLiteral(i64),
@@ -569,6 +580,7 @@ impl Parser {
             Token::Assert => Some(self.parse_assert()),
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
+            Token::For => Some(self.parse_for_in_statement()),
             Token::Unknown(ch) => {
                 self.record_error(format!("Unexpected character '{}'", ch));
                 None
@@ -821,6 +833,48 @@ impl Parser {
     /// `static let NAME = EXPR;` — parsed into a StaticLet node. The
     /// implementation just reuses parse_let_statement after consuming
     /// the `static` keyword and enforcing that `let` follows.
+    /// `for NAME in EXPR { BODY }`
+    fn parse_for_in_statement(&mut self) -> Node {
+        self.next_token(); // Skip 'for'
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'for', found {:?}", tok));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+        if self.current_token != Token::In {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected 'in' after 'for {}', found {:?}", name, tok));
+            return Node::ForInStatement {
+                name,
+                iterable: Box::new(Node::ArrayLiteral(Vec::new())),
+                body: Box::new(Node::Block(Vec::new())),
+            };
+        }
+        self.next_token(); // skip 'in'
+        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral(Vec::new()));
+        self.next_token(); // advance past the expression's tail (RES-014 invariant)
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after for-iterable, found {:?}", tok));
+            return Node::ForInStatement {
+                name,
+                iterable: Box::new(iterable),
+                body: Box::new(Node::Block(Vec::new())),
+            };
+        }
+        let body = self.parse_block_statement();
+        Node::ForInStatement {
+            name,
+            iterable: Box::new(iterable),
+            body: Box::new(body),
+        }
+    }
+
     /// `while COND { BODY }` — same parsing shape as `if` (both `while (c)`
     /// and `while c` forms), minus the `else` branch.
     fn parse_while_statement(&mut self) -> Node {
@@ -1751,6 +1805,24 @@ impl Interpreter {
                     None => Value::Void,
                 };
                 Ok(Value::Return(Box::new(val)))
+            },
+            Node::ForInStatement { name, iterable, body } => {
+                let iter_val = self.eval(iterable)?;
+                let items = match iter_val {
+                    Value::Array(v) => v,
+                    other => return Err(format!(
+                        "`for` iterable must be an array, got {:?}",
+                        other
+                    )),
+                };
+                for item in items {
+                    self.env.set(name.clone(), item);
+                    let result = self.eval(body)?;
+                    if let Value::Return(_) = result {
+                        return Ok(result);
+                    }
+                }
+                Ok(Value::Void)
             },
             Node::WhileStatement { condition, body } => {
                 // Cap iterations as a safety net so a buggy loop can't
@@ -2843,6 +2915,52 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    // ---------- for..in (RES-037) ----------
+
+    #[test]
+    fn for_in_sums_array() {
+        let src = r#"
+            let xs = [1, 2, 3, 4, 5];
+            let s = 0;
+            for x in xs { s = s + x; }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("s").unwrap(), Value::Int(15)));
+    }
+
+    #[test]
+    fn for_in_empty_array_is_noop() {
+        let (p, _e) = parse("let s = 99; for x in [] { s = 0; }");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("s").unwrap(), Value::Int(99)));
+    }
+
+    #[test]
+    fn for_in_nested_arrays() {
+        let src = r#"
+            let m = [[1, 2], [3, 4]];
+            let s = 0;
+            for row in m { for v in row { s = s + v; } }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("s").unwrap(), Value::Int(10)));
+    }
+
+    #[test]
+    fn for_in_non_array_errors() {
+        let (p, _e) = parse("for x in 42 { let y = 1; }");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("iterable must be an array"), "{}", err);
     }
 
     // ---------- Function contracts (RES-035) ----------

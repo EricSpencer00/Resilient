@@ -216,6 +216,12 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::ForInStatement { iterable, body, .. } => {
+                let _ = self.check_node(iterable)?;
+                let _ = self.check_node(body)?;
+                Ok(Type::Void)
+            },
+
             Node::WhileStatement { condition, body } => {
                 let _ = self.check_node(condition)?;
                 let _ = self.check_node(body)?;

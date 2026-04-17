@@ -1,7 +1,7 @@
 ---
 id: RES-037
 title: `for..in` loops over arrays
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G11
 created: 2026-04-16
