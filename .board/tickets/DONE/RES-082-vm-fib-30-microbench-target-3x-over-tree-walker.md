@@ -1,7 +1,7 @@
 ---
 id: RES-082
 title: VM fib(30) microbench vs tree walker
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -55,3 +55,25 @@ beat aspirational ones.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - New `benchmarks/fib/fib_vm.rs` — same recursive fib as
+    `fib.rs` but without `requires` or `println` (neither is a VM
+    op yet). Top-level `fib(25);` leaks the value for the driver
+    to print.
+  - `benchmarks/run.sh` gains a `Resilient (VM)` row in the fib
+    bench comparing to the tree walker and the other-language
+    baselines.
+  - Ran `./benchmarks/run.sh` on Apple M1 Max. **Result: 12.9×
+    speedup.** fib(25): 30.8 ms (VM) vs 396.8 ms (interp).
+  - `benchmarks/RESULTS.md` regenerated with fresh numbers and a
+    new paragraph under the fib table describing the VM-vs-interp
+    result and noting the Value-clone perf cliff as a future
+    follow-up.
+- 2026-04-17 context: the 3× target from RES-076 is **smashed**.
+  The VM also beats Python 3 (35.2 ms), Node.js (64.1 ms), and
+  Ruby (70.8 ms) on this benchmark. Lua (8.5 ms) and native Rust
+  (1.7 ms) remain ahead.
+- 2026-04-17 verification: `cargo test` 206 unit + 1 golden + 11
+  smoke = 218 tests default. `cargo clippy -- -D warnings` clean.
+  No source changes — this ticket only touched `benchmarks/` and
+  the RESULTS doc.
