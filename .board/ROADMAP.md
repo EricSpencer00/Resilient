@@ -184,3 +184,31 @@ bottom — the ladder grows indefinitely.
   * Remaining OPEN: RES-072 (Cranelift JIT, new deps) and
     RES-075 (no_std embedded target, new deps). Both are
     multi-iteration efforts deferred until needed.
+- 2026-04-17 — session continued (iterations 28-39): both Phase 5
+  pillars (JIT + no_std) opened up substantively.
+  * **G15 — JIT real expression + control-flow surface** 🟡.
+    Phases B–E shipped under RES-072: RES-096 (IntegerLiteral +
+    Add), RES-099 (Sub/Mul/Div/Mod via isub/imul/sdiv/srem),
+    RES-100 (six comparison ops via icmp + uextend, plus
+    BooleanLiteral), RES-102 (if/else with brif into two
+    cranelift blocks). The JIT now compiles programs like
+    `if (5 + 5 == 10) { return 1; } else { return 0; }` to
+    native code via parse → lower → cranelift → JITModule →
+    raw fn pointer transmute. 29 jit_backend unit tests + 4
+    end-to-end smoke tests (gated `--features jit`). Phase E
+    enforces both arms of every if must return — Phase F lifts
+    that with a merge_block + phi.
+  * **G18 — no_std embedded toolchain proven end-to-end** ✅.
+    RES-075 (Phase A: alloc-free `Value::Int`/`Bool` in
+    `resilient-runtime/`), RES-097 (verified cross-compile to
+    `thumbv7em-none-eabihf`), RES-098 (opt-in `alloc` feature
+    pulls in embedded-alloc 0.5 — `Value::Float` always
+    available, `Value::String` gated). Cortex-M4F builds clean
+    in both feature configs; clippy passes both. 11 unit tests
+    default, 14 with `--features alloc`.
+  * Test growth: default 217 (unchanged), z3 225, lsp 221, jit
+    245 (+29 jit unit tests + 4 jit smoke tests). resilient-runtime
+    sibling crate: 11 default / 14 alloc. All clippy clean.
+  * Remaining OPEN at iter 39: RES-101 (cortex-m demo crate
+    that links resilient-runtime + wires LlffHeap — needs the
+    manager pass to flesh out acceptance criteria first).
