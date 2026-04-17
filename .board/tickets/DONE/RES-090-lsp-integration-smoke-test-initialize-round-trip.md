@@ -1,7 +1,7 @@
 ---
 id: RES-090
 title: LSP integration smoke test — initialize round trip
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -66,3 +66,31 @@ ticket covers the foundational handshake.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - New `resilient/tests/lsp_smoke.rs` — separate test binary
+    gated `#[cfg(feature = "lsp")]`.
+  - Hand-rolled LSP framing helpers (`frame()` and
+    `read_one_message()`) — no new deps. `read_one_message`
+    parses Content-Length headers byte-by-byte until `\r\n\r\n`
+    terminator, then reads exactly N bytes of body, with a
+    deadline-based timeout for safety.
+  - Test `lsp_initialize_round_trip`:
+    1. Spawns `resilient --lsp` with piped stdin/stdout/stderr.
+    2. Sends framed `initialize` request (id=1, empty caps).
+    3. Reads framed response within a 5-second deadline.
+    4. Substring-asserts the response body contains `jsonrpc:2.0`,
+       `id:1`, `capabilities`, and `textDocumentSync` (the last
+       proves `Backend::initialize` actually ran).
+    5. Sends `exit` notification, drops stdin, polls for the
+       process to exit within 3 seconds.
+  - Substring-checks beat parsing — no need to add `serde_json`
+    as a direct dep.
+- 2026-04-17 verification across three feature configs:
+  - default: 215 unit + 1 golden + 11 examples_smoke = 227 tests
+  - `--features z3`: 223 + 1 + 12 = 236 tests
+  - `--features lsp`: 219 + 1 + 11 + **1 lsp_smoke** = 232 tests
+  All three `cargo clippy -- -D warnings` clean.
+- 2026-04-17 The LSP server is now proven end-to-end: a real
+  client can spawn it, complete the initialize handshake, and
+  cleanly shut it down. Follow-up (separate ticket): full
+  did_open → publishDiagnostics flow with range assertions.
