@@ -4168,6 +4168,51 @@ mod tests {
         }
     }
 
+    // ---------- Match exhaustiveness (RES-054) ----------
+
+    #[test]
+    fn typecheck_rejects_non_exhaustive_bool_match() {
+        let err = typecheck_src(r#"
+            let b = true;
+            let r = match b { true => 1, };
+        "#).unwrap_err();
+        assert!(err.contains("Non-exhaustive match on bool"), "got: {}", err);
+        assert!(err.contains("missing `false`"), "got: {}", err);
+    }
+
+    #[test]
+    fn typecheck_accepts_exhaustive_bool_match() {
+        typecheck_src(r#"
+            let b = true;
+            let r = match b { true => 1, false => 0, };
+        "#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_accepts_bool_match_with_wildcard() {
+        typecheck_src(r#"
+            let b = true;
+            let r = match b { true => 1, _ => 0, };
+        "#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_int_match_without_default() {
+        let err = typecheck_src(r#"
+            let n = 5;
+            let r = match n { 0 => "zero", 1 => "one", };
+        "#).unwrap_err();
+        assert!(err.contains("Non-exhaustive match on int"), "got: {}", err);
+    }
+
+    #[test]
+    fn typecheck_accepts_int_match_with_identifier_default() {
+        typecheck_src(r#"
+            let n = 5;
+            let r = match n { 0 => "zero", x => "other", };
+        "#).unwrap();
+    }
+
     // ---------- match (RES-039) ----------
 
     #[test]

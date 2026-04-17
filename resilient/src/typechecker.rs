@@ -1,6 +1,6 @@
 // Type checker module for Resilient language
 use std::collections::HashMap;
-use crate::Node;
+use crate::{Node, Pattern};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
@@ -368,13 +368,57 @@ impl TypeChecker {
             },
 
             Node::Match { scrutinee, arms } => {
-                let _ = self.check_node(scrutinee)?;
-                // Each arm's body is checked, but we don't unify arms
-                // at MVP — match's overall type is Any so downstream
-                // usage stays permissive.
+                let scrutinee_type = self.check_node(scrutinee)?;
                 for (_, body) in arms {
                     let _ = self.check_node(body)?;
                 }
+
+                // RES-054: exhaustiveness check.
+                // Any wildcard or identifier pattern makes the match
+                // trivially exhaustive.
+                let has_default = arms.iter().any(|(p, _)| {
+                    matches!(p, Pattern::Wildcard | Pattern::Identifier(_))
+                });
+
+                if !has_default {
+                    match scrutinee_type {
+                        // Bool is the only finite-domain scalar; require
+                        // coverage of both true and false.
+                        Type::Bool => {
+                            let has_true = arms.iter().any(|(p, _)| {
+                                matches!(p, Pattern::Literal(Node::BooleanLiteral(true)))
+                            });
+                            let has_false = arms.iter().any(|(p, _)| {
+                                matches!(p, Pattern::Literal(Node::BooleanLiteral(false)))
+                            });
+                            if !(has_true && has_false) {
+                                return Err(format!(
+                                    "Non-exhaustive match on bool: {}{}{}",
+                                    if has_true { "" } else { "missing `true` arm" },
+                                    if !has_true && !has_false { "; " } else { "" },
+                                    if has_false { "" } else { "missing `false` arm" },
+                                ));
+                            }
+                        }
+                        // For any other scrutinee type — int, float,
+                        // string, struct, Result, etc. — a wildcard /
+                        // identifier arm is required. The domain is
+                        // effectively open.
+                        Type::Any => {
+                            // Scrutinee type unknown → accept the match
+                            // rather than force a wildcard. Real
+                            // exhaustiveness for user types lands with
+                            // G7's struct-decl table.
+                        }
+                        other => {
+                            return Err(format!(
+                                "Non-exhaustive match on {}: add a wildcard `_` or identifier arm to handle unmatched values",
+                                other
+                            ));
+                        }
+                    }
+                }
+
                 Ok(Type::Any)
             },
 
