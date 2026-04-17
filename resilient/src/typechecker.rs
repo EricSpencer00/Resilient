@@ -258,12 +258,43 @@ impl VerificationStats {
 /// or returns None otherwise. Keeps the typechecker code agnostic to
 /// whether the SMT layer is compiled in.
 #[cfg(feature = "z3")]
+#[allow(dead_code)]
 fn z3_prove(expr: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     crate::verifier_z3::prove(expr, bindings)
 }
 #[cfg(not(feature = "z3"))]
+#[allow(dead_code)]
 fn z3_prove(_expr: &Node, _bindings: &HashMap<String, i64>) -> Option<bool> {
     None
+}
+
+/// RES-071: like `z3_prove`, but also returns an SMT-LIB2 certificate
+/// when the proof succeeds. Without `--features z3`, returns `(None, None)`.
+#[cfg(feature = "z3")]
+fn z3_prove_with_cert(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+) -> (Option<bool>, Option<String>) {
+    let (verdict, cert) = crate::verifier_z3::prove_with_certificate(expr, bindings);
+    (verdict, cert.map(|c| c.smt2))
+}
+#[cfg(not(feature = "z3"))]
+fn z3_prove_with_cert(
+    _expr: &Node,
+    _bindings: &HashMap<String, i64>,
+) -> (Option<bool>, Option<String>) {
+    (None, None)
+}
+
+/// RES-071: a single SMT-LIB2 proof certificate that the typechecker
+/// captured when Z3 successfully discharged a contract obligation.
+/// Filename on disk: `{fn_name}__{kind}__{idx}.smt2`.
+#[derive(Debug, Clone)]
+pub struct CapturedCertificate {
+    pub fn_name: String,
+    pub kind: &'static str,
+    pub idx: usize,
+    pub smt2: String,
 }
 
 // Type checker for verifying type correctness
@@ -276,6 +307,10 @@ pub struct TypeChecker {
     const_bindings: HashMap<String, i64>,
     /// RES-066: verification audit counters.
     pub stats: VerificationStats,
+    /// RES-071: SMT-LIB2 certificates accumulated by every successful
+    /// Z3 proof. The driver writes these to disk when invoked with
+    /// `--emit-certificate <DIR>`.
+    pub certificates: Vec<CapturedCertificate>,
 }
 
 impl TypeChecker {
@@ -381,6 +416,7 @@ impl TypeChecker {
             contract_table: HashMap::new(),
             const_bindings: HashMap::new(),
             stats: VerificationStats::default(),
+            certificates: Vec::new(),
         }
     }
     
@@ -449,14 +485,26 @@ impl TypeChecker {
                 // tautology is discharged; anything else is left for
                 // runtime.
                 let no_bindings: HashMap<String, i64> = HashMap::new();
-                for clause in requires.iter().chain(ensures.iter()) {
+                for (decl_idx, clause) in requires.iter().chain(ensures.iter()).enumerate() {
                     // Cheap folder first; fall back to Z3 (RES-067)
                     // for universal tautology / contradiction proofs.
                     let mut verdict = fold_const_bool(clause, &no_bindings);
                     if verdict.is_none() {
-                        verdict = z3_prove(clause, &no_bindings);
+                        // RES-071: capture the SMT-LIB2 certificate
+                        // alongside the verdict so the driver can dump
+                        // it to disk if --emit-certificate is set.
+                        let (v, cert) = z3_prove_with_cert(clause, &no_bindings);
+                        verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
+                            if let Some(smt2) = cert {
+                                self.certificates.push(CapturedCertificate {
+                                    fn_name: name.clone(),
+                                    kind: "decl",
+                                    idx: decl_idx,
+                                    smt2,
+                                });
+                            }
                         }
                     }
                     match verdict {
@@ -951,15 +999,27 @@ impl TypeChecker {
                             bindings.insert(pname.clone(), v);
                         }
                     }
-                    for clause in &info.requires {
+                    for (clause_idx, clause) in info.requires.iter().enumerate() {
                         // Try the cheap hand-rolled folder first.
                         let mut verdict = fold_const_bool(clause, &bindings);
                         // RES-067: if undecidable, fall back to Z3
                         // (only when the binary was built --features z3).
                         if verdict.is_none() {
-                            verdict = z3_prove(clause, &bindings);
+                            // RES-071: also capture certificate.
+                            let (v, cert) = z3_prove_with_cert(clause, &bindings);
+                            verdict = v;
                             if verdict.is_some() {
                                 self.stats.requires_discharged_by_z3 += 1;
+                            }
+                            if matches!(verdict, Some(true))
+                                && let Some(smt2) = cert
+                            {
+                                self.certificates.push(CapturedCertificate {
+                                    fn_name: callee_name.clone(),
+                                    kind: "callsite_requires",
+                                    idx: clause_idx,
+                                    smt2,
+                                });
                             }
                         }
                         match verdict {

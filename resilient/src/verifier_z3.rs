@@ -20,27 +20,86 @@
 // fires.
 
 use crate::Node;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use z3::ast::{Ast, Bool, Int};
+
+/// RES-071: a re-verifiable SMT-LIB2 certificate captured when Z3
+/// successfully discharges a contract obligation. Feeding the
+/// `smt2` string to a stock Z3 (`z3 -smt2 cert.smt2`) must print
+/// `unsat`, confirming the proof without trusting our binary.
+#[derive(Debug, Clone)]
+pub struct ProofCertificate {
+    pub smt2: String,
+}
 
 /// Return Some(true) if the expression is provably always true under
 /// the bindings, Some(false) if provably always false, None if
 /// undecidable or out of the supported subset.
+///
+/// Thin wrapper over `prove_with_certificate` for callers that don't
+/// need the SMT-LIB2 dump.
+#[allow(dead_code)]
 pub fn prove(expr: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
+    prove_with_certificate(expr, bindings).0
+}
+
+/// RES-071: like `prove`, but ALSO returns a self-contained
+/// SMT-LIB2 certificate when the verdict is `Some(true)`. The
+/// certificate, fed to stock Z3, must print `unsat` — that is, the
+/// negation of the contract clause is unsatisfiable, which is the
+/// definition of a tautology proof. For `Some(false)` and `None`
+/// verdicts the certificate is omitted.
+pub fn prove_with_certificate(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+) -> (Option<bool>, Option<ProofCertificate>) {
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
 
     // Translate the expression to a Z3 boolean.
-    let formula = translate_bool(&ctx, expr, bindings)?;
+    let formula = match translate_bool(&ctx, expr, bindings) {
+        Some(f) => f,
+        None => return (None, None),
+    };
 
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
     // is always true regardless of any free variables.
     let solver = z3::Solver::new(&ctx);
-    solver.assert(&formula.not());
+    let negated = formula.not();
+    solver.assert(&negated);
     let tautology = matches!(solver.check(), z3::SatResult::Unsat);
 
     if tautology {
-        return Some(true);
+        // Build a self-contained re-verifiable SMT-LIB2 file.
+        // Strategy: declare every Int identifier that appears in the
+        // expression, then constrain the bound ones to their concrete
+        // value, then assert the NEGATED goal so a fresh Z3 returns
+        // `unsat` (which is the proof that the original was always
+        // true).
+        let mut idents: BTreeSet<String> = BTreeSet::new();
+        collect_int_identifiers(expr, &mut idents);
+
+        let mut smt2 = String::new();
+        smt2.push_str("; RES-071 verification certificate\n");
+        smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
+        smt2.push_str("(set-logic AUFLIA)\n");
+        for name in &idents {
+            smt2.push_str(&format!("(declare-const {} Int)\n", name));
+        }
+        // Bound identifiers: pin them to their concrete value with an
+        // equality assertion. Free identifiers are left unconstrained
+        // so the proof is universal over them.
+        for name in &idents {
+            if let Some(v) = bindings.get(name) {
+                smt2.push_str(&format!("(assert (= {} {}))\n", name, v));
+            }
+        }
+        // The negated goal — Z3 ASTs Display as SMT-LIB2 syntax, so
+        // we get a faithful round-trip via `negated.to_string()`.
+        smt2.push_str(&format!("(assert {})\n", negated));
+        smt2.push_str("(check-sat)\n");
+
+        return (Some(true), Some(ProofCertificate { smt2 }));
     }
 
     // Contradiction check: is `formula` unsatisfiable? If yes, the
@@ -50,10 +109,32 @@ pub fn prove(expr: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
 
     if contradiction {
-        return Some(false);
+        return (Some(false), None);
     }
 
-    None
+    (None, None)
+}
+
+/// Walk the AST collecting every identifier that the integer or boolean
+/// translator could plausibly emit a `(declare-const NAME Int)` for.
+/// Conservative — over-collecting is fine (extra unused declarations
+/// don't change satisfiability); under-collecting would make the
+/// certificate reference an undefined symbol and stock Z3 would error.
+fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
+    match node {
+        Node::Identifier(name) => {
+            out.insert(name.clone());
+        }
+        Node::PrefixExpression { right, .. } => collect_int_identifiers(right, out),
+        Node::InfixExpression { left, right, .. } => {
+            collect_int_identifiers(left, out);
+            collect_int_identifiers(right, out);
+        }
+        // Literals contribute no identifiers; everything else
+        // (calls, blocks, etc.) is outside the supported subset and
+        // would have caused translate_*() to bail already.
+        _ => {}
+    }
 }
 
 fn translate_bool<'c>(
@@ -200,6 +281,62 @@ mod tests {
             }),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
+    }
+
+    #[test]
+    fn certificate_for_tautology_contains_negated_goal_and_check_sat() {
+        // RES-071: a successfully proven tautology yields a self-
+        // contained .smt2 file declaring every free identifier and
+        // asserting the negation of the goal.
+        let no_b = HashMap::new();
+        let expr = Node::InfixExpression {
+            left: Box::new(Node::InfixExpression {
+                left: Box::new(Node::Identifier("x".to_string())),
+                operator: "+".to_string(),
+                right: Box::new(Node::IntegerLiteral(0)),
+            }),
+            operator: "==".to_string(),
+            right: Box::new(Node::Identifier("x".to_string())),
+        };
+        let (verdict, cert) = prove_with_certificate(&expr, &no_b);
+        assert_eq!(verdict, Some(true));
+        let cert = cert.expect("tautology must yield a certificate");
+        assert!(cert.smt2.contains("(declare-const x Int)"), "missing decl in:\n{}", cert.smt2);
+        assert!(cert.smt2.contains("(check-sat)"), "missing check-sat in:\n{}", cert.smt2);
+        assert!(cert.smt2.contains("(set-logic"), "missing set-logic in:\n{}", cert.smt2);
+        assert!(cert.smt2.contains("(assert "), "missing negated assertion in:\n{}", cert.smt2);
+    }
+
+    #[test]
+    fn certificate_pins_bound_identifiers_to_their_concrete_value() {
+        // RES-071: when a parameter has a known constant binding, the
+        // certificate must include an `(assert (= NAME VALUE))` so the
+        // re-verification reflects the same call site.
+        let mut bindings = HashMap::new();
+        bindings.insert("n".to_string(), 5);
+        let expr = Node::InfixExpression {
+            left: Box::new(Node::Identifier("n".to_string())),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral(0)),
+        };
+        let (verdict, cert) = prove_with_certificate(&expr, &bindings);
+        assert_eq!(verdict, Some(true));
+        let cert = cert.expect("bound tautology must yield a certificate");
+        assert!(cert.smt2.contains("(declare-const n Int)"));
+        assert!(cert.smt2.contains("(assert (= n 5))"), "missing binding pin:\n{}", cert.smt2);
+    }
+
+    #[test]
+    fn certificate_is_omitted_for_undecidable() {
+        // RES-071: don't emit a certificate when there's no proof.
+        let no_b = HashMap::new();
+        let expr = Node::InfixExpression {
+            left: Box::new(Node::Identifier("x".to_string())),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral(0)),
+        };
+        let (_, cert) = prove_with_certificate(&expr, &no_b);
+        assert!(cert.is_none(), "no proof => no cert");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 id: RES-071
 title: G19 export SMT verification certificate
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G19
 created: 2026-04-17
@@ -48,3 +48,29 @@ practice.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager
+- 2026-04-17 executor landed:
+  - `verifier_z3::prove_with_certificate` returns the SMT-LIB2 dump
+    alongside the verdict; `prove` is now a thin wrapper. Built the
+    certificate by hand (declare-const for every Int identifier in the
+    AST, pin call-site bindings via `(assert (= NAME VAL))`, then
+    `(assert (not <goal>))` followed by `(check-sat)`) — independent of
+    z3-rs's internal `Solver::to_smt2()` so the file is portable to
+    stock Z3.
+  - `typechecker::CapturedCertificate { fn_name, kind, idx, smt2 }`
+    accumulator on `TypeChecker`; both Z3 callsites (decl-level and
+    call-site-discharge) push when proof succeeds.
+  - Driver: `--emit-certificate <DIR>` (also `=DIR`) flag; implies
+    `--typecheck`. After typecheck, writes one `.smt2` per cert as
+    `<fn>__<kind>__<idx>.smt2` and prints a cyan summary line.
+  - `examples/cert_demo.rs` declares `requires x + 0 == x` (cheap
+    folder gives up on the free var; Z3 proves universally).
+  - Smoke test `emit_certificate_writes_reverifiable_smt2` (gated on
+    `--features z3`) runs the demo, asserts the .smt2 exists, then
+    re-runs stock `z3 -smt2` if the binary is on PATH and asserts the
+    output contains `unsat`. Skips re-verify cleanly if z3 is absent.
+  - `README.md` gains a "Verification certificates" section under the
+    SMT-backed verification block.
+- 2026-04-17 verification: default `cargo build/test/clippy -- -D warnings` clean
+  (152 tests). With `--features z3`: 161 tests, clippy clean. Stock Z3
+  manual round-trip: `z3 -smt2 ./certs/ident_round__decl__0.smt2` →
+  `unsat` (proof confirmed).

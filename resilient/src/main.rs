@@ -3544,8 +3544,36 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     (program, errs)
 }
 
+/// RES-071: writes accumulated SMT-LIB2 certificates to `dir`. One file
+/// per discharged obligation: `{fn_name}__{kind}__{idx}.smt2`. Returns
+/// the count written for the audit summary.
+fn emit_certificates(
+    certificates: &[typechecker::CapturedCertificate],
+    dir: &Path,
+) -> RResult<usize> {
+    fs::create_dir_all(dir).map_err(|e| {
+        format!("could not create certificate directory {}: {}", dir.display(), e)
+    })?;
+    for cert in certificates {
+        // Sanitize fn_name: only [A-Za-z0-9_] survives, others become '_'.
+        let safe: String = cert.fn_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .collect();
+        let path = dir.join(format!("{}__{}__{}.smt2", safe, cert.kind, cert.idx));
+        fs::write(&path, &cert.smt2)
+            .map_err(|e| format!("could not write {}: {}", path.display(), e))?;
+    }
+    Ok(certificates.len())
+}
+
 // Execute a Resilient source file
-fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
+fn execute_file(
+    filename: &str,
+    type_check: bool,
+    audit: bool,
+    emit_cert_dir: Option<&Path>,
+) -> RResult<()> {
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
 
@@ -3573,9 +3601,11 @@ fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
         return Err(format!("Import error: {}", e));
     }
 
-    // Type checking if enabled. --audit implies --typecheck.
+    // Type checking if enabled. --audit and --emit-certificate both
+    // imply --typecheck (no point running them without it).
+    let want_typecheck = type_check || audit || emit_cert_dir.is_some();
     let mut proven_fns: HashSet<String> = HashSet::new();
-    if type_check || audit {
+    if want_typecheck {
         println!("Running type checker...");
         let mut tc = typechecker::TypeChecker::new();
         match tc.check_program(&program) {
@@ -3591,6 +3621,17 @@ fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
         proven_fns = tc.stats.fully_provable_fns();
         if audit {
             print_verification_audit(&tc.stats);
+        }
+        // RES-071: dump SMT-LIB2 certificates for every Z3-discharged
+        // obligation so a downstream consumer can re-verify with
+        // stock Z3 and confirm the proof without trusting our binary.
+        if let Some(dir) = emit_cert_dir {
+            let n = emit_certificates(&tc.certificates, dir)?;
+            println!(
+                "\x1B[36mWrote {} verification certificate(s) to {}\x1B[0m",
+                n,
+                dir.display()
+            );
         }
     }
 
@@ -3641,28 +3682,42 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
-    
+
     let mut type_check = false;
     let mut audit = false;
+    let mut emit_cert_dir: Option<PathBuf> = None;
     let mut filename = "";
 
     // Simple argument parsing
     if args.len() > 1 {
-        for arg in args.iter().skip(1) {
+        let mut i = 1;
+        while i < args.len() {
+            let arg = &args[i];
             if arg == "--typecheck" || arg == "-t" {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--emit-certificate" {
+                // RES-071: --emit-certificate <DIR>
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --emit-certificate requires a directory argument");
+                    std::process::exit(2);
+                }
+                emit_cert_dir = Some(PathBuf::from(&args[i]));
+            } else if let Some(dir) = arg.strip_prefix("--emit-certificate=") {
+                emit_cert_dir = Some(PathBuf::from(dir));
             } else {
                 filename = arg;
             }
+            i += 1;
         }
 
         if !filename.is_empty() {
             // Execute a file. RES-027: a failed run exits non-zero so
             // `run_examples.sh` / CI / ops tooling can distinguish
             // success from failure without parsing stdout.
-            match execute_file(filename, type_check, audit) {
+            match execute_file(filename, type_check, audit, emit_cert_dir.as_deref()) {
                 Ok(_) => {
                     println!("Program executed successfully");
                     return;

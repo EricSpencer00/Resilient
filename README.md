@@ -99,6 +99,30 @@ cargo run --features z3 -- --audit prog.rs
 The audit report tags clauses proven by Z3 separately so users can
 see what the SMT layer added.
 
+### Verification certificates (RES-071)
+
+Once Z3 has discharged a contract obligation, you can ask the driver
+to dump the proof as an SMT-LIB2 file so a downstream consumer can
+re-verify it under their own solver — without trusting the Resilient
+binary:
+
+```bash
+cargo run --features z3 -- --emit-certificate ./certs examples/cert_demo.rs
+```
+
+One file is written per discharged obligation:
+`./certs/<fn_name>__<kind>__<idx>.smt2`. Each file is self-contained
+(declares every free variable, pins call-site bindings, asserts the
+negated goal, ends with `(check-sat)`). Feed it to stock Z3:
+
+```bash
+z3 -smt2 ./certs/ident_round__decl__0.smt2
+# unsat        ← the proof: negation is unsatisfiable, so the original holds
+```
+
+Implies `--typecheck`. Without `--features z3`, no certificates are
+emitted (the cheap folder isn't asked to produce them).
+
 ### Available Examples
 
 - `minimal.rs` - A minimal working example that demonstrates basic functionality

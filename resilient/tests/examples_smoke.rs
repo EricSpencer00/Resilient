@@ -53,6 +53,66 @@ fn broken_example_exits_non_zero() {
 }
 
 #[test]
+#[cfg(feature = "z3")]
+fn emit_certificate_writes_reverifiable_smt2() {
+    // RES-071: --emit-certificate <DIR> dumps an SMT-LIB2 file per
+    // Z3-discharged contract obligation. Each file, fed back to stock
+    // Z3, must report `unsat` (which is the proof). The test skips
+    // cleanly if `z3` is not on PATH — no assumption about the CI
+    // environment.
+    let tmp = std::env::temp_dir().join(format!("res_071_smoke_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let output = Command::new(bin())
+        .arg("--emit-certificate")
+        .arg(&tmp)
+        .arg("examples/cert_demo.rs")
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "driver should exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("Wrote 1 verification certificate"),
+        "expected cert-emission line; got:\n{stdout}"
+    );
+
+    // At least one .smt2 file landed.
+    let entries: Vec<_> = std::fs::read_dir(&tmp)
+        .expect("certificate dir was not created")
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("smt2"))
+        .collect();
+    assert!(!entries.is_empty(), "no .smt2 cert in {}", tmp.display());
+
+    // Re-verify with stock Z3 if available; if not, skip cleanly.
+    let z3_present = Command::new("z3").arg("-version").output().is_ok();
+    if z3_present {
+        for entry in &entries {
+            let out = Command::new("z3")
+                .arg("-smt2")
+                .arg(entry.path())
+                .output()
+                .expect("spawn stock z3");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                stdout.contains("unsat"),
+                "stock z3 did not return unsat for {}; got: {stdout}",
+                entry.path().display()
+            );
+        }
+    } else {
+        eprintln!("(z3 binary not on PATH — skipping re-verification step)");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 fn imports_demo_resolves_use_clause() {
     // RES-073: `use "helpers.rs";` in main.rs pulls in square() and
     // shout() so the program can call them as if they were declared
