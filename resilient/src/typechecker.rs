@@ -56,36 +56,45 @@ fn compatible(a: &Type, b: &Type) -> bool {
     a == b || matches!(a, Type::Any) || matches!(b, Type::Any)
 }
 
-/// RES-060: fold a contract expression down to a concrete boolean if
-/// it has no free variables. Returns:
-///   Some(true)  — provably always true (tautology, accept and discharge)
-///   Some(false) — provably always false (contradiction, reject)
-///   None        — can't decide statically (leave for runtime check)
+/// RES-060/061: fold a contract expression down to a concrete boolean.
+/// `bindings` maps identifier names to known integer values — used at
+/// call sites where the typechecker has constant arguments to
+/// substitute for parameters.
 ///
-/// This is the first static-verification brick in Phase 4. G9b will
-/// replace this with a real SMT layer that can also reason about
-/// bindings, but the shape of the return type stays the same.
-fn fold_const_bool(n: &Node) -> Option<bool> {
+/// Returns:
+///   Some(true)  — provably true (tautology under bindings, discharged)
+///   Some(false) — provably false (contradiction, reject)
+///   None        — undecidable (leave for runtime check)
+///
+/// This is the verification core. G9b will swap it for a Z3 query;
+/// the return shape (sat/unsat/unknown) stays the same.
+fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     match n {
         Node::BooleanLiteral(b) => Some(*b),
         Node::PrefixExpression { operator, right } if operator == "!" => {
-            fold_const_bool(right).map(|b| !b)
+            fold_const_bool(right, bindings).map(|b| !b)
         }
         Node::InfixExpression { left, operator, right } => {
             match operator.as_str() {
-                "&&" => match (fold_const_bool(left), fold_const_bool(right)) {
+                "&&" => match (
+                    fold_const_bool(left, bindings),
+                    fold_const_bool(right, bindings),
+                ) {
                     (Some(a), Some(b)) => Some(a && b),
                     (Some(false), _) | (_, Some(false)) => Some(false),
                     _ => None,
                 },
-                "||" => match (fold_const_bool(left), fold_const_bool(right)) {
+                "||" => match (
+                    fold_const_bool(left, bindings),
+                    fold_const_bool(right, bindings),
+                ) {
                     (Some(a), Some(b)) => Some(a || b),
                     (Some(true), _) | (_, Some(true)) => Some(true),
                     _ => None,
                 },
                 "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                    let l = fold_const_i64(left)?;
-                    let r = fold_const_i64(right)?;
+                    let l = fold_const_i64(left, bindings)?;
+                    let r = fold_const_i64(right, bindings)?;
                     Some(match operator.as_str() {
                         "==" => l == r,
                         "!=" => l != r,
@@ -103,16 +112,17 @@ fn fold_const_bool(n: &Node) -> Option<bool> {
     }
 }
 
-/// Fold an integer-typed expression to a concrete i64 if no free vars.
-fn fold_const_i64(n: &Node) -> Option<i64> {
+/// Fold an integer-typed expression to a concrete i64 under bindings.
+fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
     match n {
         Node::IntegerLiteral(v) => Some(*v),
+        Node::Identifier(name) => bindings.get(name).copied(),
         Node::PrefixExpression { operator, right } if operator == "-" => {
-            fold_const_i64(right).map(|v| -v)
+            fold_const_i64(right, bindings).map(|v| -v)
         }
         Node::InfixExpression { left, operator, right } => {
-            let l = fold_const_i64(left)?;
-            let r = fold_const_i64(right)?;
+            let l = fold_const_i64(left, bindings)?;
+            let r = fold_const_i64(right, bindings)?;
             match operator.as_str() {
                 "+" => l.checked_add(r),
                 "-" => l.checked_sub(r),
@@ -166,9 +176,25 @@ impl TypeEnvironment {
     }
 }
 
+/// RES-061: signature-and-contract record stored per top-level fn so
+/// the typechecker can fold contracts at constant call sites.
+#[derive(Debug, Clone)]
+struct ContractInfo {
+    parameters: Vec<(String, String)>, // (type_name, param_name)
+    requires: Vec<Node>,
+    /// Reserved for the symmetric ensures-fold work (post-call result
+    /// substitution); not used by the call-site fold today, but kept
+    /// in the table so RES-062 can pick up where this leaves off.
+    #[allow(dead_code)]
+    ensures: Vec<Node>,
+}
+
 // Type checker for verifying type correctness
 pub struct TypeChecker {
     env: TypeEnvironment,
+    /// RES-061: top-level function name → its parameters + contract clauses.
+    /// Populated by check_program's first pass; consulted by CallExpression.
+    contract_table: HashMap<String, ContractInfo>,
 }
 
 impl TypeChecker {
@@ -269,20 +295,45 @@ impl TypeChecker {
         env.set("unwrap".to_string(), fn_result_to_any());
         env.set("unwrap_err".to_string(), fn_result_to_any());
 
-        TypeChecker { env }
+        TypeChecker {
+            env,
+            contract_table: HashMap::new(),
+        }
     }
     
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
         match program {
             Node::Program(statements) => {
+                // RES-061: pre-pass to register every top-level Function
+                // in the contract table. Mirrors the interpreter's
+                // function-hoisting pass so call sites can fold contracts
+                // even for forward references.
+                for stmt in statements {
+                    if let Node::Function {
+                        name,
+                        parameters,
+                        requires,
+                        ensures,
+                        ..
+                    } = stmt
+                    {
+                        self.contract_table.insert(
+                            name.clone(),
+                            ContractInfo {
+                                parameters: parameters.clone(),
+                                requires: requires.clone(),
+                                ensures: ensures.clone(),
+                            },
+                        );
+                    }
+                }
+
                 let mut result_type = Type::Void;
-                
                 for stmt in statements {
                     result_type = self.check_node(stmt)?;
                 }
-                
                 Ok(result_type)
-            },
+            }
             _ => Err("Expected program node".to_string()),
         }
     }
@@ -311,8 +362,9 @@ impl TypeChecker {
                 // clause. A contradiction is a compile-time error; a
                 // tautology is discharged; anything else is left for
                 // runtime.
+                let no_bindings: HashMap<String, i64> = HashMap::new();
                 for clause in requires.iter().chain(ensures.iter()) {
-                    if let Some(false) = fold_const_bool(clause) {
+                    if let Some(false) = fold_const_bool(clause, &no_bindings) {
                         return Err(format!(
                             "fn {}: contract can never hold (statically false clause)",
                             name
@@ -721,29 +773,54 @@ impl TypeChecker {
             
             Node::CallExpression { function, arguments } => {
                 let func_type = self.check_node(function)?;
-                
+
+                // RES-061: if the callee is a known top-level fn with
+                // contracts, try to fold each requires clause with the
+                // call's arguments substituted for parameters.
+                if let Node::Identifier(callee_name) = function.as_ref()
+                    && let Some(info) = self.contract_table.get(callee_name).cloned()
+                {
+                    // Build a (param_name → constant value) map for
+                    // every argument we can fold. Any non-foldable
+                    // argument leaves that param unbound, so the
+                    // contract folder gives up gracefully.
+                    let mut bindings: HashMap<String, i64> = HashMap::new();
+                    let no_b: HashMap<String, i64> = HashMap::new();
+                    for ((_ty, pname), arg) in info.parameters.iter().zip(arguments.iter()) {
+                        if let Some(v) = fold_const_i64(arg, &no_b) {
+                            bindings.insert(pname.clone(), v);
+                        }
+                    }
+                    for clause in &info.requires {
+                        if let Some(false) = fold_const_bool(clause, &bindings) {
+                            return Err(format!(
+                                "Contract violation: call to fn {} would fail `requires` clause at compile time",
+                                callee_name
+                            ));
+                        }
+                    }
+                }
+
                 match func_type {
                     Type::Function { params, return_type } => {
                         // Check argument count
                         if arguments.len() != params.len() {
-                            return Err(format!("Expected {} arguments, got {}", 
+                            return Err(format!("Expected {} arguments, got {}",
                                               params.len(), arguments.len()));
                         }
-                        
+
                         // Check each argument type
                         for (i, (arg, param_type)) in arguments.iter().zip(params.iter()).enumerate() {
                             let arg_type = self.check_node(arg)?;
                             if arg_type != *param_type && *param_type != Type::Any && arg_type != Type::Any {
-                                return Err(format!("Type mismatch in argument {}: expected {}, got {}", 
+                                return Err(format!("Type mismatch in argument {}: expected {}, got {}",
                                                   i + 1, param_type, arg_type));
                             }
                         }
-                        
+
                         Ok(*return_type)
                     },
                     Type::Any => {
-                        // When calling a function of unknown type, we assume it works
-                        // This is to support built-in functions that might not be fully typed
                         Ok(Type::Any)
                     },
                     _ => Err(format!("Cannot call non-function type: {}", func_type)),

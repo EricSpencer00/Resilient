@@ -3872,6 +3872,67 @@ mod tests {
         assert!(err.contains("invalid"), "{}", err);
     }
 
+    // ---------- Call-site contract fold (RES-061) ----------
+
+    #[test]
+    fn callsite_constant_args_satisfy_requires() {
+        typecheck_src(r#"
+            fn divide(int a, int b) requires b != 0 { return a / b; }
+            let r = divide(10, 5);
+        "#).unwrap();
+    }
+
+    #[test]
+    fn callsite_constant_args_violate_requires() {
+        let err = typecheck_src(r#"
+            fn divide(int a, int b) requires b != 0 { return a / b; }
+            let r = divide(10, 0);
+        "#).unwrap_err();
+        assert!(
+            err.contains("Contract violation") && err.contains("divide"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn callsite_with_inequality_constraints() {
+        // `requires x > 0`. Caller passes -3 → reject.
+        let err = typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let bad = pos(0 - 3);
+        "#).unwrap_err();
+        assert!(err.contains("Contract violation"), "unexpected: {}", err);
+        // Caller passes 5 → accept.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let good = pos(5);
+        "#).unwrap();
+    }
+
+    #[test]
+    fn callsite_free_variable_argument_left_for_runtime() {
+        // The argument is a variable, not a literal — folder gives up
+        // and the call type-checks fine.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let v = 5;
+            let r = pos(v);
+        "#).unwrap();
+    }
+
+    #[test]
+    fn callsite_multiple_clauses_one_violated() {
+        let err = typecheck_src(r#"
+            fn ranged(int n)
+                requires n >= 0
+                requires n <= 100
+            { return n; }
+            let bad = ranged(150);
+        "#).unwrap_err();
+        assert!(err.contains("Contract violation"), "unexpected: {}", err);
+    }
+
     // ---------- Static contract discharge (RES-060) ----------
 
     #[test]
