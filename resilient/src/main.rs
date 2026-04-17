@@ -161,8 +161,11 @@ impl Lexer {
             '\0' => Token::Eof,
             _ => {
                 if self.is_letter(self.ch) {
+                    // read_identifier() leaves self.ch at the first character
+                    // AFTER the identifier, so we early-return without the
+                    // trailing read_char() to avoid swallowing it.
                     let ident = self.read_identifier();
-                    match ident.as_str() {
+                    return match ident.as_str() {
                         "fn" => Token::Function,
                         "let" => Token::Let,
                         "live" => Token::Live,
@@ -173,7 +176,7 @@ impl Lexer {
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
-                    }
+                    };
                 } else if self.is_digit(self.ch) {
                     return self.read_number();
                 } else {
@@ -181,7 +184,7 @@ impl Lexer {
                 }
             }
         };
-        
+
         self.read_char();
         token
     }
@@ -318,6 +321,7 @@ struct Parser {
     lexer: Lexer,
     current_token: Token,
     peek_token: Token,
+    errors: Vec<String>,
 }
 
 impl Parser {
@@ -326,11 +330,17 @@ impl Parser {
             lexer,
             current_token: Token::Eof,
             peek_token: Token::Eof,
+            errors: Vec::new(),
         };
-        
+
         parser.next_token();
         parser.next_token();
         parser
+    }
+
+    fn record_error(&mut self, msg: String) {
+        eprintln!("\x1B[31mParser error: {}\x1B[0m", msg);
+        self.errors.push(msg);
     }
     
     fn next_token(&mut self) {
@@ -369,7 +379,8 @@ impl Parser {
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
             _ => {
-                eprintln!("Parser error: Expected identifier after 'fn', found {:?}", self.current_token);
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'fn', found {:?}", tok));
                 // Return a placeholder to allow parsing to continue
                 String::from("error_function")
             },
@@ -381,9 +392,9 @@ impl Parser {
         if self.current_token != Token::LeftParen {
             // For better error messages, provide more context
             if name == "main" {
-                eprintln!("Parser error: Expected '(' after function name '{}'. Functions in Resilient must have parameters, even if unused. Try: fn main(int dummy) {{ ... }}", name);
+                self.record_error(format!("Expected '(' after function name '{}'. Functions in Resilient must have parameters, even if unused. Try: fn main(int dummy) {{ ... }}", name));
             } else {
-                eprintln!("Parser error: Expected '(' after function name '{}'", name);
+                self.record_error(format!("Expected '(' after function name '{}'", name));
             }
             
             // Try to recover by skipping to the opening brace
@@ -412,7 +423,7 @@ impl Parser {
         let parameters = self.parse_function_parameters();
         
         if self.current_token != Token::LeftBrace {
-            eprintln!("Parser error: Expected '{{' after function parameters for '{}'", name);
+            self.record_error(format!("Expected '{{' after function parameters for '{}'", name));
             // Try to recover by skipping to the opening brace
             while self.current_token != Token::LeftBrace && self.current_token != Token::Eof {
                 self.next_token();
@@ -1135,7 +1146,9 @@ impl Interpreter {
     }
 }
 
-// REPL for interactive evaluation
+// REPL for interactive evaluation.
+// Kept as a reference implementation; the actual REPL used is `repl::EnhancedREPL`.
+#[allow(dead_code)]
 fn start_repl() -> RustylineResult<()> {
     let mut interpreter = Interpreter::new();
     let mut rl = DefaultEditor::new()?;
@@ -1228,12 +1241,8 @@ fn start_repl() -> RustylineResult<()> {
                 let mut parser = Parser::new(lexer);
                 let program = parser.parse_program();
                 
-                // Check for parser errors
+                // Skip evaluation if any parser errors were recorded
                 if !parser.errors.is_empty() {
-                    eprintln!("\x1B[31mParser errors:\x1B[0m");
-                    for error in &parser.errors {
-                        eprintln!("\x1B[31m  - {}\x1B[0m", error);
-                    }
                     continue;
                 }
                 
@@ -1292,19 +1301,9 @@ fn execute_file(filename: &str, type_check: bool) -> RResult<()> {
     let mut parser = Parser::new(lexer);
     let program = parser.parse_program();
     
-    // Check for parser errors
+    // Check for parser errors (already printed at the point they occurred)
     if !parser.errors.is_empty() {
-        eprintln!("\x1B[31mParser errors:\x1B[0m");
-        for error in &parser.errors {
-            eprintln!("\x1B[31m  - {}\x1B[0m", error);
-        }
-        
-        // Only fail if there are severe errors
-        if parser.errors.iter().any(|e| e.contains("Expected '(' after function name")) {
-            return Err(format!("Failed to parse program: {} errors", parser.errors.len()));
-        } else {
-            eprintln!("\x1B[33mWarning: Continuing despite parser errors\x1B[0m");
-        }
+        return Err(format!("Failed to parse program: {} parser error(s)", parser.errors.len()));
     }
     
     // Type checking if enabled

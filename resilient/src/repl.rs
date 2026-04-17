@@ -1,5 +1,5 @@
 // Enhanced REPL for Resilient language
-use crate::{Lexer, Parser, Node, Value};
+use crate::{Lexer, Parser, Value};
 use crate::typechecker;
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
@@ -139,25 +139,12 @@ impl EnhancedREPL {
         
         // Parse the program
         let program = parser.parse_program();
-        
-        // If parser had errors, display them
+
+        // If parser recorded errors, abort before type-checking/execution.
+        // Errors are already printed as they happen inside the parser.
         if !parser.errors.is_empty() {
-            for error in &parser.errors {
-                eprintln!("{}Parse error: {}{}", RED, error, RESET);
-            }
             return;
         }
-        
-        // Get the parsed program
-        let program = match program {
-            Ok(program) => program,
-            Err(errors) => {
-                for error in errors {
-                    eprintln!("{}Parse error: {}{}", RED, error, RESET);
-                }
-                return;
-            }
-        };
         
         // Run type checker if enabled
         if self.type_check_enabled {
@@ -209,7 +196,7 @@ impl EnhancedREPL {
         
         println!("\n{}1. Basic variable and function:{}", GREEN, RESET);
         println!("{}let x = 42;", YELLOW);
-        println!("fn add(int a, int b) {{ return a + b; }}", YELLOW);
+        println!("fn add(int a, int b) {{ return a + b; }}");
         println!("add(x, 10);{}", RESET);
         
         println!("\n{}2. Live block example:{}", GREEN, RESET);

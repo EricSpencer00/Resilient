@@ -1,5 +1,7 @@
-// Improved Parser for Resilient language
-use crate::{Lexer, Token, Node};
+// Improved Parser for Resilient language (not yet wired up - see G6).
+// Uses its own `Node` type defined below.
+#![allow(dead_code)]
+use crate::{Lexer, Token};
 use std::fmt;
 
 // Error type for better diagnostics
@@ -122,11 +124,11 @@ impl Parser {
         match self.current_token {
             Token::Function => self.parse_function(),
             Token::Let => self.parse_let_statement(),
-            Token::Return => Ok(self.parse_return_statement()),
-            Token::Live => Ok(self.parse_live_block()),
-            Token::Assert => Ok(self.parse_assert()),
-            Token::If => Ok(self.parse_if_statement()),
-            _ => Ok(self.parse_expression_statement()),
+            Token::Return => Ok(self.parse_return_statement()?),
+            Token::Live => Ok(self.parse_live_block()?),
+            Token::Assert => Ok(self.parse_assert()?),
+            Token::If => Ok(self.parse_if_statement()?),
+            _ => Ok(self.parse_expression_statement()?),
         }
     }
     
