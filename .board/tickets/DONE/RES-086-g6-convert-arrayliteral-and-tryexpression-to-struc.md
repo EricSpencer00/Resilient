@@ -1,7 +1,7 @@
 ---
 id: RES-086
 title: G6 convert ArrayLiteral + TryExpression to struct variants
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -59,3 +59,33 @@ separate tickets (RES-087, RES-088) so each piece stays reviewable.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `Node::ArrayLiteral(Vec<Node>)` →
+    `Node::ArrayLiteral { items: Vec<Node>, span: Span }`.
+  - `Node::TryExpression(Box<Node>)` →
+    `Node::TryExpression { expr: Box<Node>, span: Span }`.
+  - Both `span` fields `#[allow(dead_code)]` matching the
+    RES-078/079/084/085 convention.
+  - Parser `parse_array_literal` captures the `[` token's span
+    before advancing; threaded through both the empty-literal
+    return and the full-literal return.
+  - Postfix `?` in `parse_expression` captures the `?` token's
+    span before advancing.
+  - Fallback constructions like
+    `unwrap_or(Node::ArrayLiteral(Vec::new()))` updated to
+    `unwrap_or(Node::ArrayLiteral { items: Vec::new(), span: Span::default() })`.
+  - ~10 destructure sites updated via targeted sed across
+    `main.rs`, `typechecker.rs`, `compiler.rs`.
+- 2026-04-17 tests: new `array_literal_and_try_carry_spans` unit
+  test parses `[1, 2, 3];` and asserts the `ArrayLiteral` has
+  3 items + non-default span; then parses a function with
+  `let x = ok(1)?;` and asserts the `TryExpression` has a
+  non-default span.
+- 2026-04-17 verification across three feature configs:
+  - default: 213 unit + 1 golden + 11 smoke = 225 tests
+  - `--features z3`: 221 + 1 + 12 = 234
+  - `--features lsp`: 216 + 1 + 11 = 228
+  All three `cargo clippy -- -D warnings` clean.
+- ROADMAP G6 cell updated. Next tuple-variant follow-ups:
+  RES-087 (ExpressionStatement, 13 sites) and RES-088 (Block,
+  20 sites).

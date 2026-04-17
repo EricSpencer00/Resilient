@@ -656,7 +656,14 @@ enum Node {
     },
     /// RES-041: `expr?` — if the operand is `Ok(v)`, evaluate to `v`;
     /// if `Err(e)`, return `Err(e)` from the enclosing function.
-    TryExpression(Box<Node>),
+    ///
+    /// RES-086: converted from tuple form so it can carry the span
+    /// of the `?` operator (consumed in follow-ups).
+    TryExpression {
+        expr: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-042: anonymous fn expression. Unlike `Node::Function`, this
     /// node is not bound to a name — it evaluates to a `Value::Function`
     /// directly. Captures its defining env by value, matching existing
@@ -706,7 +713,14 @@ enum Node {
         span: span::Span,
     },
     /// RES-032: `[e1, e2, e3]` array literal.
-    ArrayLiteral(Vec<Node>),
+    ///
+    /// RES-086: converted from tuple form so it can carry a span
+    /// covering the opening `[` (span consumed in follow-ups).
+    ArrayLiteral {
+        items: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-032: `a[i]` read.
     IndexExpression {
         target: Box<Node>,
@@ -1132,13 +1146,13 @@ impl Parser {
             self.record_error(format!("Expected 'in' after 'for {}', found {:?}", name, tok));
             return Node::ForInStatement {
                 name,
-                iterable: Box::new(Node::ArrayLiteral(Vec::new())),
+                iterable: Box::new(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() }),
                 body: Box::new(Node::Block(Vec::new())),
                 span: stmt_span,
             };
         }
         self.next_token(); // skip 'in'
-        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral(Vec::new()));
+        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() });
         self.next_token(); // advance past the expression's tail (RES-014 invariant)
 
         if self.current_token != Token::LeftBrace {
@@ -1582,8 +1596,14 @@ impl Parser {
                 },
                 Token::Question => {
                     // Postfix `?` — consume it and wrap.
+                    // RES-086: capture the `?` token's span before
+                    // advancing past it.
+                    let q_span = self.span_at_current();
                     self.next_token();
-                    Some(Node::TryExpression(Box::new(current_left)))
+                    Some(Node::TryExpression {
+                        expr: Box::new(current_left),
+                        span: q_span,
+                    })
                 },
                 _ => Some(current_left),
             };
@@ -1959,10 +1979,12 @@ impl Parser {
     /// Parse `[e1, e2, ...]`. current_token is `[` on entry; on exit
     /// current_token is `]`.
     fn parse_array_literal(&mut self) -> Node {
+        // RES-086: capture the `[` token's span before advancing.
+        let bracket_span = self.span_at_current();
         let mut items = Vec::new();
         if self.peek_token == Token::RightBracket {
             self.next_token(); // to ]
-            return Node::ArrayLiteral(items);
+            return Node::ArrayLiteral { items, span: bracket_span };
         }
         self.next_token(); // skip '['
         if let Some(first) = self.parse_expression(0) {
@@ -1988,7 +2010,7 @@ impl Parser {
         } else {
             self.next_token(); // to ]
         }
-        Node::ArrayLiteral(items)
+        Node::ArrayLiteral { items, span: bracket_span }
     }
 
     /// Parse `target[index]`. current_token is `[` on entry; on exit
@@ -3003,7 +3025,7 @@ impl Interpreter {
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(func, args)
             },
-            Node::ArrayLiteral(items) => {
+            Node::ArrayLiteral { items, .. } => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
                     out.push(self.eval(item)?);
@@ -3020,7 +3042,7 @@ impl Interpreter {
                     name: "<anon>".to_string(),
                 })
             },
-            Node::TryExpression(inner) => {
+            Node::TryExpression { expr: inner, .. } => {
                 let v = self.eval(inner)?;
                 match v {
                     Value::Result { ok: true, payload } => Ok(*payload),
@@ -6196,6 +6218,33 @@ mod tests {
             "legacy shim should use <unknown> prefix, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn array_literal_and_try_carry_spans() {
+        // RES-086: ArrayLiteral and TryExpression are struct variants
+        // now. Confirm both parse sites populate their spans.
+        let (program, errors) = parse("[1, 2, 3];");
+        assert!(errors.is_empty());
+        let Node::Program(stmts) = &program else { panic!() };
+        let Node::ExpressionStatement(expr) = &stmts[0].node else { panic!() };
+        let Node::ArrayLiteral { items, span } = expr.as_ref() else {
+            panic!("expected ArrayLiteral, got {:?}", expr);
+        };
+        assert_eq!(items.len(), 3);
+        assert!(span.start.line >= 1, "array span: {:?}", span);
+
+        // TryExpression: `ok(1)?`
+        let (program, _) = parse("fn f() { let x = ok(1)?; return x; }");
+        // Walk into the fn body to find the `?` expression.
+        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Block(inner) = body.as_ref() else { panic!() };
+        let Node::LetStatement { value, .. } = &inner[0] else { panic!() };
+        let Node::TryExpression { span, .. } = value.as_ref() else {
+            panic!("expected TryExpression, got {:?}", value);
+        };
+        assert!(span.start.line >= 1, "try span: {:?}", span);
     }
 
     #[test]

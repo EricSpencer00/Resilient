@@ -481,7 +481,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::PrefixExpression { .. } => "PrefixExpression",
         Node::InfixExpression { .. } => "InfixExpression",
         Node::CallExpression { .. } => "CallExpression",
-        Node::ArrayLiteral(_) => "ArrayLiteral",
+        Node::ArrayLiteral { .. } => "ArrayLiteral",
         Node::IndexExpression { .. } => "IndexExpression",
         Node::IndexAssignment { .. } => "IndexAssignment",
         _ => "<other>",

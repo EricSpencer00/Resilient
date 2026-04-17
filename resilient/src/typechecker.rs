@@ -681,14 +681,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
-            Node::ArrayLiteral(items) => {
+            Node::ArrayLiteral { items, .. } => {
                 for item in items {
                     let _ = self.check_node(item)?;
                 }
                 Ok(Type::Array)
             },
 
-            Node::TryExpression(inner) => {
+            Node::TryExpression { expr: inner, .. } => {
                 let inner_type = self.check_node(inner)?;
                 // `?` expects a Result and unwraps to Any at MVP (we
                 // don't track Ok's payload type yet).

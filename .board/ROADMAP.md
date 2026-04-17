@@ -31,7 +31,7 @@ time, commit it, and only then move the post.
 ### Language sanity
 | # | Goalpost | Status |
 |---|---|---|
-| **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | 🟡 RES-070 deleted dead `parser.rs`; RES-069/077/078/079/084/085 landed spans on Program + leaves + core statements + core expressions + index/field ops; RES-080 surfaces them in typechecker diagnostics. Remaining: tuple variants (`ArrayLiteral`, `TryExpression`, `Block`, `ExpressionStatement` — need tuple→struct conversion) and structural variants (`Match`, `StructLiteral`, `FunctionLiteral`, `Function`, `LiveBlock`, `Assert`, `StructDecl`) — tracked as future follow-ups. |
+| **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | 🟡 RES-070 deleted dead `parser.rs`; RES-069/077/078/079/084/085/086 landed spans on Program + leaves + core statements + core expressions + index/field ops + ArrayLiteral/TryExpression (tuple→struct); RES-080 surfaces them in typechecker diagnostics. Remaining: `ExpressionStatement`/`Block` (tuple→struct, RES-087/088) and structural variants (`Match`, `StructLiteral`, `FunctionLiteral`, `Function`, `LiveBlock`, `Assert`, `StructDecl`). |
 | **G7** | Real type checker (inference, unification, exhaustiveness) | ⏳ |
 | **G8** | Function contracts (`requires` / `ensures`) at runtime | ✅ RES-035 |
 
