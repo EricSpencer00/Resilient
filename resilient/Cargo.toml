@@ -36,7 +36,7 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 # and run `resilient --jit prog.rs` to lower the program to native
 # code instead of going through the tree walker / bytecode VM.
 # Phase A only ships the scaffolding; RES-096+ adds AST lowering.
-jit = ["dep:cranelift", "dep:cranelift-jit"]
+jit = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-native", "dep:cranelift-module"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
@@ -47,3 +47,5 @@ tower-lsp = { version = "0.20", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"], optional = true }
 cranelift = { version = "0.108", optional = true }
 cranelift-jit = { version = "0.108", optional = true }
+cranelift-native = { version = "0.108", optional = true }
+cranelift-module = { version = "0.108", optional = true }

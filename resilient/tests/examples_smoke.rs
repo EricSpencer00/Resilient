@@ -176,6 +176,40 @@ fn bytecode_vm_runs_fn_call() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_arithmetic_program() {
+    // RES-096: end-to-end JIT path. Program is `return 7 + 14;`,
+    // which the JIT lowers to native code and executes. Driver
+    // prints the i64 result then exits 0.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_096_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "return 7 + 14;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("21"),
+        "expected `21` in stdout (7 + 14 via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching

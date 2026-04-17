@@ -1046,6 +1046,8 @@ dependencies = [
  "clap",
  "cranelift",
  "cranelift-jit",
+ "cranelift-module",
+ "cranelift-native",
  "logos",
  "rustyline",
  "tokio",
