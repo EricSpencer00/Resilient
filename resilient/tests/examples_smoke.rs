@@ -385,6 +385,46 @@ fn bytecode_jit_runs_let_bindings() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_function_call() {
+    // RES-105: Phase H adds user-defined function declarations
+    // and direct calls. `fn double(int x) { return x + x; }
+    // return double(21);` exercises the two-pass compilation:
+    // declare double as a FuncId in Pass 1, compile its body in
+    // Pass 2, lower the call site as `call(local_func_ref, &args)`.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_105_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(
+            f,
+            "fn double(int x) {{ return x + x; }} return double(21);"
+        )
+        .unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("42"),
+        "expected `42` in stdout (double(21) via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching

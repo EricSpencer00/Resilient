@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::Node;
 
@@ -30,6 +30,12 @@ use crate::Node;
 /// map (name → cranelift Variable) and the Variable counter
 /// through all lowering helpers so let bindings + identifier
 /// reads compose naturally with everything from earlier phases.
+///
+/// RES-105: also carries the program-wide function map (name →
+/// FuncId). The map is filled in Pass 1 (declare every fn) and
+/// read in Pass 2 (compile bodies, including CallExpression
+/// lowering). Owned, not borrowed from JITModule, so module
+/// can stay independently mutable.
 struct LowerCtx {
     /// Variable index counter — Cranelift's `Variable` is a u32
     /// newtype, increment on each `let`. The counter is owned by
@@ -40,11 +46,24 @@ struct LowerCtx {
     /// the same map is used for the whole function body. Block
     /// scoping is a future ticket.
     locals: HashMap<String, Variable>,
+    /// RES-105: program-wide function map. Cloned (cheap — FuncId
+    /// is Copy) into each per-function LowerCtx so call sites
+    /// can resolve direct calls by name.
+    functions: HashMap<String, FuncId>,
+    /// RES-105: arity per declared function, keyed by name.
+    /// Used to validate call sites — mismatch is reported as a
+    /// clean Unsupported instead of letting Cranelift segfault.
+    function_arities: HashMap<String, usize>,
 }
 
 impl LowerCtx {
     fn new() -> Self {
-        Self { next_var: 0, locals: HashMap::new() }
+        Self {
+            next_var: 0,
+            locals: HashMap::new(),
+            functions: HashMap::new(),
+            function_arities: HashMap::new(),
+        }
     }
 
     /// Reserve a fresh `Variable`, declare it on the
@@ -111,28 +130,125 @@ fn make_module() -> Result<JITModule, JitError> {
     Ok(JITModule::new(builder))
 }
 
-/// RES-072 + RES-096: compile a Resilient `Program` to native
-/// code and execute it. Today's subset:
-/// `return <int-arith expression>;` at the top level, where the
-/// expression uses only integer literals and `+`.
+/// RES-072 + RES-096 + RES-105: compile a Resilient `Program`
+/// to native code and execute it.
+///
+/// Two-pass compilation (RES-105):
+///   Pass 1: declare every `Node::Function` in the JIT module,
+///           collecting (name → FuncId) into a function map.
+///           This lets bodies reference each other (and
+///           themselves — recursion) without forward-decl pain.
+///   Pass 2: compile each function body using compile_function,
+///           plus the program's top-level non-function
+///           statements as `main`.
 pub fn run(program: &Node) -> Result<i64, JitError> {
-    // Step 1: locate the top-level statement slice we need to
-    // lower. The compiler and tree walker both accept richer
-    // programs; the JIT path is still a strict subset.
     let stmts = match program {
         Node::Program(s) => s,
         _ => return Err(JitError::Unsupported("non-Program root")),
     };
 
-    // Step 2: build a `i64 () -> i64` function whose body lowers
-    // the program statements (possibly including IfStatement) and
-    // emits the appropriate return_ per arm.
     let mut module = make_module()?;
-    let mut sig = module.make_signature();
-    sig.returns.push(AbiParam::new(types::I64));
-    let func_id = module
-        .declare_function("main", Linkage::Local, &sig)
+
+    // ---------- Pass 1: declare all top-level functions ----------
+    let mut functions: HashMap<String, FuncId> = HashMap::new();
+    let mut function_arities: HashMap<String, usize> = HashMap::new();
+    for spanned in stmts {
+        if let Node::Function { name, parameters, .. } = &spanned.node {
+            let mut sig = module.make_signature();
+            for _ in parameters {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            let func_id = module
+                .declare_function(name, Linkage::Local, &sig)
+                .map_err(|e| JitError::LinkError(e.to_string()))?;
+            functions.insert(name.clone(), func_id);
+            function_arities.insert(name.clone(), parameters.len());
+        }
+    }
+
+    // ---------- Pass 2: compile each function body ----------
+    for spanned in stmts {
+        if let Node::Function { name, parameters, body, .. } = &spanned.node {
+            let func_id = functions[name];
+            compile_function(
+                func_id,
+                parameters,
+                body,
+                &functions,
+                &function_arities,
+                &mut module,
+            )?;
+        }
+    }
+
+    // ---------- Pass 2 cont.: compile main ----------
+    // The "main" function is the program's top-level non-function
+    // statements. If the program has no top-level return,
+    // compile_statements raises EmptyProgram and we never run.
+    let mut main_sig = module.make_signature();
+    main_sig.returns.push(AbiParam::new(types::I64));
+    let main_id = module
+        .declare_function("__resilient_main__", Linkage::Local, &main_sig)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = main_sig;
+    let mut builder_ctx = FunctionBuilderContext::new();
+    {
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let entry = bcx.create_block();
+        bcx.append_block_params_for_function_params(entry);
+        bcx.switch_to_block(entry);
+        bcx.seal_block(entry);
+
+        let mut lctx = LowerCtx::new();
+        lctx.functions = functions.clone();
+        lctx.function_arities = function_arities.clone();
+        compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
+        bcx.finalize();
+    }
+
+    module
+        .define_function(main_id, &mut ctx)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    module.clear_context(&mut ctx);
+    module
+        .finalize_definitions()
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    // ---------- Run main ----------
+    let raw = module.get_finalized_function(main_id);
+    // SAFETY: `raw` points at a freshly-finalized function with
+    // signature `extern "C" fn() -> i64`; we constructed that
+    // signature ourselves above. The JITModule keeps the code
+    // alive — `module` outlives this call.
+    let f: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(raw) };
+    let result = unsafe { f() };
+    Ok(result)
+}
+
+/// RES-105: compile a single user-defined function body.
+/// Parameters are declared as Variables in a fresh LowerCtx
+/// (inheriting the program-wide function map for cross-function
+/// calls including recursion). Body is lowered via the same
+/// compile_statements walker as `main`.
+fn compile_function(
+    func_id: FuncId,
+    parameters: &[(String, String)],
+    body: &Node,
+    functions: &HashMap<String, FuncId>,
+    function_arities: &HashMap<String, usize>,
+    module: &mut JITModule,
+) -> Result<(), JitError> {
+    // Build the signature again — we declared it in Pass 1, but
+    // module.make_context() gives us a fresh empty Function we
+    // need to populate.
+    let mut sig = module.make_signature();
+    for _ in parameters {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.returns.push(AbiParam::new(types::I64));
 
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -144,13 +260,26 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
-        // RES-102 + RES-104: walk top-level statements and emit
-        // returns inline. compile_statements handles IfStatement
-        // (each arm gets its own block + return_), let bindings
-        // (declare a Variable + def_var), and the trailing
-        // ReturnStatement.
-        let mut ctx = LowerCtx::new();
-        compile_statements(stmts, &mut bcx, &mut ctx)?;
+        // Bind each parameter to a Variable in the LowerCtx so
+        // identifier reads in the body resolve correctly.
+        let mut lctx = LowerCtx::new();
+        lctx.functions = functions.clone();
+        lctx.function_arities = function_arities.clone();
+        // parameters: Vec<(String, String)> — (type, name) per
+        // the AST. Name is the second element.
+        let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
+        for ((_ty, name), pval) in parameters.iter().zip(block_params.iter()) {
+            let var = lctx.declare(name, &mut bcx);
+            bcx.def_var(var, *pval);
+        }
+
+        // The function body is a Block — lower it; require it
+        // to terminate (Phase H functions must end in a return,
+        // same constraint as `main`).
+        let terminated = lower_block_or_stmt(body, &mut bcx, &mut lctx, module)?;
+        if !terminated {
+            return Err(JitError::EmptyProgram);
+        }
         bcx.finalize();
     }
 
@@ -158,19 +287,7 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
         .define_function(func_id, &mut ctx)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
     module.clear_context(&mut ctx);
-    module
-        .finalize_definitions()
-        .map_err(|e| JitError::LinkError(e.to_string()))?;
-
-    // Step 3: get the function pointer and call it.
-    let raw = module.get_finalized_function(func_id);
-    // SAFETY: `raw` points at a freshly-finalized function with
-    // signature `extern "C" fn() -> i64`; we constructed that
-    // signature ourselves above. The JITModule keeps the code
-    // alive — `module` outlives this call.
-    let f: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(raw) };
-    let result = unsafe { f() };
-    Ok(result)
+    Ok(())
 }
 
 /// RES-102 + RES-103: walk a slice of top-level statements and
@@ -191,12 +308,21 @@ fn compile_statements(
     stmts: &[crate::Spanned<Node>],
     bcx: &mut FunctionBuilder,
     ctx: &mut LowerCtx,
+    module: &mut JITModule,
 ) -> Result<(), JitError> {
     // Top-level statements are Spanned<Node>; Block bodies are
     // raw Node. Strip the wrapper here and delegate to the shared
     // walker so the lowering logic isn't duplicated.
-    let nodes: Vec<&Node> = stmts.iter().map(|s| &s.node).collect();
-    let returned = compile_node_list(&nodes, bcx, ctx)?;
+    //
+    // RES-105: skip Function nodes — Pass 1 declared them in the
+    // module already, Pass 2 is compiling each body separately.
+    // Walking them again here would double-compile.
+    let nodes: Vec<&Node> = stmts
+        .iter()
+        .map(|s| &s.node)
+        .filter(|n| !matches!(n, Node::Function { .. }))
+        .collect();
+    let returned = compile_node_list(&nodes, bcx, ctx, module)?;
     if !returned {
         return Err(JitError::EmptyProgram);
     }
@@ -213,11 +339,12 @@ fn compile_node_list(
     stmts: &[&Node],
     bcx: &mut FunctionBuilder,
     ctx: &mut LowerCtx,
+    module: &mut JITModule,
 ) -> Result<bool, JitError> {
     for node in stmts {
         match node {
             Node::ReturnStatement { value: Some(expr), .. } => {
-                let v = lower_expr(expr, bcx, ctx)?;
+                let v = lower_expr(expr, bcx, ctx, module)?;
                 bcx.ins().return_(&[v]);
                 return Ok(true);
             }
@@ -228,6 +355,7 @@ fn compile_node_list(
                     alternative.as_deref(),
                     bcx,
                     ctx,
+                    module,
                 )?;
                 if if_terminated {
                     // Both arms returned — function exits, no
@@ -245,7 +373,7 @@ fn compile_node_list(
             // identifier reads via lower_expr will use_var the
             // same Variable.
             Node::LetStatement { name, value, .. } => {
-                let v = lower_expr(value, bcx, ctx)?;
+                let v = lower_expr(value, bcx, ctx, module)?;
                 let var = ctx.declare(name, bcx);
                 bcx.def_var(var, v);
                 continue;
@@ -284,8 +412,9 @@ fn lower_if_statement(
     alternative: Option<&Node>,
     bcx: &mut FunctionBuilder,
     ctx: &mut LowerCtx,
+    module: &mut JITModule,
 ) -> Result<bool, JitError> {
-    let cond_val = lower_expr(condition, bcx, ctx)?;
+    let cond_val = lower_expr(condition, bcx, ctx, module)?;
 
     let then_block = bcx.create_block();
     let else_block = bcx.create_block();
@@ -300,7 +429,7 @@ fn lower_if_statement(
     // then-arm
     bcx.switch_to_block(then_block);
     bcx.seal_block(then_block);
-    let then_terminated = lower_block_or_stmt(consequence, bcx, ctx)?;
+    let then_terminated = lower_block_or_stmt(consequence, bcx, ctx, module)?;
     if !then_terminated {
         // then-arm fell through — jump to merge so the trailing
         // statements after the if can run.
@@ -311,7 +440,7 @@ fn lower_if_statement(
     bcx.switch_to_block(else_block);
     bcx.seal_block(else_block);
     let else_terminated = match alternative {
-        Some(alt) => lower_block_or_stmt(alt, bcx, ctx)?,
+        Some(alt) => lower_block_or_stmt(alt, bcx, ctx, module)?,
         // Bare `if` with no else: the else-block has nothing to
         // lower and falls through immediately. RES-103 treats
         // this as a fallthrough (Phase E used to reject it).
@@ -353,20 +482,28 @@ fn lower_block_or_stmt(
     node: &Node,
     bcx: &mut FunctionBuilder,
     ctx: &mut LowerCtx,
+    module: &mut JITModule,
 ) -> Result<bool, JitError> {
     match node {
         Node::Block { stmts, .. } => {
             let refs: Vec<&Node> = stmts.iter().collect();
-            compile_node_list(&refs, bcx, ctx)
+            compile_node_list(&refs, bcx, ctx, module)
         }
         Node::IfStatement { condition, consequence, alternative, .. } => {
             // RES-103: an if "terminates" only if both arms did.
             // Otherwise the merge block is now active and the
             // surrounding block's caller may want to keep walking.
-            lower_if_statement(condition, consequence, alternative.as_deref(), bcx, ctx)
+            lower_if_statement(
+                condition,
+                consequence,
+                alternative.as_deref(),
+                bcx,
+                ctx,
+                module,
+            )
         }
         Node::ReturnStatement { value: Some(expr), .. } => {
-            let v = lower_expr(expr, bcx, ctx)?;
+            let v = lower_expr(expr, bcx, ctx, module)?;
             bcx.ins().return_(&[v]);
             Ok(true)
         }
@@ -379,6 +516,7 @@ fn lower_expr(
     node: &Node,
     bcx: &mut FunctionBuilder,
     ctx: &mut LowerCtx,
+    module: &mut JITModule,
 ) -> Result<Value, JitError> {
     match node {
         Node::IntegerLiteral { value, .. } => Ok(bcx.ins().iconst(types::I64, *value)),
@@ -395,6 +533,56 @@ fn lower_expr(
             Some(var) => Ok(bcx.use_var(var)),
             None => Err(JitError::Unsupported("identifier not in scope")),
         },
+        // RES-105: direct function call. Resolve the callee name
+        // → FuncId from the program-wide function map, lower
+        // each argument, declare the function as a local ref in
+        // the current builder's func, then emit `call`. Indirect
+        // calls (function value, method, closure) are not yet
+        // supported.
+        Node::CallExpression { function, arguments, .. } => {
+            let callee_name = match function.as_ref() {
+                Node::Identifier { name, .. } => name,
+                _ => {
+                    return Err(JitError::Unsupported(
+                        "JIT only supports direct calls (Identifier callee)",
+                    ));
+                }
+            };
+            let func_id = match ctx.functions.get(callee_name).copied() {
+                Some(id) => id,
+                None => {
+                    // Note: we lose the actual name in the
+                    // diagnostic since JitError::Unsupported
+                    // takes &'static str. A richer diagnostic
+                    // type is a future ticket.
+                    return Err(JitError::Unsupported("call to unknown function"));
+                }
+            };
+            let expected_arity = ctx
+                .function_arities
+                .get(callee_name)
+                .copied()
+                .unwrap_or(0);
+            if arguments.len() != expected_arity {
+                return Err(JitError::Unsupported(
+                    "call arity mismatch (declared params vs actual args)",
+                ));
+            }
+            // Lower each argument before declaring the local
+            // function ref; lowering may recurse and we want a
+            // clean borrow stack at the call site.
+            let mut arg_values: Vec<Value> = Vec::with_capacity(arguments.len());
+            for arg in arguments {
+                arg_values.push(lower_expr(arg, bcx, ctx, module)?);
+            }
+            // Declare the callee in the current function so
+            // Cranelift knows its signature. Returns a local
+            // FuncRef usable in `call`.
+            let local_callee = module.declare_func_in_func(func_id, bcx.func);
+            let call = bcx.ins().call(local_callee, &arg_values);
+            // i64-returning function — exactly one result.
+            Ok(bcx.inst_results(call)[0])
+        }
         // RES-099: lower all four signed integer infix ops + RES-100:
         // the six comparison ops. Same recursive shape — recurse on
         // left + right, then emit the matching Cranelift instruction.
@@ -414,8 +602,8 @@ fn lower_expr(
                     "infix operator other than +,-,*,/,%,==,!=,<,<=,>,>=",
                 ));
             }
-            let l = lower_expr(left, bcx, ctx)?;
-            let r = lower_expr(right, bcx, ctx)?;
+            let l = lower_expr(left, bcx, ctx, module)?;
+            let r = lower_expr(right, bcx, ctx, module)?;
             Ok(match op_str {
                 "+" => bcx.ins().iadd(l, r),
                 "-" => bcx.ins().isub(l, r),
@@ -738,6 +926,112 @@ mod tests {
         // across the merge_block.
         let p = parse_program("let x = 7; if (false) { return 0; } return x + 1;");
         assert_eq!(run(&p).unwrap(), 8);
+    }
+
+    // ---------- RES-105: function declarations + calls ----------
+
+    #[test]
+    fn jit_calls_zero_arg_function() {
+        let p = parse_program("fn answer() { return 42; } return answer();");
+        assert_eq!(run(&p).unwrap(), 42);
+    }
+
+    #[test]
+    fn jit_calls_one_arg_function() {
+        let p = parse_program("fn square(int x) { return x * x; } return square(7);");
+        assert_eq!(run(&p).unwrap(), 49);
+    }
+
+    #[test]
+    fn jit_calls_two_arg_function() {
+        let p = parse_program("fn add(int a, int b) { return a + b; } return add(3, 4);");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_calls_with_local_arg() {
+        // Composes RES-104 (let bindings) with RES-105 (calls):
+        // local feeds into the call, call result feeds into a
+        // trailing arith op.
+        let p = parse_program(
+            "fn square(int x) { return x * x; } let y = 5; return square(y) + 1;",
+        );
+        assert_eq!(run(&p).unwrap(), 26);
+    }
+
+    #[test]
+    fn jit_recursive_call_factorial() {
+        // The two-pass declaration order (Pass 1 declares all
+        // FuncIds before Pass 2 compiles any body) means a fn
+        // can call itself via the same map. factorial(5) = 120.
+        let p = parse_program(
+            "fn factorial(int n) { \
+                if (n <= 1) { return 1; } \
+                return n * factorial(n - 1); \
+            } \
+            return factorial(5);",
+        );
+        assert_eq!(run(&p).unwrap(), 120);
+    }
+
+    #[test]
+    fn jit_recursive_fib_25() {
+        // The poster-child recursion: fib(25) = 75025. Same
+        // workload the bytecode VM ran in 32 ms (RES-082).
+        // Functional correctness check; RES-106 will time it.
+        let p = parse_program(
+            "fn fib(int n) { \
+                if (n < 2) { return n; } \
+                return fib(n - 1) + fib(n - 2); \
+            } \
+            return fib(25);",
+        );
+        assert_eq!(run(&p).unwrap(), 75025);
+    }
+
+    #[test]
+    fn jit_call_unknown_function_unsupported() {
+        let p = parse_program("return undefined_fn();");
+        match run(&p).unwrap_err() {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("unknown function"),
+                "expected unknown-function descriptor, got: {}",
+                msg
+            ),
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn jit_call_arity_mismatch_unsupported() {
+        let p = parse_program("fn f(int x) { return x; } return f(1, 2);");
+        match run(&p).unwrap_err() {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("arity"),
+                "expected arity descriptor, got: {}",
+                msg
+            ),
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn jit_mutual_recursion_even_odd() {
+        // Two functions that call each other. Pass 1 declares
+        // both before Pass 2 compiles either body, so neither
+        // call site sees a missing FuncId.
+        let p = parse_program(
+            "fn is_even(int n) { \
+                if (n == 0) { return 1; } \
+                return is_odd(n - 1); \
+            } \
+            fn is_odd(int n) { \
+                if (n == 0) { return 0; } \
+                return is_even(n - 1); \
+            } \
+            return is_even(10);",
+        );
+        assert_eq!(run(&p).unwrap(), 1);
     }
 
     // ---------- RES-103: merge block + fallthrough ----------
