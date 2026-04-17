@@ -286,7 +286,8 @@ enum Node {
         value: Box<Node>,
     },
     ReturnStatement {
-        value: Box<Node>,
+        /// `None` for a bare `return;`
+        value: Option<Box<Node>>,
     },
     IfStatement {
         condition: Box<Node>,
@@ -528,16 +529,30 @@ impl Parser {
     
     fn parse_return_statement(&mut self) -> Node {
         self.next_token(); // Skip 'return'
-        
-        let value = self.parse_expression(0).unwrap();
-        
+
+        // Bare `return;` or `return}` → no expression.
+        if matches!(
+            self.current_token,
+            Token::Semicolon | Token::RightBrace | Token::Eof
+        ) {
+            return Node::ReturnStatement { value: None };
+        }
+
+        let value = match self.parse_expression(0) {
+            Some(expr) => Some(Box::new(expr)),
+            None => {
+                self.record_error(
+                    "Expected expression after 'return' (or write 'return;' for no value)".to_string()
+                );
+                None
+            }
+        };
+
         if self.peek_token == Token::Semicolon {
             self.next_token(); // Skip to semicolon
         }
-        
-        Node::ReturnStatement {
-            value: Box::new(value),
-        }
+
+        Node::ReturnStatement { value }
     }
     
     fn parse_live_block(&mut self) -> Node {
@@ -946,7 +961,10 @@ impl Interpreter {
                 Ok(Value::Void)
             },
             Node::ReturnStatement { value } => {
-                let val = self.eval(value)?;
+                let val = match value {
+                    Some(expr) => self.eval(expr)?,
+                    None => Value::Void,
+                };
                 Ok(Value::Return(Box::new(val)))
             },
             Node::IfStatement { condition, consequence, alternative } => {
@@ -1803,6 +1821,32 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parser_accepts_bare_return() {
+        // RES-011: `return;` used to panic on unwrap().
+        let (program, errors) = parse("fn foo() { return; }");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        match program {
+            Node::Program(stmts) => match &stmts[0] {
+                Node::Function { body, .. } => match body.as_ref() {
+                    Node::Block(inner) => match &inner[0] {
+                        Node::ReturnStatement { value } => assert!(value.is_none()),
+                        other => panic!("expected ReturnStatement, got {:?}", other),
+                    },
+                    other => panic!("expected Block, got {:?}", other),
+                },
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_return_with_value() {
+        let (_program, errors) = parse("fn foo() { return 42; }");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     #[test]

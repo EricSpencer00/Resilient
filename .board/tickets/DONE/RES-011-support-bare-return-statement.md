@@ -1,7 +1,7 @@
 ---
 id: RES-011
 title: Support bare `return;` statements
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G4
 created: 2026-04-16
@@ -33,6 +33,26 @@ Node::Void (or similar) }`.
 - Fix is at `resilient/src/main.rs:530-532` in `parse_return_statement`.
 - Needs a variant of `Node` for void expression (`Node::VoidLiteral`?)
   or just store `Option<Box<Node>>` as the return value.
+
+## Resolution
+- `Node::ReturnStatement.value` is now `Option<Box<Node>>` instead of
+  `Box<Node>`. `None` means bare `return;`.
+- `parse_return_statement` now checks for `Semicolon` / `RightBrace` /
+  `Eof` immediately after `return` and returns `value: None` in that
+  case. Otherwise it tries `parse_expression(0)` and, crucially, no
+  longer calls `.unwrap()` — on `None` it records an error instead.
+- Interpreter: bare return evaluates to `Value::Return(Box::new(Void))`.
+- Typechecker: bare return's type is `Type::Void`.
+- Two new tests: `parser_accepts_bare_return` (asserts `value.is_none()`)
+  and `parser_accepts_return_with_value` regression.
+
+Verification:
+```
+$ cargo test
+17 unit + 1 golden + 2 smoke, all passing
+$ cargo clippy -- -D warnings
+clean
+```
 
 ## Log
 - 2026-04-16 created by manager

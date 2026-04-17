@@ -196,8 +196,12 @@ impl TypeChecker {
             },
             
             Node::ReturnStatement { value } => {
-                // Simply pass through the type of the returned value
-                self.check_node(value)
+                // Bare `return;` has type Void; otherwise pass through
+                // the type of the returned value.
+                match value {
+                    Some(expr) => self.check_node(expr),
+                    None => Ok(Type::Void),
+                }
             },
             
             Node::IfStatement { condition, consequence, alternative } => {
