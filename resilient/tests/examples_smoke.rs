@@ -35,6 +35,24 @@ fn hello_rs_prints_greeting() {
 }
 
 #[test]
+fn hello_exits_zero_minimal_exits_zero() {
+    // RES-027: successful runs produce exit code 0.
+    let (_s, _e, code) = run_example("hello.rs");
+    assert_eq!(code, Some(0), "hello.rs should exit 0");
+    let (_s, _e, code) = run_example("minimal.rs");
+    assert_eq!(code, Some(0), "minimal.rs should exit 0");
+}
+
+#[test]
+fn broken_example_exits_non_zero() {
+    // sensor_example.rs has a parse error (parameterless fn w/o type).
+    // Until someone fixes the example, running it must surface a
+    // non-zero exit code so CI sees the failure.
+    let (_s, _e, code) = run_example("sensor_example.rs");
+    assert_ne!(code, Some(0), "broken example should NOT exit 0");
+}
+
+#[test]
 fn minimal_rs_runs_end_to_end() {
     // After RES-003 (println) and RES-008 (string+primitive coercion)
     // minimal.rs runs to completion.

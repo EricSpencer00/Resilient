@@ -2183,19 +2183,27 @@ fn main() {
         }
         
         if !filename.is_empty() {
-            // Execute a file
+            // Execute a file. RES-027: a failed run exits non-zero so
+            // `run_examples.sh` / CI / ops tooling can distinguish
+            // success from failure without parsing stdout.
             match execute_file(filename, type_check) {
-                Ok(_) => println!("Program executed successfully"),
-                Err(e) => eprintln!("Error: {}", e),
+                Ok(_) => {
+                    println!("Program executed successfully");
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            return;
         }
     }
-    
+
     // Start the enhanced REPL if no file was provided
     let mut enhanced_repl = repl::EnhancedREPL::new();
     if let Err(e) = enhanced_repl.run() {
         eprintln!("REPL error: {}", e);
+        std::process::exit(1);
     }
 }
 
