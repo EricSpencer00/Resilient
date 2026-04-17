@@ -138,3 +138,49 @@ bottom — the ladder grows indefinitely.
   itself is split into RES-077..080 for iteration-sized AST migration
   work. 165 unit + 1 golden + 6 smoke = 172 tests default, 173+1+7
   with `--features z3`. Clippy clean both ways.
+- 2026-04-17 — session 4 continued (ralph-loop, iterations 8-27): 21
+  more tickets shipped under the orchestrator/executor pattern. Major
+  shifts:
+  * **G6 fully closed** ✅ via the RES-077..088 series. Every `Node`
+    variant now carries `span: Span`. Migration covered Program
+    statements (RES-077), leaves (RES-078), core statements
+    (RES-079), core expressions (RES-084), index/field ops
+    (RES-085), tuple→struct conversions for ArrayLiteral +
+    TryExpression (RES-086) and ExpressionStatement + Block
+    (RES-087), and structural variants Function/Use/LiveBlock/
+    Assert/Match/StructDecl/StructLiteral/FunctionLiteral
+    (RES-088). RES-080 surfaces statement spans in typechecker
+    diagnostics: errors now print `<file>:<line>:<col>:` prefix.
+  * **G15 — bytecode VM end-to-end** 🟡 fully built out. RES-076
+    foundation (Op enum + Chunk + compiler + stack VM for int
+    arith + let), RES-081 function calls + recursion + call frames,
+    RES-083 control flow (Jump/JumpIfFalse, comparison ops, &&/||
+    short-circuit). RES-082 bench: bytecode VM runs fib(25) in
+    30.8 ms vs 396.8 ms tree walker — **12.9× speedup**, beating
+    Python 3 / Node.js / Ruby on the same workload. RES-091 +
+    RES-092 thread `chunk.line_info` so VM runtime errors print
+    `(line N)` at the actual offending source line.
+  * **G17 — LSP scaffolding + 3 integration tests** 🟡. RES-074
+    landed tower-lsp + tokio under an opt-in `lsp` feature flag,
+    with a `--lsp` driver flag, `Backend::initialize` returning
+    capabilities, and `did_open`/`did_change` publishing
+    diagnostics with proper LSP ranges. RES-089 routed parser
+    errors through the same range extractor (no more 0:0
+    diagnostics). RES-090/093/094 are end-to-end integration
+    tests that spawn the binary and exercise the full LSP
+    protocol: handshake → didOpen → didChange edit/revert flow.
+    Hand-rolled LSP framing helpers — no extra deps beyond
+    tower-lsp itself.
+  * **Smaller wins**: RES-026 REPL `--examples-dir`; RES-034
+    nested index assignment `a[i][j]...[k] = v`; RES-055
+    type-preserving `floor`/`ceil`/`pow`.
+  * **Test growth across the session**: 145 unit / 4 smoke / 1
+    golden → 217 unit / 11 smoke / 1 golden default; 225/12/1
+    with `--features z3`; 221/14/1 with `--features lsp`
+    (including 3 lsp_smoke tests). All three `cargo clippy
+    -- -D warnings` clean. Net 28 tickets shipped this session
+    (RES-026, 034, 055, 069..074, 076..088, 089..094 — see
+    `.board/tickets/DONE/` for the ledger).
+  * Remaining OPEN: RES-072 (Cranelift JIT, new deps) and
+    RES-075 (no_std embedded target, new deps). Both are
+    multi-iteration efforts deferred until needed.
