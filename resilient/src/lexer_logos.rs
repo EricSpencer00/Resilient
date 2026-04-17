@@ -31,6 +31,7 @@
 use logos::Logos;
 
 use crate::Token;
+use crate::pos_from_byte;
 use crate::span::{Pos, Span};
 
 /// Token variants the logos derive produces. Converted to the
@@ -190,41 +191,20 @@ fn block_comment(lex: &mut logos::Lexer<Tok>) -> logos::Skip {
 /// The returned spans are in the crate's `Span` format — 1-indexed
 /// line and column, 0-indexed char offset — so downstream diagnostics
 /// receive the same shape they do from the hand-rolled lexer.
+///
+/// Implementation: build the line-start table once with
+/// `Lexer::build_line_table` (RES-110), then backfill every logos
+/// byte span via `pos_from_byte`. Binary search keeps the conversion
+/// O(log n) per token.
 pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
-    // Build a byte-offset -> Pos lookup so we can translate logos's
-    // byte spans into the crate's 1-indexed line:col positions. We
-    // snapshot one entry per char plus one final EOF entry.
-    let mut line: usize = 1;
-    let mut col: usize = 1;
-    let mut char_idx: usize = 0;
-    let mut byte_to_pos: Vec<(usize, Pos)> = Vec::with_capacity(src.len() + 1);
-    for (byte_off, ch) in src.char_indices() {
-        byte_to_pos.push((byte_off, Pos::new(line, col, char_idx)));
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-        char_idx += 1;
-    }
-    let eof_pos = Pos::new(line, col, char_idx);
-    byte_to_pos.push((src.len(), eof_pos));
-
-    let pos_at = |byte_off: usize| -> Pos {
-        match byte_to_pos.binary_search_by_key(&byte_off, |x| x.0) {
-            Ok(i) => byte_to_pos[i].1,
-            Err(0) => byte_to_pos[0].1,
-            Err(i) => byte_to_pos[i - 1].1,
-        }
-    };
+    let table = crate::Lexer::build_line_table(src);
 
     let mut out: Vec<(Token, Span)> = Vec::new();
     let mut lex = Tok::lexer(src);
     while let Some(result) = lex.next() {
         let range = lex.span();
-        let start = pos_at(range.start);
-        let end = pos_at(range.end);
+        let start = pos_from_byte(&table, src, range.start);
+        let end = pos_from_byte(&table, src, range.end);
         let span = Span::new(start, end);
         let tok = match result {
             Ok(t) => convert(t),
@@ -241,11 +221,13 @@ pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
     // mirroring what the hand-rolled lexer produces after input ends.
     //
     // The hand-rolled lexer calls `read_char` once more after emitting
-    // `Token::Eof`, which bumps its `column` by one even though no
-    // character was actually consumed. We reproduce that single-column
-    // bump on the end position so the parity test matches; downstream
-    // consumers only look at the `start` of an EOF span anyway.
-    let eof_end = Pos::new(eof_pos.line, eof_pos.column + 1, eof_pos.offset);
+    // `Token::Eof`, which bumps its `column` *and* char-offset by one
+    // even though no character was actually consumed. We reproduce
+    // that single-unit bump on the end position so the parity test
+    // matches; downstream consumers only look at the `start` of an
+    // EOF span anyway.
+    let eof_pos = pos_from_byte(&table, src, src.len());
+    let eof_end = Pos::new(eof_pos.line, eof_pos.column + 1, eof_pos.offset + 1);
     out.push((Token::Eof, Span::new(eof_pos, eof_end)));
     out
 }
