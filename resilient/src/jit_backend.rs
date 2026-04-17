@@ -18,11 +18,51 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
 use crate::Node;
+
+/// RES-104: per-function lowering context. Threads the locals
+/// map (name → cranelift Variable) and the Variable counter
+/// through all lowering helpers so let bindings + identifier
+/// reads compose naturally with everything from earlier phases.
+struct LowerCtx {
+    /// Variable index counter — Cranelift's `Variable` is a u32
+    /// newtype, increment on each `let`. The counter is owned by
+    /// the ctx (not global) so per-function lowering stays
+    /// independent.
+    next_var: u32,
+    /// Currently-in-scope locals. Phase G is function-scoped:
+    /// the same map is used for the whole function body. Block
+    /// scoping is a future ticket.
+    locals: HashMap<String, Variable>,
+}
+
+impl LowerCtx {
+    fn new() -> Self {
+        Self { next_var: 0, locals: HashMap::new() }
+    }
+
+    /// Reserve a fresh `Variable`, declare it on the
+    /// FunctionBuilder, and remember the binding under `name`.
+    /// Shadowing a previous binding just overwrites the map
+    /// entry — subsequent uses get the fresh Variable.
+    fn declare(&mut self, name: &str, bcx: &mut FunctionBuilder) -> Variable {
+        let var = Variable::from_u32(self.next_var);
+        self.next_var += 1;
+        bcx.declare_var(var, types::I64);
+        self.locals.insert(name.to_string(), var);
+        var
+    }
+
+    fn lookup(&self, name: &str) -> Option<Variable> {
+        self.locals.get(name).copied()
+    }
+}
 
 /// Errors the JIT backend can surface.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,11 +144,13 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
-        // RES-102: walk top-level statements and emit returns
-        // inline. compile_statements handles IfStatement (each arm
-        // gets its own block + return_) and the trailing
+        // RES-102 + RES-104: walk top-level statements and emit
+        // returns inline. compile_statements handles IfStatement
+        // (each arm gets its own block + return_), let bindings
+        // (declare a Variable + def_var), and the trailing
         // ReturnStatement.
-        compile_statements(stmts, &mut bcx)?;
+        let mut ctx = LowerCtx::new();
+        compile_statements(stmts, &mut bcx, &mut ctx)?;
         bcx.finalize();
     }
 
@@ -148,12 +190,13 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
 fn compile_statements(
     stmts: &[crate::Spanned<Node>],
     bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
 ) -> Result<(), JitError> {
     // Top-level statements are Spanned<Node>; Block bodies are
     // raw Node. Strip the wrapper here and delegate to the shared
     // walker so the lowering logic isn't duplicated.
     let nodes: Vec<&Node> = stmts.iter().map(|s| &s.node).collect();
-    let returned = compile_node_list(&nodes, bcx)?;
+    let returned = compile_node_list(&nodes, bcx, ctx)?;
     if !returned {
         return Err(JitError::EmptyProgram);
     }
@@ -169,11 +212,12 @@ fn compile_statements(
 fn compile_node_list(
     stmts: &[&Node],
     bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
 ) -> Result<bool, JitError> {
     for node in stmts {
         match node {
             Node::ReturnStatement { value: Some(expr), .. } => {
-                let v = lower_expr(expr, bcx)?;
+                let v = lower_expr(expr, bcx, ctx)?;
                 bcx.ins().return_(&[v]);
                 return Ok(true);
             }
@@ -183,6 +227,7 @@ fn compile_node_list(
                     consequence,
                     alternative.as_deref(),
                     bcx,
+                    ctx,
                 )?;
                 if if_terminated {
                     // Both arms returned — function exits, no
@@ -195,9 +240,19 @@ fn compile_node_list(
                 // the merge block.
                 continue;
             }
+            // RES-104: `let NAME = EXPR;` — lower the RHS, declare
+            // a fresh Variable, and bind NAME to it. Subsequent
+            // identifier reads via lower_expr will use_var the
+            // same Variable.
+            Node::LetStatement { name, value, .. } => {
+                let v = lower_expr(value, bcx, ctx)?;
+                let var = ctx.declare(name, bcx);
+                bcx.def_var(var, v);
+                continue;
+            }
             // Skip statements with no JIT-relevant effect for now;
-            // a future phase will lower let-bindings, expression
-            // statements, etc.
+            // a future phase will lower expression statements,
+            // reassignment, while loops, etc.
             _ => continue,
         }
     }
@@ -228,8 +283,9 @@ fn lower_if_statement(
     consequence: &Node,
     alternative: Option<&Node>,
     bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
 ) -> Result<bool, JitError> {
-    let cond_val = lower_expr(condition, bcx)?;
+    let cond_val = lower_expr(condition, bcx, ctx)?;
 
     let then_block = bcx.create_block();
     let else_block = bcx.create_block();
@@ -244,7 +300,7 @@ fn lower_if_statement(
     // then-arm
     bcx.switch_to_block(then_block);
     bcx.seal_block(then_block);
-    let then_terminated = lower_block_or_stmt(consequence, bcx)?;
+    let then_terminated = lower_block_or_stmt(consequence, bcx, ctx)?;
     if !then_terminated {
         // then-arm fell through — jump to merge so the trailing
         // statements after the if can run.
@@ -255,7 +311,7 @@ fn lower_if_statement(
     bcx.switch_to_block(else_block);
     bcx.seal_block(else_block);
     let else_terminated = match alternative {
-        Some(alt) => lower_block_or_stmt(alt, bcx)?,
+        Some(alt) => lower_block_or_stmt(alt, bcx, ctx)?,
         // Bare `if` with no else: the else-block has nothing to
         // lower and falls through immediately. RES-103 treats
         // this as a fallthrough (Phase E used to reject it).
@@ -293,20 +349,24 @@ fn lower_if_statement(
 /// where the parser gives a nested IfStatement directly as
 /// `alternative`). Returns Ok(true) when a terminator (return)
 /// was emitted, Ok(false) when the block fell through.
-fn lower_block_or_stmt(node: &Node, bcx: &mut FunctionBuilder) -> Result<bool, JitError> {
+fn lower_block_or_stmt(
+    node: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+) -> Result<bool, JitError> {
     match node {
         Node::Block { stmts, .. } => {
             let refs: Vec<&Node> = stmts.iter().collect();
-            compile_node_list(&refs, bcx)
+            compile_node_list(&refs, bcx, ctx)
         }
         Node::IfStatement { condition, consequence, alternative, .. } => {
             // RES-103: an if "terminates" only if both arms did.
             // Otherwise the merge block is now active and the
             // surrounding block's caller may want to keep walking.
-            lower_if_statement(condition, consequence, alternative.as_deref(), bcx)
+            lower_if_statement(condition, consequence, alternative.as_deref(), bcx, ctx)
         }
         Node::ReturnStatement { value: Some(expr), .. } => {
-            let v = lower_expr(expr, bcx)?;
+            let v = lower_expr(expr, bcx, ctx)?;
             bcx.ins().return_(&[v]);
             Ok(true)
         }
@@ -315,7 +375,11 @@ fn lower_block_or_stmt(node: &Node, bcx: &mut FunctionBuilder) -> Result<bool, J
 }
 
 /// Lower an expression to a Cranelift `Value` of type `i64`.
-fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError> {
+fn lower_expr(
+    node: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+) -> Result<Value, JitError> {
     match node {
         Node::IntegerLiteral { value, .. } => Ok(bcx.ins().iconst(types::I64, *value)),
         // RES-100: bool literals lower to i64 0/1 — matches how
@@ -324,6 +388,13 @@ fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError>
         Node::BooleanLiteral { value, .. } => {
             Ok(bcx.ins().iconst(types::I64, if *value { 1 } else { 0 }))
         }
+        // RES-104: identifier read — look up the Variable in the
+        // locals map and use_var. Cranelift's SSA construction
+        // routes the right value to this use.
+        Node::Identifier { name, .. } => match ctx.lookup(name) {
+            Some(var) => Ok(bcx.use_var(var)),
+            None => Err(JitError::Unsupported("identifier not in scope")),
+        },
         // RES-099: lower all four signed integer infix ops + RES-100:
         // the six comparison ops. Same recursive shape — recurse on
         // left + right, then emit the matching Cranelift instruction.
@@ -343,8 +414,8 @@ fn lower_expr(node: &Node, bcx: &mut FunctionBuilder) -> Result<Value, JitError>
                     "infix operator other than +,-,*,/,%,==,!=,<,<=,>,>=",
                 ));
             }
-            let l = lower_expr(left, bcx)?;
-            let r = lower_expr(right, bcx)?;
+            let l = lower_expr(left, bcx, ctx)?;
+            let r = lower_expr(right, bcx, ctx)?;
             Ok(match op_str {
                 "+" => bcx.ins().iadd(l, r),
                 "-" => bcx.ins().isub(l, r),
@@ -425,17 +496,26 @@ mod tests {
         assert_eq!(run(&p).unwrap(), 7);
     }
 
+    // RES-104 closed Phase G — let bindings + identifier reads
+    // both work now. The test that was here pinning the
+    // unsupported case was retired; the equivalent positive
+    // test (jit_let_and_use, below) replaces it.
+
     #[test]
-    fn jit_rejects_let_for_now() {
-        let p = parse_program("let x = 1; return x;");
-        // The walk hits ReturnStatement first via top_level_return_expr;
-        // its expr is an Identifier which is unsupported in Phase B.
-        let err = run(&p).unwrap_err();
-        assert!(
-            matches!(err, JitError::Unsupported(_)),
-            "expected Unsupported, got {:?}",
-            err
-        );
+    fn jit_undeclared_identifier_unsupported() {
+        // An identifier read with no matching `let` is still
+        // unsupported in Phase G — a future ticket can promote
+        // this to a richer "scope error" diagnostic, but for
+        // now Unsupported with the descriptor is enough.
+        let p = parse_program("return undefined_var;");
+        match run(&p).unwrap_err() {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("identifier not in scope"),
+                "expected scope descriptor, got: {}",
+                msg
+            ),
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
     }
 
     // RES-100 closed Phase D — comparison ops work now too.
@@ -601,6 +681,63 @@ mod tests {
         assert_eq!(run(&p).unwrap(), 42);
         let p2 = parse_program("if (false) { return 42; } else { return 0; }");
         assert_eq!(run(&p2).unwrap(), 0);
+    }
+
+    // ---------- RES-104: let bindings + identifier reads ----------
+
+    #[test]
+    fn jit_let_and_use() {
+        // Smallest meaningful test: bind a value, then use it.
+        let p = parse_program("let x = 5; return x + 10;");
+        assert_eq!(run(&p).unwrap(), 15);
+    }
+
+    #[test]
+    fn jit_let_in_arith() {
+        // Two locals in an arithmetic expression. Pratt: `*`
+        // binds tighter than `+`, so this is `a * b + 2` →
+        // (3 * 4) + 2 = 14.
+        let p = parse_program("let a = 3; let b = 4; return a * b + 2;");
+        assert_eq!(run(&p).unwrap(), 14);
+    }
+
+    #[test]
+    fn jit_let_in_if_condition() {
+        // Identifier read inside an if condition: composes
+        // RES-100 comparison + RES-104 lookup.
+        let p = parse_program("let x = 5; if (x > 0) { return x; } else { return 0; }");
+        assert_eq!(run(&p).unwrap(), 5);
+    }
+
+    #[test]
+    fn jit_let_inside_arm() {
+        // `let` inside a then-arm — the LowerCtx threads down
+        // through lower_block_or_stmt, so the local is visible
+        // for the arm-local return. Phase G is function-scoped,
+        // so the binding outlives the arm but no test exercises
+        // that yet (would need post-if usage).
+        let p = parse_program("if (1 < 2) { let y = 7; return y; } else { return 0; }");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_let_shadowing() {
+        // `let x = 1; let x = 2; return x;` — second `let x`
+        // overwrites the HashMap entry, so the use_var picks
+        // up the fresh Variable. Function-scoped semantics
+        // mean shadowing is just rebinding.
+        let p = parse_program("let x = 1; let x = 2; return x;");
+        assert_eq!(run(&p).unwrap(), 2);
+    }
+
+    #[test]
+    fn jit_let_used_after_if_fallthrough() {
+        // Combines RES-103 fallthrough with RES-104 locals:
+        // bind x, conditionally early-return, otherwise use x
+        // in the trailing return. Proves the LowerCtx survives
+        // across the merge_block.
+        let p = parse_program("let x = 7; if (false) { return 0; } return x + 1;");
+        assert_eq!(run(&p).unwrap(), 8);
     }
 
     // ---------- RES-103: merge block + fallthrough ----------

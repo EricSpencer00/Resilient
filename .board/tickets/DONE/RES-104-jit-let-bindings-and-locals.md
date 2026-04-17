@@ -82,3 +82,28 @@ benchmark).
 
 ## Log
 - 2026-04-17 created by manager (Phase G scope)
+- 2026-04-17 executor: introduced LowerCtx struct (next_var
+  counter + HashMap<String, Variable> locals map) and threaded
+  it as `&mut LowerCtx` through compile_statements,
+  compile_node_list, lower_if_statement, lower_block_or_stmt,
+  and lower_expr. ctx.declare(name, bcx) reserves a fresh
+  Variable, declares it on the FunctionBuilder with i64 type,
+  and binds the name. ctx.lookup(name) returns the Variable
+  for identifier reads.
+  lower_expr added an Identifier arm: lookup → use_var; missing
+  binding → Unsupported("identifier not in scope").
+  compile_node_list added a LetStatement arm: lower RHS via
+  lower_expr → declare → def_var, no terminator emitted.
+  Six new unit tests cover: simple let-and-use, two locals in
+  arith, identifier in if condition, let inside arm, shadowing
+  (let x = 1; let x = 2;), and let-used-after-fallthrough
+  (composes with RES-103). The old jit_rejects_let_for_now
+  was retired and replaced with jit_undeclared_identifier_unsupported
+  to pin the still-unsupported case.
+  Smoke test bytecode_jit_runs_let_bindings: `let x = 100; let
+  y = 4; return x / y;` → driver prints 25, exits 0.
+  Variable::with_u32 was deprecated in this cranelift release —
+  switched to Variable::from_u32. Matrix: default 217, z3 225,
+  lsp 221, jit 255 — all green; clippy clean across all four.
+  No reassignment, while loops, function calls, or block-scoped
+  locals — those land in RES-105+.

@@ -350,6 +350,41 @@ fn bytecode_jit_runs_if_with_fallthrough() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_let_bindings() {
+    // RES-104: Phase G adds let bindings + identifier reads.
+    // `let x = 100; let y = 4; return x / y;` exercises two
+    // local variables flowing into a RES-099 sdiv. Driver gets
+    // 25 back as i64.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_104_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "let x = 100; let y = 4; return x / y;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("25"),
+        "expected `25` in stdout (let x/let y/return x/y via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching
