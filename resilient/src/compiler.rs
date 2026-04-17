@@ -1,60 +1,137 @@
-//! RES-076: AST → bytecode compiler.
+//! RES-076 + RES-081: AST → bytecode compiler.
 //!
-//! Walks a `Node::Program` and emits a `Chunk` for the VM to execute.
-//! FOUNDATION subset only — see `bytecode.rs` for the supported Ops
-//! and the RES-076 ticket for what's deferred.
+//! Walks a `Node::Program` and emits a `Program { main, functions }`
+//! for the VM to execute. Supports the subset covered by RES-076
+//! (int arithmetic, let bindings, identifiers, return) plus RES-081
+//! (top-level function declarations + calls).
 //!
-//! Locals are resolved at compile time to `u16` indices into a
-//! per-program slab. The runtime never sees identifier strings,
-//! which is half the perf win over the tree walker.
+//! Locals are resolved at compile time to `u16` frame-relative
+//! indices; the runtime never sees identifier strings. That's half
+//! the perf win over the tree walker.
 
-#![allow(dead_code)] // populated incrementally — follow-ups will exercise everything
+#![allow(dead_code)]
 
-use crate::bytecode::{Chunk, CompileError, Op};
+use crate::bytecode::{Chunk, CompileError, Function, Op, Program};
 use crate::{Node, Value};
 use std::collections::HashMap;
 
-/// Compile a parsed program into a `Chunk` ready for the VM.
+/// Compile a parsed program into a bytecode `Program` ready for the VM.
 ///
-/// Statements are compiled in source order. Each statement leaves
-/// nothing on the operand stack (expressions inside `let` are
-/// consumed by `StoreLocal`; expression statements are emitted as
-/// `Op::Const(void)` placeholders if needed — the FOUNDATION compiler
-/// rejects bare expression statements that would leak a value, since
-/// the test surface doesn't need them).
+/// Steps:
+/// 1. Pre-pass: find every top-level `fn` and index it by name so
+///    call sites can refer to it regardless of source order (mirrors
+///    the tree-walker's function-hoist in `eval_program`).
+/// 2. Compile each function body into its own `Chunk`.
+/// 3. Compile the remaining top-level statements into `main`.
 ///
-/// A trailing `Op::Return` is appended unconditionally — if the
-/// program ended with an explicit `return EXPR;` this is unreachable
-/// and harmless; otherwise it terminates the VM with `Value::Void`.
-pub fn compile(program: &Node) -> Result<Chunk, CompileError> {
+/// A trailing `Op::Return` is appended to `main` unconditionally —
+/// if the program ended with an explicit `return EXPR;` this is
+/// unreachable and harmless; otherwise it terminates the VM with
+/// `Value::Void`.
+pub fn compile(program: &Node) -> Result<Program, CompileError> {
     let stmts = match program {
         Node::Program(s) => s,
         _ => return Err(CompileError::Unsupported("non-Program root")),
     };
-    let mut chunk = Chunk::new();
-    let mut locals: HashMap<String, u16> = HashMap::new();
-    let mut next_local: u16 = 0;
+
+    // Pre-pass: function name → index in the `functions` table.
+    let mut fn_index: HashMap<String, u16> = HashMap::new();
+    let mut next_fn_idx: u16 = 0;
     for spanned in stmts {
-        // Each top-level statement uses the per-stmt span line
-        // captured by RES-077 for `line_info` so VM-side errors
-        // can attribute back to the source.
-        let line = spanned.span.start.line as u32;
-        compile_stmt(&spanned.node, &mut chunk, &mut locals, &mut next_local, line)?;
+        if let Node::Function { name, parameters, .. } = &spanned.node {
+            if parameters.len() > u8::MAX as usize {
+                return Err(CompileError::Unsupported("fn with >255 params"));
+            }
+            if next_fn_idx == u16::MAX {
+                return Err(CompileError::Unsupported("program has > 65535 functions"));
+            }
+            fn_index.insert(name.clone(), next_fn_idx);
+            next_fn_idx += 1;
+        }
     }
-    chunk.emit(Op::Return, 0);
-    Ok(chunk)
+
+    // Pass 2: compile each function body in declaration order.
+    let mut functions: Vec<Function> = Vec::new();
+    for spanned in stmts {
+        if let Node::Function { name, parameters, body, .. } = &spanned.node {
+            let arity = parameters.len() as u8;
+            let mut chunk = Chunk::new();
+            // Parameters occupy locals 0..arity. Map each param name
+            // to its slot; additional `let` bindings in the body bump
+            // `next_local` from there.
+            let mut locals: HashMap<String, u16> = HashMap::new();
+            let mut next_local: u16 = 0;
+            for (_type_name, pname) in parameters {
+                locals.insert(pname.clone(), next_local);
+                next_local += 1;
+            }
+            // Function bodies are `Node::Block(stmts)` today. Walk
+            // the inner statements; emit a trailing ReturnFromCall so
+            // a body that fell through produces Void to the caller.
+            let inner = match body.as_ref() {
+                Node::Block(b) => b,
+                single => std::slice::from_ref(single),
+            };
+            for stmt in inner {
+                let line = spanned.span.start.line as u32;
+                compile_stmt_in_fn(
+                    stmt,
+                    &mut chunk,
+                    &mut locals,
+                    &mut next_local,
+                    &fn_index,
+                    line,
+                )?;
+            }
+            chunk.emit(Op::ReturnFromCall, 0);
+            functions.push(Function {
+                name: name.clone(),
+                arity,
+                chunk,
+                local_count: next_local,
+            });
+        }
+    }
+
+    // Pass 3: compile the remaining top-level statements into `main`.
+    let mut main = Chunk::new();
+    let mut main_locals: HashMap<String, u16> = HashMap::new();
+    let mut main_next_local: u16 = 0;
+    for spanned in stmts {
+        // Skip fn decls — they were compiled in pass 2.
+        if matches!(spanned.node, Node::Function { .. }) {
+            continue;
+        }
+        let line = spanned.span.start.line as u32;
+        compile_stmt(
+            &spanned.node,
+            &mut main,
+            &mut main_locals,
+            &mut main_next_local,
+            &fn_index,
+            line,
+        )?;
+    }
+    main.emit(Op::Return, 0);
+
+    Ok(Program { main, functions })
 }
 
+/// Compile a top-level (main-chunk) statement. Bare expression
+/// statements leak their value onto the operand stack, which `Return`
+/// picks up as the program result — useful for the RES-076 smoke
+/// test that parses `2 + 3 * 4;`.
 fn compile_stmt(
     node: &Node,
     chunk: &mut Chunk,
     locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, line)?;
+            compile_expr(value, chunk, locals, fn_index, line)?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -65,7 +142,7 @@ fn compile_stmt(
             Ok(())
         }
         Node::ReturnStatement { value: Some(v) } => {
-            compile_expr(v, chunk, locals, line)?;
+            compile_expr(v, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Return, line);
             Ok(())
         }
@@ -74,20 +151,57 @@ fn compile_stmt(
             Ok(())
         }
         Node::ExpressionStatement(inner) => {
-            // FOUNDATION: only allow expression statements that don't
-            // need their value (e.g. parenthesized arith for side
-            // effects we don't have yet). Push then... we don't have
-            // a Pop op, so just compile the expression and let the
-            // value sit on the stack until Return picks it up.
-            // This means a trailing `2 + 3` at top level becomes the
-            // program's return value — useful for the smoke test.
-            compile_expr(inner, chunk, locals, line)
+            compile_expr(inner, chunk, locals, fn_index, line)
         }
         Node::Function { .. } => {
-            // Functions need RES-081 — the FOUNDATION can't compile a
-            // call frame yet. Cleanly reject so the user knows what's
-            // missing.
-            Err(CompileError::Unsupported("function decl (RES-081)"))
+            // Top-level fn decl already handled in pass 2. Skipping
+            // here would be a no-op, but we should never see one —
+            // the caller filters them out before calling us.
+            Err(CompileError::Unsupported("nested function decl"))
+        }
+        other => Err(CompileError::Unsupported(node_kind(other))),
+    }
+}
+
+/// Compile a statement inside a `fn` body. Same as `compile_stmt`
+/// except `return EXPR;` emits `ReturnFromCall` instead of `Return`
+/// — a bare `return` at program scope halts the VM; one inside a
+/// function returns to the caller.
+fn compile_stmt_in_fn(
+    node: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    line: u32,
+) -> Result<(), CompileError> {
+    match node {
+        Node::LetStatement { name, value, .. } => {
+            compile_expr(value, chunk, locals, fn_index, line)?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx);
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        Node::ReturnStatement { value: Some(v) } => {
+            compile_expr(v, chunk, locals, fn_index, line)?;
+            chunk.emit(Op::ReturnFromCall, line);
+            Ok(())
+        }
+        Node::ReturnStatement { value: None } => {
+            // `return;` inside a fn body returns Void — push a Void
+            // constant so ReturnFromCall has something to transfer.
+            let idx = chunk.add_constant(Value::Void)?;
+            chunk.emit(Op::Const(idx), line);
+            chunk.emit(Op::ReturnFromCall, line);
+            Ok(())
+        }
+        Node::ExpressionStatement(inner) => {
+            compile_expr(inner, chunk, locals, fn_index, line)
         }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -97,6 +211,7 @@ fn compile_expr(
     node: &Node,
     chunk: &mut Chunk,
     locals: &HashMap<String, u16>,
+    fn_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
@@ -113,13 +228,13 @@ fn compile_expr(
             Ok(())
         }
         Node::PrefixExpression { operator, right } if operator == "-" => {
-            compile_expr(right, chunk, locals, line)?;
+            compile_expr(right, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Neg, line);
             Ok(())
         }
         Node::InfixExpression { left, operator, right } => {
-            compile_expr(left, chunk, locals, line)?;
-            compile_expr(right, chunk, locals, line)?;
+            compile_expr(left, chunk, locals, fn_index, line)?;
+            compile_expr(right, chunk, locals, fn_index, line)?;
             let op = match operator.as_str() {
                 "+" => Op::Add,
                 "-" => Op::Sub,
@@ -129,6 +244,26 @@ fn compile_expr(
                 _ => return Err(CompileError::Unsupported("non-arithmetic operator")),
             };
             chunk.emit(op, line);
+            Ok(())
+        }
+        // RES-081: call to a top-level function. Only supports
+        // calls where the callee is a bare `Identifier` — indirect
+        // call through a function value (closures, lambdas) is out
+        // of scope here.
+        Node::CallExpression { function, arguments } => {
+            let callee_name = match function.as_ref() {
+                Node::Identifier(n) => n.clone(),
+                _ => return Err(CompileError::Unsupported("indirect call")),
+            };
+            let callee_idx = *fn_index
+                .get(&callee_name)
+                .ok_or_else(|| CompileError::UnknownFunction(callee_name.clone()))?;
+            // Push args left-to-right so the VM can pop them in reverse
+            // and assign to locals 0..arity in source order.
+            for arg in arguments {
+                compile_expr(arg, chunk, locals, fn_index, line)?;
+            }
+            chunk.emit(Op::Call(callee_idx), line);
             Ok(())
         }
         other => Err(CompileError::Unsupported(node_kind(other))),
@@ -163,7 +298,6 @@ fn node_kind(n: &Node) -> &'static str {
         Node::ArrayLiteral(_) => "ArrayLiteral",
         Node::IndexExpression { .. } => "IndexExpression",
         Node::IndexAssignment { .. } => "IndexAssignment",
-        // Anything we forgot to enumerate falls through here.
         _ => "<other>",
     }
 }
@@ -182,24 +316,20 @@ mod tests {
     #[test]
     fn compile_int_literal_emits_const() {
         let p = parse_one("42;");
-        let chunk = compile(&p).unwrap();
-        assert_eq!(chunk.constants.len(), 1);
-        assert!(matches!(chunk.constants[0], Value::Int(42)));
-        // Const(0), Return (from the bare expression-stmt with value
-        // sitting on the stack), then trailing Return (unreachable
-        // but harmless — see compile() doc).
-        assert_eq!(chunk.code.first(), Some(&Op::Const(0)));
-        assert!(matches!(chunk.code.last(), Some(Op::Return)));
+        let prog = compile(&p).unwrap();
+        assert_eq!(prog.main.constants.len(), 1);
+        assert!(matches!(prog.main.constants[0], Value::Int(42)));
+        assert_eq!(prog.main.code.first(), Some(&Op::Const(0)));
+        assert!(matches!(prog.main.code.last(), Some(Op::Return)));
+        assert!(prog.functions.is_empty());
     }
 
     #[test]
     fn compile_arith_respects_precedence() {
-        // 2 + 3 * 4 should compile to: Const(2), Const(3), Const(4), Mul, Add, Return*
         let p = parse_one("2 + 3 * 4;");
-        let chunk = compile(&p).unwrap();
-        // Strip the trailing Return that compile() always appends so
-        // we can assert on just the expression body.
-        let body: Vec<&Op> = chunk
+        let prog = compile(&p).unwrap();
+        let body: Vec<&Op> = prog
+            .main
             .code
             .iter()
             .filter(|op| !matches!(op, Op::Return))
@@ -212,8 +342,8 @@ mod tests {
     #[test]
     fn compile_let_emits_store_local() {
         let p = parse_one("let x = 7;");
-        let chunk = compile(&p).unwrap();
-        assert!(chunk.code.iter().any(|op| matches!(op, Op::StoreLocal(0))));
+        let prog = compile(&p).unwrap();
+        assert!(prog.main.code.iter().any(|op| matches!(op, Op::StoreLocal(0))));
     }
 
     #[test]
@@ -226,6 +356,57 @@ mod tests {
     #[test]
     fn compile_unsupported_construct_is_clean_error() {
         let p = parse_one("if true { let x = 1; }");
+        let err = compile(&p).unwrap_err();
+        assert!(matches!(err, CompileError::Unsupported(_)), "{:?}", err);
+    }
+
+    // ---------- RES-081 tests ----------
+
+    #[test]
+    fn compile_fn_decl_populates_functions_table() {
+        let p = parse_one("fn zero() { return 0; }");
+        let prog = compile(&p).unwrap();
+        assert_eq!(prog.functions.len(), 1);
+        assert_eq!(prog.functions[0].name, "zero");
+        assert_eq!(prog.functions[0].arity, 0);
+    }
+
+    #[test]
+    fn compile_call_emits_call_op() {
+        let p = parse_one("fn zero() { return 0; } zero();");
+        let prog = compile(&p).unwrap();
+        assert!(
+            prog.main.code.iter().any(|op| matches!(op, Op::Call(0))),
+            "expected Call(0) in main.code: {:?}",
+            prog.main.code
+        );
+    }
+
+    #[test]
+    fn compile_unknown_function_call_errors() {
+        let p = parse_one("nope();");
+        let err = compile(&p).unwrap_err();
+        assert!(matches!(err, CompileError::UnknownFunction(_)), "{:?}", err);
+    }
+
+    #[test]
+    fn compile_fn_with_params_maps_them_to_first_locals() {
+        let p = parse_one("fn sq(int n) { return n * n; }");
+        let prog = compile(&p).unwrap();
+        let f = &prog.functions[0];
+        assert_eq!(f.arity, 1);
+        // Inside the body, `n` is local 0. The emitted code should
+        // LoadLocal(0) twice before Mul.
+        let load_count = f.chunk.code.iter().filter(|op| matches!(op, Op::LoadLocal(0))).count();
+        assert_eq!(load_count, 2, "expected two LoadLocal(0) for n*n: {:?}", f.chunk.code);
+    }
+
+    #[test]
+    fn compile_too_many_params_errors() {
+        // 256 params — over the u8 limit.
+        let params: Vec<String> = (0..256).map(|i| format!("int p{}", i)).collect();
+        let src = format!("fn big({}) {{ return 0; }}", params.join(", "));
+        let p = parse_one(&src);
         let err = compile(&p).unwrap_err();
         assert!(matches!(err, CompileError::Unsupported(_)), "{:?}", err);
     }

@@ -1,7 +1,7 @@
 ---
 id: RES-081
 title: VM function calls and recursion
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G15
 created: 2026-04-17
@@ -46,3 +46,41 @@ land together because one is useless without the other.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `bytecode::Function { name, arity: u8, chunk, local_count: u16 }`
+    + `bytecode::Program { main, functions }`. Compiler's return type
+    changed from `Chunk` to `Program`.
+  - New ops `Op::Call(u16)` and `Op::ReturnFromCall`.
+    `Call` pops `arity` args (leftmost popped last → stored into
+    slots `0..arity` in source order), reserves `local_count` locals,
+    pushes a `CallFrame`. `ReturnFromCall` pops a return value,
+    unwinds the frame, pushes the value onto the caller's stack.
+    Top-level `return` still emits `Op::Return` (halts); inside a
+    fn body `return` emits `ReturnFromCall`.
+  - New `CompileError::UnknownFunction(String)` and
+    `CompileError::ArityMismatch { ... }`; new `VmError` variants
+    `FunctionOutOfBounds`, `CallStackUnderflow`, `CallStackOverflow`
+    with a 1024-frame safety cap to stop runaway recursion.
+  - Compiler pre-pass: function-name → index table built before
+    body compilation so forward references work. Each fn body
+    compiled with its own locals map starting with params in slots
+    `0..arity`.
+  - VM uses a shared `locals: Vec<Value>` slab plus a per-frame
+    `locals_base` offset so LoadLocal/StoreLocal indices remain
+    frame-relative. `ReturnFromCall` truncates `locals` back to
+    the caller's base — no leaks across frames.
+- 2026-04-17 tests: **12 new unit tests** across compiler (5) and
+  vm (7), including the oracle test
+  `vm_and_tree_walker_agree_on_call_result` that cross-checks VM and
+  interpreter on `sq(6) = 36`. Existing tests updated for the new
+  `Program` return type. New smoke test `bytecode_vm_runs_fn_call`
+  runs `fn sq(int n) { return n * n; } sq(7);` through `--vm` and
+  asserts stdout contains `49`.
+- 2026-04-17 manual verification: nested-call test
+  `add(sq(3), sq(4)) = 25` runs correctly through `--vm`.
+- 2026-04-17 build/test/clippy: 196 unit + 1 golden + 10 smoke =
+  207 tests default; 204 + 1 + 11 = 216 with `--features z3`.
+  Clippy clean both ways.
+- Recursion with terminating branches is deferred to RES-083
+  (control flow) + RES-082 (fib bench) per the ticket's explicit
+  dependency note.

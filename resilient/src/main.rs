@@ -3763,13 +3763,13 @@ fn execute_file(
     }
 
     if use_vm {
-        // RES-076: bytecode VM path. Compile the AST, run the chunk,
-        // print the resulting value (mirroring the tree walker's
-        // behavior for non-Void results so the smoke test sees `14`
-        // when running `let x = 2 + 3 * 4; return x;`).
-        let chunk = compiler::compile(&program)
+        // RES-076 + RES-081: bytecode VM path. Compile the AST into
+        // a Program (main chunk + function table), run it, print the
+        // resulting value (mirroring the tree walker's behavior for
+        // non-Void results).
+        let prog = compiler::compile(&program)
             .map_err(|e| format!("VM compile error: {}", e))?;
-        let result = vm::run(&chunk).map_err(|e| format!("VM runtime error: {}", e))?;
+        let result = vm::run(&prog).map_err(|e| format!("VM runtime error: {}", e))?;
         if !matches!(result, Value::Void) {
             println!("{}", result);
         }

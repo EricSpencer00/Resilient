@@ -145,6 +145,37 @@ fn bytecode_vm_runs_arithmetic_and_let() {
 }
 
 #[test]
+fn bytecode_vm_runs_fn_call() {
+    // RES-081: --vm runs a program that declares a fn and calls it.
+    // Foundation only covers calls without branching — that's fine
+    // for this smoke test; `sq(7) = 49` doesn't need control flow.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_081_smoke_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "fn sq(int n) {{ return n * n; }}").unwrap();
+        writeln!(f, "sq(7);").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm fn-call path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("49"),
+        "expected `49` in stdout (sq(7)); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn bytecode_vm_rejects_unsupported_construct_cleanly() {
     // RES-076: anything outside the FOUNDATION subset (e.g. `if`)
     // returns `CompileError::Unsupported(...)` and the driver

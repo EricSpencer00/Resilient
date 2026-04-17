@@ -1,18 +1,22 @@
-//! RES-076: stack-based bytecode VM.
+//! RES-076 + RES-081: stack-based bytecode VM.
 //!
-//! Walks a `Chunk` produced by `compiler::compile`. The execution
-//! model is dead simple: an operand stack of `Value`s, a locals
-//! slab indexed by `u16`, and a single program counter into
-//! `chunk.code`. There are no jumps yet (control-flow ops land in
-//! RES-083), so `pc` only ever advances by 1.
+//! Walks a `Program` produced by `compiler::compile`. The execution
+//! model is dead simple: an operand stack of `Value`s, a single
+//! locals slab, and a stack of `CallFrame`s. Each frame records the
+//! chunk it's executing, its pc, and the base index into the locals
+//! slab (so LoadLocal/StoreLocal indices are frame-relative).
+//!
+//! There are no forward/backward jumps yet (control-flow ops land
+//! in RES-083), but RES-081 adds `Call` / `ReturnFromCall` so every
+//! non-trivial program that doesn't branch can now run under `--vm`.
 
 #![allow(dead_code)]
 
-use crate::bytecode::{Chunk, Op};
+use crate::bytecode::{Chunk, Op, Program};
 use crate::Value;
 
 /// Errors the VM can surface at runtime. Like `CompileError`, the
-/// `&'static str` payloads describe the offending construct without
+/// `&'static str` payloads describe the offending op without
 /// allocating per-error.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VmError {
@@ -21,6 +25,14 @@ pub enum VmError {
     TypeMismatch(&'static str),
     LocalOutOfBounds(u16),
     ConstantOutOfBounds(u16),
+    /// RES-081: `Op::Call(idx)` with `idx` outside `program.functions`.
+    FunctionOutOfBounds(u16),
+    /// RES-081: `ReturnFromCall` with no caller — either the program
+    /// emitted it at the top level, or a fn-body underflow.
+    CallStackUnderflow,
+    /// RES-081: call stack depth exceeded a safety cap (defense
+    /// against runaway recursion — infinite fib etc.).
+    CallStackOverflow,
 }
 
 impl std::fmt::Display for VmError {
@@ -31,25 +43,78 @@ impl std::fmt::Display for VmError {
             VmError::TypeMismatch(what) => write!(f, "vm: type mismatch in {}", what),
             VmError::LocalOutOfBounds(i) => write!(f, "vm: local {} out of bounds", i),
             VmError::ConstantOutOfBounds(i) => write!(f, "vm: constant {} out of bounds", i),
+            VmError::FunctionOutOfBounds(i) => write!(f, "vm: function {} out of bounds", i),
+            VmError::CallStackUnderflow => write!(f, "vm: call stack underflow"),
+            VmError::CallStackOverflow => write!(f, "vm: call stack overflow (>1024 frames)"),
         }
     }
 }
 
 impl std::error::Error for VmError {}
 
-/// Run a compiled chunk. Returns the value on top of the operand
-/// stack at the moment `Op::Return` fires; `Value::Void` if the
-/// stack was empty.
-pub fn run(chunk: &Chunk) -> Result<Value, VmError> {
-    let mut stack: Vec<Value> = Vec::with_capacity(64);
-    // Locals slab is sized lazily — we grow on first store. The
-    // compiler caps locals at u16 so this is bounded.
-    let mut locals: Vec<Value> = Vec::new();
+/// Cap on concurrent call frames. Prevents unbounded native-stack
+/// growth on pathologically-recursive input (test case for
+/// `VmError::CallStackOverflow`).
+const MAX_CALL_DEPTH: usize = 1024;
 
-    let mut pc = 0usize;
-    while pc < chunk.code.len() {
+/// RES-081: one active function invocation. `chunk_idx = usize::MAX`
+/// marks the `main` frame; any other value indexes into
+/// `program.functions`.
+#[derive(Debug)]
+struct CallFrame {
+    /// Index into `program.functions`, or `usize::MAX` for the main
+    /// chunk. Kept as an index (not a `*const Chunk`) to stay safe
+    /// across Vec growth.
+    chunk_idx: usize,
+    /// Program counter within this frame's chunk.
+    pc: usize,
+    /// Base offset into the shared `locals` slab. LoadLocal(idx)
+    /// resolves to `locals[locals_base + idx]`.
+    locals_base: usize,
+}
+
+/// Run a compiled program. Returns the value left on the operand
+/// stack when the outer `Op::Return` fires (`Value::Void` if empty).
+pub fn run(program: &Program) -> Result<Value, VmError> {
+    let mut stack: Vec<Value> = Vec::with_capacity(64);
+    let mut locals: Vec<Value> = Vec::new();
+    let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
+    frames.push(CallFrame {
+        chunk_idx: usize::MAX, // main
+        pc: 0,
+        locals_base: 0,
+    });
+
+    loop {
+        // SAFETY: frames is non-empty for the duration of the main
+        // loop — we only pop a frame on `ReturnFromCall` (which has
+        // a pre-check) and exit the loop on main's `Op::Return`.
+        let frame_idx = frames.len() - 1;
+        let (chunk, pc) = {
+            let f = &frames[frame_idx];
+            let chunk: &Chunk = if f.chunk_idx == usize::MAX {
+                &program.main
+            } else {
+                &program.functions[f.chunk_idx].chunk
+            };
+            (chunk, f.pc)
+        };
+        if pc >= chunk.code.len() {
+            // Ran off the end without an explicit return. Treat as
+            // an implicit Return / ReturnFromCall depending on
+            // whether we're in main.
+            if frames.len() == 1 {
+                return Ok(stack.pop().unwrap_or(Value::Void));
+            }
+            // In a fn body: implicit ReturnFromCall with Void.
+            let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            locals.truncate(popped.locals_base);
+            stack.push(Value::Void);
+            continue;
+        }
         let op = chunk.code[pc];
-        pc += 1;
+        frames[frame_idx].pc += 1;
+
         match op {
             Op::Const(idx) => {
                 let v = chunk
@@ -93,29 +158,75 @@ pub fn run(chunk: &Chunk) -> Result<Value, VmError> {
                 stack.push(Value::Int(i.wrapping_neg()));
             }
             Op::LoadLocal(idx) => {
+                let base = frames[frame_idx].locals_base;
+                let abs = base + idx as usize;
                 let v = locals
-                    .get(idx as usize)
+                    .get(abs)
                     .ok_or(VmError::LocalOutOfBounds(idx))?
                     .clone();
                 stack.push(v);
             }
             Op::StoreLocal(idx) => {
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
-                let needed = (idx as usize) + 1;
-                if locals.len() < needed {
-                    locals.resize(needed, Value::Void);
+                let base = frames[frame_idx].locals_base;
+                let abs = base + idx as usize;
+                if locals.len() <= abs {
+                    locals.resize(abs + 1, Value::Void);
                 }
-                locals[idx as usize] = v;
+                locals[abs] = v;
+            }
+            Op::Call(idx) => {
+                // RES-081: set up a fresh call frame. Pop `arity`
+                // values as args (leftmost arg is the deepest push),
+                // reserve `local_count` slots in the locals slab
+                // (params plus body-local bindings), copy args into
+                // slots 0..arity.
+                let func = program
+                    .functions
+                    .get(idx as usize)
+                    .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                let arity = func.arity as usize;
+                if stack.len() < arity {
+                    return Err(VmError::EmptyStack);
+                }
+                if frames.len() >= MAX_CALL_DEPTH {
+                    return Err(VmError::CallStackOverflow);
+                }
+                let base = locals.len();
+                // Reserve the full locals slab for the callee up
+                // front, then overwrite the first `arity` slots with
+                // args. Popping from the stack gives rightmost arg
+                // first, so write backwards.
+                locals.resize(base + func.local_count as usize, Value::Void);
+                for i in (0..arity).rev() {
+                    let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                    locals[base + i] = v;
+                }
+                frames.push(CallFrame {
+                    chunk_idx: idx as usize,
+                    pc: 0,
+                    locals_base: base,
+                });
+            }
+            Op::ReturnFromCall => {
+                // Pop the return value, unwind the frame, push it
+                // onto the caller's stack.
+                let ret = stack.pop().ok_or(VmError::EmptyStack)?;
+                let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                if frames.is_empty() {
+                    // ReturnFromCall at top level — shouldn't happen
+                    // for well-formed programs. Treat as halt so
+                    // hand-rolled chunks don't panic.
+                    return Ok(ret);
+                }
+                locals.truncate(popped.locals_base);
+                stack.push(ret);
             }
             Op::Return => {
                 return Ok(stack.pop().unwrap_or(Value::Void));
             }
         }
     }
-    // Program ran off the end without an explicit Return — same as
-    // returning Void from the trailing implicit Return that the
-    // compiler always appends.
-    Ok(stack.pop().unwrap_or(Value::Void))
 }
 
 fn pop_two_ints(stack: &mut Vec<Value>, op_name: &'static str) -> Result<(i64, i64), VmError> {
@@ -130,25 +241,26 @@ fn pop_two_ints(stack: &mut Vec<Value>, op_name: &'static str) -> Result<(i64, i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::Op;
+    use crate::bytecode::{Op, Program};
 
-    fn const_chunk(values: &[Value], code: &[Op]) -> Chunk {
-        let mut c = Chunk::new();
+    fn const_program(values: &[Value], code: &[Op]) -> Program {
+        let mut main = Chunk::new();
         for v in values {
-            c.constants.push(v.clone());
+            main.constants.push(v.clone());
         }
         for op in code {
-            c.code.push(*op);
-            c.line_info.push(1);
+            main.code.push(*op);
+            main.line_info.push(1);
         }
-        c
+        Program { main, functions: Vec::new() }
     }
 
-    /// Test helper: run + assert the result is `Value::Int(expected)`.
-    /// `Value` doesn't implement `PartialEq` (it carries a `Function`
-    /// variant whose body is `Box<Node>`, which would require a deep
-    /// equality not worth the maintenance burden), so the VM tests
-    /// destructure manually.
+    fn compile_run(src: &str) -> Result<Value, VmError> {
+        let (program, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&program).unwrap();
+        run(&prog)
+    }
+
     fn assert_int(actual: Value, expected: i64) {
         match actual {
             Value::Int(v) => assert_eq!(v, expected, "expected Int({}), got Int({})", expected, v),
@@ -158,60 +270,142 @@ mod tests {
 
     #[test]
     fn const_then_return_yields_value() {
-        let c = const_chunk(&[Value::Int(7)], &[Op::Const(0), Op::Return]);
-        assert_int(run(&c).unwrap(), 7);
+        let p = const_program(&[Value::Int(7)], &[Op::Const(0), Op::Return]);
+        assert_int(run(&p).unwrap(), 7);
     }
 
     #[test]
     fn add_two_ints() {
-        // 2 + 3 = 5
-        let c = const_chunk(
+        let p = const_program(
             &[Value::Int(2), Value::Int(3)],
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
         );
-        assert_int(run(&c).unwrap(), 5);
+        assert_int(run(&p).unwrap(), 5);
     }
 
     #[test]
     fn end_to_end_two_plus_three_times_four() {
-        // 2 + 3 * 4 = 14, compiled by the real compiler
-        let (program, _) = crate::parse("2 + 3 * 4;");
-        let chunk = crate::compiler::compile(&program).unwrap();
-        assert_int(run(&chunk).unwrap(), 14);
+        assert_int(compile_run("2 + 3 * 4;").unwrap(), 14);
     }
 
     #[test]
     fn let_then_load_yields_stored_value() {
-        // let x = 9; x;
-        let (program, _) = crate::parse("let x = 9; x;");
-        let chunk = crate::compiler::compile(&program).unwrap();
-        assert_int(run(&chunk).unwrap(), 9);
+        assert_int(compile_run("let x = 9; x;").unwrap(), 9);
     }
 
     #[test]
     fn divide_by_zero_is_clean_error() {
-        let (program, _) = crate::parse("10 / 0;");
-        let chunk = crate::compiler::compile(&program).unwrap();
-        let err = run(&chunk).unwrap_err();
-        assert_eq!(err, VmError::DivideByZero);
+        assert_eq!(compile_run("10 / 0;").unwrap_err(), VmError::DivideByZero);
     }
 
     #[test]
     fn type_mismatch_on_add_with_string_constant() {
-        // Hand-roll a chunk that tries to Add an Int to a String —
-        // the compiler won't emit this directly, but the VM must
-        // refuse cleanly anyway.
-        let c = const_chunk(
+        let p = const_program(
             &[Value::Int(1), Value::String("x".into())],
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
         );
-        assert_eq!(run(&c).unwrap_err(), VmError::TypeMismatch("Add"));
+        assert_eq!(run(&p).unwrap_err(), VmError::TypeMismatch("Add"));
     }
 
     #[test]
     fn negation_works() {
-        let (program, _) = crate::parse("let x = -7; x;");
-        let chunk = crate::compiler::compile(&program).unwrap();
-        assert_int(run(&chunk).unwrap(), -7);
+        assert_int(compile_run("let x = -7; x;").unwrap(), -7);
+    }
+
+    // ---------- RES-081 tests ----------
+
+    #[test]
+    fn zero_arg_function_call_returns_its_constant() {
+        let src = "fn zero() { return 0; } zero();";
+        assert_int(compile_run(src).unwrap(), 0);
+    }
+
+    #[test]
+    fn unary_function_squares_its_argument() {
+        let src = "fn sq(int n) { return n * n; } sq(5);";
+        assert_int(compile_run(src).unwrap(), 25);
+    }
+
+    #[test]
+    fn two_arg_function_adds_its_arguments() {
+        let src = "fn add(int a, int b) { return a + b; } add(3, 4);";
+        assert_int(compile_run(src).unwrap(), 7);
+    }
+
+    #[test]
+    fn fn_arg_order_is_source_order() {
+        // a - b is order-sensitive: sub(10, 3) = 7, sub(3, 10) = -7.
+        let src = "fn sub(int a, int b) { return a - b; } sub(10, 3);";
+        assert_int(compile_run(src).unwrap(), 7);
+    }
+
+    #[test]
+    fn fn_with_let_in_body_works() {
+        // Body uses a local beyond the param slots.
+        let src = "fn work(int n) { let doubled = n + n; return doubled + 1; } work(5);";
+        assert_int(compile_run(src).unwrap(), 11);
+    }
+
+    #[test]
+    fn call_stack_overflow_on_runaway_recursion() {
+        // Without RES-083's `if`, we can't write terminating
+        // recursion in source yet. Hand-roll a chunk whose body
+        // is just `Call(self); ReturnFromCall` — blows the stack.
+        use crate::bytecode::Function;
+        let mut body = Chunk::new();
+        body.code.push(Op::Call(0));
+        body.code.push(Op::ReturnFromCall);
+        body.line_info.push(1);
+        body.line_info.push(1);
+        let runaway = Function {
+            name: "runaway".into(),
+            arity: 0,
+            chunk: body,
+            local_count: 0,
+        };
+        let mut main = Chunk::new();
+        main.code.push(Op::Call(0));
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        main.line_info.push(1);
+        let p = Program { main, functions: vec![runaway] };
+        assert_eq!(run(&p).unwrap_err(), VmError::CallStackOverflow);
+    }
+
+    #[test]
+    fn vm_and_tree_walker_agree_on_call_result() {
+        // Oracle check: for a program both paths accept, the VM and
+        // the interpreter must return the same value.
+        let src = "fn sq(int n) { return n * n; } sq(6);";
+        let (ast, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&ast).unwrap();
+        let vm_result = run(&prog).unwrap();
+
+        // Tree walker: eval the whole program, then look up main
+        // return by evaluating the call manually via a fresh
+        // interpreter.
+        let mut interp = crate::Interpreter::new();
+        // Eval to register the fn.
+        interp.eval(&ast).unwrap();
+        // Then invoke sq(6) as a standalone call expression.
+        let (call_ast, _) = crate::parse("sq(6);");
+        // Hoist the program fns into interp first (done above) then
+        // evaluate the call expression.
+        let Value::Int(interp_val) = eval_first_stmt(&mut interp, &call_ast) else {
+            panic!("interpreter didn't return Int for sq(6)");
+        };
+        let Value::Int(vm_val) = vm_result else {
+            panic!("VM didn't return Int");
+        };
+        assert_eq!(interp_val, vm_val);
+    }
+
+    /// Evaluate the first top-level statement of `program` in the
+    /// given interpreter, returning the resulting value.
+    fn eval_first_stmt(interp: &mut crate::Interpreter, program: &crate::Node) -> Value {
+        let crate::Node::Program(stmts) = program else {
+            panic!("expected Program");
+        };
+        interp.eval(&stmts[0].node).expect("eval")
     }
 }

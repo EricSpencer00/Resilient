@@ -19,7 +19,8 @@ use crate::Value;
 
 /// A single instruction. The VM is stack-based: most ops pop their
 /// arguments and push their result. `LoadLocal`/`StoreLocal` read and
-/// write the locals slab indexed by `u16`.
+/// write the current frame's slice of the locals slab, indexed by
+/// `u16` (frame-relative).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Op {
     /// Push `chunk.constants[idx]` onto the operand stack.
@@ -36,16 +37,28 @@ pub enum Op {
     Mod,
     /// Pop one int, push `-int`.
     Neg,
-    /// Push `locals[idx]` onto the operand stack.
+    /// Push `locals[frame_base + idx]` onto the operand stack.
     LoadLocal(u16),
-    /// Pop the operand stack and store into `locals[idx]`.
+    /// Pop the operand stack and store into `locals[frame_base + idx]`.
     StoreLocal(u16),
+    /// RES-081: call function `program.functions[idx]`. The VM pops
+    /// `arity` values from the operand stack as arguments (leftmost
+    /// arg popped last, so stack order matches source order), pushes
+    /// a new `CallFrame`, and jumps into the callee's chunk.
+    Call(u16),
+    /// RES-081: return from a function call. Pops the top of the
+    /// operand stack as the return value, unwinds the current frame,
+    /// and pushes the return value onto the caller's stack.
+    /// Distinct from `Return`, which halts the VM entirely — a
+    /// top-level `return;` at program scope emits `Return`; a
+    /// `return;` inside a `fn` body emits `ReturnFromCall`.
+    ReturnFromCall,
     /// Halt execution. The top of the operand stack (if any) is the
     /// program's return value; an empty stack returns `Value::Void`.
     Return,
 }
 
-/// One compiled program. `code` is the instruction stream;
+/// One compiled chunk of bytecode. `code` is the instruction stream;
 /// `constants` is the table that `Const(idx)` indexes into;
 /// `line_info` parallels `code` and stores the source line each
 /// instruction came from (RES-077-style spans get richer in
@@ -55,6 +68,27 @@ pub struct Chunk {
     pub code: Vec<Op>,
     pub constants: Vec<Value>,
     pub line_info: Vec<u32>,
+}
+
+/// RES-081: a compiled function. Parameters occupy the first `arity`
+/// slots of the callee's locals slab; `local_count` is the total
+/// number of locals (params + `let` bindings) the VM needs to
+/// reserve on entry.
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub name: String,
+    pub arity: u8,
+    pub chunk: Chunk,
+    pub local_count: u16,
+}
+
+/// RES-081: top-level compile output. `main` is the entrypoint
+/// (executed by `vm::run`), and `functions` is the call table that
+/// `Op::Call(idx)` indexes into.
+#[derive(Debug, Clone, Default)]
+pub struct Program {
+    pub main: Chunk,
+    pub functions: Vec<Function>,
 }
 
 impl Chunk {
@@ -115,6 +149,15 @@ pub enum CompileError {
     TooManyConstants,
     TooManyLocals,
     UnknownIdentifier(String),
+    /// RES-081: call to an unknown function name.
+    UnknownFunction(String),
+    /// RES-081: call arity mismatch — arguments at a call site don't
+    /// match the callee's declared parameter count.
+    ArityMismatch {
+        callee: String,
+        expected: u8,
+        got: usize,
+    },
 }
 
 impl std::fmt::Display for CompileError {
@@ -128,6 +171,14 @@ impl std::fmt::Display for CompileError {
             CompileError::UnknownIdentifier(n) => {
                 write!(f, "bytecode compile: unknown identifier: {}", n)
             }
+            CompileError::UnknownFunction(n) => {
+                write!(f, "bytecode compile: unknown function: {}", n)
+            }
+            CompileError::ArityMismatch { callee, expected, got } => write!(
+                f,
+                "bytecode compile: call to {} has {} args, expected {}",
+                callee, got, expected
+            ),
         }
     }
 }
