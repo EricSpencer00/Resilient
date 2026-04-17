@@ -1276,16 +1276,32 @@ impl Interpreter {
     }
     
     fn eval_program(&mut self, statements: &[Node]) -> RResult<Value> {
-        let mut result = Value::Void;
-        
+        // RES-018: hoist function bindings so they can forward-reference
+        // each other. First pass: bind every top-level fn. Second pass:
+        // re-bind so each captured env includes ALL sibling functions.
+        // Then run non-fn statements in declaration order.
         for statement in statements {
+            if matches!(statement, Node::Function { .. }) {
+                self.eval(statement)?;
+            }
+        }
+        for statement in statements {
+            if matches!(statement, Node::Function { .. }) {
+                self.eval(statement)?;
+            }
+        }
+
+        let mut result = Value::Void;
+        for statement in statements {
+            if matches!(statement, Node::Function { .. }) {
+                continue;
+            }
             result = self.eval(statement)?;
-            
             if let Value::Return(value) = result {
                 return Ok(*value);
             }
         }
-        
+
         Ok(result)
     }
     
@@ -2127,6 +2143,25 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn forward_reference_between_functions() {
+        // RES-018: caller is defined before callee, which only works if
+        // eval_program hoists function definitions.
+        let src = r#"
+            fn caller() { return callee(); }
+            fn callee() { return 42; }
+            let x = caller();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("x").unwrap() {
+            Value::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected Int(42), got {:?}", other),
+        }
     }
 
     #[test]
