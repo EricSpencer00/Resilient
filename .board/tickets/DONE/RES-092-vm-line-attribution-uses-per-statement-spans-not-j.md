@@ -1,7 +1,7 @@
 ---
 id: RES-092
 title: VM line attribution uses per-statement spans (refines RES-091)
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -59,3 +59,26 @@ read those spans.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - New `node_line(&Node) -> Option<u32>` helper in `compiler.rs`
+    that extracts the 1-indexed source line from any Node variant's
+    `span` field. Returns `None` for synthetic nodes (line 0) so the
+    caller can fall back to a parent-scope line.
+  - In `compile`, the fn-body statement loop now calls
+    `node_line(stmt).unwrap_or(spanned.span.start.line as u32)`
+    instead of using the outer fn's line for every body op. The
+    top-level statement loop already used per-statement spans
+    (RES-077's `Spanned<Node>`).
+- 2026-04-17 tests:
+  - New `divide_by_zero_inside_fn_body_attributes_to_body_line`:
+    fn body's `let r = 100 / n;` is on source line 2; the test
+    asserts the resulting error's Display contains `line 2`,
+    which would have been `line 1` before this ticket.
+- 2026-04-17 manual end-to-end: same 5-line source as the test
+  prints `Error: VM runtime error: vm: divide by zero (line 2)`
+  — the ACTUAL division line, not the fn declaration.
+- 2026-04-17 verification across three feature configs:
+  - default: 217 unit + 1 golden + 11 smoke = 229 tests
+  - `--features z3`: 225 + 1 + 12 = 238
+  - `--features lsp`: 221 + 1 + 11 + 1 lsp_smoke = 234 tests
+  All three `cargo clippy -- -D warnings` clean.

@@ -73,7 +73,13 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 single => std::slice::from_ref(single),
             };
             for stmt in inner {
-                let line = spanned.span.start.line as u32;
+                // RES-092: prefer the body statement's own span so
+                // VM runtime errors land on the offending source
+                // line, not just the line of the enclosing fn.
+                // Falls back to the fn's outer line when the
+                // statement node has no span (synthetic).
+                let line = node_line(stmt)
+                    .unwrap_or(spanned.span.start.line as u32);
                 compile_stmt_in_fn(
                     stmt,
                     &mut chunk,
@@ -457,6 +463,65 @@ fn compile_expr(
 }
 
 /// Static descriptor for a node kind, used in `Unsupported` errors.
+/// RES-092: extract a 1-indexed source line from any Node variant
+/// that carries a `Span`. Returns `None` for nodes whose span is
+/// `Span::default()` (line 0 = synthetic) or for variants that
+/// don't carry a span at all. Callers fall back to a parent-scope
+/// line in those cases.
+fn node_line(n: &Node) -> Option<u32> {
+    let line: u32 = match n {
+        // Statement variants (RES-079).
+        Node::LetStatement { span, .. }
+        | Node::StaticLet { span, .. }
+        | Node::Assignment { span, .. }
+        | Node::ReturnStatement { span, .. }
+        | Node::IfStatement { span, .. }
+        | Node::WhileStatement { span, .. }
+        | Node::ForInStatement { span, .. } => span.start.line as u32,
+
+        // Block + ExpressionStatement (RES-087, tuple→struct).
+        Node::Block { span, .. } | Node::ExpressionStatement { span, .. } => {
+            span.start.line as u32
+        }
+
+        // Leaves (RES-078).
+        Node::IntegerLiteral { span, .. }
+        | Node::FloatLiteral { span, .. }
+        | Node::StringLiteral { span, .. }
+        | Node::BooleanLiteral { span, .. }
+        | Node::Identifier { span, .. } => span.start.line as u32,
+
+        // Core expressions (RES-084) and index/field (RES-085).
+        Node::PrefixExpression { span, .. }
+        | Node::InfixExpression { span, .. }
+        | Node::CallExpression { span, .. }
+        | Node::IndexExpression { span, .. }
+        | Node::IndexAssignment { span, .. }
+        | Node::FieldAccess { span, .. }
+        | Node::FieldAssignment { span, .. } => span.start.line as u32,
+
+        // Tuple-struct conversions (RES-086).
+        Node::ArrayLiteral { span, .. } | Node::TryExpression { span, .. } => {
+            span.start.line as u32
+        }
+
+        // Structural variants (RES-088).
+        Node::Function { span, .. }
+        | Node::Use { span, .. }
+        | Node::LiveBlock { span, .. }
+        | Node::Assert { span, .. }
+        | Node::Match { span, .. }
+        | Node::StructDecl { span, .. }
+        | Node::StructLiteral { span, .. }
+        | Node::FunctionLiteral { span, .. } => span.start.line as u32,
+
+        // Program is wrapped in Spanned<Node> at the call site, not
+        // inside the Node enum itself.
+        Node::Program(_) => 0,
+    };
+    if line == 0 { None } else { Some(line) }
+}
+
 fn node_kind(n: &Node) -> &'static str {
     match n {
         Node::Program(_) => "Program",

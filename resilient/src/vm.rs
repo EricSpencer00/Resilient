@@ -424,6 +424,22 @@ mod tests {
     }
 
     #[test]
+    fn divide_by_zero_inside_fn_body_attributes_to_body_line() {
+        // RES-092: the divide-by-zero is on the SECOND line of source
+        // (inside the fn body). Without RES-092 this would land at
+        // line 1 (the `fn` declaration).
+        let src = "fn unsafe_div(int n) {\n    let r = 100 / n;\n    return r;\n}\nunsafe_div(0);";
+        let err = compile_run(src).unwrap_err();
+        let display = err.to_string();
+        assert!(display.contains("divide by zero"), "missing kind: {}", display);
+        assert!(
+            display.contains("line 2"),
+            "expected `line 2` (the body's divide line); got: {}",
+            display
+        );
+    }
+
+    #[test]
     fn divide_by_zero_error_includes_source_line() {
         // RES-091: the runtime error wraps the underlying kind with
         // VmError::AtLine carrying the source line. Display should
