@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One job per push/PR is enough — cancel in-flight runs on rebase.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: build / test / clippy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+
+      - name: cargo build
+        run: cargo build --locked --verbose
+
+      - name: cargo test
+        run: cargo test --locked --verbose
+
+      - name: cargo clippy
+        run: cargo clippy --locked -- -D warnings
+
+      # Optional: check formatting. Non-blocking for now since we haven't
+      # committed to a rustfmt style; flip `continue-on-error` off when
+      # we do.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+        continue-on-error: true
+
+  board:
+    name: board hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Each commit references a ticket
+        shell: bash
+        run: |
+          # Only enforce this for merge-commit ranges on PRs; on `main` we
+          # just warn.
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+              bad=""
+              while read -r sha msg; do
+                  # Skip merge commits.
+                  if [[ $(git log -1 --pretty=%P "$sha" | wc -w) -gt 1 ]]; then
+                      continue
+                  fi
+                  # Require RES-NNN: prefix OR MGR: prefix.
+                  if ! echo "$msg" | grep -qE '^(RES-[0-9]+|MGR): '; then
+                      bad+="$sha $msg"$'\n'
+                  fi
+              done < <(git log --format='%H %s' "$base..$head")
+              if [[ -n "$bad" ]]; then
+                  echo "::error::commits without RES-NNN/MGR prefix:"
+                  echo "$bad"
+                  exit 1
+              fi
+          else
+              echo "push to main — skipping commit-message enforcement"
+          fi
+
+      - name: Board sanity (no ticket stuck in IN_PROGRESS)
+        shell: bash
+        run: |
+          # A ticket lingering in IN_PROGRESS across a merge is a signal
+          # of unfinished work. Tolerated but called out.
+          stuck=$(ls .board/tickets/IN_PROGRESS/*.md 2>/dev/null || true)
+          if [[ -n "$stuck" ]]; then
+              echo "::warning::ticket(s) in IN_PROGRESS at merge:"
+              echo "$stuck"
+          fi
