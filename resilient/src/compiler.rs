@@ -349,18 +349,18 @@ fn compile_expr(
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
-        Node::IntegerLiteral(v) => {
+        Node::IntegerLiteral { value: v, .. } => {
             let idx = chunk.add_constant(Value::Int(*v))?;
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
         // RES-083: boolean literals.
-        Node::BooleanLiteral(b) => {
+        Node::BooleanLiteral { value: b, .. } => {
             let idx = chunk.add_constant(Value::Bool(*b))?;
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
-        Node::Identifier(name) => {
+        Node::Identifier { name, .. } => {
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
@@ -438,7 +438,7 @@ fn compile_expr(
         // of scope here.
         Node::CallExpression { function, arguments } => {
             let callee_name = match function.as_ref() {
-                Node::Identifier(n) => n.clone(),
+                Node::Identifier { name: n, .. } => n.clone(),
                 _ => return Err(CompileError::Unsupported("indirect call")),
             };
             let callee_idx = *fn_index
@@ -473,11 +473,11 @@ fn node_kind(n: &Node) -> &'static str {
         Node::WhileStatement { .. } => "WhileStatement",
         Node::ForInStatement { .. } => "ForInStatement",
         Node::ExpressionStatement(_) => "ExpressionStatement",
-        Node::Identifier(_) => "Identifier",
-        Node::IntegerLiteral(_) => "IntegerLiteral",
-        Node::FloatLiteral(_) => "FloatLiteral",
-        Node::StringLiteral(_) => "StringLiteral",
-        Node::BooleanLiteral(_) => "BooleanLiteral",
+        Node::Identifier { .. } => "Identifier",
+        Node::IntegerLiteral { .. } => "IntegerLiteral",
+        Node::FloatLiteral { .. } => "FloatLiteral",
+        Node::StringLiteral { .. } => "StringLiteral",
+        Node::BooleanLiteral { .. } => "BooleanLiteral",
         Node::PrefixExpression { .. } => "PrefixExpression",
         Node::InfixExpression { .. } => "InfixExpression",
         Node::CallExpression { .. } => "CallExpression",

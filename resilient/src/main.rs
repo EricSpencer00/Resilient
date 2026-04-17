@@ -578,11 +578,37 @@ enum Node {
         body: Box<Node>,
     },
     ExpressionStatement(Box<Node>),
-    Identifier(String),
-    IntegerLiteral(i64),
-    FloatLiteral(f64),
-    StringLiteral(String),
-    BooleanLiteral(bool),
+    /// RES-078: identifiers carry source span so diagnostics can
+    /// point at the referenced name.
+    Identifier {
+        name: String,
+        span: span::Span,
+    },
+    /// RES-078: literal nodes carry source span so diagnostics
+    /// (typechecker, verifier, VM runtime errors) can point at the
+    /// offending value. The fields are unused today — RES-079 and
+    /// RES-080 follow-ups will surface them in richer diagnostics —
+    /// so the dead_code allow is deliberate and scoped.
+    IntegerLiteral {
+        value: i64,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    FloatLiteral {
+        value: f64,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    StringLiteral {
+        value: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    BooleanLiteral {
+        value: bool,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     PrefixExpression {
         operator: String,
         right: Box<Node>,
@@ -782,12 +808,12 @@ impl Parser {
         // Parse the index expression (which consumes IDENT, [, index, ]).
         let lhs = self
             .parse_expression(0)
-            .unwrap_or(Node::IntegerLiteral(0));
+            .unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
         // If this is an assignment, peek should be `=`.
         if self.peek_token == Token::Assign {
             self.next_token(); // move onto '='
             self.next_token(); // skip '=' to first token of RHS
-            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
             if self.peek_token == Token::Semicolon {
                 self.next_token();
             }
@@ -820,7 +846,7 @@ impl Parser {
         };
         self.next_token(); // move onto '='
         self.next_token(); // skip '=' to first token of RHS
-        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
@@ -954,13 +980,13 @@ impl Parser {
             match self.current_token {
                 Token::Requires => {
                     self.next_token(); // skip `requires`
-                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
                     self.next_token(); // move past last token of expression
                     requires.push(expr);
                 }
                 Token::Ensures => {
                     self.next_token();
-                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
                     self.next_token();
                     ensures.push(expr);
                 }
@@ -1088,7 +1114,7 @@ impl Parser {
 
         let condition = if self.current_token == Token::LeftParen {
             self.next_token();
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
             self.next_token();
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
@@ -1098,7 +1124,7 @@ impl Parser {
             }
             expr
         } else {
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
             self.next_token();
             expr
         };
@@ -1126,7 +1152,7 @@ impl Parser {
             self.record_error(format!("Expected 'let' after 'static', found {:?}", tok));
             return Node::StaticLet {
                 name: String::new(),
-                value: Box::new(Node::IntegerLiteral(0)),
+                value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
             };
         }
         // Delegate to parse_let_statement and re-wrap. parse_let_statement
@@ -1148,7 +1174,7 @@ impl Parser {
                 self.record_error(format!("Expected identifier after 'let', found {:?}", tok));
                 return Node::LetStatement {
                     name: String::new(),
-                    value: Box::new(Node::IntegerLiteral(0)),
+                    value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
                     type_annot: None,
                 };
             }
@@ -1181,7 +1207,7 @@ impl Parser {
             ));
             return Node::LetStatement {
                 name,
-                value: Box::new(Node::IntegerLiteral(0)),
+                value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
                 type_annot,
             };
         }
@@ -1258,7 +1284,7 @@ impl Parser {
         let mut invariants = Vec::new();
         while self.current_token == Token::Invariant {
             self.next_token(); // skip `invariant`
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
             self.next_token(); // move past last token of the expression
             invariants.push(expr);
         }
@@ -1287,19 +1313,19 @@ impl Parser {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '(' after 'assert', found {:?}", tok));
             return Node::Assert {
-                condition: Box::new(Node::BooleanLiteral(true)),
+                condition: Box::new(Node::BooleanLiteral { value: true, span: span::Span::default() }),
                 message: None,
             };
         }
 
         self.next_token(); // Skip '('
 
-        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(true));
+        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
         self.next_token(); // RES-014: advance past last token of expression
 
         let message = if self.current_token == Token::Comma {
             self.next_token(); // Skip ','
-            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral(String::new()));
+            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral { value: String::new(), span: span::Span::default() });
             self.next_token(); // advance past last token of message expression
             Some(Box::new(msg))
         } else {
@@ -1330,7 +1356,7 @@ impl Parser {
         // must advance once to move past the expression's tail.
         let condition = if self.current_token == Token::LeftParen {
             self.next_token(); // Skip '('
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
             self.next_token(); // Advance past last-token-of-expression
 
             if self.current_token != Token::RightParen {
@@ -1344,7 +1370,7 @@ impl Parser {
             }
             expr
         } else {
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
             self.next_token(); // Advance past last-token-of-expression
             expr
         };
@@ -1398,14 +1424,27 @@ impl Parser {
         Some(Node::ExpressionStatement(Box::new(expr)))
     }
     
+    /// RES-078: build a single-position `Span` from the lexer's
+    /// current `last_token_*` state — good enough for leaf nodes
+    /// where the "source range" is just wherever the token starts.
+    fn span_at_current(&self) -> span::Span {
+        let pos = span::Pos::new(
+            self.lexer.last_token_line,
+            self.lexer.last_token_column,
+            0,
+        );
+        span::Span::new(pos, pos)
+    }
+
     fn parse_expression(&mut self, precedence: u8) -> Option<Node> {
         // Parse prefix expressions
+        let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
-            Token::Identifier(name) => Some(Node::Identifier(name.clone())),
-            Token::IntLiteral(value) => Some(Node::IntegerLiteral(*value)),
-            Token::FloatLiteral(value) => Some(Node::FloatLiteral(*value)),
-            Token::StringLiteral(value) => Some(Node::StringLiteral(value.clone())),
-            Token::BoolLiteral(value) => Some(Node::BooleanLiteral(*value)),
+            Token::Identifier(name) => Some(Node::Identifier { name: name.clone(), span: tok_span }),
+            Token::IntLiteral(value) => Some(Node::IntegerLiteral { value: *value, span: tok_span }),
+            Token::FloatLiteral(value) => Some(Node::FloatLiteral { value: *value, span: tok_span }),
+            Token::StringLiteral(value) => Some(Node::StringLiteral { value: value.clone(), span: tok_span }),
+            Token::BoolLiteral(value) => Some(Node::BooleanLiteral { value: *value, span: tok_span }),
             // RES-012: prefix operators `!` and `-`. Precedence is higher
             // than any infix operator, so the operand consumes only the
             // tightest-binding next expression.
@@ -1663,7 +1702,7 @@ impl Parser {
                 break;
             }
             self.next_token(); // skip ':'
-            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
             fields.push((fname, value));
             // parse_expression leaves current on the last token of the
             // expression; advance to move past it.
@@ -1737,7 +1776,7 @@ impl Parser {
     /// is `match` on entry; on exit it's `}`.
     fn parse_match_expression(&mut self) -> Node {
         self.next_token(); // skip 'match'
-        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
         self.next_token(); // past last token of scrutinee
 
         if self.current_token != Token::LeftBrace {
@@ -1771,7 +1810,7 @@ impl Parser {
                 break;
             }
             self.next_token(); // skip '=>'
-            let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral(0));
+            let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
             arms.push((pattern, body));
             self.next_token(); // past last token of body
             if self.current_token == Token::Comma {
@@ -1795,12 +1834,13 @@ impl Parser {
     /// Parse a single match pattern. On exit current_token is the
     /// pattern's last token.
     fn parse_pattern(&mut self) -> Pattern {
+        let tok_span = self.span_at_current();
         match &self.current_token {
             Token::Underscore => Pattern::Wildcard,
-            Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral(*n)),
-            Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral(*f)),
-            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral(s.clone())),
-            Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral(*b)),
+            Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral { value: *n, span: tok_span }),
+            Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral { value: *f, span: tok_span }),
+            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral { value: s.clone(), span: tok_span }),
+            Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral { value: *b, span: tok_span }),
             Token::Identifier(name) => Pattern::Identifier(name.clone()),
             other => {
                 let tok = other.clone();
@@ -2159,7 +2199,7 @@ fn flatten_field_target(target: &Node, last_field: &str) -> (Option<String>, Vec
     let mut node = target;
     loop {
         match node {
-            Node::Identifier(name) => return (Some(name.clone()), {
+            Node::Identifier { name, .. } => return (Some(name.clone()), {
                 path.reverse();
                 path
             }),
@@ -2203,11 +2243,11 @@ fn set_nested_field(root: Value, path: &[String], new_val: Value) -> RResult<Val
 /// fired, not reconstruct the full AST.
 fn format_contract_expr(node: &Node) -> String {
     match node {
-        Node::Identifier(s) => s.clone(),
-        Node::IntegerLiteral(n) => n.to_string(),
-        Node::FloatLiteral(f) => f.to_string(),
-        Node::StringLiteral(s) => format!("{:?}", s),
-        Node::BooleanLiteral(b) => b.to_string(),
+        Node::Identifier { name, .. } => name.clone(),
+        Node::IntegerLiteral { value, .. } => value.to_string(),
+        Node::FloatLiteral { value, .. } => value.to_string(),
+        Node::StringLiteral { value, .. } => format!("{:?}", value),
+        Node::BooleanLiteral { value, .. } => value.to_string(),
         Node::PrefixExpression { operator, right } => {
             format!("{}{}", operator, format_contract_expr(right))
         }
@@ -2848,7 +2888,7 @@ impl Interpreter {
                 }
             },
             Node::ExpressionStatement(expr) => self.eval(expr),
-            Node::Identifier(name) => {
+            Node::Identifier { name, .. } => {
                 if let Some(value) = self.env.get(name) {
                     Ok(value)
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
@@ -2857,10 +2897,10 @@ impl Interpreter {
                     Err(format!("Identifier not found: {}", name))
                 }
             },
-            Node::IntegerLiteral(value) => Ok(Value::Int(*value)),
-            Node::FloatLiteral(value) => Ok(Value::Float(*value)),
-            Node::StringLiteral(value) => Ok(Value::String(value.clone())),
-            Node::BooleanLiteral(value) => Ok(Value::Bool(*value)),
+            Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
+            Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
+            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::PrefixExpression { operator, right } => {
                 let right_val = self.eval(right)?;
                 self.eval_prefix_expression(operator, right_val)
@@ -3020,7 +3060,7 @@ impl Interpreter {
                 let mut cursor: &Node = target;
                 let root_name = loop {
                     match cursor {
-                        Node::Identifier(n) => break n.clone(),
+                        Node::Identifier { name, .. } => break name.clone(),
                         Node::IndexExpression { target: inner_t, index: inner_i } => {
                             indices_rev.push(inner_i);
                             cursor = inner_t;
@@ -3993,7 +4033,7 @@ mod tests {
                 match &stmts[0].node {
                     Node::LetStatement { name, value, .. } => {
                         assert_eq!(name, "x");
-                        assert!(matches!(**value, Node::IntegerLiteral(42)));
+                        assert!(matches!(**value, Node::IntegerLiteral { value: 42, .. }));
                     }
                     other => panic!("expected LetStatement, got {:?}", other),
                 }
@@ -4653,7 +4693,7 @@ mod tests {
                 Node::LetStatement { name, value, type_annot } => {
                     assert_eq!(name, "x");
                     assert_eq!(type_annot.as_deref(), Some("int"));
-                    assert!(matches!(**value, Node::IntegerLiteral(42)));
+                    assert!(matches!(**value, Node::IntegerLiteral { value: 42, .. }));
                 }
                 other => panic!("expected LetStatement, got {:?}", other),
             },
@@ -6043,6 +6083,44 @@ mod tests {
         assert!(
             err.starts_with("<unknown>:1:"),
             "legacy shim should use <unknown> prefix, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn literal_and_identifier_nodes_carry_non_default_spans() {
+        // RES-078: leaf nodes (IntegerLiteral here + Identifier for
+        // `x`) come back with populated Span fields so the typechecker
+        // and verifier can attribute errors to them.
+        let src = "let x = 42;";
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program");
+        };
+        let Node::LetStatement { value, .. } = &stmts[0].node else {
+            panic!("expected LetStatement");
+        };
+        let Node::IntegerLiteral { value: lit, span } = value.as_ref() else {
+            panic!("expected IntegerLiteral");
+        };
+        assert_eq!(*lit, 42);
+        assert!(span.start.line >= 1, "int literal span.start.line = {}", span.start.line);
+    }
+
+    #[test]
+    fn undefined_variable_error_includes_line_col() {
+        // RES-078: when the typechecker rejects an undefined name,
+        // the Identifier's span should surface in the error message.
+        let (program, _) = parse("let x = undefined_thing;");
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).expect_err("must reject undefined");
+        // check_program goes through the statement-level prefix
+        // (RES-080) too, so the error has two file:line:col segments.
+        // We just need the identifier-level `at N:M` part to appear.
+        assert!(
+            err.contains("undefined_thing") && err.contains("at "),
+            "expected `at LINE:COL` from RES-078 identifier span; got: {}",
             err
         );
     }

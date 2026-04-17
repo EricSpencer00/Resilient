@@ -70,7 +70,7 @@ fn compatible(a: &Type, b: &Type) -> bool {
 /// the return shape (sat/unsat/unknown) stays the same.
 fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     match n {
-        Node::BooleanLiteral(b) => Some(*b),
+        Node::BooleanLiteral { value: b, .. } => Some(*b),
         Node::PrefixExpression { operator, right } if operator == "!" => {
             fold_const_bool(right, bindings).map(|b| !b)
         }
@@ -125,10 +125,10 @@ fn extract_eq_assumption(cond: &Node) -> Option<(String, i64)> {
     {
         let no_b: HashMap<String, i64> = HashMap::new();
         match (left.as_ref(), right.as_ref()) {
-            (Node::Identifier(name), other) => {
+            (Node::Identifier { name, .. }, other) => {
                 fold_const_i64(other, &no_b).map(|v| (name.clone(), v))
             }
-            (other, Node::Identifier(name)) => {
+            (other, Node::Identifier { name, .. }) => {
                 fold_const_i64(other, &no_b).map(|v| (name.clone(), v))
             }
             _ => None,
@@ -141,8 +141,8 @@ fn extract_eq_assumption(cond: &Node) -> Option<(String, i64)> {
 /// Fold an integer-typed expression to a concrete i64 under bindings.
 fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
     match n {
-        Node::IntegerLiteral(v) => Some(*v),
-        Node::Identifier(name) => bindings.get(name).copied(),
+        Node::IntegerLiteral { value: v, .. } => Some(*v),
+        Node::Identifier { name, .. } => bindings.get(name).copied(),
         Node::PrefixExpression { operator, right } if operator == "-" => {
             fold_const_i64(right, bindings).map(|v| -v)
         }
@@ -739,10 +739,10 @@ impl TypeChecker {
                         // coverage of both true and false.
                         Type::Bool => {
                             let has_true = arms.iter().any(|(p, _)| {
-                                matches!(p, Pattern::Literal(Node::BooleanLiteral(true)))
+                                matches!(p, Pattern::Literal(Node::BooleanLiteral { value: true, .. }))
                             });
                             let has_false = arms.iter().any(|(p, _)| {
-                                matches!(p, Pattern::Literal(Node::BooleanLiteral(false)))
+                                matches!(p, Pattern::Literal(Node::BooleanLiteral { value: false, .. }))
                             });
                             if !(has_true && has_false) {
                                 return Err(format!(
@@ -899,17 +899,29 @@ impl TypeChecker {
                 self.check_node(expr)
             },
             
-            Node::Identifier(name) => {
+            Node::Identifier { name, span } => {
+                // RES-078: identifier span lets us tell users where
+                // exactly the undefined reference lives. Skip the
+                // prefix when the span looks default (synthetic).
                 match self.env.get(name) {
                     Some(typ) => Ok(typ),
-                    None => Err(format!("Undefined variable: {}", name)),
+                    None => {
+                        if span.start.line == 0 {
+                            Err(format!("Undefined variable: {}", name))
+                        } else {
+                            Err(format!(
+                                "Undefined variable '{}' at {}:{}",
+                                name, span.start.line, span.start.column
+                            ))
+                        }
+                    }
                 }
             },
             
-            Node::IntegerLiteral(_) => Ok(Type::Int),
-            Node::FloatLiteral(_) => Ok(Type::Float),
-            Node::StringLiteral(_) => Ok(Type::String),
-            Node::BooleanLiteral(_) => Ok(Type::Bool),
+            Node::IntegerLiteral { .. } => Ok(Type::Int),
+            Node::FloatLiteral { .. } => Ok(Type::Float),
+            Node::StringLiteral { .. } => Ok(Type::String),
+            Node::BooleanLiteral { .. } => Ok(Type::Bool),
             
             Node::PrefixExpression { operator, right } => {
                 let right_type = self.check_node(right)?;
@@ -1023,7 +1035,7 @@ impl TypeChecker {
                 // call's arguments substituted for parameters. Arguments
                 // can be literal expressions OR identifiers that resolve
                 // to a constant via const_bindings.
-                if let Node::Identifier(callee_name) = function.as_ref()
+                if let Node::Identifier { name: callee_name, .. } = function.as_ref()
                     && let Some(info) = self.contract_table.get(callee_name).cloned()
                 {
                     if !info.requires.is_empty() {

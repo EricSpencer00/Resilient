@@ -122,7 +122,7 @@ pub fn prove_with_certificate(
 /// certificate reference an undefined symbol and stock Z3 would error.
 fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
     match node {
-        Node::Identifier(name) => {
+        Node::Identifier { name, .. } => {
             out.insert(name.clone());
         }
         Node::PrefixExpression { right, .. } => collect_int_identifiers(right, out),
@@ -143,7 +143,7 @@ fn translate_bool<'c>(
     bindings: &HashMap<String, i64>,
 ) -> Option<Bool<'c>> {
     match node {
-        Node::BooleanLiteral(b) => Some(Bool::from_bool(ctx, *b)),
+        Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
         Node::PrefixExpression { operator, right } if operator == "!" => {
             translate_bool(ctx, right, bindings).map(|b| b.not())
         }
@@ -184,8 +184,8 @@ fn translate_int<'c>(
     bindings: &HashMap<String, i64>,
 ) -> Option<Int<'c>> {
     match node {
-        Node::IntegerLiteral(v) => Some(Int::from_i64(ctx, *v)),
-        Node::Identifier(name) => match bindings.get(name) {
+        Node::IntegerLiteral { value: v, .. } => Some(Int::from_i64(ctx, *v)),
+        Node::Identifier { name, .. } => match bindings.get(name) {
             // If the name is bound to a known constant, model it as a
             // constant. Otherwise model it as a fresh free integer
             // variable so Z3 can reason about it universally.
@@ -220,9 +220,9 @@ mod tests {
         let no_b = HashMap::new();
         // `5 != 0` — provably true, no free variables.
         let expr = Node::InfixExpression {
-            left: Box::new(Node::IntegerLiteral(5)),
+            left: Box::new(Node::IntegerLiteral { value: 5, span: crate::span::Span::default() }),
             operator: "!=".to_string(),
-            right: Box::new(Node::IntegerLiteral(0)),
+            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
     }
@@ -232,9 +232,9 @@ mod tests {
         let no_b = HashMap::new();
         // `0 != 0` — provably false.
         let expr = Node::InfixExpression {
-            left: Box::new(Node::IntegerLiteral(0)),
+            left: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
             operator: "!=".to_string(),
-            right: Box::new(Node::IntegerLiteral(0)),
+            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
         };
         assert_eq!(prove(&expr, &no_b), Some(false));
     }
@@ -246,12 +246,12 @@ mod tests {
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier("x".to_string())),
+                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: "+".to_string(),
-                right: Box::new(Node::IntegerLiteral(0)),
+                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
             }),
             operator: "==".to_string(),
-            right: Box::new(Node::Identifier("x".to_string())),
+            right: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
     }
@@ -269,15 +269,15 @@ mod tests {
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier("x".to_string())),
+                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: ">".to_string(),
-                right: Box::new(Node::IntegerLiteral(0)),
+                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
             }),
             operator: "||".to_string(),
             right: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier("x".to_string())),
+                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: "<=".to_string(),
-                right: Box::new(Node::IntegerLiteral(0)),
+                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
             }),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
@@ -291,12 +291,12 @@ mod tests {
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier("x".to_string())),
+                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: "+".to_string(),
-                right: Box::new(Node::IntegerLiteral(0)),
+                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
             }),
             operator: "==".to_string(),
-            right: Box::new(Node::Identifier("x".to_string())),
+            right: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
         };
         let (verdict, cert) = prove_with_certificate(&expr, &no_b);
         assert_eq!(verdict, Some(true));
@@ -315,9 +315,9 @@ mod tests {
         let mut bindings = HashMap::new();
         bindings.insert("n".to_string(), 5);
         let expr = Node::InfixExpression {
-            left: Box::new(Node::Identifier("n".to_string())),
+            left: Box::new(Node::Identifier { name: "n".to_string(), span: crate::span::Span::default() }),
             operator: ">".to_string(),
-            right: Box::new(Node::IntegerLiteral(0)),
+            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
         };
         let (verdict, cert) = prove_with_certificate(&expr, &bindings);
         assert_eq!(verdict, Some(true));
@@ -331,9 +331,9 @@ mod tests {
         // RES-071: don't emit a certificate when there's no proof.
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
-            left: Box::new(Node::Identifier("x".to_string())),
+            left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
             operator: ">".to_string(),
-            right: Box::new(Node::IntegerLiteral(0)),
+            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
         };
         let (_, cert) = prove_with_certificate(&expr, &no_b);
         assert!(cert.is_none(), "no proof => no cert");
@@ -345,9 +345,9 @@ mod tests {
         // sat for both forms, so prove() returns None.
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
-            left: Box::new(Node::Identifier("x".to_string())),
+            left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
             operator: ">".to_string(),
-            right: Box::new(Node::IntegerLiteral(0)),
+            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
         };
         assert_eq!(prove(&expr, &no_b), None);
     }
