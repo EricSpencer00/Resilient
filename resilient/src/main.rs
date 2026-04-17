@@ -3376,35 +3376,69 @@ fn start_repl() -> RustylineResult<()> {
 }
 
 // Execute a Resilient source file
-fn execute_file(filename: &str, type_check: bool) -> RResult<()> {
+fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
-    
+
     let lexer = Lexer::new(contents);
     let mut parser = Parser::new(lexer);
     let program = parser.parse_program();
-    
+
     // Check for parser errors (already printed at the point they occurred)
     if !parser.errors.is_empty() {
         return Err(format!("Failed to parse program: {} parser error(s)", parser.errors.len()));
     }
-    
-    // Type checking if enabled
-    if type_check {
+
+    // Type checking if enabled. --audit implies --typecheck.
+    if type_check || audit {
         println!("Running type checker...");
-        match typechecker::TypeChecker::new().check_program(&program) {
-            Ok(_) => println!("\x1B[32mType check passed\x1B[0m"), // Green text
+        let mut tc = typechecker::TypeChecker::new();
+        match tc.check_program(&program) {
+            Ok(_) => println!("\x1B[32mType check passed\x1B[0m"),
             Err(e) => {
-                eprintln!("\x1B[31mType error: {}\x1B[0m", e); // Red text
+                eprintln!("\x1B[31mType error: {}\x1B[0m", e);
                 return Err(format!("Type check failed: {}", e));
             }
         }
+        if audit {
+            print_verification_audit(&tc.stats);
+        }
     }
-    
+
     let mut interpreter = Interpreter::new();
     interpreter.eval(&program)?;
-    
+
     Ok(())
+}
+
+/// RES-066: print a structured verification report after a successful
+/// typecheck. Tells the user exactly what the static verifier
+/// discharged vs deferred to runtime.
+fn print_verification_audit(stats: &typechecker::VerificationStats) {
+    let total_callsite =
+        stats.requires_discharged_at_compile + stats.requires_left_for_runtime;
+    println!();
+    println!("\x1B[36m--- Verification Audit ---\x1B[0m");
+    println!(
+        "  contract decls (tautologies discharged): \x1B[32m{}\x1B[0m",
+        stats.requires_tautology
+    );
+    println!(
+        "  contracted call sites visited:           \x1B[36m{}\x1B[0m",
+        stats.contracted_call_sites
+    );
+    println!(
+        "  call-site requires discharged statically: \x1B[32m{} / {}\x1B[0m",
+        stats.requires_discharged_at_compile, total_callsite
+    );
+    println!(
+        "  call-site requires left for runtime:      \x1B[33m{} / {}\x1B[0m",
+        stats.requires_left_for_runtime, total_callsite
+    );
+    if total_callsite > 0 {
+        let pct = (stats.requires_discharged_at_compile as f64 / total_callsite as f64) * 100.0;
+        println!("  static coverage:                          \x1B[36m{:.0}%\x1B[0m", pct);
+    }
 }
 
 // Example programs
@@ -3543,23 +3577,26 @@ fn main() {
     }
     
     let mut type_check = false;
+    let mut audit = false;
     let mut filename = "";
-    
+
     // Simple argument parsing
     if args.len() > 1 {
         for arg in args.iter().skip(1) {
             if arg == "--typecheck" || arg == "-t" {
                 type_check = true;
+            } else if arg == "--audit" {
+                audit = true;
             } else {
                 filename = arg;
             }
         }
-        
+
         if !filename.is_empty() {
             // Execute a file. RES-027: a failed run exits non-zero so
             // `run_examples.sh` / CI / ops tooling can distinguish
             // success from failure without parsing stdout.
-            match execute_file(filename, type_check) {
+            match execute_file(filename, type_check, audit) {
                 Ok(_) => {
                     println!("Program executed successfully");
                     return;
@@ -3878,6 +3915,27 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("invalid"), "{}", err);
+    }
+
+    // ---------- Verification audit (RES-066) ----------
+
+    #[test]
+    fn audit_counts_discharged_and_runtime() {
+        let (program, _e) = parse(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let r1 = pos(5);
+            let n = 7;
+            let r2 = pos(n);
+            let dyn_val = pos(r1);  // r1's type is Any → not foldable
+        "#);
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).unwrap();
+        assert!(
+            tc.stats.requires_discharged_at_compile >= 2,
+            "got {} discharged",
+            tc.stats.requires_discharged_at_compile
+        );
+        assert_eq!(tc.stats.contracted_call_sites, 3);
     }
 
     // ---------- Caller-requires propagation (RES-065) ----------

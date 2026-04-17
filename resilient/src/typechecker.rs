@@ -215,18 +215,31 @@ struct ContractInfo {
     ensures: Vec<Node>,
 }
 
+/// RES-066: counters for the verification audit. Incremented as the
+/// typechecker walks the program; read out by `--audit` after the run.
+#[derive(Debug, Clone, Default)]
+pub struct VerificationStats {
+    /// requires clauses with no free variables AND a constant call site,
+    /// or pushed assumptions that fold to true.
+    pub requires_discharged_at_compile: usize,
+    /// requires clauses left for runtime check (couldn't fold).
+    pub requires_left_for_runtime: usize,
+    /// requires clauses that fold to a tautology (no params used).
+    pub requires_tautology: usize,
+    /// Total contracted call sites visited.
+    pub contracted_call_sites: usize,
+}
+
 // Type checker for verifying type correctness
 pub struct TypeChecker {
     env: TypeEnvironment,
     /// RES-061: top-level function name → its parameters + contract clauses.
     /// Populated by check_program's first pass; consulted by CallExpression.
     contract_table: HashMap<String, ContractInfo>,
-    /// RES-063: identifier → known constant integer value. Populated when
-    /// `let NAME = <foldable expr>;` is checked. Invalidated on
-    /// reassignment or shadowing with a non-foldable value. Used by the
-    /// CallExpression contract-fold pass so `let n = 5; pos(n)` is
-    /// equivalent to `pos(5)` for verification purposes.
+    /// RES-063: identifier → known constant integer value.
     const_bindings: HashMap<String, i64>,
+    /// RES-066: verification audit counters.
+    pub stats: VerificationStats,
 }
 
 impl TypeChecker {
@@ -331,6 +344,7 @@ impl TypeChecker {
             env,
             contract_table: HashMap::new(),
             const_bindings: HashMap::new(),
+            stats: VerificationStats::default(),
         }
     }
     
@@ -397,11 +411,17 @@ impl TypeChecker {
                 // runtime.
                 let no_bindings: HashMap<String, i64> = HashMap::new();
                 for clause in requires.iter().chain(ensures.iter()) {
-                    if let Some(false) = fold_const_bool(clause, &no_bindings) {
-                        return Err(format!(
-                            "fn {}: contract can never hold (statically false clause)",
-                            name
-                        ));
+                    match fold_const_bool(clause, &no_bindings) {
+                        Some(false) => {
+                            return Err(format!(
+                                "fn {}: contract can never hold (statically false clause)",
+                                name
+                            ));
+                        }
+                        Some(true) => {
+                            self.stats.requires_tautology += 1;
+                        }
+                        None => {}
                     }
                 }
 
@@ -874,6 +894,9 @@ impl TypeChecker {
                 if let Node::Identifier(callee_name) = function.as_ref()
                     && let Some(info) = self.contract_table.get(callee_name).cloned()
                 {
+                    if !info.requires.is_empty() {
+                        self.stats.contracted_call_sites += 1;
+                    }
                     let mut bindings: HashMap<String, i64> = HashMap::new();
                     for ((_ty, pname), arg) in info.parameters.iter().zip(arguments.iter()) {
                         if let Some(v) = fold_const_i64(arg, &self.const_bindings) {
@@ -881,11 +904,19 @@ impl TypeChecker {
                         }
                     }
                     for clause in &info.requires {
-                        if let Some(false) = fold_const_bool(clause, &bindings) {
-                            return Err(format!(
-                                "Contract violation: call to fn {} would fail `requires` clause at compile time",
-                                callee_name
-                            ));
+                        match fold_const_bool(clause, &bindings) {
+                            Some(false) => {
+                                return Err(format!(
+                                    "Contract violation: call to fn {} would fail `requires` clause at compile time",
+                                    callee_name
+                                ));
+                            }
+                            Some(true) => {
+                                self.stats.requires_discharged_at_compile += 1;
+                            }
+                            None => {
+                                self.stats.requires_left_for_runtime += 1;
+                            }
                         }
                     }
                 }
