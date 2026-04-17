@@ -123,27 +123,38 @@ z3 -smt2 ./certs/ident_round__decl__0.smt2
 Implies `--typecheck`. Without `--features z3`, no certificates are
 emitted (the cheap folder isn't asked to produce them).
 
-### Embedded runtime (RES-075 Phase A)
+### Embedded runtime (RES-075 + RES-097)
 
 The sibling `resilient-runtime/` crate carves out the value layer
 + core ops in a `#![no_std]`-compatible form, ready for a
-Cortex-M class MCU. Phase A only ships the alloc-free types
+Cortex-M class MCU. RES-075 Phase A shipped the alloc-free types
 (`Value::Int`, `Value::Bool`, plus `add`/`sub`/`mul`/`div`/`eq`
-ops). Float/String/Array/closure variants need allocator support
-and land with RES-101 / `embedded-alloc`.
+ops); RES-097 verified the cross-compile. Float/String/Array/
+closure variants need allocator support and land with RES-098 /
+`embedded-alloc`.
 
 ```bash
+# Host build + 7 unit tests
 cd resilient-runtime
 cargo build
 cargo test
 ```
 
-For a real cross-compile (lands in RES-100):
+#### Verified cross-compile
+
+`resilient-runtime` builds for the `thumbv7em-none-eabihf` target
+(Cortex-M4F class MCU) without missing-symbol errors:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-cargo build -p resilient-runtime --target thumbv7em-none-eabihf
+cd resilient-runtime
+cargo build --target thumbv7em-none-eabihf
+cargo clippy --target thumbv7em-none-eabihf -- -D warnings
 ```
+
+The Phase A subset uses only `i64::wrapping_*` and the raw `/`
+operator — both are no_std-clean and have native Cortex-M4F
+backing. No `compiler_builtins` shim needed.
 
 The `resilient/` crate is unaffected — it stays a single-crate
 project; `resilient-runtime/` is a separate Cargo project alongside

@@ -1,7 +1,7 @@
 ---
 id: RES-097
 title: resilient-runtime cross-compiles for thumbv7em-none-eabihf
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -52,3 +52,27 @@ cargo can drive the build.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `rustup target add thumbv7em-none-eabihf` (rust-std component
+    downloaded + installed).
+  - `cd resilient-runtime && cargo build --target thumbv7em-none-eabihf`
+    succeeds **on first try** — no missing-symbol issues.
+  - `cargo clippy --target thumbv7em-none-eabihf -- -D warnings`
+    also clean.
+  - Host build untouched: 7 unit tests still pass + clippy clean.
+  - README "Embedded runtime" section updated:
+    - Title now reflects RES-075 + RES-097.
+    - New "Verified cross-compile" subsection with exact
+      `rustup target add` + `cargo build --target ...` commands.
+    - Notes that the Phase A subset uses only `i64::wrapping_*`
+      and the raw `/` operator — no `compiler_builtins` shim
+      needed because Cortex-M4F has native i64 instruction
+      support.
+- 2026-04-17 verification:
+  - `cargo build` (host): clean.
+  - `cargo build --target thumbv7em-none-eabihf`: clean.
+  - `cargo test`: 7 passed.
+  - `cargo clippy -- -D warnings` (both targets): clean.
+- The cross-compile path is now proven. RES-098
+  (`embedded-alloc` + Float/String variants) can layer on top
+  with confidence that the foundation works.
