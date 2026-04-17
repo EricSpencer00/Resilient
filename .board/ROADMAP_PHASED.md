@@ -91,13 +91,15 @@ the interpreter never sees an ill-typed program.
 
 ---
 
-## Phase 4 — The verifiability payoff (65% → 80%)  🟡 STARTED
+## Phase 4 — The verifiability payoff (65% → 80%)  ✅ COMPLETE
 
 **Goal**: the original pitch becomes true. `requires`/`ensures` are
 proved correct for *all* inputs in their declared range, not just
 the ones the test suite happens to exercise.
 
-This is the phase where Resilient *earns its name*.
+**Phase 4 is the phase where Resilient earned its name.** The
+hand-rolled folder discharges a useful subset; Z3 backstops it for
+the rest. Together they prove what the original pitch promised.
 
 | Ticket | Adds | Status |
 |---|---|---|
@@ -108,6 +110,7 @@ This is the phase where Resilient *earns its name*.
 | RES-064 | **Flow-sensitive if-branch assumptions** — `if x == 0 { divide(10, x); }` rejected at compile time. First control-flow-aware verification. | ✅ |
 | RES-065 | **Caller-requires propagation** — caller's preconditions become assumptions inside its body, so contracts chain across function boundaries. | ✅ |
 | RES-066 | **`--audit` flag** — verification certificate with discharged-vs-runtime stats. Closes the user-facing loop. | ✅ |
+| RES-067 | **G9b — Z3 SMT integration** behind `--features z3`. Backstops the hand-rolled folder for universal tautologies, contradictions, and non-trivial arithmetic implications. **The original pitch becomes true.** | ✅ |
 | RES-061 | **G9b Z3 integration** (optional feature flag `--features z3`) — translate contract AST to SMT-LIB, discharge at compile time, fall back to runtime check on unknown |
 | RES-062 | **Verification certificate** — on success, emit `<file>.vcert` pinning the solver version, the query, and the answer. Commit these alongside source. |
 | RES-063 | Live-block invariants verified symbolically (G10 meets G9) |
