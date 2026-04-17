@@ -6,3 +6,6 @@ resilient/target
 # Ralph-loop runtime artifacts (logs grow, STOP is a local kill switch)
 .board/logs/
 .board/STOP
+# Native benchmark binaries — built by benchmarks/run.sh on demand.
+benchmarks/fib/fib_native
+benchmarks/sum/sum_native
