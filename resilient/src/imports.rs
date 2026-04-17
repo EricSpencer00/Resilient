@@ -52,7 +52,7 @@ pub fn expand_uses(
 
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
-        if let Node::Use { path } = &stmt.node {
+        if let Node::Use { path, .. } = &stmt.node {
             let target = resolve_use_path(base_dir, path)?;
 
             // Cycle / already-loaded check: canonicalize so that

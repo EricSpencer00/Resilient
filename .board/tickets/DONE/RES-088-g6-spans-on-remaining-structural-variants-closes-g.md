@@ -1,7 +1,7 @@
 ---
 id: RES-088
-title: G6 spans on remaining structural variants — CLOSES G6
-state: OPEN
+title: G6 spans on remaining structural variants — CLOSES G6 ✅
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -63,3 +63,33 @@ All are already struct variants, so the change is purely additive
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - Added `span: span::Span` field (`#[allow(dead_code)]`) to all
+    eight remaining struct variants: `Use`, `Function`, `LiveBlock`,
+    `Assert`, `Match`, `StructDecl`, `StructLiteral`, `FunctionLiteral`.
+  - `parse_function` captures `fn` keyword span before advance and
+    threads it through every Function construction (3 sites: EOF
+    fallback, error-recovery, normal). Other parsers fall back to
+    `self.span_at_current()` for now.
+  - Python-driven span injection across construction sites; manual
+    fixes for sites the regex couldn't handle cleanly (mostly multi-
+    line constructions with `Box::new` nested args).
+  - ~70 destructure sites updated. Match-arm patterns that the
+    injector wrecked (`Node::Foo { ..,\n  span: <expr> }` is invalid
+    in pattern context) repaired via a follow-up Python sed pass to
+    collapse them back to `, .. }`.
+  - Typechecker `Node::Function` destructure at line 503 widened
+    with `..`.
+- 2026-04-17 tests:
+  - New unit `function_declarations_carry_spans_per_source_line`:
+    parses two functions on different lines, asserts each
+    `Function`'s span reflects the originating line, and that line
+    ordering is preserved.
+- 2026-04-17 verification across three feature configs:
+  - default: 215 unit + 1 golden + 11 smoke = 227 tests
+  - `--features z3`: 222 + 1 + 12 = 235 tests
+  - `--features lsp`: 217 + 1 + 11 = 229 tests
+  All three `cargo clippy -- -D warnings` clean.
+- ROADMAP G6 cell flipped 🟡 → ✅. **G6 closes.**
+  Umbrella RES-069 also flipped to DONE with a summary log entry
+  pointing at the RES-077..088 series.

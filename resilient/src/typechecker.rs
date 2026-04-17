@@ -500,7 +500,7 @@ impl TypeChecker {
             // leftovers as void (no-op) for safety.
             Node::Use { .. } => Ok(Type::Void),
             
-            Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt } => {
+            Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt, .. } => {
                 let mut param_types = Vec::new();
 
                 // Create a new enclosed environment for function body
@@ -614,7 +614,7 @@ impl TypeChecker {
                 self.check_node(body)
             },
             
-            Node::Assert { condition, message } => {
+            Node::Assert { condition, message, .. } => {
                 // Condition must be a boolean expression
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
@@ -720,7 +720,7 @@ impl TypeChecker {
                 })
             },
 
-            Node::Match { scrutinee, arms } => {
+            Node::Match { scrutinee, arms, .. } => {
                 let scrutinee_type = self.check_node(scrutinee)?;
                 for (_, body) in arms {
                     let _ = self.check_node(body)?;
@@ -777,7 +777,7 @@ impl TypeChecker {
 
             Node::StructDecl { .. } => Ok(Type::Void),
 
-            Node::StructLiteral { name, fields } => {
+            Node::StructLiteral { name, fields, .. } => {
                 for (_, e) in fields {
                     let _ = self.check_node(e)?;
                 }

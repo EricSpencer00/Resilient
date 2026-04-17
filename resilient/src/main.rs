@@ -508,6 +508,9 @@ enum Node {
     /// typechecker or interpreter — never seen at eval time.
     Use {
         path: String,
+        /// RES-088: span of the `use` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     Function {
         name: String,
@@ -523,6 +526,9 @@ enum Node {
         /// RES-052: optional `-> TYPE` return-type annotation. Advisory.
         #[allow(dead_code)]
         return_type: Option<String>,
+        /// RES-088: span of the `fn` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     LiveBlock {
         body: Box<Node>,
@@ -530,10 +536,16 @@ enum Node {
         /// every iteration of the body. A failing invariant triggers
         /// the same retry path as a body-level error.
         invariants: Vec<Node>,
+        /// RES-088: span of the `live` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     Assert {
         condition: Box<Node>,
         message: Option<Box<Node>>,
+        /// RES-088: span of the `assert` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-087: converted from tuple form so it can carry the span
     /// of the opening `{` (consumed in follow-ups).
@@ -687,11 +699,17 @@ enum Node {
         ensures: Vec<Node>,
         #[allow(dead_code)]
         return_type: Option<String>,
+        /// RES-088: span of the `fn` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
     Match {
         scrutinee: Box<Node>,
         arms: Vec<(Pattern, Node)>,
+        /// RES-088: span of the `match` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-038: `struct NAME { TYPE FIELD, ... }` declaration. Fields
     /// are carried but currently unused at runtime — the typechecker
@@ -701,11 +719,16 @@ enum Node {
     StructDecl {
         name: String,
         fields: Vec<(String, String)>, // (type, field_name)
+        /// RES-088: span of the `struct` keyword. Consumed in follow-ups.
+        span: span::Span,
     },
     /// RES-038: `NAME { field: expr, ... }` struct literal.
     StructLiteral {
         name: String,
         fields: Vec<(String, Node)>,
+        /// RES-088: span of the type-name token. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-038: `target.field` read.
     FieldAccess {
@@ -938,6 +961,8 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Node {
+        // RES-088: capture the `fn` keyword's span before advancing.
+        let fn_span = self.span_at_current();
         self.next_token(); // Skip 'fn'
         
         let name = match &self.current_token {
@@ -974,6 +999,7 @@ impl Parser {
                     requires: Vec::new(),
                     ensures: Vec::new(),
                     return_type: None,
+                    span: fn_span,
                 };
             }
 
@@ -985,6 +1011,7 @@ impl Parser {
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 return_type: None,
+            span: fn_span
             };
         }
 
@@ -1015,6 +1042,7 @@ impl Parser {
                     requires,
                     ensures,
                     return_type,
+                    span: fn_span,
                 };
             }
         }
@@ -1028,6 +1056,7 @@ impl Parser {
             requires,
             ensures,
             return_type,
+            span: fn_span
         }
     }
 
@@ -1327,7 +1356,7 @@ impl Parser {
         }
     }
 
-    /// RES-073: `use "path/to/file.res";` — emits `Node::Use { path }`.
+    /// RES-073: `use "path/to/file.res";` — emits `Node::Use { path, span }`.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
         // Caller checked self.current_token == Token::Use.
@@ -1345,7 +1374,8 @@ impl Parser {
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
-        Some(Node::Use { path })
+        Some(Node::Use { path,
+            span: self.span_at_current() })
     }
 
     fn parse_return_statement(&mut self) -> Node {
@@ -1396,6 +1426,7 @@ impl Parser {
             return Node::LiveBlock {
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 invariants,
+                span: self.span_at_current(),
             };
         }
 
@@ -1404,6 +1435,7 @@ impl Parser {
         Node::LiveBlock {
             body: Box::new(body),
             invariants,
+            span: self.span_at_current()
         }
     }
     
@@ -1416,6 +1448,7 @@ impl Parser {
             return Node::Assert {
                 condition: Box::new(Node::BooleanLiteral { value: true, span: span::Span::default() }),
                 message: None,
+                span: self.span_at_current(),
             };
         }
 
@@ -1444,6 +1477,7 @@ impl Parser {
         Node::Assert {
             condition: Box::new(condition),
             message,
+            span: self.span_at_current()
         }
     }
     
@@ -1738,7 +1772,8 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after struct name, found {:?}", tok));
-            return Node::StructDecl { name, fields: Vec::new() };
+            return Node::StructDecl { name, fields: Vec::new(),
+            span: self.span_at_current() };
         }
         self.next_token(); // skip '{'
 
@@ -1774,7 +1809,8 @@ impl Parser {
                 break;
             }
         }
-        Node::StructDecl { name, fields }
+        Node::StructDecl { name, fields,
+            span: self.span_at_current() }
     }
 
     /// Parse `new NAME { field: expr, ... }`. current_token is `new`
@@ -1793,14 +1829,16 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after struct name, found {:?}", tok));
-            return Node::StructLiteral { name, fields: Vec::new() };
+            return Node::StructLiteral { name, fields: Vec::new(),
+            span: self.span_at_current() };
         }
 
         let mut fields: Vec<(String, Node)> = Vec::new();
 
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
-            return Node::StructLiteral { name, fields };
+            return Node::StructLiteral { name, fields,
+            span: self.span_at_current() };
         }
 
         self.next_token(); // skip '{'
@@ -1848,7 +1886,8 @@ impl Parser {
                 break;
             }
         }
-        Node::StructLiteral { name, fields }
+        Node::StructLiteral { name, fields,
+            span: self.span_at_current() }
     }
 
     /// Parse an anonymous `fn(params) -> TYPE? requires/ensures? { body }`.
@@ -1866,6 +1905,7 @@ impl Parser {
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 return_type: None,
+                span: self.span_at_current(),
             };
         }
         self.next_token(); // skip '('
@@ -1884,6 +1924,7 @@ impl Parser {
                 requires,
                 ensures,
                 return_type,
+                span: self.span_at_current(),
             };
         }
         let body = self.parse_block_statement();
@@ -1893,6 +1934,7 @@ impl Parser {
             requires,
             ensures,
             return_type,
+            span: self.span_at_current()
         }
     }
 
@@ -1909,6 +1951,7 @@ impl Parser {
             return Node::Match {
                 scrutinee: Box::new(scrutinee),
                 arms: Vec::new(),
+            span: self.span_at_current()
             };
         }
 
@@ -1918,6 +1961,7 @@ impl Parser {
             return Node::Match {
                 scrutinee: Box::new(scrutinee),
                 arms,
+            span: self.span_at_current()
             };
         }
 
@@ -1952,6 +1996,7 @@ impl Parser {
         Node::Match {
             scrutinee: Box::new(scrutinee),
             arms,
+            span: self.span_at_current()
         }
     }
 
@@ -2924,8 +2969,8 @@ impl Interpreter {
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
             },
-            Node::LiveBlock { body, invariants } => self.eval_live_block(body, invariants),
-            Node::Assert { condition, message } => self.eval_assert(condition, message),
+            Node::LiveBlock { body, invariants, .. } => self.eval_live_block(body, invariants),
+            Node::Assert { condition, message, .. } => self.eval_assert(condition, message),
             Node::Block { stmts: statements, .. } => self.eval_block_statement(statements),
             Node::LetStatement { name, value, .. } => {
                 let val = self.eval(value)?;
@@ -3084,7 +3129,7 @@ impl Interpreter {
                     )),
                 }
             },
-            Node::Match { scrutinee, arms } => {
+            Node::Match { scrutinee, arms, .. } => {
                 let sval = self.eval(scrutinee)?;
                 for (pattern, body) in arms {
                     if let Some(binding) = self.match_pattern(pattern, &sval)? {
@@ -3113,7 +3158,7 @@ impl Interpreter {
                 // construction trusts the literal.
                 Ok(Value::Void)
             },
-            Node::StructLiteral { name, fields } => {
+            Node::StructLiteral { name, fields, .. } => {
                 let mut out = Vec::with_capacity(fields.len());
                 for (fname, fexpr) in fields {
                     out.push((fname.clone(), self.eval(fexpr)?));
@@ -6244,13 +6289,36 @@ mod tests {
     }
 
     #[test]
+    fn function_declarations_carry_spans_per_source_line() {
+        // RES-088: a 2-fn source produces two Function nodes whose
+        // spans reflect the source line the `fn` keyword sits on.
+        let src = "fn one() { return 1; }\nfn two() { return 2; }";
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Function { span: s0, .. } = &stmts[0].node else {
+            panic!("expected Function for stmt 0");
+        };
+        let Node::Function { span: s1, .. } = &stmts[1].node else {
+            panic!("expected Function for stmt 1");
+        };
+        assert!(s0.start.line >= 1, "fn 1 span: {:?}", s0);
+        assert!(s1.start.line >= 2, "fn 2 span: {:?}", s1);
+        assert!(
+            s1.start.line > s0.start.line,
+            "expected fn 2 line ({}) > fn 1 line ({})",
+            s1.start.line, s0.start.line
+        );
+    }
+
+    #[test]
     fn block_and_expression_statement_carry_spans() {
         // RES-087: Block and ExpressionStatement are struct variants
         // now. Parse a fn body + confirm both have populated spans.
         let (program, errors) = parse("fn f() { let x = 1; let y = 2; }");
         assert!(errors.is_empty());
         let Node::Program(stmts) = &program else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Function { body, span: fn_span, .. } = &stmts[0].node else { panic!() };
         let Node::Block { stmts: inner, span: block_span } = body.as_ref() else {
             panic!("expected Block");
         };
@@ -6284,7 +6352,7 @@ mod tests {
         let (program, _) = parse("fn f() { let x = ok(1)?; return x; }");
         // Walk into the fn body to find the `?` expression.
         let Node::Program(stmts) = &program else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
+        let Node::Function { body, span: fn_span, .. } = &stmts[0].node else { panic!() };
         let Node::Block { stmts: inner, .. } = body.as_ref() else { panic!() };
         let Node::LetStatement { value, .. } = &inner[0] else { panic!() };
         let Node::TryExpression { span, .. } = value.as_ref() else {
