@@ -3880,6 +3880,65 @@ mod tests {
         assert!(err.contains("invalid"), "{}", err);
     }
 
+    // ---------- Flow-sensitive if-branch assumptions (RES-064) ----------
+
+    #[test]
+    fn if_branch_assumption_satisfies_contract() {
+        // We assume `x == 5` inside the consequence; pos requires x > 0;
+        // 5 > 0 is true, so discharged.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int x) {
+                if x == 5 {
+                    let r = pos(x);
+                }
+            }
+        "#).unwrap();
+    }
+
+    #[test]
+    fn if_branch_assumption_rejects_violating_call() {
+        // We assume `x == 0` inside the consequence; pos requires x > 0;
+        // 0 > 0 is false → reject.
+        let err = typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int x) {
+                if x == 0 {
+                    let r = pos(x);
+                }
+            }
+        "#).unwrap_err();
+        assert!(err.contains("Contract violation"), "got: {}", err);
+    }
+
+    #[test]
+    fn if_branch_assumption_does_not_leak_outside() {
+        // After the if, x's value is unknown again.
+        // pos(x) outside the if → not rejected (left for runtime)
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int x) {
+                if x == 0 {
+                    let r = pos(x + 1);  // would fold x=0 + 1 = 1 > 0 → ok
+                }
+                let r2 = pos(x);  // x's assumption is gone now
+            }
+        "#).unwrap();
+    }
+
+    #[test]
+    fn if_literal_eq_ident_form_works_too() {
+        // `5 == x` form, not just `x == 5`.
+        typecheck_src(r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int x) {
+                if 5 == x {
+                    let r = pos(x);
+                }
+            }
+        "#).unwrap();
+    }
+
     // ---------- Const let-binding tracking (RES-063) ----------
 
     #[test]

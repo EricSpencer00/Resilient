@@ -112,6 +112,32 @@ fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     }
 }
 
+/// RES-064: if the expression is `IDENT == LITERAL` or `LITERAL == IDENT`,
+/// extract the assumption as `(name, value)`. Used to push the assumption
+/// into const_bindings while checking an `if` consequence.
+///
+/// This is the first step toward real flow-sensitive verification.
+/// Future tickets will extend to inequality bounds, ranges, and the
+/// negative branch (else).
+fn extract_eq_assumption(cond: &Node) -> Option<(String, i64)> {
+    if let Node::InfixExpression { left, operator, right } = cond
+        && operator == "=="
+    {
+        let no_b: HashMap<String, i64> = HashMap::new();
+        match (left.as_ref(), right.as_ref()) {
+            (Node::Identifier(name), other) => {
+                fold_const_i64(other, &no_b).map(|v| (name.clone(), v))
+            }
+            (other, Node::Identifier(name)) => {
+                fold_const_i64(other, &no_b).map(|v| (name.clone(), v))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 /// Fold an integer-typed expression to a concrete i64 under bindings.
 fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
     match n {
@@ -657,21 +683,42 @@ impl TypeChecker {
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!("If condition must be a boolean, got {}", condition_type));
                 }
-                
+
+                // RES-064: if the condition is `IDENT == LITERAL` (or
+                // `LITERAL == IDENT`), assume that equality inside the
+                // consequence by pushing the binding. Restore on exit
+                // so the assumption doesn't leak.
+                let assumption = extract_eq_assumption(condition);
+                let saved = if let Some((ref name, value)) = assumption {
+                    let prev = self.const_bindings.get(name).copied();
+                    self.const_bindings.insert(name.clone(), value);
+                    Some((name.clone(), prev))
+                } else {
+                    None
+                };
+
                 let consequence_type = self.check_node(consequence)?;
-                
+
+                // Restore.
+                if let Some((name, prev)) = saved {
+                    match prev {
+                        Some(v) => { self.const_bindings.insert(name, v); }
+                        None => { self.const_bindings.remove(&name); }
+                    }
+                }
+
                 if let Some(alt) = alternative {
                     let alternative_type = self.check_node(alt)?;
-                    
+
                     // Both branches should have compatible types
-                    if consequence_type != alternative_type && 
-                       consequence_type != Type::Any && 
+                    if consequence_type != alternative_type &&
+                       consequence_type != Type::Any &&
                        alternative_type != Type::Any {
-                        return Err(format!("If branches have incompatible types: {} and {}", 
+                        return Err(format!("If branches have incompatible types: {} and {}",
                                           consequence_type, alternative_type));
                     }
                 }
-                
+
                 Ok(consequence_type)
             },
             
