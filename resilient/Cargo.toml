@@ -9,7 +9,19 @@ authors = ["Eric Spencer"]
 # it doesn't try to build them as Rust examples.
 autoexamples = false
 
+[features]
+# RES-067: opt-in Z3 SMT verification. Default off so the build only
+# requires libz3 when explicitly requested:
+#
+#   cargo build --features z3
+#
+# The verifier uses our hand-rolled folder by default (RES-060..065)
+# and falls back to Z3 only when fold returns Unknown.
+default = []
+z3 = ["dep:z3"]
+
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
 logos = "0.13"
 rustyline = "12.0.0"
+z3 = { version = "0.12", optional = true }

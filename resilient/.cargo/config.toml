@@ -1,0 +1,11 @@
+# Per-project cargo config — used only when building from this directory.
+# Forwards the include path bindgen needs to find z3.h when building
+# with --features z3.
+
+[env]
+# macOS Homebrew (Apple Silicon). Add /usr/local/include for Intel macs
+# or /usr/include for Linux as needed.
+BINDGEN_EXTRA_CLANG_ARGS = "-I/opt/homebrew/include -I/usr/local/include -I/usr/include"
+# Where the linker should find libz3.dylib (Apple Silicon Homebrew).
+# LIBRARY_PATH is a colon-separated list, picked up by clang.
+LIBRARY_PATH = "/opt/homebrew/lib:/usr/local/lib:/usr/lib"

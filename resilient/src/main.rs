@@ -11,6 +11,8 @@ use std::rc::Rc;
 mod typechecker;
 mod parser;
 mod repl;
+#[cfg(feature = "z3")]
+mod verifier_z3;
 
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
@@ -3431,6 +3433,12 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
         "  call-site requires discharged statically: \x1B[32m{} / {}\x1B[0m",
         stats.requires_discharged_at_compile, total_callsite
     );
+    if stats.requires_discharged_by_z3 > 0 {
+        println!(
+            "    of which proven by Z3 (SMT):            \x1B[35m{}\x1B[0m",
+            stats.requires_discharged_by_z3
+        );
+    }
     println!(
         "  call-site requires left for runtime:      \x1B[33m{} / {}\x1B[0m",
         stats.requires_left_for_runtime, total_callsite

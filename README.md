@@ -73,11 +73,31 @@ cargo run
 
 ```bash
 cd resilient
-./run_example.sh minimal
+cargo run -- examples/sensor_monitor.rs
 
-# With type checking enabled
-./run_example.sh minimal --typecheck
+# With static type checking
+cargo run -- --typecheck examples/sensor_monitor.rs
+
+# With verification audit (shows static-vs-runtime contract coverage)
+cargo run -- --audit examples/sensor_monitor.rs
 ```
+
+### SMT-backed verification (optional)
+
+Resilient ships with a hand-rolled contract verifier that handles
+constant folding, let-binding propagation, control-flow assumptions,
+and inter-procedural chaining. For contracts beyond that subset
+(e.g. universal tautologies like `x + 0 == x`), build with the
+optional `z3` feature to get full SMT-backed proofs:
+
+```bash
+# macOS:  brew install z3
+# Linux:  sudo apt-get install libz3-dev z3
+cargo run --features z3 -- --audit prog.rs
+```
+
+The audit report tags clauses proven by Z3 separately so users can
+see what the SMT layer added.
 
 ### Available Examples
 

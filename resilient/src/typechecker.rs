@@ -228,6 +228,21 @@ pub struct VerificationStats {
     pub requires_tautology: usize,
     /// Total contracted call sites visited.
     pub contracted_call_sites: usize,
+    /// RES-067: clauses the hand-rolled folder couldn't decide but Z3
+    /// could. Bumped when --features z3 is in use; otherwise zero.
+    pub requires_discharged_by_z3: usize,
+}
+
+/// RES-067: shim that forwards to the Z3 module when built --features z3,
+/// or returns None otherwise. Keeps the typechecker code agnostic to
+/// whether the SMT layer is compiled in.
+#[cfg(feature = "z3")]
+fn z3_prove(expr: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
+    crate::verifier_z3::prove(expr, bindings)
+}
+#[cfg(not(feature = "z3"))]
+fn z3_prove(_expr: &Node, _bindings: &HashMap<String, i64>) -> Option<bool> {
+    None
 }
 
 // Type checker for verifying type correctness
@@ -411,7 +426,16 @@ impl TypeChecker {
                 // runtime.
                 let no_bindings: HashMap<String, i64> = HashMap::new();
                 for clause in requires.iter().chain(ensures.iter()) {
-                    match fold_const_bool(clause, &no_bindings) {
+                    // Cheap folder first; fall back to Z3 (RES-067)
+                    // for universal tautology / contradiction proofs.
+                    let mut verdict = fold_const_bool(clause, &no_bindings);
+                    if verdict.is_none() {
+                        verdict = z3_prove(clause, &no_bindings);
+                        if matches!(verdict, Some(true)) {
+                            self.stats.requires_discharged_by_z3 += 1;
+                        }
+                    }
+                    match verdict {
                         Some(false) => {
                             return Err(format!(
                                 "fn {}: contract can never hold (statically false clause)",
@@ -904,7 +928,17 @@ impl TypeChecker {
                         }
                     }
                     for clause in &info.requires {
-                        match fold_const_bool(clause, &bindings) {
+                        // Try the cheap hand-rolled folder first.
+                        let mut verdict = fold_const_bool(clause, &bindings);
+                        // RES-067: if undecidable, fall back to Z3
+                        // (only when the binary was built --features z3).
+                        if verdict.is_none() {
+                            verdict = z3_prove(clause, &bindings);
+                            if verdict.is_some() {
+                                self.stats.requires_discharged_by_z3 += 1;
+                            }
+                        }
+                        match verdict {
                             Some(false) => {
                                 return Err(format!(
                                     "Contract violation: call to fn {} would fail `requires` clause at compile time",

@@ -48,6 +48,42 @@ jobs:
         run: cargo fmt --check
         continue-on-error: true
 
+  z3:
+    name: build / test with --features z3
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Z3 (libz3-dev for bindgen + linker)
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: z3
+
+      - name: cargo build --features z3
+        run: cargo build --locked --features z3
+        env:
+          # Linux distro paths for bindgen + linker.
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+
+      - name: cargo test --features z3
+        run: cargo test --locked --features z3
+        env:
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+
   board:
     name: board hygiene
     runs-on: ubuntu-latest
