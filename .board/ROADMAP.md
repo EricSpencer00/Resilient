@@ -31,28 +31,28 @@ time, commit it, and only then move the post.
 ### Language sanity
 | # | Goalpost | Status |
 |---|---|---|
-| **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | ⏳ |
+| **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | 🟡 RES-070 deleted dead `parser.rs`; RES-069 landed `span.rs` (Pos/Span/Spanned + lexer helper). Remaining: thread `Span` through every `Node` variant — split into RES-077..080. |
 | **G7** | Real type checker (inference, unification, exhaustiveness) | ⏳ |
 | **G8** | Function contracts (`requires` / `ensures`) at runtime | ✅ RES-035 |
 
 ### Verifiability
 | # | Goalpost | Status |
 |---|---|---|
-| **G9** | Symbolic assert (Z3 or custom bounded verifier for int domain) | ⏳ — **NEXT strategic milestone** |
+| **G9** | Symbolic assert (Z3 or custom bounded verifier for int domain) | ✅ RES-067 wired Z3; RES-068 elides runtime checks for fully-proven fns. |
 | **G10** | Live-block invariants re-checked on every retry | ✅ RES-036 |
 
 ### Stdlib / ergonomics / ecosystem
 | # | Goalpost | Status |
 |---|---|---|
-| **G11** | Stdlib primitives | 🟡 13 builtins: println, print, abs, min, max, sqrt, pow, floor, ceil, len, push, pop, slice. Next: file I/O, input, string utilities. |
-| **G12** | Arrays + structs / records | 🟡 Arrays landed (RES-032, RES-033, RES-037). Structs pending. |
-| **G13** | Pattern matching (`match`) | ⏳ |
-| **G14** | Static type errors at compile time | ⏳ |
-| **G15** | Cranelift backend | ⏳ |
-| **G16** | `no_std` / Cortex-M embedded target | ⏳ |
-| **G17** | Language Server Protocol | ⏳ |
+| **G11** | Stdlib primitives | 🟡 13 builtins. RES-055 made `floor`/`ceil`/`pow` type-preserving (Int→Int when lossless). Next: file I/O, input, string utilities. |
+| **G12** | Arrays + structs / records | 🟡 Arrays + RES-034 nested index assignment (`a[i][j] = v`) at any depth. Structs pending. |
+| **G13** | Pattern matching (`match`) | ✅ RES-039 (closed earlier; carry-over) |
+| **G14** | Static type errors at compile time | 🟡 RES-053/054 partial; full inference pending |
+| **G15** | Cranelift backend / modules / VM | 🟡 RES-073 landed `use "path";` modules. Cranelift (RES-072) and bytecode VM (RES-076) still open. |
+| **G16** | `no_std` / Cortex-M embedded target | ⏳ — RES-075 ticket open |
+| **G17** | Language Server Protocol | ⏳ — RES-074 ticket open, blocked on RES-069 |
 | **G18** | Effect tracking | ⏳ |
-| **G19** | Proof-carrying assertions | ⏳ |
+| **G19** | Proof-carrying assertions | 🟡 RES-071 landed `--emit-certificate`: SMT-LIB2 dumps re-verifiable by stock Z3. Full PCA semantics (signed certs, manifest) still ahead. |
 | **G20** | Self-hosting | ⏳ |
 
 ### New between G4 and G5 (core-language improvements landed in session 2)
@@ -116,3 +116,25 @@ bottom — the ladder grows indefinitely.
   block-level correctness conditions. That's the foundation the G9
   SMT layer will run on. Also: GitHub Actions CI is wired up.
   69 unit + 1 golden + 4 smoke, clippy clean.
+- 2026-04-17 — session 4 (ralph-loop, 7+ iterations): seven tickets
+  shipped under the orchestrator/executor pattern. **G6 partial** —
+  RES-069 landed the `span.rs` foundation (Pos/Span/Spanned + a lexer
+  helper that pairs each token with its source range), RES-070 deleted
+  the 817-line dead `parser.rs` parallel parser. **G15 partial** —
+  RES-073 added `use "path.rs";` module imports with recursive
+  resolution, cycle detection via canonicalized-path HashSet, and
+  splice-into-importer semantics. **G19 partial** — RES-071 landed
+  `--emit-certificate <DIR>`: every Z3-discharged contract obligation
+  now dumps a self-contained SMT-LIB2 file that stock Z3 confirms as
+  `unsat` (proof confirmed via manual round-trip). **G11 polish** —
+  RES-055 made `floor`/`ceil`/`pow` type-preserving with
+  checked-arithmetic overflow guards. **G12 polish** — RES-034 lifted
+  the single-index restriction so `a[i][j]...[k] = v` works at any
+  depth, with `at dim {N}` bounds messages. **Ergonomics** — RES-026
+  added `--examples-dir <DIR>` so the REPL's `examples` command can
+  list real files. The remaining big-ticket items (Cranelift, LSP,
+  no_std, bytecode VM) all require significant new dependencies and
+  carry their own multi-iteration tickets (RES-072/074/075/076). RES-069
+  itself is split into RES-077..080 for iteration-sized AST migration
+  work. 165 unit + 1 golden + 6 smoke = 172 tests default, 173+1+7
+  with `--features z3`. Clippy clean both ways.
