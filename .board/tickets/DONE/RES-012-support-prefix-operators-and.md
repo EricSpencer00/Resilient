@@ -1,7 +1,7 @@
 ---
 id: RES-012
 title: Support prefix operators `!` and `-`
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G4
 created: 2026-04-16

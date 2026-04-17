@@ -54,6 +54,9 @@ enum Token {
     Semicolon,
     Colon,
     
+    /// Prefix logical-not.
+    Bang,
+
     // Other
     Eof,
     /// A character the lexer did not recognize. Emitted instead of
@@ -147,10 +150,7 @@ impl Lexer {
                     self.read_char();
                     Token::NotEqual
                 } else {
-                    // Bare `!` (prefix logical-not) isn't supported yet;
-                    // emit Unknown so the parser surfaces a graceful error
-                    // instead of panicking.
-                    Token::Unknown('!')
+                    Token::Bang
                 }
             },
             '(' => Token::LeftParen,
@@ -311,8 +311,6 @@ enum Node {
     FloatLiteral(f64),
     StringLiteral(String),
     BooleanLiteral(bool),
-    // Reserved for future language features - unary operators
-    #[allow(dead_code)]
     PrefixExpression {
         operator: String,
         right: Box<Node>,
@@ -710,6 +708,18 @@ impl Parser {
             Token::FloatLiteral(value) => Some(Node::FloatLiteral(*value)),
             Token::StringLiteral(value) => Some(Node::StringLiteral(value.clone())),
             Token::BoolLiteral(value) => Some(Node::BooleanLiteral(*value)),
+            // RES-012: prefix operators `!` and `-`. Precedence is higher
+            // than any infix operator, so the operand consumes only the
+            // tightest-binding next expression.
+            Token::Bang | Token::Minus => {
+                let op = if self.current_token == Token::Bang { "!" } else { "-" };
+                self.next_token();
+                let right = self.parse_expression(6)?;
+                Some(Node::PrefixExpression {
+                    operator: op.to_string(),
+                    right: Box::new(right),
+                })
+            }
             Token::LeftParen => {
                 self.next_token(); // Skip '('
                 let expr = self.parse_expression(0);
@@ -1905,6 +1915,40 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn prefix_bang_evaluates() {
+        let (p, _e) = parse("let x = !true;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("x").unwrap() {
+            Value::Bool(b) => assert!(!b),
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn prefix_minus_evaluates() {
+        let (p, _e) = parse("let x = -5;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("x").unwrap() {
+            Value::Int(n) => assert_eq!(n, -5),
+            other => panic!("expected Int(-5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn prefix_bang_on_identifier() {
+        let (p, errors) = parse("let t = true; let f = !t;");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("f").unwrap() {
+            Value::Bool(b) => assert!(!b),
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
     }
 
     #[test]
