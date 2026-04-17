@@ -44,6 +44,8 @@ enum Token {
     Assign,
     Equal,
     NotEqual,
+    And,
+    Or,
     Greater,
     Less,
     GreaterEqual,
@@ -146,6 +148,22 @@ impl Lexer {
             '-' => Token::Minus,
             '*' => Token::Multiply,
             '%' => Token::Modulo,
+            '&' => {
+                if self.peek_char() == '&' {
+                    self.read_char();
+                    Token::And
+                } else {
+                    Token::Unknown('&')
+                }
+            },
+            '|' => {
+                if self.peek_char() == '|' {
+                    self.read_char();
+                    Token::Or
+                } else {
+                    Token::Unknown('|')
+                }
+            },
             '/' => {
                 if self.peek_char() == '/' {
                     // Skip comment line
@@ -856,7 +874,9 @@ impl Parser {
             Token::Bang | Token::Minus => {
                 let op = if self.current_token == Token::Bang { "!" } else { "-" };
                 self.next_token();
-                let right = self.parse_expression(6)?;
+                // Prefix precedence is higher than any infix operator
+                // so `-1 + 2` parses as `(-1) + 2`, not `-(1 + 2)`.
+                let right = self.parse_expression(7)?;
                 Some(Node::PrefixExpression {
                     operator: op.to_string(),
                     right: Box::new(right),
@@ -887,7 +907,7 @@ impl Parser {
             left_expr = match &self.peek_token {
                 Token::Plus | Token::Minus | Token::Multiply | Token::Divide | Token::Modulo |
                 Token::Equal | Token::NotEqual | Token::Less | Token::Greater |
-                Token::LessEqual | Token::GreaterEqual => {
+                Token::LessEqual | Token::GreaterEqual | Token::And | Token::Or => {
                     self.next_token();
                     self.parse_infix_expression(current_left)
                 },
@@ -909,6 +929,8 @@ impl Parser {
             Token::Multiply => "*".to_string(),
             Token::Divide => "/".to_string(),
             Token::Modulo => "%".to_string(),
+            Token::And => "&&".to_string(),
+            Token::Or => "||".to_string(),
             Token::Equal => "==".to_string(),
             Token::NotEqual => "!=".to_string(),
             Token::Less => "<".to_string(),
@@ -977,22 +999,26 @@ impl Parser {
     
     fn current_precedence(&self) -> u8 {
         match &self.current_token {
-            Token::Equal | Token::NotEqual => 2,
-            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 3,
-            Token::Plus | Token::Minus => 4,
-            Token::Multiply | Token::Divide | Token::Modulo => 5,
-            Token::LeftParen => 6,
+            Token::Or => 1,
+            Token::And => 2,
+            Token::Equal | Token::NotEqual => 3,
+            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 4,
+            Token::Plus | Token::Minus => 5,
+            Token::Multiply | Token::Divide | Token::Modulo => 6,
+            Token::LeftParen => 7,
             _ => 0,
         }
     }
     
     fn peek_precedence(&self) -> u8 {
         match &self.peek_token {
-            Token::Equal | Token::NotEqual => 2,
-            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 3,
-            Token::Plus | Token::Minus => 4,
-            Token::Multiply | Token::Divide | Token::Modulo => 5,
-            Token::LeftParen => 6,
+            Token::Or => 1,
+            Token::And => 2,
+            Token::Equal | Token::NotEqual => 3,
+            Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 4,
+            Token::Plus | Token::Minus => 5,
+            Token::Multiply | Token::Divide | Token::Modulo => 6,
+            Token::LeftParen => 7,
             _ => 0,
         }
     }
@@ -1628,6 +1654,8 @@ impl Interpreter {
         match operator {
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
+            "&&" => Ok(Value::Bool(left && right)),
+            "||" => Ok(Value::Bool(left || right)),
             _ => Err(format!("Unknown operator: {} {} {}", left, operator, right)),
         }
     }
@@ -2263,6 +2291,33 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn logical_and_or_evaluate() {
+        let (p, _e) = parse(r#"
+            let a = true && false;
+            let b = true || false;
+            let c = false || (1 < 2);
+            let d = (5 > 0) && (5 < 10);
+        "#);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let g = |n: &str| match interp.env.get(n).unwrap() {
+            Value::Bool(b) => b,
+            other => panic!("expected Bool for {}, got {:?}", n, other),
+        };
+        assert!(!g("a"));
+        assert!(g("b"));
+        assert!(g("c"));
+        assert!(g("d"));
+    }
+
+    #[test]
+    fn if_with_and_or_condition() {
+        // Integration with parser: complex conditions in `if`.
+        let (_p, errors) = parse("fn f() { if true && false { let x = 1; } }");
+        assert!(errors.is_empty(), "{:?}", errors);
     }
 
     #[test]
