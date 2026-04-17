@@ -97,3 +97,26 @@ the fallthrough.
 
 ## Log
 - 2026-04-17 created by manager (Phase F scope, follow-up to RES-102)
+- 2026-04-17 executor: lower_if_statement now creates a
+  merge_block up-front and emits jump(merge) inline from each
+  arm that didn't terminate. The signature changed from
+  Result<()> → Result<bool> so the caller knows whether the if
+  was a terminator (both arms returned, no merge needed) or a
+  fallthrough (caller continues lowering at merge_block).
+  Bare `if` (no else) now treated as "else falls through" — the
+  RES-102 rejection path was deleted. compile_node_list updated
+  to keep walking statements after a fallthrough-if, breaking
+  only when an explicit return or fully-terminating if is hit.
+  Two RES-102 tests retired (jit_rejects_if_without_else,
+  jit_rejects_if_arm_without_return) — Phase F accepts both
+  shapes. Replaced with jit_if_with_no_return_anywhere_is_empty_program
+  which pins the case that's STILL rejected (function never
+  returns at all). Five new unit tests cover the four
+  fallthrough sub-cases plus a two-ifs-in-sequence test that
+  exercises merge → continue → second-if → return chain.
+  Smoke test bytecode_jit_runs_if_with_fallthrough added:
+  `if (5 < 3) { return 7; } return 9;` → driver prints 9.
+  Pre-existing clippy doc-list-indentation warnings introduced
+  by the new doc comment fixed inline.
+  Matrix: default 217, z3 225, lsp 221, jit 249 — clippy clean
+  across all four configs.

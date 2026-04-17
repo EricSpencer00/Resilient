@@ -315,6 +315,41 @@ fn bytecode_jit_runs_if_else() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_if_with_fallthrough() {
+    // RES-103: Phase F lifts the both-arms-must-return rule by
+    // adding a merge_block. `if (5 < 3) { return 7; } return 9;`
+    // exercises the merge mechanic: condition false → bare-if
+    // semantics via no-op else → fallthrough → trailing return.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_103_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "if (5 < 3) {{ return 7; }} return 9;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("9"),
+        "expected `9` in stdout (fallthrough via JIT); got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn vm_runtime_error_includes_source_filename() {
     // RES-095: the driver's --vm error path should prefix with
     // <file>:<line>: so editors auto-link the location, matching

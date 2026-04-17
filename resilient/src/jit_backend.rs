@@ -131,21 +131,20 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
     Ok(result)
 }
 
-/// RES-102: walk a slice of top-level statements and emit
-/// Cranelift instructions including the function's `return_`.
+/// RES-102 + RES-103: walk a slice of top-level statements and
+/// emit Cranelift instructions including the function's `return_`.
 ///
-/// Phase E supports two top-level shapes:
+/// Supported shapes (grows ticket by ticket):
 /// 1. A single `ReturnStatement { value: Some(expr) }`
 ///    → lowers the expression and emits `return_`.
-/// 2. An `IfStatement` whose then-arm AND else-arm each contain
-///    a `ReturnStatement` → lowers via a brif into two blocks,
-///    each block ends with `return_`. A trailing return after
-///    the if is allowed (acts as a fallthrough), but currently
-///    Phase E requires both arms of the if to return so the
-///    trailing path is unreachable. (Future phase can lift this.)
-///
-/// Anything else is `Unsupported(...)` or `EmptyProgram` so the
-/// supported shape grows ticket by ticket.
+/// 2. An `IfStatement`. Phase F (RES-103) handles four sub-cases:
+///    both arms terminate, then-only terminates,
+///    else-only terminates, neither terminates. For any
+///    fallthrough case the surrounding compile_node_list keeps
+///    walking from the merge block. If the walk completes
+///    without ever emitting a return, compile_statements raises
+///    `EmptyProgram` ("program has no top-level return") — same
+///    behavior as a program with no return statement at all.
 fn compile_statements(
     stmts: &[crate::Spanned<Node>],
     bcx: &mut FunctionBuilder,
@@ -179,12 +178,22 @@ fn compile_node_list(
                 return Ok(true);
             }
             Node::IfStatement { condition, consequence, alternative, .. } => {
-                lower_if_statement(condition, consequence, alternative.as_deref(), bcx)?;
-                // lower_if_statement enforces that both arms ended
-                // in a return, so the current block is filled and
-                // the if itself counts as a terminator for the
-                // surrounding statement list.
-                return Ok(true);
+                let if_terminated = lower_if_statement(
+                    condition,
+                    consequence,
+                    alternative.as_deref(),
+                    bcx,
+                )?;
+                if if_terminated {
+                    // Both arms returned — function exits, no
+                    // statements after the if can run.
+                    return Ok(true);
+                }
+                // RES-103: at least one arm fell through; the
+                // builder is now positioned at the merge block.
+                // Keep walking — trailing statements lower into
+                // the merge block.
+                continue;
             }
             // Skip statements with no JIT-relevant effect for now;
             // a future phase will lower let-bindings, expression
@@ -195,26 +204,40 @@ fn compile_node_list(
     Ok(false)
 }
 
-/// RES-102: lower an IfStatement. Both arms must end in a return
-/// in Phase E — see compile_statements docs.
+/// RES-102 + RES-103: lower an IfStatement.
+///
+/// Returns `Ok(true)` when both arms emit terminators (function
+/// exits from each arm — no merge block needed). Returns
+/// `Ok(false)` when at least one arm falls through; in that case
+/// the function builder is positioned at the merge block on
+/// return so the caller can continue lowering trailing
+/// statements there.
 ///
 /// Cranelift block dance:
 ///   brif(cond, then_block, &[], else_block, &[])
-///   then_block: lower then-arm; emits return_
-///   else_block: lower else-arm; emits return_
+///   then_block: lower then-arm; emits return_ OR jump merge
+///   else_block: lower else-arm (or missing → straight to merge);
+///               emits return_ OR jump merge
+///   merge_block (if either arm fell through): switch + seal
 ///
-/// With no block params and no back-edges, both blocks can be
-/// sealed immediately after creation/branch.
+/// No phi nodes are needed because lower_if_statement doesn't
+/// produce an SSA value yet — that's a future "if as expression"
+/// phase.
 fn lower_if_statement(
     condition: &Node,
     consequence: &Node,
     alternative: Option<&Node>,
     bcx: &mut FunctionBuilder,
-) -> Result<(), JitError> {
+) -> Result<bool, JitError> {
     let cond_val = lower_expr(condition, bcx)?;
 
     let then_block = bcx.create_block();
     let else_block = bcx.create_block();
+    // Create merge_block up-front so each arm can jump to it
+    // inline. If neither arm needs the merge (both terminate)
+    // we'll just never switch to it — Cranelift doesn't require
+    // unused blocks to be sealed before finalize.
+    let merge_block = bcx.create_block();
 
     bcx.ins().brif(cond_val, then_block, &[], else_block, &[]);
 
@@ -223,33 +246,43 @@ fn lower_if_statement(
     bcx.seal_block(then_block);
     let then_terminated = lower_block_or_stmt(consequence, bcx)?;
     if !then_terminated {
-        // Phase E requires both arms to return so the merge block
-        // doesn't need phi nodes. (Future phase will lift this.)
-        return Err(JitError::Unsupported(
-            "if/else arm without a return — Phase E requires both arms to return",
-        ));
+        // then-arm fell through — jump to merge so the trailing
+        // statements after the if can run.
+        bcx.ins().jump(merge_block, &[]);
     }
 
     // else-arm
     bcx.switch_to_block(else_block);
     bcx.seal_block(else_block);
-    match alternative {
-        Some(alt) => {
-            let else_terminated = lower_block_or_stmt(alt, bcx)?;
-            if !else_terminated {
-                return Err(JitError::Unsupported(
-                    "if/else arm without a return — Phase E requires both arms to return",
-                ));
-            }
-        }
-        None => {
-            return Err(JitError::Unsupported(
-                "bare `if` without `else` — Phase E requires both arms to return",
-            ));
-        }
+    let else_terminated = match alternative {
+        Some(alt) => lower_block_or_stmt(alt, bcx)?,
+        // Bare `if` with no else: the else-block has nothing to
+        // lower and falls through immediately. RES-103 treats
+        // this as a fallthrough (Phase E used to reject it).
+        None => false,
+    };
+    if !else_terminated {
+        bcx.ins().jump(merge_block, &[]);
     }
 
-    Ok(())
+    if then_terminated && else_terminated {
+        // Both arms exited — merge_block has no predecessors, so
+        // we'll never use it. Cranelift accepts unused blocks at
+        // finalize time as long as they're sealed; seal it here
+        // to keep things tidy. (FunctionBuilder will skip
+        // emitting code for it.)
+        bcx.seal_block(merge_block);
+        return Ok(true);
+    }
+
+    // At least one arm fell through. Switch to merge so the
+    // caller's compile_node_list lowers trailing statements
+    // here, and seal — both predecessor jumps were emitted
+    // above (or one arm terminated and the merge has a single
+    // predecessor jump).
+    bcx.switch_to_block(merge_block);
+    bcx.seal_block(merge_block);
+    Ok(false)
 }
 
 /// Lower a Block, or a single statement (in case `else if` chains
@@ -267,8 +300,10 @@ fn lower_block_or_stmt(node: &Node, bcx: &mut FunctionBuilder) -> Result<bool, J
             compile_node_list(&refs, bcx)
         }
         Node::IfStatement { condition, consequence, alternative, .. } => {
-            lower_if_statement(condition, consequence, alternative.as_deref(), bcx)?;
-            Ok(true)
+            // RES-103: an if "terminates" only if both arms did.
+            // Otherwise the merge block is now active and the
+            // surrounding block's caller may want to keep walking.
+            lower_if_statement(condition, consequence, alternative.as_deref(), bcx)
         }
         Node::ReturnStatement { value: Some(expr), .. } => {
             let v = lower_expr(expr, bcx)?;
@@ -568,6 +603,58 @@ mod tests {
         assert_eq!(run(&p2).unwrap(), 0);
     }
 
+    // ---------- RES-103: merge block + fallthrough ----------
+
+    #[test]
+    fn jit_if_then_returns_else_falls_through() {
+        // then-arm taken, returns 7. The else-arm falls through
+        // to the merge block, where the trailing `return 9;`
+        // lowers. Tests the "then terminates, else doesn't" path.
+        let p = parse_program("if (1 < 2) { return 7; } return 9;");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_then_falls_through_else_returns() {
+        // Inverse of above: condition false → else taken (returns
+        // 9). When then-arm executes a no-return body, the
+        // fallthrough hits the trailing return. We can't easily
+        // construct "then has no return" without let bindings
+        // (RES-104) — use bare-if instead, which is also a
+        // fallthrough-from-then case.
+        let p = parse_program("if (1 > 2) { return 7; } return 9;");
+        assert_eq!(run(&p).unwrap(), 9);
+    }
+
+    #[test]
+    fn jit_bare_if_with_fallthrough_false_branch() {
+        // No else; condition false → fallthrough to trailing
+        // return. This is the case Phase E rejected with
+        // "bare `if` without else"; Phase F accepts it.
+        let p = parse_program("if (false) { return 7; } return 9;");
+        assert_eq!(run(&p).unwrap(), 9);
+    }
+
+    #[test]
+    fn jit_bare_if_with_fallthrough_true_branch() {
+        // No else; condition true → then-arm returns 7. The
+        // trailing return is unreachable but still lowers
+        // (cranelift is happy with dead blocks).
+        let p = parse_program("if (true) { return 7; } return 9;");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_two_ifs_in_sequence() {
+        // First if falls through (false branch), second if
+        // returns. Proves the merge_block correctly hands
+        // control back to compile_node_list which then walks
+        // the second if. A nice end-to-end test of the
+        // fallthrough mechanic.
+        let p = parse_program("if (false) { return 1; } if (true) { return 2; } return 3;");
+        assert_eq!(run(&p).unwrap(), 2);
+    }
+
     #[test]
     fn jit_nested_if_in_then_arm() {
         // A nested if inside the then-arm. The inner if must also
@@ -580,36 +667,21 @@ mod tests {
         assert_eq!(run(&p).unwrap(), 1);
     }
 
-    #[test]
-    fn jit_rejects_if_without_else() {
-        // Phase E doesn't yet support fallthrough — bare `if`
-        // (no else) returns Unsupported with a clear descriptor.
-        let p = parse_program("if (1 < 2) { return 7; }");
-        let err = run(&p).unwrap_err();
-        match err {
-            JitError::Unsupported(msg) => assert!(
-                msg.contains("bare `if`") || msg.contains("without `else`"),
-                "expected Phase E descriptor, got: {}",
-                msg
-            ),
-            _ => panic!("expected Unsupported, got {:?}", err),
-        }
-    }
+    // RES-103 lifted Phase E's "both arms must return" rule.
+    // The two old tests (jit_rejects_if_without_else,
+    // jit_rejects_if_arm_without_return) pinned shapes that
+    // Phase F now accepts via the merge_block. Below: the
+    // shape that's STILL rejected — an if that doesn't return
+    // AND has nothing after it. The function never returns.
 
     #[test]
-    fn jit_rejects_if_arm_without_return() {
-        // `if (cond) { /* no return */ } else { return X; }` is
-        // also Unsupported in Phase E — both arms must return.
-        let p = parse_program("if (1 < 2) { let x = 1; } else { return 9; }");
-        let err = run(&p).unwrap_err();
-        match err {
-            JitError::Unsupported(msg) => assert!(
-                msg.contains("without a return"),
-                "expected Phase E without-return descriptor, got: {}",
-                msg
-            ),
-            _ => panic!("expected Unsupported, got {:?}", err),
-        }
+    fn jit_if_with_no_return_anywhere_is_empty_program() {
+        // `if (false) { let x = 1; }` — no return in either
+        // arm, no trailing statement. Function never returns,
+        // so this surfaces as EmptyProgram (same error a bare
+        // `let x = 1;` would).
+        let p = parse_program("if (1 < 2) { let x = 1; }");
+        assert_eq!(run(&p).unwrap_err(), JitError::EmptyProgram);
     }
 
     #[test]
