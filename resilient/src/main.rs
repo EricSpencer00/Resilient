@@ -37,6 +37,7 @@ enum Token {
     Minus,
     Multiply,
     Divide,
+    Modulo,
     Assign,
     Equal,
     NotEqual,
@@ -118,6 +119,7 @@ impl Lexer {
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Multiply,
+            '%' => Token::Modulo,
             '/' => {
                 if self.peek_char() == '/' {
                     // Skip comment line
@@ -743,7 +745,7 @@ impl Parser {
                 return None;
             };
             left_expr = match &self.peek_token {
-                Token::Plus | Token::Minus | Token::Multiply | Token::Divide |
+                Token::Plus | Token::Minus | Token::Multiply | Token::Divide | Token::Modulo |
                 Token::Equal | Token::NotEqual | Token::Less | Token::Greater |
                 Token::LessEqual | Token::GreaterEqual => {
                     self.next_token();
@@ -766,6 +768,7 @@ impl Parser {
             Token::Minus => "-".to_string(),
             Token::Multiply => "*".to_string(),
             Token::Divide => "/".to_string(),
+            Token::Modulo => "%".to_string(),
             Token::Equal => "==".to_string(),
             Token::NotEqual => "!=".to_string(),
             Token::Less => "<".to_string(),
@@ -831,7 +834,7 @@ impl Parser {
             Token::Equal | Token::NotEqual => 2,
             Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 3,
             Token::Plus | Token::Minus => 4,
-            Token::Multiply | Token::Divide => 5,
+            Token::Multiply | Token::Divide | Token::Modulo => 5,
             Token::LeftParen => 6,
             _ => 0,
         }
@@ -842,7 +845,7 @@ impl Parser {
             Token::Equal | Token::NotEqual => 2,
             Token::Less | Token::Greater | Token::LessEqual | Token::GreaterEqual => 3,
             Token::Plus | Token::Minus => 4,
-            Token::Multiply | Token::Divide => 5,
+            Token::Multiply | Token::Divide | Token::Modulo => 5,
             Token::LeftParen => 6,
             _ => 0,
         }
@@ -1238,6 +1241,13 @@ impl Interpreter {
                     Ok(Value::Int(left / right))
                 }
             },
+            "%" => {
+                if right == 0 {
+                    Err("Modulo by zero".to_string())
+                } else {
+                    Ok(Value::Int(left % right))
+                }
+            },
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
             "<" => Ok(Value::Bool(left < right)),
@@ -1258,6 +1268,13 @@ impl Interpreter {
                     Err("Division by zero".to_string())
                 } else {
                     Ok(Value::Float(left / right))
+                }
+            },
+            "%" => {
+                if right == 0.0 {
+                    Err("Modulo by zero".to_string())
+                } else {
+                    Ok(Value::Float(left % right))
                 }
             },
             "==" => Ok(Value::Bool(left == right)),
@@ -1915,6 +1932,25 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn int_modulo() {
+        let (p, _e) = parse("let x = 7 % 3;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("x").unwrap() {
+            Value::Int(n) => assert_eq!(n, 1),
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_modulo_by_zero_errors() {
+        let (p, _e) = parse("let x = 5 % 0;");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("Modulo by zero"), "err: {}", err);
     }
 
     #[test]
