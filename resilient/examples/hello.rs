@@ -1,5 +1,5 @@
 // Simplest possible Resilient program
-fn main(int dummy) {
+fn main() {
     println("Hello, Resilient world!");
 }
-main(0);
+main();

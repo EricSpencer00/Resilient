@@ -111,21 +111,10 @@ The `new_examples` directory contains working examples of the Resilient language
 
 See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and examples. Key points:
 
-- Functions must have parameters with explicit types, even if they're not used
+- Function parameters carry explicit types; zero-parameter functions use `fn name()`
 - Static variables maintain state between function calls
 - Live blocks provide self-healing capabilities
 - Assertions validate system invariants
-
-### Utility Script
-
-If you have code that doesn't conform to Resilient's parameter requirements, you can use the provided conversion tool:
-
-```bash
-# Convert functions without parameters to Resilient-compatible format
-./convert_functions.sh input_file.rs output_file.rs
-```
-
-This will automatically add `int dummy` parameters to functions without parameters and add `0` as an argument to function calls without parameters.
 
 ## Project Status
 

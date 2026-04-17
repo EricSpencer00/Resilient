@@ -11,15 +11,15 @@ fn print_message(string msg) {
 }
 
 // Main function - program entry point
-fn main(int dummy) {
+fn main() {
     print_message("Starting the program...");
-    
+
     // Calculate and display result
     let result = add_one(41);
     println("The answer is: " + result);
-    
+
     print_message("Program completed.");
 }
 
 // Call the main function to start execution
-main(0);
+main();

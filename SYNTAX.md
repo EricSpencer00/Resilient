@@ -4,33 +4,34 @@ This document outlines the syntax requirements and quirks discovered during impl
 
 ## Function Declarations
 
-Functions in Resilient must always have parameters with types, even if they're not used. This is a strict requirement of the language:
+Functions declare their parameters with types. Zero-parameter
+functions are written with empty parentheses, just like you'd expect:
 
 ```rust
-// INCORRECT - Will fail to parse and compile
+// Both are valid
 fn main() {
     println("Hello, world!");
 }
 
-// CORRECT - Includes a parameter even if unused
-fn main(int dummy) {
-    println("Hello, world!");
+fn add(int a, int b) {
+    return a + b;
 }
 ```
 
 ### Function Calls
 
-When calling functions, you must provide values for all parameters:
+When calling functions, provide values for each declared parameter:
 
 ```rust
-// Correct - passes a value for the dummy parameter
-main(0);
-
-// For a function with multiple parameters
+main();
+let sum = add(2, 3);
 process_data(42, "sensor1");
 ```
 
-> **Note**: This is a core design choice in Resilient. While it may seem unusual compared to other languages, it helps ensure explicit parameter handling and improves code clarity in safety-critical systems.
+> **Historical note**: older versions of Resilient required every
+> function to declare at least one parameter (the "dummy parameter"
+> workaround) because of a parser limitation. That limitation is gone
+> as of RES-004; you can and should write `fn main()` going forward.
 
 ## Variable Declarations
 

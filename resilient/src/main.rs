@@ -1662,6 +1662,26 @@ mod tests {
     }
 
     #[test]
+    fn parser_function_with_no_parameters() {
+        // RES-004: `fn main()` must parse. Historically the parser
+        // appeared to reject it, but that was the RES-001 lexer bug
+        // eating the `(`. The parameter-list parser itself already
+        // handled empty `()`; this test locks that in.
+        let (program, errors) = parse("fn main() { let x = 1; }");
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        match program {
+            Node::Program(stmts) => match &stmts[0] {
+                Node::Function { name, parameters, .. } => {
+                    assert_eq!(name, "main");
+                    assert!(parameters.is_empty(), "expected no params, got {:?}", parameters);
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn parser_function_with_parameters_roundtrips() {
         let (program, errors) = parse("fn add(int a, int b) { return a + b; }");
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);

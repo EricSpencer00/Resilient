@@ -2,7 +2,7 @@
 // This simulates a system that can recover from failures
 
 // Simulates an unreliable operation that might fail
-fn unreliable_operation(int dummy) {
+fn unreliable_operation() {
     // Simulates a failure based on random value
     if read_random(0) < 0.5 {
         println("  -> Operation internal failure detected");
@@ -14,7 +14,7 @@ fn unreliable_operation(int dummy) {
 }
 
 // Helper function to generate random values
-fn read_random(int dummy) {
+fn read_random() {
     // For the MVP, alternates between 0.25 and 0.75
     // In a real implementation, this would use a proper RNG
     static let toggle = false;
@@ -32,7 +32,7 @@ fn log_status(string message) {
     println("[SYSTEM] " + message);
 }
 
-fn main(int dummy) {
+fn main() {
     let max_attempts = 5;
     let current_attempt = 0;
     
@@ -46,7 +46,7 @@ fn main(int dummy) {
         println("\nAttempt " + current_attempt + " of " + max_attempts);
         
         log_status("Executing unreliable operation...");
-        let result = unreliable_operation(0);
+        let result = unreliable_operation();
         
         // If result is negative, this will cause the live {
     block to retry
@@ -71,4 +71,4 @@ fn main(int dummy) {
     log_status("Self-healing demonstration completed");
 }
 
-main(0);
+main();

@@ -11,7 +11,7 @@ static let error_count = 0;
 static let max_allowed_errors = 3;
 
 // Initialize the system and return status
-fn initialize_system(int dummy) {
+fn initialize_system() {
     system_online = true;
     error_count = 0;
     println("System initialized and online");
@@ -38,7 +38,7 @@ fn read_sensor(int sensor_id) {
 }
 
 // Simple random value generator (0.0 to 1.0)
-fn get_random_value(int dummy) {
+fn get_random_value() {
     static let counter = 0;
     counter = (counter + 1) % 10;
     return counter / 10.0;
@@ -99,11 +99,11 @@ fn monitor_sensor(int sensor_id, float threshold) {
 }
 
 // Main entry point
-fn main(int dummy) {
+fn main() {
     log_message("INFO", "Starting Resilient demonstration");
     
     // Initialize the system
-    initialize_system(0);
+    initialize_system();
     
     // Define monitoring parameters
     let sensor_count = 3;
@@ -120,4 +120,4 @@ fn main(int dummy) {
 }
 
 // Run the program
-main(0);
+main();

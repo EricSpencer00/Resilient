@@ -2,7 +2,7 @@
 // This simulates a sensor reading system with error handling
 
 // Simulates reading from a sensor, can fail with a negative value
-fn read_sensor(int dummy) {
+fn read_sensor() {
     // Return a random value for testing
     // In a real system, this would read from hardware
     if read_random(0) < 0.2 {
@@ -13,7 +13,7 @@ fn read_sensor(int dummy) {
 }
 
 // Helper function to generate random values
-fn read_random(int dummy) {
+fn read_random() {
     // For the MVP, just return a semi-random value
     // In a real implementation, this would use a proper RNG
     static let counter = 0;
@@ -42,7 +42,7 @@ fn process_sensor_data(int value, int threshold) {
 }
 
 // Main control loop
-fn main_loop(int dummy) {
+fn main_loop() {
     let threshold = 50;
     let max_retries = 3;
     let current_retry = 0;
@@ -60,7 +60,7 @@ fn main_loop(int dummy) {
         current_retry = current_retry + 1;
         
         println("\nReading sensor (attempt " + current_retry + ")...");
-        let sensor_value = read_sensor(0);
+        let sensor_value = read_sensor();
         
         // Validate the reading - if this fails, the live {
     block will retry
@@ -80,8 +80,8 @@ fn main_loop(int dummy) {
 }
 
 // Start the main loop
-fn main(int dummy) {
-    main_loop(0);
+fn main() {
+    main_loop();
 }
 
-main(0);
+main();
