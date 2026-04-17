@@ -796,14 +796,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
-            Node::IndexExpression { target, index } => {
+            Node::IndexExpression { target, index, .. } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
                 // Element type not tracked at MVP.
                 Ok(Type::Any)
             },
 
-            Node::IndexAssignment { target, index, value } => {
+            Node::IndexAssignment { target, index, value, .. } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
                 let _ = self.check_node(value)?;

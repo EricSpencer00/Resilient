@@ -31,7 +31,7 @@ time, commit it, and only then move the post.
 ### Language sanity
 | # | Goalpost | Status |
 |---|---|---|
-| **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | 🟡 RES-070 deleted dead `parser.rs`; RES-069 landed `span.rs` (Pos/Span/Spanned + lexer helper); RES-077 wrapped `Node::Program` statements in `Spanned<Node>`; RES-078 put spans on leaf variants (literals + identifiers); RES-079 put spans on core statement variants; RES-084 put spans on core expression variants (PrefixExpression, InfixExpression, CallExpression); RES-080 surfaces spans in typechecker diagnostics. Remaining: secondary expression variants (`ArrayLiteral`, `IndexExpression`, `IndexAssignment`, `FieldAccess`, `FieldAssignment`, `Match`, `StructLiteral`, `FunctionLiteral`, `TryExpression`) — tracked as a future follow-up. |
+| **G6** | AST hardening (one canonical AST, resolve parser.rs fate) | 🟡 RES-070 deleted dead `parser.rs`; RES-069/077/078/079/084/085 landed spans on Program + leaves + core statements + core expressions + index/field ops; RES-080 surfaces them in typechecker diagnostics. Remaining: tuple variants (`ArrayLiteral`, `TryExpression`, `Block`, `ExpressionStatement` — need tuple→struct conversion) and structural variants (`Match`, `StructLiteral`, `FunctionLiteral`, `Function`, `LiveBlock`, `Assert`, `StructDecl`) — tracked as future follow-ups. |
 | **G7** | Real type checker (inference, unification, exhaustiveness) | ⏳ |
 | **G8** | Function contracts (`requires` / `ensures`) at runtime | ✅ RES-035 |
 

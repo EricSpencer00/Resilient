@@ -692,12 +692,18 @@ enum Node {
     FieldAccess {
         target: Box<Node>,
         field: String,
+        /// RES-085: span of the `.field` operator. Consumed in
+        /// follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-038: `target.field = expr` write.
     FieldAssignment {
         target: Box<Node>,
         field: String,
         value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-032: `[e1, e2, e3]` array literal.
     ArrayLiteral(Vec<Node>),
@@ -705,12 +711,17 @@ enum Node {
     IndexExpression {
         target: Box<Node>,
         index: Box<Node>,
+        /// RES-085: span of the opening `[`. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-032: `a[i] = expr` write.
     IndexAssignment {
         target: Box<Node>,
         index: Box<Node>,
         value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
     },
 }
 
@@ -850,16 +861,20 @@ impl Parser {
                 self.next_token();
             }
             // Destructure the LHS to pick the right assignment shape.
+            // RES-085: pull span through so the Assignment node
+            // inherits the LHS expression's span.
             match lhs {
-                Node::IndexExpression { target, index } => Node::IndexAssignment {
+                Node::IndexExpression { target, index, span } => Node::IndexAssignment {
                     target,
                     index,
                     value: Box::new(value),
+                    span,
                 },
-                Node::FieldAccess { target, field } => Node::FieldAssignment {
+                Node::FieldAccess { target, field, span } => Node::FieldAssignment {
                     target,
                     field,
                     value: Box::new(value),
+                    span,
                 },
                 _ => Node::ExpressionStatement(Box::new(lhs)),
             }
@@ -1923,6 +1938,8 @@ impl Parser {
 
     /// Parse `.field`. current_token is `.` on entry; on exit current is `field`.
     fn parse_field_access(&mut self, target: Node) -> Option<Node> {
+        // RES-085: span covers the `.` at current_token on entry.
+        let dot_span = self.span_at_current();
         self.next_token(); // skip '.'
         let field = match &self.current_token {
             Token::Identifier(n) => n.clone(),
@@ -1935,6 +1952,7 @@ impl Parser {
         Some(Node::FieldAccess {
             target: Box::new(target),
             field,
+            span: dot_span,
         })
     }
 
@@ -1976,6 +1994,8 @@ impl Parser {
     /// Parse `target[index]`. current_token is `[` on entry; on exit
     /// current_token is `]`.
     fn parse_index_expression(&mut self, target: Node) -> Option<Node> {
+        // RES-085: span covers the `[` at current_token on entry.
+        let bracket_span = self.span_at_current();
         self.next_token(); // skip '['
         let index = self.parse_expression(0)?;
         if self.peek_token != Token::RightBracket {
@@ -1987,12 +2007,14 @@ impl Parser {
             return Some(Node::IndexExpression {
                 target: Box::new(target),
                 index: Box::new(index),
+                span: bracket_span,
             });
         }
         self.next_token(); // to ]
         Some(Node::IndexExpression {
             target: Box::new(target),
             index: Box::new(index),
+            span: bracket_span,
         })
     }
 
@@ -2269,7 +2291,7 @@ fn flatten_field_target(target: &Node, last_field: &str) -> (Option<String>, Vec
                 path.reverse();
                 path
             }),
-            Node::FieldAccess { target: t, field } => {
+            Node::FieldAccess { target: t, field, .. } => {
                 path.push(field.clone());
                 node = t;
             }
@@ -2329,7 +2351,7 @@ fn format_contract_expr(node: &Node) -> String {
             let args: Vec<String> = arguments.iter().map(format_contract_expr).collect();
             format!("{}({})", format_contract_expr(function), args.join(", "))
         }
-        Node::IndexExpression { target, index } => {
+        Node::IndexExpression { target, index, .. } => {
             format!(
                 "{}[{}]",
                 format_contract_expr(target),
@@ -3056,7 +3078,7 @@ impl Interpreter {
                     fields: out,
                 })
             },
-            Node::FieldAccess { target, field } => {
+            Node::FieldAccess { target, field, .. } => {
                 let tval = self.eval(target)?;
                 match tval {
                     Value::Struct { name, fields } => {
@@ -3074,7 +3096,7 @@ impl Interpreter {
                     )),
                 }
             },
-            Node::FieldAssignment { target, field, value } => {
+            Node::FieldAssignment { target, field, value, .. } => {
                 // Only support `IDENT.field = v` and `IDENT.f1.f2 = v`
                 // for MVP. The target tree is a chain of Identifier and
                 // FieldAccess nodes; we walk it to find the root binding,
@@ -3095,7 +3117,7 @@ impl Interpreter {
                 let _ = self.env.reassign(&root_name, updated);
                 Ok(Value::Void)
             },
-            Node::IndexExpression { target, index } => {
+            Node::IndexExpression { target, index, .. } => {
                 let target_val = self.eval(target)?;
                 let index_val = self.eval(index)?;
                 match (target_val, index_val) {
@@ -3117,7 +3139,7 @@ impl Interpreter {
                     (other, _) => Err(format!("Cannot index {:?}", other)),
                 }
             },
-            Node::IndexAssignment { target, index, value } => {
+            Node::IndexAssignment { target, index, value, .. } => {
                 // RES-034: walk the LHS chain to support a[i][j]...[k] = v.
                 // The parser builds nested IndexExpression nodes; descend
                 // through them collecting each index (root-to-leaf order)
@@ -3127,7 +3149,7 @@ impl Interpreter {
                 let root_name = loop {
                     match cursor {
                         Node::Identifier { name, .. } => break name.clone(),
-                        Node::IndexExpression { target: inner_t, index: inner_i } => {
+                        Node::IndexExpression { target: inner_t, index: inner_i, .. } => {
                             indices_rev.push(inner_i);
                             cursor = inner_t;
                         }
@@ -6174,6 +6196,29 @@ mod tests {
             "legacy shim should use <unknown> prefix, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn index_and_field_expressions_carry_spans() {
+        // RES-085: `a[0]` builds an IndexExpression whose span lands
+        // on the `[`. `a.b` builds a FieldAccess whose span lands on
+        // the `.`. Both should have start.line >= 1 when parsed from
+        // real source.
+        let (program, errors) = parse("let a = [1, 2]; a[0]; let b = a; b.len;");
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let Node::Program(stmts) = &program else { panic!() };
+        // stmt 1: `a[0];` expression statement wrapping IndexExpression
+        let Node::ExpressionStatement(expr) = &stmts[1].node else { panic!() };
+        let Node::IndexExpression { span, .. } = expr.as_ref() else {
+            panic!("expected IndexExpression");
+        };
+        assert!(span.start.line >= 1, "index span: {:?}", span);
+        // stmt 3: `b.len;` expression statement wrapping FieldAccess
+        let Node::ExpressionStatement(expr) = &stmts[3].node else { panic!() };
+        let Node::FieldAccess { span, .. } = expr.as_ref() else {
+            panic!("expected FieldAccess");
+        };
+        assert!(span.start.line >= 1, "field span: {:?}", span);
     }
 
     #[test]
