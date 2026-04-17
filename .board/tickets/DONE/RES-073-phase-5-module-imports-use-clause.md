@@ -1,7 +1,7 @@
 ---
 id: RES-073
 title: Phase 5 module imports use clause
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -45,3 +45,21 @@ no submodules, no visibility modifiers yet.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager
+- 2026-04-17 executor landed: `Token::Use` keyword + `Node::Use { path }`
+  variant + `parse_use_statement` + new `imports.rs` module with
+  `expand_uses(program, base_dir, loaded)` recursive resolver. Cycle /
+  re-import dedup via canonicalized-path `HashSet`. Driver
+  (`execute_file`) calls `expand_uses` AFTER parse, BEFORE typecheck,
+  seeded with the importing file's canonical path so a `use` pointing
+  back at the entry file collapses to a no-op. Defensive `Node::Use`
+  arms added in interpreter `eval` and typechecker `check_node` so any
+  unresolved leftover is a no-op rather than a panic.
+- 2026-04-17 example: `examples/imports_demo/{main,helpers}.rs` —
+  main calls imported `square(7)` and `shout("imports work")` from
+  helpers.rs and prints `49`. Smoke tests
+  `imports_demo_resolves_use_clause` and
+  `imports_missing_file_errors_cleanly` pinned in
+  `tests/examples_smoke.rs`.
+- 2026-04-17 verification: `cargo build`, `cargo test` (145 unit + 1
+  golden + 6 smoke = 152 tests, all pass), `cargo clippy -- -D warnings`
+  all clean. Note: span field on `Node::Use` deferred to RES-069 follow-up.

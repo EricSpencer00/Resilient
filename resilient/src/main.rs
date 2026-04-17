@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 // Import modules
@@ -12,6 +12,7 @@ mod typechecker;
 mod parser;
 mod repl;
 mod span;
+mod imports;
 #[cfg(feature = "z3")]
 mod verifier_z3;
 
@@ -47,6 +48,8 @@ enum Token {
     Arrow,
     Underscore,
     Question,
+    /// RES-073: `use "path/to/file.res";` — module import.
+    Use,
     
     // Literals
     Identifier(String),
@@ -306,6 +309,7 @@ impl Lexer {
                         "struct" => Token::Struct,
                         "new" => Token::New,
                         "match" => Token::Match,
+                        "use" => Token::Use,
                         "_" => Token::Underscore,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
@@ -490,6 +494,13 @@ enum Pattern {
 #[derive(Debug, Clone)]
 enum Node {
     Program(Vec<Node>),
+    /// RES-073: top-level `use "path";` import. The path is resolved
+    /// relative to the file containing the `use`. Resolved away by
+    /// `expand_uses` (in `imports.rs`) before the program reaches the
+    /// typechecker or interpreter — never seen at eval time.
+    Use {
+        path: String,
+    },
     Function {
         name: String,
         parameters: Vec<(String, String)>, // (type, name)
@@ -708,6 +719,7 @@ impl Parser {
         match self.current_token {
             Token::Function => Some(self.parse_function()),
             Token::Struct => Some(self.parse_struct_decl()),
+            Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
             Token::Return => Some(self.parse_return_statement()),
@@ -1164,6 +1176,27 @@ impl Parser {
         }
     }
     
+    /// RES-073: `use "path/to/file.res";` — emits `Node::Use { path }`.
+    /// Resolved by `imports::expand_uses` before typechecker / interpreter.
+    fn parse_use_statement(&mut self) -> Option<Node> {
+        // Caller checked self.current_token == Token::Use.
+        self.next_token(); // consume 'use'
+        let path = match &self.current_token {
+            Token::StringLiteral(s) => s.clone(),
+            _ => {
+                self.record_error(
+                    "Expected string literal after 'use' (e.g. `use \"helpers.res\";`)"
+                        .to_string(),
+                );
+                return None;
+            }
+        };
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+        Some(Node::Use { path })
+    }
+
     fn parse_return_statement(&mut self) -> Node {
         self.next_token(); // Skip 'return'
 
@@ -2596,6 +2629,10 @@ impl Interpreter {
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
+            // RES-073: `use` should have been resolved by expand_uses
+            // before the program reached here. Treat any leftover as
+            // a no-op so unit tests that bypass the driver don't trip.
+            Node::Use { .. } => Ok(Value::Void),
             Node::Function { name, parameters, body, requires, ensures, .. } => {
                 // RES-068: if every observed call site for this fn was
                 // statically proven, the runtime requires check is
@@ -3496,6 +3533,17 @@ fn start_repl() -> RustylineResult<()> {
     Ok(())
 }
 
+/// RES-073: shared parse helper. Returns the parsed program plus any
+/// parser error strings collected along the way. Used by both the
+/// driver and `imports::expand_uses`.
+fn parse(src: &str) -> (Node, Vec<String>) {
+    let lexer = Lexer::new(src.to_string());
+    let mut parser = Parser::new(lexer);
+    let program = parser.parse_program();
+    let errs: Vec<String> = parser.errors.into_iter().map(|e| e.to_string()).collect();
+    (program, errs)
+}
+
 // Execute a Resilient source file
 fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
     let contents = fs::read_to_string(filename)
@@ -3503,11 +3551,26 @@ fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
 
     let lexer = Lexer::new(contents);
     let mut parser = Parser::new(lexer);
-    let program = parser.parse_program();
+    let mut program = parser.parse_program();
 
     // Check for parser errors (already printed at the point they occurred)
     if !parser.errors.is_empty() {
         return Err(format!("Failed to parse program: {} parser error(s)", parser.errors.len()));
+    }
+
+    // RES-073: resolve `use` imports before typecheck / interpret.
+    let base_dir = Path::new(filename)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut loaded: HashSet<PathBuf> = HashSet::new();
+    // Seed with the canonicalized current file so circular `use`s are
+    // detected if a re-import points back at us.
+    if let Ok(canon) = fs::canonicalize(filename) {
+        loaded.insert(canon);
+    }
+    if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+        return Err(format!("Import error: {}", e));
     }
 
     // Type checking if enabled. --audit implies --typecheck.

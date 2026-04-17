@@ -424,6 +424,9 @@ impl TypeChecker {
     pub fn check_node(&mut self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Program(_statements) => self.check_program(node),
+            // RES-073: `use` is resolved away before typecheck. Treat
+            // leftovers as void (no-op) for safety.
+            Node::Use { .. } => Ok(Type::Void),
             
             Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt } => {
                 let mut param_types = Vec::new();
