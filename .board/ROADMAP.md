@@ -23,9 +23,9 @@ time, commit it, and only then move the post.
 | # | Goalpost | Status |
 |---|---|---|
 | **G1** | Green build | ✅ RES-001, clippy clean RES-007 |
-| **G2** | Test harness | ✅ RES-002 (17 tests), RES-003 (`println`), RES-006 (golden framework), RES-008 (`string+`) |
-| **G3** | Drop dummy parameters | ✅ RES-004 (examples, SYNTAX, README) |
-| **G4** | Diagnostics with spans | 🟡 RES-005 open |
+| **G2** | Test harness | ✅ RES-002 (19 tests), RES-003 (`println`), RES-006 (golden framework), RES-008 (`string+`), RES-011 (bare return), RES-009/010 (no parser/lexer panics) |
+| **G3** | Drop dummy parameters | ✅ RES-004 |
+| **G4** | Diagnostics — phase 1 done, phase 2 open | 🟡 graceful errors landed (RES-009, RES-010); source spans still RES-005 |
 | **G5** | Proper lexer via `logos` | ⏳ pending |
 
 ### Language sanity
@@ -77,3 +77,12 @@ bottom — the ladder grows indefinitely.
 - 2026-04-16 — ladder extended with G11–G20 post-initial-foundation.
 - 2026-04-16 — ralph-loop launcher parked (see `.board/LOOP_STATUS.md`);
   this session is acting as both Manager and Executor.
+- 2026-04-16 — RES-008 (string + primitive coercion) landed — `minimal.rs`
+  now runs end-to-end; golden tests for hello/minimal pinned.
+- 2026-04-16 — RES-006 (golden-test framework) landed. `tests/examples_golden.rs`
+  walks examples/ and diffs against .expected.txt sidecars.
+- 2026-04-16 — RES-007 (clippy clean) landed. `cargo clippy -- -D warnings` exits 0.
+- 2026-04-16 — RES-011 (bare return) landed.
+- 2026-04-16 — RES-009 + RES-010 landed: no parser/lexer panic can crash
+  the binary. Unknown characters and unrecognized syntax now produce red
+  "Parser error" diagnostics and let the driver exit cleanly.
