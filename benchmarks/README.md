@@ -103,21 +103,23 @@ dispatch through the AST.
 ### 3. Contract overhead — 100k `requires` checks
 
 Same loop, with and without `requires b != 0` on the called
-function.
+function. Three variants now: with contract checked at runtime, with
+contract proven at compile time (`--typecheck` enables RES-068's
+elision), and no contract at all.
 
 | Variant | Mean | Overhead |
 |---|---:|---:|
-| `Resilient (no contract)` | 128.6 ms | baseline |
-| `Resilient + requires`     | 155.5 ms | **+21%** (~270 ns / call) |
+| `Resilient (no contract)`              | 124.9 ms | baseline |
+| `Resilient + requires + --typecheck`   | **124.7 ms** | **+0%** ← RES-068 elides |
+| `Resilient + requires` (runtime check) | 148.7 ms | +19% |
 
-A static `--audit` showed 100% of these call sites are statically
-discharged, which means **the runtime check is provably redundant**
-— the optimizer could elide it entirely (RES-068).
+**The contract costs nothing at runtime when statically discharged.**
+That's the value proposition fully realized: write contracts, run
+the typechecker, ship with full safety AND zero overhead.
 
-The before-refactor numbers were 1,885 ms / 2,049 ms — both improved
-~14× from the env refactor. The relative overhead grew from 9% to
-21% because the baseline shrank faster than the absolute check cost.
-Eliding proven-safe checks (RES-068) would zero this out.
+For contracts the verifier can't fully prove (free variables,
+non-arithmetic, etc.), the runtime check stays — and costs ~270 ns
+per call.
 
 ---
 

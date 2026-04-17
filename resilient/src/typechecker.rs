@@ -231,6 +231,27 @@ pub struct VerificationStats {
     /// RES-067: clauses the hand-rolled folder couldn't decide but Z3
     /// could. Bumped when --features z3 is in use; otherwise zero.
     pub requires_discharged_by_z3: usize,
+    /// RES-068: per-function counters. fn_name → (discharged, runtime).
+    /// A function is "fully provable" iff every call site discharged
+    /// every requires clause statically. The interpreter elides runtime
+    /// checks for those functions.
+    pub per_fn_discharged: std::collections::HashMap<String, usize>,
+    pub per_fn_runtime: std::collections::HashMap<String, usize>,
+}
+
+impl VerificationStats {
+    /// RES-068: names of functions whose call sites were ALL statically
+    /// discharged AND there was at least one such call site. Empty
+    /// requires (no contract) is excluded — there's nothing to elide.
+    pub fn fully_provable_fns(&self) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for (name, n) in &self.per_fn_discharged {
+            if *n > 0 && !self.per_fn_runtime.contains_key(name) {
+                out.insert(name.clone());
+            }
+        }
+        out
+    }
 }
 
 /// RES-067: shim that forwards to the Z3 module when built --features z3,
@@ -947,9 +968,13 @@ impl TypeChecker {
                             }
                             Some(true) => {
                                 self.stats.requires_discharged_at_compile += 1;
+                                *self.stats.per_fn_discharged
+                                    .entry(callee_name.clone()).or_insert(0) += 1;
                             }
                             None => {
                                 self.stats.requires_left_for_runtime += 1;
+                                *self.stats.per_fn_runtime
+                                    .entry(callee_name.clone()).or_insert(0) += 1;
                             }
                         }
                     }

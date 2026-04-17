@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io;
@@ -2161,6 +2161,8 @@ fn stringify_for_concat(v: &Value) -> Option<String> {
 // environment. Keep this list small and predictable — it is the
 // language's minimal stdlib until a proper module system arrives.
 
+// RES-050: Environment methods take &self; this signature could now be
+// `&Environment`, but `&mut` is harmless and signals "we're populating".
 fn register_builtins(env: &mut Environment) {
     for (name, func) in BUILTINS {
         env.set(
@@ -2529,6 +2531,13 @@ struct Interpreter {
     /// Keyed by the static's identifier (caveat: two functions using the
     /// same static name currently share — good enough for MVP).
     statics: Rc<RefCell<HashMap<String, Value>>>,
+    /// RES-068: function names whose `requires` clauses were 100%
+    /// statically discharged across every observed call site. The
+    /// runtime check for these is provably redundant — when binding a
+    /// Function value, we strip the requires so apply_function skips
+    /// the runtime check entirely. Empty by default; populated by
+    /// `with_proven_fns` after typecheck.
+    proven_fns: Rc<HashSet<String>>,
 }
 
 impl Interpreter {
@@ -2538,18 +2547,34 @@ impl Interpreter {
         Interpreter {
             env,
             statics: Rc::new(RefCell::new(HashMap::new())),
+            proven_fns: Rc::new(HashSet::new()),
         }
+    }
+
+    /// RES-068: pass the set of fully-proven function names to the
+    /// interpreter. Their `requires` clauses won't fire at runtime.
+    fn with_proven_fns(mut self, proven: HashSet<String>) -> Self {
+        self.proven_fns = Rc::new(proven);
+        self
     }
     
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
             Node::Function { name, parameters, body, requires, ensures, .. } => {
+                // RES-068: if every observed call site for this fn was
+                // statically proven, the runtime requires check is
+                // provably redundant. Strip it.
+                let runtime_requires = if self.proven_fns.contains(name) {
+                    Vec::new()
+                } else {
+                    requires.clone()
+                };
                 let func = Value::Function {
                     parameters: parameters.clone(),
                     body: body.clone(),
                     env: self.env.clone(),
-                    requires: requires.clone(),
+                    requires: runtime_requires,
                     ensures: ensures.clone(),
                     name: name.clone(),
                 };
@@ -3200,6 +3225,7 @@ impl Interpreter {
                 let mut interpreter = Interpreter {
                     env: extended_env,
                     statics: self.statics.clone(),
+                    proven_fns: self.proven_fns.clone(),
                 };
 
                 // RES-035: check each `requires` clause BEFORE running
@@ -3450,6 +3476,7 @@ fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
     }
 
     // Type checking if enabled. --audit implies --typecheck.
+    let mut proven_fns: HashSet<String> = HashSet::new();
     if type_check || audit {
         println!("Running type checker...");
         let mut tc = typechecker::TypeChecker::new();
@@ -3460,12 +3487,16 @@ fn execute_file(filename: &str, type_check: bool, audit: bool) -> RResult<()> {
                 return Err(format!("Type check failed: {}", e));
             }
         }
+        // RES-068: harvest the set of fns whose contracts the
+        // typechecker fully discharged, so the interpreter can skip
+        // their runtime requires checks.
+        proven_fns = tc.stats.fully_provable_fns();
         if audit {
             print_verification_audit(&tc.stats);
         }
     }
 
-    let mut interpreter = Interpreter::new();
+    let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
     interpreter.eval(&program)?;
 
     Ok(())
@@ -3987,6 +4018,68 @@ mod tests {
                 }
             }
         "#).unwrap();
+    }
+
+    // ---------- Elide proven runtime checks (RES-068) ----------
+
+    #[test]
+    fn elide_runtime_check_when_all_callsites_proven() {
+        // Both call sites have constant args that satisfy `requires`.
+        // The typechecker discharges them; with_proven_fns then
+        // strips the runtime check from the bound Function value.
+        let src = r#"
+            fn pos(int x) requires x > 0 { return x; }
+            let a = pos(5);
+            let b = pos(10);
+        "#;
+        let (program, _e) = parse(src);
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).unwrap();
+        let proven = tc.stats.fully_provable_fns();
+        assert!(proven.contains("pos"), "pos should be fully proven");
+
+        // Run with the proven set: pos's Value::Function has empty
+        // requires, so apply_function never enters the runtime-check
+        // branch even if we deliberately try to violate the contract.
+        // Sanity check by inspecting the bound Function value.
+        let mut interp = Interpreter::new().with_proven_fns(proven);
+        interp.eval(&program).unwrap();
+        match interp.env.get("pos").unwrap() {
+            Value::Function { requires, .. } => {
+                assert!(requires.is_empty(),
+                    "expected requires to be elided after proof");
+            }
+            other => panic!("expected Function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn keep_runtime_check_when_some_callsite_unproven() {
+        // One call site uses a free variable → typechecker can't
+        // prove it, so runtime check must stay.
+        let src = r#"
+            fn pos(int x) requires x > 0 { return x; }
+            fn caller(int n) {
+                let a = pos(n);   // unproven (n is free here)
+                let b = pos(5);   // proven
+            }
+        "#;
+        let (program, _e) = parse(src);
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).unwrap();
+        let proven = tc.stats.fully_provable_fns();
+        assert!(!proven.contains("pos"),
+            "pos has an unproven call site, should NOT be fully proven");
+
+        let mut interp = Interpreter::new().with_proven_fns(proven);
+        interp.eval(&program).unwrap();
+        match interp.env.get("pos").unwrap() {
+            Value::Function { requires, .. } => {
+                assert_eq!(requires.len(), 1,
+                    "expected requires to be retained for runtime check");
+            }
+            other => panic!("expected Function, got {:?}", other),
+        }
     }
 
     // ---------- Const let-binding tracking (RES-063) ----------
