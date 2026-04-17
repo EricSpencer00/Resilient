@@ -4312,6 +4312,65 @@ mod tests {
     }
 
     #[test]
+    fn closure_with_shared_mutation_makes_a_counter() {
+        // RES-056 (unblocked by RES-050): the canonical
+        // make_counter test. The inner fn captures `n` from the outer
+        // env. Because Environment is now Rc<RefCell<>>, the
+        // captured env IS the same RefCell that was mutated, and
+        // every call to the closure reads/writes the same `n`.
+        //
+        // Before RES-050 this would have returned 1, 1, 1 because
+        // each call cloned the captured env and mutated the clone.
+        let src = r#"
+            fn make_counter() {
+                let n = 0;
+                return fn() {
+                    n = n + 1;
+                    return n;
+                };
+            }
+            let c = make_counter();
+            let a = c();
+            let b = c();
+            let three = c();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("a").unwrap(), Value::Int(1)));
+        assert!(matches!(interp.env.get("b").unwrap(), Value::Int(2)));
+        assert!(matches!(interp.env.get("three").unwrap(), Value::Int(3)));
+    }
+
+    #[test]
+    fn two_counters_are_independent() {
+        // Each call to make_counter creates a fresh enclosing env;
+        // counters made in different calls must NOT share state.
+        let src = r#"
+            fn make_counter() {
+                let n = 0;
+                return fn() {
+                    n = n + 1;
+                    return n;
+                };
+            }
+            let a = make_counter();
+            let b = make_counter();
+            let a1 = a();
+            let a2 = a();
+            let b1 = b();
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("a1").unwrap(), Value::Int(1)));
+        assert!(matches!(interp.env.get("a2").unwrap(), Value::Int(2)));
+        // b is fresh, so b() returns 1, not 3.
+        assert!(matches!(interp.env.get("b1").unwrap(), Value::Int(1)));
+    }
+
+    #[test]
     fn closure_captures_enclosing_variable() {
         let src = r#"
             fn make_adder(int n) {
