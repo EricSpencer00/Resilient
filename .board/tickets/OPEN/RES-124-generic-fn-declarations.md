@@ -37,3 +37,36 @@ one concrete version per (fn, type-tuple) pair seen at call sites.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed and bailed by executor (blocked + oversized)
+
+## Attempt 1 failed
+
+Blocked on the inference walker (RES-120, OPEN with
+`## Clarification needed`) and top-level let-polymorphism
+(RES-122, also OPEN with `## Clarification needed`). Two acceptance
+criteria fail open without them: "Inferer: generics become fresh
+`Type::Var` when entering the function body" and "Codegen
+(interpreter + VM + JIT): dispatch calls to the monomorphized
+name" — the latter assumes a monomorphization pass backed by
+inference.
+
+Even ignoring the deps, this is a multi-iteration ticket on its own:
+parser syntax for `fn<T>`, inferer instantiation, monomorphization
+pass with a mangling scheme, recursion-over-generics handling, and
+three codegen backends (interpreter + VM + JIT).
+
+## Clarification needed
+
+Re-open once RES-120 and RES-122 land. Additionally, the Manager
+should consider splitting this ticket into:
+
+- RES-124a: parser support for `fn<T>` syntax + `type_params: Vec<...>`
+  on `Node::Function`. Independently testable via AST-shape asserts,
+  lands cleanly even before RES-120.
+- RES-124b: inferer integration — fresh `Type::Var` at function
+  entry; instantiation at call sites.
+- RES-124c: monomorphization pass + mangling scheme.
+- RES-124d: codegen dispatch (interpreter + VM + JIT).
+
+No code changes landed — only the ticket state toggle and this
+clarification note.
