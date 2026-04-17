@@ -1148,9 +1148,14 @@ fn register_builtins(env: &mut Environment) {
 /// Resilient program.
 const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("println", builtin_println),
+    ("print", builtin_print),
     ("abs", builtin_abs),
     ("min", builtin_min),
     ("max", builtin_max),
+    ("sqrt", builtin_sqrt),
+    ("pow", builtin_pow),
+    ("floor", builtin_floor),
+    ("ceil", builtin_ceil),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -1174,6 +1179,76 @@ fn builtin_println(args: &[Value]) -> RResult<Value> {
             "println expects 0 or 1 argument, got {}",
             many.len()
         )),
+    }
+}
+
+/// `print(x)` — like println but without the trailing newline. Useful
+/// for building a line from multiple values or for prompt-style output.
+fn builtin_print(args: &[Value]) -> RResult<Value> {
+    use std::io::Write as _;
+    match args {
+        [] => {
+            // No-op with flush so partial-line state is consistent.
+            let _ = std::io::stdout().flush();
+            Ok(Value::Void)
+        }
+        [single] => {
+            match single {
+                Value::String(s) => print!("{}", s),
+                other => print!("{}", other),
+            }
+            let _ = std::io::stdout().flush();
+            Ok(Value::Void)
+        }
+        many => Err(format!("print expects 0 or 1 argument, got {}", many.len())),
+    }
+}
+
+/// `sqrt(x)` — square root, float-returning. Int arg coerced to f64.
+fn builtin_sqrt(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Float((*i as f64).sqrt())),
+        [Value::Float(f)] => Ok(Value::Float(f.sqrt())),
+        [other] => Err(format!("sqrt: expected numeric, got {:?}", other)),
+        _ => Err(format!("sqrt: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `pow(base, exp)` — base^exp. Float-returning.
+fn builtin_pow(args: &[Value]) -> RResult<Value> {
+    let to_f = |v: &Value| match v {
+        Value::Int(i) => Some(*i as f64),
+        Value::Float(f) => Some(*f),
+        _ => None,
+    };
+    match args {
+        [a, b] => {
+            let (Some(base), Some(exp)) = (to_f(a), to_f(b)) else {
+                return Err(format!("pow: expected numeric args, got {:?} and {:?}", a, b));
+            };
+            Ok(Value::Float(base.powf(exp)))
+        }
+        _ => Err(format!("pow: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// `floor(x)` — round toward negative infinity. Always returns float.
+fn builtin_floor(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Float(*i as f64)),
+        [Value::Float(f)] => Ok(Value::Float(f.floor())),
+        [other] => Err(format!("floor: expected numeric, got {:?}", other)),
+        _ => Err(format!("floor: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `ceil(x)` — round toward positive infinity. Always returns float.
+fn builtin_ceil(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Float(*i as f64)),
+        [Value::Float(f)] => Ok(Value::Float(f.ceil())),
+        [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
+        _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -2188,6 +2263,24 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn math_builtins_sqrt_pow_floor_ceil() {
+        let src = r#"
+            let a = sqrt(16);
+            let b = pow(2, 10);
+            let c = floor(3.7);
+            let d = ceil(3.2);
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let get = |n: &str| interp.env.get(n).unwrap();
+        assert!(matches!(get("a"), Value::Float(v) if (v - 4.0).abs() < 1e-9));
+        assert!(matches!(get("b"), Value::Float(v) if (v - 1024.0).abs() < 1e-9));
+        assert!(matches!(get("c"), Value::Float(v) if (v - 3.0).abs() < 1e-9));
+        assert!(matches!(get("d"), Value::Float(v) if (v - 4.0).abs() < 1e-9));
     }
 
     #[test]
