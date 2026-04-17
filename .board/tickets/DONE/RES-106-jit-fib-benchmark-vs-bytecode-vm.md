@@ -74,3 +74,26 @@ ticket measures it and writes it down.
 
 ## Log
 - 2026-04-17 created by manager (Phase I scope, depends on RES-105)
+- 2026-04-17 executor: created benchmarks/fib/fib_jit.rs (same
+  body as fib_vm.rs but with `return fib(25);` at top level,
+  since the JIT requires a top-level return). Updated
+  benchmarks/run.sh to build a separate `resilient-with-jit`
+  release binary (cp from `resilient` after `cargo build
+  --release --features jit`) and added the JIT row to the
+  fib bench section. Ran hyperfine with --warmup 2 --runs 5
+  on Apple M1 Max:
+    interp 406.7 ms, VM 33.7 ms, **JIT 2.8 ms**, native 2.0 ms.
+  JIT is **~12× faster than the VM**, **~145× faster than the
+  tree walker**, and only **~1.41× slower than Rust -O**. Beats
+  Lua (7.1 ms), Python (32.5 ms), Node (62.8 ms), Ruby (71.2 ms).
+  Compile time is INCLUDED in the JIT measurement (amortized
+  across ~242k recursive calls, so dominated by the calls
+  themselves, not codegen).
+  Updated benchmarks/RESULTS.md with the new fib section
+  including a paragraph explaining the JIT methodology + a
+  caveat listing what the JIT can't yet compile (reassignment,
+  while loops, closures, structs, arrays, live blocks — all
+  work in interp/VM). Added a "Performance" section to
+  README.md showing the headline table.
+  No code changes to resilient/src/* — pure benchmark and
+  documentation work. Matrix unchanged from RES-105.

@@ -13,9 +13,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 RES=resilient/target/release/resilient
+RES_JIT=resilient/target/release/resilient-with-jit
 if [[ ! -x "$RES" ]]; then
-    echo "Building release binary..."
+    echo "Building release binary (default features)..."
     (cd resilient && cargo build --release --quiet)
+fi
+# RES-106: a separate release binary with --features jit so the
+# JIT row in the bench is real native code, not the dev profile.
+# The default-features build is kept for the interp/VM rows so we
+# don't regress binary size on the non-jit path.
+if [[ ! -x "$RES_JIT" ]]; then
+    echo "Building release binary with --features jit..."
+    (cd resilient \
+        && cargo build --release --features jit --quiet \
+        && cp target/release/resilient target/release/resilient-with-jit)
 fi
 
 # Make sure native baselines are built and up-to-date.
@@ -45,6 +56,7 @@ bench() {
 bench "fib(25) — recursive Fibonacci" \
     --command-name "Resilient (interp)" "$RES benchmarks/fib/fib.rs" \
     --command-name "Resilient (VM)"     "$RES --vm benchmarks/fib/fib_vm.rs" \
+    --command-name "Resilient (JIT)"    "$RES_JIT --jit benchmarks/fib/fib_jit.rs" \
     --command-name "Python 3"           "python3 benchmarks/fib/fib.py" \
     --command-name "Node.js"            "node benchmarks/fib/fib.js" \
     --command-name "Lua"                "lua benchmarks/fib/fib.lua" \

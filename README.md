@@ -245,6 +245,26 @@ the full ledger. Each commit of the form `RES-NNN: summary` closes one ticket.
   and example programs (golden file sidecars in `resilient/examples/`)
 - Zero panic paths in the parser or lexer — every error is recoverable
 
+### Performance (RES-106)
+
+A representative workload: fib(25), 242,785 recursive calls,
+on Apple M1 Max. See `benchmarks/RESULTS.md` for the full
+table including Python/Node/Lua/Ruby and the bench scripts.
+
+| backend                  | fib(25) median | vs interp |
+|--------------------------|----------------|-----------|
+| Resilient (interp)       | 406.7 ms       | 1×        |
+| Resilient (VM, RES-082)  | 33.7 ms        | 12×       |
+| Resilient (JIT, RES-106) | **2.8 ms**     | **145×**  |
+| Rust (native -O)         | 2.0 ms         | 204×      |
+
+The Cranelift JIT (`--features jit --jit`) is **~12× faster
+than the bytecode VM** and within **~1.4×** of native Rust on
+this workload, beating Lua (7.1 ms), Python 3 (32.5 ms),
+Node.js (62.8 ms), and Ruby (71.2 ms). Compile time is
+included in the measurement (amortized across the ~242k
+calls); for one-shot arithmetic the VM is the right backend.
+
 ### What's next
 
 - G4 (full source spans with snippets / carets)
