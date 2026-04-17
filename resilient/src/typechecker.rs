@@ -71,10 +71,10 @@ fn compatible(a: &Type, b: &Type) -> bool {
 fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     match n {
         Node::BooleanLiteral { value: b, .. } => Some(*b),
-        Node::PrefixExpression { operator, right } if operator == "!" => {
+        Node::PrefixExpression { operator, right, .. } if operator == "!" => {
             fold_const_bool(right, bindings).map(|b| !b)
         }
-        Node::InfixExpression { left, operator, right } => {
+        Node::InfixExpression { left, operator, right, .. } => {
             match operator.as_str() {
                 "&&" => match (
                     fold_const_bool(left, bindings),
@@ -120,7 +120,7 @@ fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
 /// Future tickets will extend to inequality bounds, ranges, and the
 /// negative branch (else).
 fn extract_eq_assumption(cond: &Node) -> Option<(String, i64)> {
-    if let Node::InfixExpression { left, operator, right } = cond
+    if let Node::InfixExpression { left, operator, right, .. } = cond
         && operator == "=="
     {
         let no_b: HashMap<String, i64> = HashMap::new();
@@ -143,10 +143,10 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
     match n {
         Node::IntegerLiteral { value: v, .. } => Some(*v),
         Node::Identifier { name, .. } => bindings.get(name).copied(),
-        Node::PrefixExpression { operator, right } if operator == "-" => {
+        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
             fold_const_i64(right, bindings).map(|v| -v)
         }
-        Node::InfixExpression { left, operator, right } => {
+        Node::InfixExpression { left, operator, right, .. } => {
             let l = fold_const_i64(left, bindings)?;
             let r = fold_const_i64(right, bindings)?;
             match operator.as_str() {
@@ -923,7 +923,7 @@ impl TypeChecker {
             Node::StringLiteral { .. } => Ok(Type::String),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
             
-            Node::PrefixExpression { operator, right } => {
+            Node::PrefixExpression { operator, right, .. } => {
                 let right_type = self.check_node(right)?;
                 
                 match operator.as_str() {
@@ -943,7 +943,7 @@ impl TypeChecker {
                 }
             },
             
-            Node::InfixExpression { left, operator, right } => {
+            Node::InfixExpression { left, operator, right, .. } => {
                 let left_type = self.check_node(left)?;
                 let right_type = self.check_node(right)?;
 
@@ -1027,7 +1027,7 @@ impl TypeChecker {
                 }
             },
             
-            Node::CallExpression { function, arguments } => {
+            Node::CallExpression { function, arguments, .. } => {
                 let func_type = self.check_node(function)?;
 
                 // RES-061 + RES-063: if the callee is a known top-level

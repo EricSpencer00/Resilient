@@ -1,7 +1,7 @@
 ---
 id: RES-084
 title: G6 spans on core expression nodes (Prefix/Infix/Call)
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -56,3 +56,34 @@ on the three core ones. This mirrors the RES-078/079 split.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `Node::PrefixExpression`, `Node::InfixExpression`,
+    `Node::CallExpression` each gain a `span: span::Span` field
+    marked `#[allow(dead_code)]`. Field comment notes "consumed in
+    follow-ups" (typechecker arithmetic-mismatch, arity-mismatch).
+  - Parser captures a span at the moment of each expression's key
+    token: prefix captures at the `!` / `-` token, infix at the
+    operator token between lhs and rhs, call at the `(` token.
+    All three capture **before** the corresponding `next_token`,
+    matching RES-079's convention.
+  - ~21 destructure sites across `main.rs`, `typechecker.rs`,
+    `verifier_z3.rs`, `compiler.rs` updated via targeted sed to
+    add `..` where missing.
+  - verifier_z3 tests had ~12 InfixExpression constructors that
+    needed `span: crate::span::Span::default()`. Fixed via a
+    Python-driven injection pass + three manual fixes for
+    nested-inside-nested cases the script missed.
+- 2026-04-17 tests:
+  - `infix_expression_carries_operator_span`: parses `1 + 2;` and
+    asserts the InfixExpression's span has `start.line >= 1`.
+  - `prefix_and_call_expressions_carry_spans`: parses a
+    three-statement source and checks both `!true` and `f()` have
+    populated spans.
+- 2026-04-17 verification: 211 unit + 1 golden + 11 smoke = 223
+  tests default; 219 + 1 + 12 = 232 with `--features z3`. Clippy
+  clean both ways.
+- ROADMAP G6 cell updated to call out RES-084; remaining
+  secondary-expression variants (ArrayLiteral, IndexExpression,
+  IndexAssignment, FieldAccess, FieldAssignment, Match,
+  StructLiteral, FunctionLiteral, TryExpression) tracked as a
+  future follow-up ticket.

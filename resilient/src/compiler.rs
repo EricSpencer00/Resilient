@@ -367,19 +367,19 @@ fn compile_expr(
             chunk.emit(Op::LoadLocal(idx), line);
             Ok(())
         }
-        Node::PrefixExpression { operator, right } if operator == "-" => {
+        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
             compile_expr(right, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Neg, line);
             Ok(())
         }
         // RES-083: logical negation.
-        Node::PrefixExpression { operator, right } if operator == "!" => {
+        Node::PrefixExpression { operator, right, .. } if operator == "!" => {
             compile_expr(right, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Not, line);
             Ok(())
         }
         // RES-083: short-circuit && desugars to `if lhs { rhs } else { false }`.
-        Node::InfixExpression { left, operator, right } if operator == "&&" => {
+        Node::InfixExpression { left, operator, right, .. } if operator == "&&" => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_expr(right, chunk, locals, fn_index, line)?;
@@ -394,7 +394,7 @@ fn compile_expr(
             Ok(())
         }
         // RES-083: short-circuit || desugars to `if !lhs { rhs } else { true }`.
-        Node::InfixExpression { left, operator, right } if operator == "||" => {
+        Node::InfixExpression { left, operator, right, .. } if operator == "||" => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
             chunk.emit(Op::Not, line);
@@ -411,7 +411,7 @@ fn compile_expr(
             chunk.patch_jump(jmp_end, end)?;
             Ok(())
         }
-        Node::InfixExpression { left, operator, right } => {
+        Node::InfixExpression { left, operator, right, .. } => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             compile_expr(right, chunk, locals, fn_index, line)?;
             let op = match operator.as_str() {
@@ -436,7 +436,7 @@ fn compile_expr(
         // calls where the callee is a bare `Identifier` — indirect
         // call through a function value (closures, lambdas) is out
         // of scope here.
-        Node::CallExpression { function, arguments } => {
+        Node::CallExpression { function, arguments, .. } => {
             let callee_name = match function.as_ref() {
                 Node::Identifier { name: n, .. } => n.clone(),
                 _ => return Err(CompileError::Unsupported("indirect call")),

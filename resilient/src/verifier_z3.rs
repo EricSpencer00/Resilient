@@ -144,10 +144,10 @@ fn translate_bool<'c>(
 ) -> Option<Bool<'c>> {
     match node {
         Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
-        Node::PrefixExpression { operator, right } if operator == "!" => {
+        Node::PrefixExpression { operator, right, .. } if operator == "!" => {
             translate_bool(ctx, right, bindings).map(|b| b.not())
         }
-        Node::InfixExpression { left, operator, right } => match operator.as_str() {
+        Node::InfixExpression { left, operator, right, .. } => match operator.as_str() {
             "&&" => {
                 let l = translate_bool(ctx, left, bindings)?;
                 let r = translate_bool(ctx, right, bindings)?;
@@ -192,10 +192,10 @@ fn translate_int<'c>(
             Some(v) => Some(Int::from_i64(ctx, *v)),
             None => Some(Int::new_const(ctx, name.as_str())),
         },
-        Node::PrefixExpression { operator, right } if operator == "-" => {
+        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
             translate_int(ctx, right, bindings).map(|v| v.unary_minus())
         }
-        Node::InfixExpression { left, operator, right } => {
+        Node::InfixExpression { left, operator, right, .. } => {
             let l = translate_int(ctx, left, bindings)?;
             let r = translate_int(ctx, right, bindings)?;
             Some(match operator.as_str() {
@@ -223,6 +223,7 @@ mod tests {
             left: Box::new(Node::IntegerLiteral { value: 5, span: crate::span::Span::default() }),
             operator: "!=".to_string(),
             right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
     }
@@ -235,6 +236,7 @@ mod tests {
             left: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
             operator: "!=".to_string(),
             right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(false));
     }
@@ -249,9 +251,11 @@ mod tests {
                 left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: "+".to_string(),
                 right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
             }),
             operator: "==".to_string(),
             right: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
     }
@@ -272,13 +276,16 @@ mod tests {
                 left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: ">".to_string(),
                 right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
             }),
             operator: "||".to_string(),
             right: Box::new(Node::InfixExpression {
                 left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: "<=".to_string(),
                 right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
             }),
+            span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
     }
@@ -294,9 +301,11 @@ mod tests {
                 left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
                 operator: "+".to_string(),
                 right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
             }),
             operator: "==".to_string(),
             right: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         let (verdict, cert) = prove_with_certificate(&expr, &no_b);
         assert_eq!(verdict, Some(true));
@@ -318,6 +327,7 @@ mod tests {
             left: Box::new(Node::Identifier { name: "n".to_string(), span: crate::span::Span::default() }),
             operator: ">".to_string(),
             right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         let (verdict, cert) = prove_with_certificate(&expr, &bindings);
         assert_eq!(verdict, Some(true));
@@ -334,6 +344,7 @@ mod tests {
             left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
             operator: ">".to_string(),
             right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         let (_, cert) = prove_with_certificate(&expr, &no_b);
         assert!(cert.is_none(), "no proof => no cert");
@@ -348,6 +359,7 @@ mod tests {
             left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
             operator: ">".to_string(),
             right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), None);
     }

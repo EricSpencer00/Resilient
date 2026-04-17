@@ -630,15 +630,27 @@ enum Node {
     PrefixExpression {
         operator: String,
         right: Box<Node>,
+        /// RES-084: source span of the operator token. Consumed in
+        /// follow-ups (e.g. typechecker arithmetic-mismatch errors).
+        #[allow(dead_code)]
+        span: span::Span,
     },
     InfixExpression {
         left: Box<Node>,
         operator: String,
         right: Box<Node>,
+        /// RES-084: span of the operator token (NOT the full
+        /// `lhs op rhs` range — that's a future refinement).
+        #[allow(dead_code)]
+        span: span::Span,
     },
     CallExpression {
         function: Box<Node>,
         arguments: Vec<Node>,
+        /// RES-084: span of the call's `(` token. Used by future
+        /// arity-mismatch and unknown-function diagnostics.
+        #[allow(dead_code)]
+        span: span::Span,
     },
     /// RES-041: `expr?` — if the operand is `Ok(v)`, evaluate to `v`;
     /// if `Err(e)`, return `Err(e)` from the enclosing function.
@@ -1491,6 +1503,9 @@ impl Parser {
             // tightest-binding next expression.
             Token::Bang | Token::Minus => {
                 let op = if self.current_token == Token::Bang { "!" } else { "-" };
+                // RES-084: capture the operator's span before
+                // advancing past it.
+                let op_span = self.span_at_current();
                 self.next_token();
                 // Prefix precedence is higher than any infix operator
                 // so `-1 + 2` parses as `(-1) + 2`, not `-(1 + 2)`.
@@ -1498,6 +1513,7 @@ impl Parser {
                 Some(Node::PrefixExpression {
                     operator: op.to_string(),
                     right: Box::new(right),
+                    span: op_span,
                 })
             }
             Token::LeftParen => {
@@ -1589,23 +1605,30 @@ impl Parser {
         };
         
         let precedence = self.current_precedence();
+        // RES-084: capture the operator's span before advancing.
+        let op_span = self.span_at_current();
         self.next_token();
-        
+
         let right = self.parse_expression(precedence).unwrap();
-        
+
         Some(Node::InfixExpression {
             left: Box::new(left),
             operator,
             right: Box::new(right),
+            span: op_span,
         })
     }
-    
+
     fn parse_call_expression(&mut self, function: Node) -> Option<Node> {
+        // RES-084: capture the call's span (lands on the `(` token)
+        // before parsing arguments advances the lexer.
+        let call_span = self.span_at_current();
         let arguments = self.parse_call_arguments();
-        
+
         Some(Node::CallExpression {
             function: Box::new(function),
             arguments,
+            span: call_span,
         })
     }
     
@@ -2289,10 +2312,10 @@ fn format_contract_expr(node: &Node) -> String {
         Node::FloatLiteral { value, .. } => value.to_string(),
         Node::StringLiteral { value, .. } => format!("{:?}", value),
         Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::PrefixExpression { operator, right } => {
+        Node::PrefixExpression { operator, right, .. } => {
             format!("{}{}", operator, format_contract_expr(right))
         }
-        Node::InfixExpression { left, operator, right } => {
+        Node::InfixExpression { left, operator, right, .. } => {
             format!(
                 "{} {} {}",
                 format_contract_expr(left),
@@ -2300,7 +2323,7 @@ fn format_contract_expr(node: &Node) -> String {
                 format_contract_expr(right)
             )
         }
-        Node::CallExpression { function, arguments } => {
+        Node::CallExpression { function, arguments, .. } => {
             let args: Vec<String> = arguments.iter().map(format_contract_expr).collect();
             format!("{}({})", format_contract_expr(function), args.join(", "))
         }
@@ -2942,16 +2965,16 @@ impl Interpreter {
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
-            Node::PrefixExpression { operator, right } => {
+            Node::PrefixExpression { operator, right, .. } => {
                 let right_val = self.eval(right)?;
                 self.eval_prefix_expression(operator, right_val)
             },
-            Node::InfixExpression { left, operator, right } => {
+            Node::InfixExpression { left, operator, right, .. } => {
                 let left_val = self.eval(left)?;
                 let right_val = self.eval(right)?;
                 self.eval_infix_expression(operator, left_val, right_val)
             },
-            Node::CallExpression { function, arguments } => {
+            Node::CallExpression { function, arguments, .. } => {
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(func, args)
@@ -3297,7 +3320,7 @@ impl Interpreter {
     /// comparisons we re-evaluate the operands to show their values;
     /// for anything else we just show the final value.
     fn format_assert_detail(&mut self, condition: &Node, final_value: &Value) -> String {
-        if let Node::InfixExpression { left, operator, right } = condition
+        if let Node::InfixExpression { left, operator, right, .. } = condition
             && matches!(operator.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=")
             && let (Ok(lv), Ok(rv)) = (self.eval(left), self.eval(right))
         {
@@ -6126,6 +6149,41 @@ mod tests {
             "legacy shim should use <unknown> prefix, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn infix_expression_carries_operator_span() {
+        // RES-084: the operator's span lands on the InfixExpression
+        // node, NOT a default zero. `1 + 2` is a single line of
+        // source so start.line should be >= 1.
+        let (program, errors) = parse("1 + 2;");
+        assert!(errors.is_empty());
+        let Node::Program(stmts) = &program else { panic!() };
+        let Node::ExpressionStatement(expr) = &stmts[0].node else {
+            panic!("expected ExpressionStatement, got {:?}", stmts[0].node);
+        };
+        let Node::InfixExpression { operator, span, .. } = expr.as_ref() else {
+            panic!("expected InfixExpression, got {:?}", expr);
+        };
+        assert_eq!(operator, "+");
+        assert!(span.start.line >= 1, "infix span: {:?}", span);
+    }
+
+    #[test]
+    fn prefix_and_call_expressions_carry_spans() {
+        // RES-084: prefix `!x` and call `f()` both record their
+        // operator/parenthesis location.
+        let (program, _) = parse("fn f() { return 1; }\n!true;\nf();");
+        let Node::Program(stmts) = &program else { panic!() };
+        // stmt 0 is the fn decl; stmt 1 is the !true expression
+        let Node::ExpressionStatement(expr) = &stmts[1].node else { panic!() };
+        let Node::PrefixExpression { operator, span, .. } = expr.as_ref() else { panic!() };
+        assert_eq!(operator, "!");
+        assert!(span.start.line >= 1);
+        // stmt 2 is the call f()
+        let Node::ExpressionStatement(expr) = &stmts[2].node else { panic!() };
+        let Node::CallExpression { span, .. } = expr.as_ref() else { panic!() };
+        assert!(span.start.line >= 1);
     }
 
     #[test]
