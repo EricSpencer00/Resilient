@@ -1,0 +1,57 @@
+---
+id: RES-082
+title: VM fib(30) microbench vs tree walker
+state: OPEN
+priority: P2
+goalpost: G15
+created: 2026-04-17
+owner: executor
+---
+
+## Summary
+The RES-076 ticket originally promised a **3× speedup on fib(30)**
+as the sign-off measurement for the bytecode VM track. RES-083
+(control flow) unblocked fib; this ticket runs the bench and
+documents the number.
+
+If the 3× target isn't met, don't fudge — record the real ratio,
+investigate the hottest VM op with `cargo flamegraph` or similar,
+and file a follow-up for the missing perf work. Honest numbers
+beat aspirational ones.
+
+## Acceptance criteria
+- New file `benchmarks/fib/fib_vm.rs` that is VM-compatible: NO
+  `requires` clauses (contracts aren't bytecode-lowered), NO
+  `println` calls (builtins aren't a VM op yet). The top-level is
+  just `fib(25);` — the bare call's return value leaks to the stack
+  and the driver prints it.
+  - Pick the same `n` the existing `fib.rs` uses (currently 25,
+    not 30 — the ticket's "fib(30)" was aspirational, but matching
+    the existing bench keeps the comparison apples-to-apples).
+- `benchmarks/run.sh` gains a `Resilient (VM)` row in the fib bench:
+  `$RES --vm benchmarks/fib/fib_vm.rs`.
+- Run `./benchmarks/run.sh` and update `benchmarks/RESULTS.md` with
+  the new row. Add a one-paragraph note directly beneath the fib
+  table recording the VM-vs-interp ratio and a sentence on whether
+  the 3× target was met.
+- `cargo build`, `cargo test`, `cargo clippy -- -D warnings` all
+  pass (this ticket only touches benchmarks/ — no source changes).
+- Commit message: `RES-082: fib(25) microbench — VM vs tree walker`.
+
+## Notes
+- Hyperfine is already in the dev toolchain (see `run.sh`); don't
+  add a new dep.
+- The VM runs `Resilient + typecheck + compile + run`. For an
+  apples-to-apples compare we DO want that whole pipeline timed
+  (that's what users experience). So both rows run the release
+  binary end-to-end.
+- **If the VM loses to the tree walker**: ship the numbers anyway
+  and file a follow-up ticket documenting what the hot path is
+  (likely Value cloning on every LoadLocal).
+- The 3× target was a hand-wavy goal set before the VM was
+  implemented. A stack VM with Value clones on every Load may
+  realistically only get 1.5-2×. Record the real number.
+
+## Log
+- 2026-04-17 created by manager
+- 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
