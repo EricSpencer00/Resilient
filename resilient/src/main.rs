@@ -1647,7 +1647,7 @@ impl Interpreter {
     
     fn eval_assert(&mut self, condition: &Node, message: &Option<Box<Node>>) -> RResult<Value> {
         let condition_value = self.eval(condition)?;
-        
+
         if !self.is_truthy(&condition_value) {
             let error_message = if let Some(msg) = message {
                 match self.eval(msg)? {
@@ -1657,15 +1657,35 @@ impl Interpreter {
             } else {
                 "Assertion failed".to_string()
             };
-            
-            // Create a more detailed error message
-            let formatted_error = format!("ASSERTION ERROR: {}\n  - Condition evaluated to: {}", 
-                                         error_message, condition_value);
-            
-            return Err(formatted_error);
+
+            // RES-028: if the condition is a comparison, show both
+            // operand values so "fuel >= 0" doesn't just say "false" —
+            // it says "fuel = -5, 0 >= 0 — got: -5 >= 0 == false".
+            let detail = self.format_assert_detail(condition, &condition_value);
+
+            return Err(format!(
+                "ASSERTION ERROR: {}\n  - {}",
+                error_message, detail
+            ));
         }
-        
+
         Ok(Value::Void)
+    }
+
+    /// Produce the "why did this assertion fail" line. For infix
+    /// comparisons we re-evaluate the operands to show their values;
+    /// for anything else we just show the final value.
+    fn format_assert_detail(&mut self, condition: &Node, final_value: &Value) -> String {
+        if let Node::InfixExpression { left, operator, right } = condition
+            && matches!(operator.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=")
+            && let (Ok(lv), Ok(rv)) = (self.eval(left), self.eval(right))
+        {
+            return format!(
+                "condition {} {} {} was {}",
+                lv, operator, rv, final_value
+            );
+        }
+        format!("Condition evaluated to: {}", final_value)
     }
     
     fn eval_prefix_expression(&mut self, operator: &str, right: Value) -> RResult<Value> {
@@ -2444,6 +2464,25 @@ mod tests {
             tokens.iter().any(|t| matches!(t, Token::FloatLiteral(f) if *f == 1.5)),
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
+        );
+    }
+
+    #[test]
+    fn assert_shows_both_operands() {
+        // RES-028: when an infix comparison assert fails, both sides
+        // appear in the error so the user can see the actual values.
+        let src = r#"
+            let fuel = -5;
+            assert(fuel >= 0, "Fuel must be non-negative");
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("Fuel must be non-negative"), "msg lost: {}", err);
+        assert!(
+            err.contains("-5 >= 0") || err.contains("condition -5 >= 0"),
+            "expected both operands in error, got: {}",
+            err
         );
     }
 
