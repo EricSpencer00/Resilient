@@ -195,6 +195,12 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::StaticLet { name, value } => {
+                let value_type = self.check_node(value)?;
+                self.env.set(name.clone(), value_type);
+                Ok(Type::Void)
+            },
+
             Node::Assignment { value, .. } => {
                 // Assignment is allowed at runtime; static type check
                 // just ensures the RHS type-checks. Per-name existence

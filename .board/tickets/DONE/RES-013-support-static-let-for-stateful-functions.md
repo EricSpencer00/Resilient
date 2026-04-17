@@ -1,7 +1,7 @@
 ---
 id: RES-013
 title: Support `static let` for stateful functions
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G7
 created: 2026-04-16

@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
 use std::io::Write;
 use std::path::Path;
+use std::rc::Rc;
 
 // Import modules
 mod typechecker;
@@ -24,6 +26,7 @@ enum Token {
     If,
     Else,
     Return,
+    Static,
     
     // Literals
     Identifier(String),
@@ -205,6 +208,7 @@ impl Lexer {
                         "if" => Token::If,
                         "else" => Token::Else,
                         "return" => Token::Return,
+                        "static" => Token::Static,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -321,8 +325,16 @@ enum Node {
         name: String,
         value: Box<Node>,
     },
+    /// RES-013: `static let NAME = EXPR;` — like let, but stored in a
+    /// per-interpreter statics map so the binding survives across
+    /// function calls. First evaluation sets the value; subsequent
+    /// evaluations are no-ops.
+    StaticLet {
+        name: String,
+        value: Box<Node>,
+    },
     /// RES-017: re-bind an existing variable. Fails at runtime if the
-    /// name has not been declared with `let` (or, later, declared static).
+    /// name has not been declared with `let` or `static let`.
     Assignment {
         name: String,
         value: Box<Node>,
@@ -426,6 +438,7 @@ impl Parser {
         match self.current_token {
             Token::Function => Some(self.parse_function()),
             Token::Let => Some(self.parse_let_statement()),
+            Token::Static => Some(self.parse_static_let_statement()),
             Token::Return => Some(self.parse_return_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
@@ -600,6 +613,28 @@ impl Parser {
         Node::Block(statements)
     }
     
+    /// `static let NAME = EXPR;` — parsed into a StaticLet node. The
+    /// implementation just reuses parse_let_statement after consuming
+    /// the `static` keyword and enforcing that `let` follows.
+    fn parse_static_let_statement(&mut self) -> Node {
+        self.next_token(); // Skip 'static'
+        if self.current_token != Token::Let {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected 'let' after 'static', found {:?}", tok));
+            return Node::StaticLet {
+                name: String::new(),
+                value: Box::new(Node::IntegerLiteral(0)),
+            };
+        }
+        // Delegate to parse_let_statement and re-wrap. parse_let_statement
+        // returns a Node::LetStatement.
+        let inner = self.parse_let_statement();
+        match inner {
+            Node::LetStatement { name, value } => Node::StaticLet { name, value },
+            other => other, // error paths return a degenerate LetStatement
+        }
+    }
+
     fn parse_let_statement(&mut self) -> Node {
         self.next_token(); // Skip 'let'
 
@@ -1134,13 +1169,21 @@ fn builtin_println(args: &[Value]) -> RResult<Value> {
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
+    /// RES-013: static-let bindings. Shared across every sub-interpreter
+    /// created for function calls so the values survive across invocations.
+    /// Keyed by the static's identifier (caveat: two functions using the
+    /// same static name currently share — good enough for MVP).
+    statics: Rc<RefCell<HashMap<String, Value>>>,
 }
 
 impl Interpreter {
     fn new() -> Self {
         let mut env = Environment::new();
         register_builtins(&mut env);
-        Interpreter { env }
+        Interpreter {
+            env,
+            statics: Rc::new(RefCell::new(HashMap::new())),
+        }
     }
     
     fn eval(&mut self, node: &Node) -> RResult<Value> {
@@ -1163,17 +1206,26 @@ impl Interpreter {
                 self.env.set(name.clone(), val);
                 Ok(Value::Void)
             },
-            Node::Assignment { name, value } => {
-                // Must target an already-declared name. Walk the env
-                // chain and update where it was first defined.
-                let val = self.eval(value)?;
-                if !self.env.reassign(name, val.clone()) {
-                    return Err(format!(
-                        "Cannot assign to undeclared variable '{}'",
-                        name
-                    ));
+            Node::StaticLet { name, value } => {
+                // Initialize only once. Subsequent executions of the
+                // same declaration are no-ops (the value persists in
+                // self.statics across function calls).
+                if !self.statics.borrow().contains_key(name) {
+                    let val = self.eval(value)?;
+                    self.statics.borrow_mut().insert(name.clone(), val);
                 }
                 Ok(Value::Void)
+            },
+            Node::Assignment { name, value } => {
+                let val = self.eval(value)?;
+                if self.env.reassign(name, val.clone()) {
+                    Ok(Value::Void)
+                } else if self.statics.borrow().contains_key(name) {
+                    self.statics.borrow_mut().insert(name.clone(), val);
+                    Ok(Value::Void)
+                } else {
+                    Err(format!("Cannot assign to undeclared variable '{}'", name))
+                }
             },
             Node::ReturnStatement { value } => {
                 let val = match value {
@@ -1194,9 +1246,12 @@ impl Interpreter {
             },
             Node::ExpressionStatement(expr) => self.eval(expr),
             Node::Identifier(name) => {
-                match self.env.get(name) {
-                    Some(value) => Ok(value),
-                    None => Err(format!("Identifier not found: {}", name)),
+                if let Some(value) = self.env.get(name) {
+                    Ok(value)
+                } else if let Some(value) = self.statics.borrow().get(name).cloned() {
+                    Ok(value)
+                } else {
+                    Err(format!("Identifier not found: {}", name))
                 }
             },
             Node::IntegerLiteral(value) => Ok(Value::Int(*value)),
@@ -1463,7 +1518,10 @@ impl Interpreter {
                     }
                 }
 
-                let mut interpreter = Interpreter { env: extended_env };
+                let mut interpreter = Interpreter {
+                    env: extended_env,
+                    statics: self.statics.clone(),
+                };
                 let result = interpreter.eval(&body)?;
 
                 if let Value::Return(value) = result {
@@ -2069,6 +2127,32 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn static_let_persists_across_calls() {
+        // RES-013: counter survives across calls. Three calls → 1, 2, 3.
+        let src = r#"
+            fn tick() {
+                static let n = 0;
+                n = n + 1;
+                return n;
+            }
+            let a = tick();
+            let b = tick();
+            let c = tick();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let extract = |name: &str| match interp.env.get(name).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int for {}, got {:?}", name, other),
+        };
+        assert_eq!(extract("a"), 1);
+        assert_eq!(extract("b"), 2);
+        assert_eq!(extract("c"), 3);
     }
 
     #[test]
