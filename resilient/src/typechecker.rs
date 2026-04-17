@@ -195,6 +195,12 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            Node::WhileStatement { condition, body } => {
+                let _ = self.check_node(condition)?;
+                let _ = self.check_node(body)?;
+                Ok(Type::Void)
+            },
+
             Node::StaticLet { name, value } => {
                 let value_type = self.check_node(value)?;
                 self.env.set(name.clone(), value_type);

@@ -27,6 +27,7 @@ enum Token {
     Else,
     Return,
     Static,
+    While,
     
     // Literals
     Identifier(String),
@@ -227,6 +228,7 @@ impl Lexer {
                         "else" => Token::Else,
                         "return" => Token::Return,
                         "static" => Token::Static,
+                        "while" => Token::While,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -366,6 +368,11 @@ enum Node {
         consequence: Box<Node>,
         alternative: Option<Box<Node>>,
     },
+    /// RES-023: `while COND { BODY }`. Body re-evaluated until COND is falsy.
+    WhileStatement {
+        condition: Box<Node>,
+        body: Box<Node>,
+    },
     ExpressionStatement(Box<Node>),
     Identifier(String),
     IntegerLiteral(i64),
@@ -461,6 +468,7 @@ impl Parser {
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
             Token::If => Some(self.parse_if_statement()),
+            Token::While => Some(self.parse_while_statement()),
             Token::Unknown(ch) => {
                 self.record_error(format!("Unexpected character '{}'", ch));
                 None
@@ -634,6 +642,44 @@ impl Parser {
     /// `static let NAME = EXPR;` — parsed into a StaticLet node. The
     /// implementation just reuses parse_let_statement after consuming
     /// the `static` keyword and enforcing that `let` follows.
+    /// `while COND { BODY }` — same parsing shape as `if` (both `while (c)`
+    /// and `while c` forms), minus the `else` branch.
+    fn parse_while_statement(&mut self) -> Node {
+        self.next_token(); // Skip 'while'
+
+        let condition = if self.current_token == Token::LeftParen {
+            self.next_token();
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            self.next_token();
+            if self.current_token != Token::RightParen {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected ')' after while condition, found {:?}", tok));
+            } else {
+                self.next_token();
+            }
+            expr
+        } else {
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral(false));
+            self.next_token();
+            expr
+        };
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after while condition, found {:?}", tok));
+            return Node::WhileStatement {
+                condition: Box::new(condition),
+                body: Box::new(Node::Block(Vec::new())),
+            };
+        }
+
+        let body = self.parse_block_statement();
+        Node::WhileStatement {
+            condition: Box::new(condition),
+            body: Box::new(body),
+        }
+    }
+
     fn parse_static_let_statement(&mut self) -> Node {
         self.next_token(); // Skip 'static'
         if self.current_token != Token::Let {
@@ -1389,6 +1435,30 @@ impl Interpreter {
                     None => Value::Void,
                 };
                 Ok(Value::Return(Box::new(val)))
+            },
+            Node::WhileStatement { condition, body } => {
+                // Cap iterations as a safety net so a buggy loop can't
+                // freeze the interpreter. 1M is big enough for
+                // realistic work and small enough to catch runaways.
+                const MAX_ITERS: usize = 1_000_000;
+                let mut iters = 0usize;
+                loop {
+                    iters += 1;
+                    if iters > MAX_ITERS {
+                        return Err(format!(
+                            "while loop exceeded {MAX_ITERS} iterations (runaway?)"
+                        ));
+                    }
+                    let cond_val = self.eval(condition)?;
+                    if !self.is_truthy(&cond_val) {
+                        break;
+                    }
+                    let result = self.eval(body)?;
+                    if let Value::Return(_) = result {
+                        return Ok(result);
+                    }
+                }
+                Ok(Value::Void)
             },
             Node::IfStatement { condition, consequence, alternative } => {
                 let condition_value = self.eval(condition)?;
@@ -2307,6 +2377,35 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn while_loop_counts_to_ten() {
+        let src = r#"
+            let i = 0;
+            let sum = 0;
+            while i < 10 {
+                sum = sum + i;
+                i = i + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("sum").unwrap() {
+            Value::Int(n) => assert_eq!(n, 45), // 0+1+..+9
+            other => panic!("expected Int(45), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn while_loop_runaway_is_capped() {
+        // A tight `while true` should error out rather than hang.
+        let (p, _e) = parse("let x = 0; while true { x = x + 1; }");
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("runaway"), "{}", err);
     }
 
     #[test]
