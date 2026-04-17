@@ -72,6 +72,15 @@ struct Lexer {
     position: usize,
     read_position: usize,
     ch: char,
+    /// 1-indexed current line, advanced each time we consume a '\n'.
+    line: usize,
+    /// 1-indexed column at the current `ch`.
+    column: usize,
+    /// Line/column snapshotted at the START of the most recently
+    /// emitted token — so external code can ask "where did this
+    /// token begin?".
+    last_token_line: usize,
+    last_token_column: usize,
 }
 
 impl Lexer {
@@ -81,12 +90,22 @@ impl Lexer {
             position: 0,
             read_position: 0,
             ch: '\0',
+            line: 1,
+            column: 0,
+            last_token_line: 1,
+            last_token_column: 1,
         };
         lexer.read_char();
         lexer
     }
-    
+
     fn read_char(&mut self) {
+        if self.ch == '\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
         if self.read_position >= self.input.len() {
             self.ch = '\0';
         } else {
@@ -106,6 +125,10 @@ impl Lexer {
     
     fn next_token(&mut self) -> Token {
         self.skip_whitespace();
+        // Capture where this token STARTS so `Parser` can attribute
+        // errors to the correct file:line:col.
+        self.last_token_line = self.line;
+        self.last_token_column = self.column;
         
         let token = match self.ch {
             '=' => {
@@ -333,6 +356,12 @@ struct Parser {
     lexer: Lexer,
     current_token: Token,
     peek_token: Token,
+    /// Source position (line, column) of `current_token`. 1-indexed.
+    current_line: usize,
+    current_column: usize,
+    /// Source position of `peek_token`.
+    peek_line: usize,
+    peek_column: usize,
     errors: Vec<String>,
 }
 
@@ -342,6 +371,10 @@ impl Parser {
             lexer,
             current_token: Token::Eof,
             peek_token: Token::Eof,
+            current_line: 1,
+            current_column: 1,
+            peek_line: 1,
+            peek_column: 1,
             errors: Vec::new(),
         };
 
@@ -350,14 +383,24 @@ impl Parser {
         parser
     }
 
+    /// Record an error, prefixing with the start of `current_token`
+    /// so users see `line:col: Parser error: ...`.
     fn record_error(&mut self, msg: String) {
-        eprintln!("\x1B[31mParser error: {}\x1B[0m", msg);
-        self.errors.push(msg);
+        let full = format!(
+            "{}:{}: {}",
+            self.current_line, self.current_column, msg
+        );
+        eprintln!("\x1B[31mParser error: {}\x1B[0m", full);
+        self.errors.push(full);
     }
-    
+
     fn next_token(&mut self) {
         self.current_token = self.peek_token.clone();
+        self.current_line = self.peek_line;
+        self.current_column = self.peek_column;
         self.peek_token = self.lexer.next_token();
+        self.peek_line = self.lexer.last_token_line;
+        self.peek_column = self.lexer.last_token_column;
     }
     
     fn parse_program(&mut self) -> Node {
@@ -1972,6 +2015,33 @@ mod tests {
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
+    }
+
+    #[test]
+    fn error_message_includes_line_and_column() {
+        // RES-005: errors carry `line:col:` prefix from the Lexer.
+        let src = "fn main() {\n    let = 1;\n}";
+        let (_p, errors) = parse(src);
+        assert!(!errors.is_empty(), "expected an error for missing ident");
+        // The missing identifier is on line 2.
+        let first = &errors[0];
+        assert!(
+            first.starts_with("2:"),
+            "expected error prefixed with '2:', got: {}",
+            first
+        );
+    }
+
+    #[test]
+    fn lexer_tracks_line_across_newlines() {
+        let mut lex = Lexer::new("let x = 1;\nlet y = 2;".to_string());
+        let _ = lex.next_token(); // let (line 1)
+        let _ = lex.next_token(); // x
+        let _ = lex.next_token(); // =
+        let _ = lex.next_token(); // 1
+        let _ = lex.next_token(); // ;
+        let _ = lex.next_token(); // let (line 2)
+        assert_eq!(lex.last_token_line, 2, "second `let` should be on line 2");
     }
 
     #[test]

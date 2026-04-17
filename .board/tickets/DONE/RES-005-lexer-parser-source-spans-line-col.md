@@ -1,7 +1,7 @@
 ---
 id: RES-005
 title: Lexer and parser track source spans (line, column)
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G4
 created: 2026-04-16
