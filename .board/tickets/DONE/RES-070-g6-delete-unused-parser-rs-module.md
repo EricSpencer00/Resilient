@@ -1,7 +1,7 @@
 ---
 id: RES-070
 title: G6 delete unused parser.rs module
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G6
 created: 2026-04-17
@@ -40,3 +40,17 @@ absorbed into the surviving parser.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager
+- 2026-04-17 executor landed: `git rm resilient/src/parser.rs` (817
+  lines) and `mod parser;` removed from `main.rs`. Pre-flight grep
+  confirmed zero call sites referenced the module (it had been opening
+  with `#![allow(dead_code)]` since inception). Nothing was preserved
+  from the deleted file — the in-tree parser in `main.rs` is strictly
+  more capable; the parallel `Node` type and `ParseError` shape in
+  parser.rs were both inferior to what we already use. RES-069's Span
+  foundation made the `ParseError { line, column }` idea redundant
+  too. Build, test, and clippy clean both with and without
+  `--features z3` (152 / 161 tests respectively).
+- 2026-04-17 G6 status: still partial. RES-069's AST-side migration
+  (Spans on every `Node` variant + at least one diagnostic path
+  rewritten) remains. When that lands, the manager should flip G6 to
+  ✅ in ROADMAP.md.

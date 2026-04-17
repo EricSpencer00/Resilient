@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 // Import modules
 mod typechecker;
-mod parser;
 mod repl;
 mod span;
 mod imports;
