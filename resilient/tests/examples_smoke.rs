@@ -113,6 +113,39 @@ fn emit_certificate_writes_reverifiable_smt2() {
 }
 
 #[test]
+fn typecheck_error_prefixes_path_and_line() {
+    // RES-080: --typecheck on a file with a type error on line 3
+    // must produce stderr containing `<tempfile>:3:` prefix so users
+    // can navigate straight to the offending statement.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_080_smoke_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "let a = 1;").unwrap();
+        writeln!(f, "let b = 2;").unwrap();
+        writeln!(f, "let bad: int = \"not an int\";").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--typecheck")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let path_str = tmp.to_string_lossy();
+    // The :3: line marker must appear AND the file name must be present.
+    assert!(
+        stderr.contains(":3:"),
+        "expected `:3:` line marker in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(path_str.as_ref()),
+        "expected source path '{path_str}' in stderr; got:\n{stderr}"
+    );
+    assert_ne!(output.status.code(), Some(0), "type-check failure must exit non-zero");
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn imports_demo_resolves_use_clause() {
     // RES-073: `use "helpers.rs";` in main.rs pulls in square() and
     // shout() so the program can call them as if they were declared

@@ -421,6 +421,24 @@ impl TypeChecker {
     }
     
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
+        // Backwards-compatible thin shim: callers that don't have a
+        // source path (REPL, unit tests) keep the original signature.
+        // RES-080 added `check_program_with_source` for the driver.
+        self.check_program_with_source(program, "<unknown>")
+    }
+
+    /// RES-080: like `check_program`, but errors thrown by per-statement
+    /// type checking are prefixed with `<source_path>:<line>:<col>: `
+    /// (using the statement's `Spanned` start position from RES-077).
+    /// The driver uses this entry point so `--typecheck` diagnostics
+    /// point users at the right line. Sub-expression errors still
+    /// surface at the granularity of their containing top-level
+    /// statement until RES-078 / RES-079 land per-expression spans.
+    pub fn check_program_with_source(
+        &mut self,
+        program: &Node,
+        source_path: &str,
+    ) -> Result<Type, String> {
         match program {
             Node::Program(statements) => {
                 // RES-061: pre-pass to register every top-level Function
@@ -451,7 +469,23 @@ impl TypeChecker {
 
                 let mut result_type = Type::Void;
                 for stmt in statements {
-                    result_type = self.check_node(&stmt.node)?;
+                    result_type = self.check_node(&stmt.node).map_err(|e| {
+                        // RES-080: prepend file:line:col so users can
+                        // locate the offending statement. Skip the
+                        // prefix when the span looks default/empty
+                        // (line 0 means "synthetic" — see span.rs).
+                        if stmt.span.start.line == 0 {
+                            e
+                        } else {
+                            format!(
+                                "{}:{}:{}: {}",
+                                source_path,
+                                stmt.span.start.line,
+                                stmt.span.start.column,
+                                e
+                            )
+                        }
+                    })?;
                 }
                 Ok(result_type)
             }

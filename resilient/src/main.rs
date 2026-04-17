@@ -3729,7 +3729,9 @@ fn execute_file(
     if want_typecheck {
         println!("Running type checker...");
         let mut tc = typechecker::TypeChecker::new();
-        match tc.check_program(&program) {
+        // RES-080: pass the source filename so per-statement errors
+        // are prefixed with `<file>:<line>:<col>:`.
+        match tc.check_program_with_source(&program, filename) {
             Ok(_) => println!("\x1B[32mType check passed\x1B[0m"),
             Err(e) => {
                 eprintln!("\x1B[31mType error: {}\x1B[0m", e);
@@ -5978,6 +5980,49 @@ mod tests {
     }
 
     // ---------- RES-077: Program statements carry Span ----------
+
+    #[test]
+    fn typecheck_error_includes_file_line_col_prefix() {
+        // RES-080: when the offending top-level statement is on line 2,
+        // the error string should be prefixed with `<file>:2:<col>:`.
+        // Use the existing typecheck rule that rejects mismatched
+        // type annotations (`let x: int = "hi";` triggers it).
+        let src = "let ok = 1;\nlet bad: int = \"hi\";";
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty(), "parse errors: {:?}", errors);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "scratch.rs")
+            .expect_err("type checker must reject the second statement");
+        assert!(
+            err.starts_with("scratch.rs:2:"),
+            "expected file:line prefix, got: {}",
+            err
+        );
+        // The original message must still be present after the prefix.
+        assert!(
+            err.contains("let bad: int") || err.contains("string"),
+            "expected original type-error wording in: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn check_program_legacy_shim_uses_unknown_source() {
+        // RES-080 backward-compat: callers that haven't migrated to
+        // check_program_with_source still get a helpful message —
+        // just prefixed with `<unknown>` instead of a real path.
+        let src = "let bad: int = \"hi\";";
+        let (program, _errors) = parse(src);
+        let err = typechecker::TypeChecker::new()
+            .check_program(&program)
+            .unwrap_err();
+        assert!(
+            err.starts_with("<unknown>:1:"),
+            "legacy shim should use <unknown> prefix, got: {}",
+            err
+        );
+    }
 
     #[test]
     fn program_statements_carry_non_default_spans() {
