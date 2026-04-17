@@ -44,24 +44,28 @@ Shipped: RES-017..037 (everything except G6/G7/G9 bricks).
 
 ---
 
-## Phase 2 — Structured data & error handling (35% → 50%)  🟡 NEXT
+## Phase 2 — Structured data & error handling (35% → 50%)  🟡 IN PROGRESS
 
 **Goal**: programs can express real domain logic, not just numeric
 scripts. This is the single most requested class of features by
 realistic example programs.
 
-| Ticket (future) | Adds |
-|---|---|
-| RES-038 | **Structs / records** — user-defined product types, field access `.`, closes G12 |
-| RES-039 | **`match` expressions** with literal + identifier + wildcard patterns, closes G13 |
-| RES-040 | **`Result<T, E>` type** — explicit failure handling, no more silent interpreter errors |
-| RES-041 | **`?` propagation operator** on `Result` |
-| RES-042 | **Closures** — `fn(x) -> x + n` with proper lexical scope (needs Environment refactor to `Rc<RefCell<...>>`) |
-| RES-043 | **String builtins** — `split`, `join`, `trim`, `contains`, `substring` |
+| Ticket | Adds | Status |
+|---|---|---|
+| RES-038 | **Structs / records** — user-defined product types, field access `.`, closes G12 | ✅ |
+| RES-039 | **`match` expressions** with literal + identifier + wildcard patterns, closes G13 at MVP | ✅ |
+| RES-043 | **String builtins** — split, trim, contains, to_upper, to_lower | ✅ |
+| RES-040 | **`Result<T, E>` type** — explicit failure handling, no more silent interpreter errors | ⏳ |
+| RES-041 | **`?` propagation operator** on `Result` | ⏳ |
+| RES-042 | **Closures** — `fn(x) -> x + n` with proper lexical scope (needs Environment refactor to `Rc<RefCell<...>>`) | ⏳ |
 
 **Definition of done for Phase 2**: the four broken examples (`self_healing`,
 `self_healing2`, `sensor_example`, `sensor_example2`) run end-to-end
 with green golden-file tests.
+
+**Progress**: 3/6 tickets landed. The data-side of Phase 2 is complete
+(arrays + structs + match). Remaining: error handling (Result/?) and
+closures.
 
 ---
 
