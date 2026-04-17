@@ -176,6 +176,52 @@ fn bytecode_vm_runs_fn_call() {
 }
 
 #[test]
+fn vm_runtime_error_includes_source_filename() {
+    // RES-095: the driver's --vm error path should prefix with
+    // <file>:<line>: so editors auto-link the location, matching
+    // the typechecker's RES-080 format.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_095_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        // Line 1: fn opener; line 2: divide-by-zero; line 3: return; etc.
+        writeln!(f, "fn boom(int n) {{").unwrap();
+        writeln!(f, "    let r = 100 / n;").unwrap();
+        writeln!(f, "    return r;").unwrap();
+        writeln!(f, "}}").unwrap();
+        writeln!(f, "boom(0);").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let path_str = tmp.to_string_lossy();
+    assert!(
+        stderr.contains(path_str.as_ref()),
+        "expected source path '{path_str}' in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(":2:"),
+        "expected `:2:` line marker (the divide line) in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("divide by zero"),
+        "expected divide-by-zero text; got:\n{stderr}"
+    );
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "VM runtime error must exit non-zero"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn bytecode_vm_runs_recursive_fib() {
     // RES-083: with control flow landed, fib becomes runnable under
     // --vm. This is the capstone smoke test that exercises Call +

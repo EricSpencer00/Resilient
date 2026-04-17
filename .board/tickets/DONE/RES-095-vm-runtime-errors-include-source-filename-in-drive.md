@@ -1,7 +1,7 @@
 ---
 id: RES-095
 title: VM runtime errors include source filename in driver output
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -52,3 +52,29 @@ want the line-suffix form.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager (orchestrator pass)
+- 2026-04-17 executor landed:
+  - `execute_file` in `main.rs` (the VM branch) inspects the
+    returned `VmError`. If it's `AtLine { line, kind }`, formats
+    as `<filename>:<line>: <kind>` (matching the typechecker's
+    RES-080 prefix shape). Otherwise falls back to the existing
+    `VM runtime error: <message>` form.
+  - `vm::VmError`'s own `Display` impl unchanged — other callers
+    (vm tests, future LSP integration) still see the
+    `<inner> (line N)` form when they want it.
+- 2026-04-17 tests:
+  - New `vm_runtime_error_includes_source_filename` smoke test in
+    `tests/examples_smoke.rs`. Writes a 5-line temp file with a
+    divide-by-zero on line 2, runs `--vm`, asserts stderr
+    contains the temp path AND `:2:` AND `divide by zero`, and
+    that the binary exits non-zero.
+- 2026-04-17 manual: `cargo run --vm /tmp/r95.rs` on a
+  divide-by-zero source prints `Error: /tmp/r95.rs:2: vm: divide
+  by zero` — editor-clickable.
+- 2026-04-17 verification across three feature configs:
+  - default: 217 unit + 1 golden + 12 smoke = 230 tests
+  - `--features z3`: 225 + 1 + 13 = 239 tests
+  - `--features lsp`: 221 + 1 + 12 + 3 lsp_smoke = 237 tests
+  All three `cargo clippy -- -D warnings` clean.
+- Diagnostic surface is now uniform across parser, typechecker,
+  and VM runtime: all three produce `<file>:<line>:` prefixed
+  errors that editors auto-link.

@@ -3987,7 +3987,17 @@ fn execute_file(
         // non-Void results).
         let prog = compiler::compile(&program)
             .map_err(|e| format!("VM compile error: {}", e))?;
-        let result = vm::run(&prog).map_err(|e| format!("VM runtime error: {}", e))?;
+        let result = vm::run(&prog).map_err(|e| {
+            // RES-095: mirror the typechecker's `<file>:<line>:` shape
+            // so VM runtime errors are editor-clickable when the
+            // wrapper carries a source line. Other variants fall back
+            // to the bare Display form.
+            if let vm::VmError::AtLine { line, kind } = &e {
+                format!("{}:{}: {}", filename, line, kind)
+            } else {
+                format!("VM runtime error: {}", e)
+            }
+        })?;
         if !matches!(result, Value::Void) {
             println!("{}", result);
         }
