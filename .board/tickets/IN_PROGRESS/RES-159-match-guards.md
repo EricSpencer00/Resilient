@@ -1,7 +1,7 @@
 ---
 id: RES-159
 title: Match arm guards `case X(n) if n > 0 => ...`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G13
 created: 2026-04-17
@@ -35,3 +35,4 @@ pattern.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
