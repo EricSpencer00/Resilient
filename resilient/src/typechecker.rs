@@ -451,6 +451,12 @@ impl TypeChecker {
             return_type: Box::new(Type::Float),
         });
 
+        // RES-147: monotonic ms-clock builtin. std-only.
+        env.set("clock_ms".to_string(), Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Int),
+        });
+
         // len: any -> int
         env.set(
             "len".to_string(),

@@ -3399,6 +3399,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("ln", builtin_ln),
     ("log", builtin_log),
     ("exp", builtin_exp),
+    // RES-147: monotonic ms clock, std-only.
+    ("clock_ms", builtin_clock_ms),
     ("len", builtin_len),
     ("push", builtin_push),
     ("pop", builtin_pop),
@@ -3733,6 +3735,45 @@ fn builtin_exp(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!("exp: expected 1 argument, got {}", args.len())),
     }
+}
+
+/// RES-147: process-lifetime monotonic epoch. Lazily captured on
+/// the first `clock_ms()` call via `OnceLock` — subsequent calls
+/// pay only the atomic-load cost plus an `Instant::now()` sample.
+/// The epoch is deliberately unspecified and unobservable except
+/// through `clock_ms()`: users get deltas, not absolute times.
+static CLOCK_EPOCH: std::sync::OnceLock<std::time::Instant> =
+    std::sync::OnceLock::new();
+
+/// RES-147: `clock_ms() -> Int` — milliseconds since a per-process
+/// monotonic epoch. Monotonic: `clock_ms()` observed twice in a
+/// program never returns a decreasing pair (Rust's
+/// `Instant::duration_since` is saturating, and the epoch is frozen
+/// at first-call time).
+///
+/// Returns `Int` (i64). `u128::as_millis` is clamped to `i64::MAX`
+/// on the astronomical chance a process runs for ~290 million
+/// years, rather than truncating silently.
+///
+/// std-only: the no_std runtime has no stdlib clock; an
+/// `embedded-time` wiring follows in a separate G16 ticket.
+fn builtin_clock_ms(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "clock_ms: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+    let ms = std::time::Instant::now().duration_since(*epoch).as_millis();
+    // `as_millis` returns u128; clamp to i64::MAX on overflow so
+    // long-running processes don't wrap or panic.
+    let clamped: i64 = if ms > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        ms as i64
+    };
+    Ok(Value::Int(clamped))
 }
 
 /// `Ok(v)` — wrap a success value as a Result.
@@ -6754,6 +6795,63 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-147: clock_ms() monotonic builtin ---
+
+    /// Extract a `Value::Int` or panic with context.
+    fn as_int(v: Value) -> i64 {
+        match v {
+            Value::Int(i) => i,
+            other => panic!("expected Value::Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clock_ms_advances_after_sleep() {
+        // Per the ticket: sleep 10ms, assert difference is ≥ 9ms
+        // and ≤ 50ms. The upper bound is generous so a slow CI
+        // scheduler doesn't flake; the lower bound is slightly
+        // below the 10ms sleep because std::thread::sleep is only
+        // a lower bound and some platforms round to sub-ms timer
+        // ticks.
+        let t0 = as_int(builtin_clock_ms(&[]).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let t1 = as_int(builtin_clock_ms(&[]).unwrap());
+        let delta = t1 - t0;
+        assert!(
+            (9..=50).contains(&delta),
+            "expected 9 <= delta <= 50, got {} (t0={}, t1={})",
+            delta,
+            t0,
+            t1
+        );
+    }
+
+    #[test]
+    fn clock_ms_never_goes_backwards() {
+        // Monotonicity invariant: ten rapid calls must produce a
+        // non-decreasing sequence. `Instant` is monotonic on all
+        // supported platforms, but the test documents the
+        // contract at the builtin level so a future refactor can't
+        // silently regress.
+        let mut prev = as_int(builtin_clock_ms(&[]).unwrap());
+        for _ in 0..10 {
+            let cur = as_int(builtin_clock_ms(&[]).unwrap());
+            assert!(
+                cur >= prev,
+                "clock_ms regressed: {} -> {}",
+                prev,
+                cur
+            );
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn clock_ms_rejects_arguments() {
+        let err = builtin_clock_ms(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected 0 arguments"), "err was: {}", err);
     }
 
     // --- RES-146: trig / log / exp builtins ---
