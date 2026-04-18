@@ -4647,6 +4647,44 @@ fn format_interpreter_error(filename: &str, err: &str) -> String {
     }
 }
 
+/// RES-112: scan `src` through the default routing (hand-rolled or
+/// logos lexer, whichever the build has) and print one token per
+/// line on stdout in the format
+/// `<line>:<col>  <Kind>("<lexeme>")`, with the lexeme extracted
+/// from the source using the token's span. Terminates at `Eof`.
+///
+/// The emitted format is driven by the token's `Debug` impl for
+/// variant naming, so adding a new `Token` variant automatically
+/// shows up here without a matching change.
+fn dump_tokens_to_stdout(src: &str) {
+    // Pre-index the source as chars so we can slice by the lexer's
+    // char-offset `Span::{start.offset, end.offset}` regardless of
+    // UTF-8 boundaries.
+    let chars: Vec<char> = src.chars().collect();
+    let mut lex = Lexer::new(src.to_string());
+    loop {
+        let (tok, span) = lex.next_token_with_span();
+        let is_eof = matches!(tok, Token::Eof);
+        let lexeme: String = if span.end.offset > span.start.offset
+            && span.end.offset <= chars.len()
+        {
+            chars[span.start.offset..span.end.offset].iter().collect()
+        } else {
+            String::new()
+        };
+        // Escape newlines / quotes in the lexeme so block comments
+        // and multi-line string literals stay readable.
+        let lexeme = lexeme.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        println!(
+            "{}:{}  {:?}(\"{}\")",
+            span.start.line, span.start.column, tok, lexeme
+        );
+        if is_eof {
+            break;
+        }
+    }
+}
+
 /// RES-073: shared parse helper. Returns the parsed program plus any
 /// parser error strings collected along the way. Used by both the
 /// driver and `imports::expand_uses`.
@@ -4863,6 +4901,9 @@ fn main() {
     let mut use_vm = false;
     let mut use_jit = false;
     let mut lsp_mode = false;
+    // RES-112: --dump-tokens prints the lexer output and exits, so
+    // lexer regressions are inspectable without editing source.
+    let mut dump_tokens = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -4897,6 +4938,12 @@ fn main() {
                 // functional when built with `--features lsp`; the
                 // non-feature path prints a helpful message and exits.
                 lsp_mode = true;
+            } else if arg == "--dump-tokens" {
+                // RES-112: print the lexer's token stream and exit.
+                // Accepts both the hand-rolled scanner (default) and
+                // the logos-lexer feature path — both go through
+                // `Lexer::new` + `next_token_with_span`.
+                dump_tokens = true;
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -4912,6 +4959,38 @@ fn main() {
                 filename = arg;
             }
             i += 1;
+        }
+
+        // RES-112: --dump-tokens is mutually exclusive with --lsp
+        // (both are terminal modes that don't want a file arg the
+        // other way). Emit a clean error if the user combined them.
+        if dump_tokens && lsp_mode {
+            eprintln!("Error: --dump-tokens and --lsp are mutually exclusive");
+            std::process::exit(2);
+        }
+
+        // RES-112: short-circuit straight to the token dumper before
+        // the rest of the pipeline kicks in. The dumper reads the
+        // file, constructs `Lexer::new(src)` (which honours the
+        // `logos-lexer` feature flag automatically), drains
+        // `next_token_with_span` to EOF, and prints one token per
+        // line in `L:C  Kind("lexeme")` form. Exits 0 on success, 1
+        // if the file can't be read.
+        if dump_tokens {
+            if filename.is_empty() {
+                eprintln!("Error: --dump-tokens requires a path argument");
+                std::process::exit(2);
+            }
+            match fs::read_to_string(filename) {
+                Ok(src) => {
+                    dump_tokens_to_stdout(&src);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Error: could not read {}: {}", filename, e);
+                    std::process::exit(1);
+                }
+            }
         }
 
         if !filename.is_empty() {

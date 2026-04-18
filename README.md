@@ -222,6 +222,23 @@ chroot or container if you care about what they can touch. The
 builtins table and therefore no file I/O surface — it stays
 no_std-clean.
 
+### Debugging
+
+`--dump-tokens <file>` prints the lexer's token stream — one
+`line:col Kind("lexeme")` per line, ending with `Eof` — and
+exits. Useful when a parser error points at a mystery token and
+you want to see what the scanner actually emitted, without
+editing source (RES-112). Mutually exclusive with `--lsp`.
+
+```sh
+resilient --dump-tokens examples/hello.rs
+# 2:1  Function("fn")
+# 2:4  Identifier("main")("main")
+# 2:8  LeftParen("(")
+# ...
+# 6:1  Eof("")
+```
+
 ### REPL Commands
 
 - `help` - Show help message
