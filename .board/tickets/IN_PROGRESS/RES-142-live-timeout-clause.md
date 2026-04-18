@@ -1,7 +1,7 @@
 ---
 id: RES-142
 title: `live ... within 10ms` wall-clock timeout clause
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G10
 created: 2026-04-17
@@ -38,3 +38,4 @@ exactly like exhaustion (RES-140).
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
