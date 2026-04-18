@@ -239,6 +239,27 @@ resilient --dump-tokens examples/hello.rs
 # 6:1  Eof("")
 ```
 
+`--dump-chunks <file>` compiles the program to VM bytecode and
+prints a human-readable disassembly of every chunk — `main` plus
+each user function — with constants, per-op offset/line/opname
+columns, and absolute jump targets (RES-173). The output reflects
+the RES-172 peephole pass, so what you see is what runs.
+
+```sh
+resilient --dump-chunks examples/hello.rs
+# === main ===
+# constants:
+#   const[0] = "Hello, Resilient world!"
+# code:
+#   0000  L2   Const 0      ; const[0] = "Hello, Resilient world!"
+#   0001  L2   Call 0       ; -> println
+#   0002  L2   Return
+```
+
+Mutually exclusive with `--dump-tokens` and `--lsp`. The output
+format is stable — external tools are welcome to parse it; the
+disassembler module comment documents the exact column contract.
+
 ### REPL Commands
 
 - `help` - Show help message

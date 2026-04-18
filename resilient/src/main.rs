@@ -14,6 +14,7 @@ mod span;
 mod imports;
 mod bytecode;
 mod compiler;
+mod disasm;
 mod peephole;
 mod vm;
 #[cfg(feature = "z3")]
@@ -7344,6 +7345,11 @@ fn main() {
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
+    // RES-173: --dump-chunks compiles the program and prints a
+    // human-readable VM disassembly. Reflects RES-172 peephole
+    // results because the compiler runs peephole before the
+    // disassembler sees the chunks.
+    let mut dump_chunks = false;
     // RES-137: per-query Z3 solver timeout in milliseconds. 0 means
     // "no timeout". Default 5000 matches the ticket's recommendation.
     let mut verifier_timeout_ms: u32 = 5000;
@@ -7390,6 +7396,12 @@ fn main() {
                 // the logos-lexer feature path — both go through
                 // `Lexer::new` + `next_token_with_span`.
                 dump_tokens = true;
+            } else if arg == "--dump-chunks" {
+                // RES-173: compile the program to bytecode and print
+                // a human-readable disassembly (RES-172 peephole
+                // included). Exits after the dump — mutually
+                // exclusive with `--lsp` / `--dump-tokens`.
+                dump_chunks = true;
             } else if arg == "--verifier-timeout-ms" {
                 // RES-137: --verifier-timeout-ms <N> overrides the
                 // per-Z3-query budget. `0` disables the timeout.
@@ -7462,6 +7474,12 @@ fn main() {
             eprintln!("Error: --dump-tokens and --lsp are mutually exclusive");
             std::process::exit(2);
         }
+        // RES-173: --dump-chunks mutually exclusive with the other
+        // terminal modes for the same reason.
+        if dump_chunks && (lsp_mode || dump_tokens) {
+            eprintln!("Error: --dump-chunks and --dump-tokens/--lsp are mutually exclusive");
+            std::process::exit(2);
+        }
 
         // RES-150: install the RNG seed before any user program
         // can pull from it. `--seed <N>` pins the sequence
@@ -7502,6 +7520,56 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+
+        // RES-173: --dump-chunks — read the file, parse + compile
+        // to bytecode (peephole included per RES-172), and print a
+        // stable-format disassembly. Exits after the dump;
+        // mutually exclusive with --lsp / --dump-tokens above.
+        if dump_chunks {
+            if filename.is_empty() {
+                eprintln!("Error: --dump-chunks requires a path argument");
+                std::process::exit(2);
+            }
+            let src = match fs::read_to_string(filename) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error: could not read {}: {}", filename, e);
+                    std::process::exit(1);
+                }
+            };
+            // Run the parser — bail cleanly on parse errors rather
+            // than attempt to compile a malformed program.
+            let (program, errs) = parse(&src);
+            if !errs.is_empty() {
+                for e in errs {
+                    eprintln!("Parser error: {}", e);
+                }
+                std::process::exit(1);
+            }
+            // RES-073: resolve `use "..."` before the compiler sees
+            // the AST, matching the --vm driver path.
+            let mut resolved = program;
+            let base_dir = std::path::Path::new(filename)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf();
+            let mut loaded = std::collections::HashSet::new();
+            if let Err(e) = imports::expand_uses(&mut resolved, &base_dir, &mut loaded) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+            let prog = match compiler::compile(&resolved) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Error: compile failed: {:?}", e);
+                    std::process::exit(1);
+                }
+            };
+            let mut buf = String::new();
+            disasm::disassemble(&prog, &mut buf).expect("String write is infallible");
+            print!("{}", buf);
+            return;
         }
 
         if !filename.is_empty() {
