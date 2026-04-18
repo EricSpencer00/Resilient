@@ -139,6 +139,48 @@ live {
 }
 ```
 
+### Nesting (RES-140)
+
+`live` blocks **compose**. When an inner block exhausts its own
+retry budget, the failure escalates to the enclosing block as a
+single recoverable error — the outer block counts that as one
+failure and, if it still has retries left, re-runs its entire
+body (which re-enters the inner block from scratch). Retry
+counters at each level are independent; `live_retries()`
+(RES-138) reads the innermost block's counter.
+
+Be careful: retries at different levels multiply. Two nested
+`live` blocks with the default `MAX_RETRIES=3` cap run the
+inner body up to `3 * 3 = 9` times before the outer gives up.
+Use `live backoff(...)` (RES-139) on at least one level when
+the inner operation touches real hardware.
+
+Worked example: inner always fails, outer swallows the
+escalation until its own budget runs out.
+
+```rust
+fn main() {
+    live {
+        live {
+            // Always fails.
+            assert(false, "inner");
+        }
+    }
+}
+```
+
+Final error:
+
+```
+Runtime error: Live block failed after 3 attempts (retry depth: 1):
+    Live block failed after 3 attempts (retry depth: 2):
+        ASSERTION ERROR: inner
+```
+
+Each `(retry depth: N)` note corresponds to one nesting level
+— `depth: 1` is the outermost block, `depth: 2` is its child,
+and so on. Inner invocations total `3 × 3 = 9`.
+
 ## Assertions
 
 Assertions halt with a diagnostic. For comparison conditions both

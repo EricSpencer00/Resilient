@@ -4567,9 +4567,20 @@ impl Interpreter {
                         eprintln!(
                             "\x1B[31m[LIVE BLOCK] Maximum retry attempts reached, propagating error\x1B[0m"
                         );
+                        // RES-140: footer note recording the
+                        // nesting depth at which exhaustion fired.
+                        // `LIVE_RETRY_STACK.len()` at this point
+                        // is the current level (self included). As
+                        // an inner block's error escalates up the
+                        // call chain, each outer level wraps it
+                        // with its OWN "after N attempts" prefix
+                        // plus its own depth — together the nested
+                        // wrappers serialize the retry-depth
+                        // history at every nesting level.
+                        let depth = LIVE_RETRY_STACK.with(|s| s.borrow().len());
                         return Err(format!(
-                            "Live block failed after {} attempts: {}",
-                            MAX_RETRIES, error
+                            "Live block failed after {} attempts (retry depth: {}): {}",
+                            MAX_RETRIES, depth, error
                         ));
                     }
 
@@ -9051,6 +9062,91 @@ mod tests {
     }
 
     // --- RES-123: optional (inferred) return type annotations ---
+
+    // --- RES-140: nested live-block escalation ---
+
+    #[test]
+    fn nested_live_inner_exhaustion_counts_as_one_outer_retry() {
+        // Outer retries → inner re-runs to exhaustion each time.
+        // With MAX_RETRIES=3 per level and `always_fail`, total
+        // inner invocations = outer_attempts * inner_attempts =
+        // 3 * 3 = 9. A `static let` counter confirms.
+        let src = "\
+            static let inner_calls = 0;\n\
+            fn always_fail() {\n\
+                inner_calls = inner_calls + 1;\n\
+                assert(false, \"inner\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    live { let r = always_fail(); }\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("outer live block should eventually exhaust");
+        // Error shape: `Live block failed after 3 attempts (retry depth: 1): Live block failed after 3 attempts (retry depth: 2): ...`
+        assert!(err.contains("Live block failed after 3 attempts"), "got: {}", err);
+        assert!(err.contains("retry depth: 1"), "outer level note missing: {}", err);
+        assert!(err.contains("retry depth: 2"), "inner level note missing: {}", err);
+        // 3 outer * 3 inner = 9 inner invocations.
+        match interp.statics.borrow().get("inner_calls").expect("static counter") {
+            Value::Int(n) => assert_eq!(*n, 9, "expected 9 inner invocations, got {}", n),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nested_live_retries_reports_innermost_counter() {
+        // `live_retries()` inside the inner block reads 0, 1, 2
+        // per outer attempt — independent of the outer's counter.
+        // We capture the innermost reads on the first outer
+        // attempt only (inner exhaustion then escalates) to keep
+        // the test deterministic.
+        let src = "\
+            static let inner_fails = 3;\n\
+            static let seen = [];\n\
+            fn always_fail() {\n\
+                seen = push(seen, live_retries());\n\
+                inner_fails = inner_fails - 1;\n\
+                assert(false, \"inner\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    live { let r = always_fail(); }\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let _ = interp.eval(&program); // exhausts; ignore error
+        match interp.statics.borrow().get("seen").expect("static seen") {
+            Value::Array(items) => {
+                let ns: Vec<i64> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => *n,
+                        other => panic!("non-int in seen: {:?}", other),
+                    })
+                    .collect();
+                // Inner ran 9 times (3 outer × 3 inner). The inner
+                // counter resets to 0 at every new inner-block
+                // entry, so the sequence is 0,1,2 repeated three
+                // times.
+                assert_eq!(ns, vec![0, 1, 2, 0, 1, 2, 0, 1, 2], "got {:?}", ns);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
 
     // --- RES-139: live exponential backoff ---
 
