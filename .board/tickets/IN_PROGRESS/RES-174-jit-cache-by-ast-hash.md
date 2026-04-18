@@ -1,7 +1,7 @@
 ---
 id: RES-174
 title: JIT cache: memoize compiled functions keyed by AST hash
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G15
 created: 2026-04-17
@@ -36,3 +36,4 @@ follow-up.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
