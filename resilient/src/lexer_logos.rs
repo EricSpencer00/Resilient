@@ -139,6 +139,10 @@ enum Tok {
     #[token("true")] True,
     #[token("false")] False,
     #[token("_")] Underscore,
+    // RES-163: `default` is a reserved alias for `_` at the top of
+    // a match arm. Must precede the `Ident` regex so logos picks
+    // the keyword arm over the identifier arm.
+    #[token("default")] Default,
 
     // --- identifiers ---
     // Split into two arms so bare `_` is handled by the `#[token]`
@@ -398,6 +402,7 @@ fn convert(t: Tok) -> Token {
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,
+        Tok::Default => Token::Default,
         Tok::EqEq => Token::Equal,
         Tok::NotEq => Token::NotEqual,
         Tok::LessEq => Token::LessEqual,

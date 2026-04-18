@@ -421,6 +421,26 @@ branches bind different names" — the body would otherwise
 reference a binding whose presence depends on which branch
 fired. This mirrors Rust's rule.
 
+### `default` keyword (RES-163)
+
+`default` is a reserved alias for `_` at the top of a match
+arm — pure readability sugar; both forms produce identical
+AST and runtime behaviour:
+
+```rust
+match n {
+    0 => "zero",
+    1 => "one",
+    default => "other",   // same as `_ => "other"`
+}
+```
+
+Because `default` is reserved, it cannot appear as an
+identifier: `let default = 3;` is a parse error
+(`Expected identifier after 'let', found \`default\``).
+No other `_` synonyms (`otherwise`, `else`, ...) are planned
+— one alias is plenty.
+
 ```rust
 // line comment
 /* block comment, can

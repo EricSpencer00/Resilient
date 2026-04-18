@@ -65,6 +65,13 @@ enum Token {
     FatArrow,
     Arrow,
     Underscore,
+    /// RES-163: `default` — alias for `_` at the top of a match
+    /// arm. Reserved word: `default` cannot appear as an
+    /// identifier, so `let default = 3;` is a parse error. The
+    /// parser desugars the match-arm use to `Pattern::Wildcard`
+    /// so downstream phases never see a distinct "default"
+    /// pattern.
+    Default,
     Question,
     /// RES-073: `use "path/to/file.res";` — module import.
     Use,
@@ -179,6 +186,7 @@ impl Token {
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
             Token::Underscore => "`_`".to_string(),
+            Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
             Token::FatArrow => "`=>`".to_string(),
             Token::Arrow => "`->`".to_string(),
@@ -555,6 +563,13 @@ impl Lexer {
                         "impl" => Token::Impl,
                         "type" => Token::Type,
                         "_" => Token::Underscore,
+                        // RES-163: `default` is a reserved alias
+                        // for `_` at the top of a match arm.
+                        // Outside that position the parser rejects
+                        // it as an unexpected token — which is the
+                        // "`default` as an identifier is a lex
+                        // error" rule the ticket calls for.
+                        "default" => Token::Default,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
                         _ => Token::Identifier(ident),
@@ -3155,6 +3170,12 @@ impl Parser {
         let tok_span = self.span_at_current();
         match &self.current_token {
             Token::Underscore => Pattern::Wildcard,
+            // RES-163: `default` desugars to `_` — pure sugar, no
+            // downstream phase sees a distinct variant. Only legal
+            // at pattern position; other uses surface as an
+            // unexpected-token error since `Token::Default` isn't
+            // accepted anywhere else in the grammar.
+            Token::Default => Pattern::Wildcard,
             Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral { value: *n, span: tok_span }),
             Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral { value: *f, span: tok_span }),
             Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral { value: s.clone(), span: tok_span }),
@@ -8026,6 +8047,110 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-163: `default` as `_` alias in match arms ---
+
+    #[test]
+    fn default_arm_exhausts_previously_non_exhaustive_match() {
+        // Without a wildcard `_` / `default`, matching on an int
+        // scrutinee is non-exhaustive. With `default =>`, the
+        // same match passes typecheck and runs correctly at
+        // runtime.
+        let src = "\
+            fn classify(int n) -> string {\n\
+                return match n {\n\
+                    0 => \"zero\",\n\
+                    1 => \"one\",\n\
+                    default => \"other\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) {\n\
+                return len(classify(42));\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        // Typecheck must pass — `default` counts as a default arm.
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).expect("should typecheck");
+        // And execution picks `default` for 42.
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5), // "other".len()
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn default_and_underscore_are_interchangeable_at_match_position() {
+        // Both forms produce the same AST (`Pattern::Wildcard`),
+        // so swapping one for the other in an otherwise-identical
+        // program yields identical runtime behaviour.
+        let src_under = "fn main(int _d) { return match 7 { _ => 1, }; } main(0);";
+        let src_default = "fn main(int _d) { return match 7 { default => 1, }; } main(0);";
+        for src in [src_under, src_default] {
+            let (program, errs) = parse(src);
+            assert!(errs.is_empty(), "parse errors in `{}`: {:?}", src, errs);
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::Int(n) => assert_eq!(n, 1, "src: {}", src),
+                other => panic!("src {}: expected Int(1), got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn default_as_let_binding_name_is_a_parse_error() {
+        // Ticket: "`default` as an identifier now becomes a lex
+        // error". The lexer emits `Token::Default` instead of
+        // `Token::Identifier("default")`, so the parser's
+        // let-parser complains about seeing a non-identifier after
+        // `let`.
+        let src = "fn main(int _d) { let default = 3; return default; } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("found `default`")),
+            "expected `found `default`` in errors, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn default_in_arbitrary_expression_position_is_a_parse_error() {
+        // Using `default` where any expression is expected must
+        // fail — not just after `let`. A `return default;` hits
+        // the parser's "expected expression" path since
+        // `Token::Default` isn't a prefix operator / atom.
+        let src = "fn f() { return default; } f();";
+        let (_program, errs) = parse(src);
+        assert!(!errs.is_empty(), "expected parse errors for `default` as expr, got none");
+    }
+
+    #[test]
+    fn default_works_inside_or_pattern_and_with_guards() {
+        // Sanity: `default` isn't special — it's a pattern atom
+        // just like `_`, so it combines with the other pattern
+        // features (guards from RES-159, or-patterns from RES-160).
+        let src = "\
+            fn main(int _d) {\n\
+                let n = 42;\n\
+                return match n {\n\
+                    0 | 1 => 1,\n\
+                    default if n < 100 => 2,\n\
+                    default => 3,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2), // 42 < 100
+            other => panic!("expected Int(2), got {:?}", other),
+        }
     }
 
     // --- RES-162: string-literal match patterns ---
