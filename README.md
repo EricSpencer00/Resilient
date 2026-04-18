@@ -2,7 +2,7 @@
 
 A programming language designed for extreme reliability in embedded and safety-critical systems.
 
-📖 **Docs**: [ericspencer00.github.io/Resilient](https://ericspencer00.github.io/Resilient/)
+📖 **Docs**: [ericspencer.us/Resilient](https://ericspencer.us/Resilient/)
 &nbsp;·&nbsp; [Onboarding](https://ericspencer00.github.io/Resilient/getting-started)
 &nbsp;·&nbsp; [Design Philosophy](https://ericspencer00.github.io/Resilient/philosophy)
 &nbsp;·&nbsp; [Performance](https://ericspencer00.github.io/Resilient/performance)
