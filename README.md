@@ -128,6 +128,41 @@ z3 -smt2 ./certs/ident_round__decl__0.smt2
 Implies `--typecheck`. Without `--features z3`, no certificates are
 emitted (the cheap folder isn't asked to produce them).
 
+#### Signed certificates (RES-194)
+
+Pass `--sign-cert <path-to-ed25519-private-key.pem>` alongside
+`--emit-certificate <dir>` to write a 64-byte Ed25519 signature to
+`<dir>/cert.sig`. The signed payload is the byte-for-byte
+concatenation of the `.smt2` files in the directory (sorted by
+filename, joined with `\n`); the signature binds the certificate
+set to the signer's key.
+
+```bash
+# Sign during emit:
+resilient -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rs
+
+# Verify against the binary's embedded public key:
+resilient verify-cert ./certs
+
+# Or against a custom public key (e.g. a rotated / test key):
+resilient verify-cert ./certs --pubkey ./trusted-pub.pem
+```
+
+Exit codes from `verify-cert`: `0` = valid signature, `1` =
+tampered / wrong key, `2` = usage error (missing directory, etc.).
+
+The committed public key lives at `resilient/src/cert_key.pem` and
+is baked into the binary via `include_str!`. Key management (the
+corresponding private key + rotation) is a human concern — the
+signing key is NOT committed. See the ticket's Notes for the
+rotation-follow-up plan.
+
+The PEM format is a minimal `-----BEGIN ED25519 {PUBLIC,PRIVATE}
+KEY-----` envelope around 64 hex chars (32 raw bytes). A tiny
+helper is provided inside the `cert_sign` module; external tools
+that want to generate a compatible keypair can use any Ed25519
+library and format the output identically.
+
 ### Embedded runtime (RES-075 + RES-097 + RES-098)
 
 The sibling `resilient-runtime/` crate carves out the value layer

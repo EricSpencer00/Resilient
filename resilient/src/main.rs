@@ -39,6 +39,11 @@ mod diag;
 // Standalone from the compiler pipeline; lives here so the single
 // `resilient` binary carries it alongside the runtime.
 mod pkg_init;
+// RES-194: Ed25519 signatures on RES-071 verification certificates.
+// Pure algorithm + mini-PEM codec; consumed from main() when
+// `--sign-cert <path>` is passed and from the `verify-cert`
+// subcommand.
+mod cert_sign;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -7499,9 +7504,15 @@ pub(crate) fn encode_semantic_tokens(tokens: &[AbsSemToken]) -> Vec<u32> {
 /// RES-071: writes accumulated SMT-LIB2 certificates to `dir`. One file
 /// per discharged obligation: `{fn_name}__{kind}__{idx}.smt2`. Returns
 /// the count written for the audit summary.
+///
+/// RES-194: when `sign_key_path` is `Some`, also writes `cert.sig`
+/// in the same directory — an Ed25519 signature over the
+/// concatenated `.smt2` payload (see `cert_sign::compute_cert_payload`
+/// for the byte-exact recipe).
 fn emit_certificates(
     certificates: &[typechecker::CapturedCertificate],
     dir: &Path,
+    sign_key_path: Option<&Path>,
 ) -> RResult<usize> {
     fs::create_dir_all(dir).map_err(|e| {
         format!("could not create certificate directory {}: {}", dir.display(), e)
@@ -7516,15 +7527,33 @@ fn emit_certificates(
         fs::write(&path, &cert.smt2)
             .map_err(|e| format!("could not write {}: {}", path.display(), e))?;
     }
+
+    // RES-194: sign if the caller provided a private key.
+    if let Some(key_path) = sign_key_path {
+        let pem = fs::read_to_string(key_path).map_err(|e| {
+            format!("could not read signing key {}: {}", key_path.display(), e)
+        })?;
+        let priv_b = cert_sign::parse_private_key_pem(&pem).map_err(|e| {
+            format!("could not parse signing key {}: {}", key_path.display(), e)
+        })?;
+        let payload = cert_sign::compute_cert_payload(dir)?;
+        let sig = cert_sign::sign_payload(&priv_b, &payload);
+        let sig_path = dir.join("cert.sig");
+        fs::write(&sig_path, cert_sign::format_signature_hex(&sig))
+            .map_err(|e| format!("could not write {}: {}", sig_path.display(), e))?;
+    }
+
     Ok(certificates.len())
 }
 
 // Execute a Resilient source file
+#[allow(clippy::too_many_arguments)] // CLI glue fn — all args come from flags
 fn execute_file(
     filename: &str,
     type_check: bool,
     audit: bool,
     emit_cert_dir: Option<&Path>,
+    sign_cert_key: Option<&Path>,
     use_vm: bool,
     use_jit: bool,
     verifier_timeout_ms: u32,
@@ -7602,12 +7631,18 @@ fn execute_file(
         // obligation so a downstream consumer can re-verify with
         // stock Z3 and confirm the proof without trusting our binary.
         if let Some(dir) = emit_cert_dir {
-            let n = emit_certificates(&tc.certificates, dir)?;
+            let n = emit_certificates(&tc.certificates, dir, sign_cert_key)?;
             println!(
                 "\x1B[36mWrote {} verification certificate(s) to {}\x1B[0m",
                 n,
                 dir.display()
             );
+            if sign_cert_key.is_some() {
+                println!(
+                    "\x1B[36mWrote Ed25519 signature to {}\x1B[0m",
+                    dir.join("cert.sig").display()
+                );
+            }
         }
     }
 
@@ -7807,6 +7842,124 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+/// RES-194: `resilient verify-cert <dir> [--pubkey <path>]`.
+///
+/// Reads `<dir>/cert.sig` + every `.smt2` file, concatenates the
+/// latter (sorted by filename), and verifies the signature with
+/// either the binary's embedded public key (default) or a PEM
+/// supplied via `--pubkey`.
+///
+/// Exit codes:
+/// - 0 = signature verified OK.
+/// - 1 = signature mismatch / tampered payload / bad PEM in the
+///   supplied file.
+/// - 2 = usage error (missing arg, unreadable dir).
+///
+/// Returns `None` when the first arg isn't `verify-cert`; the
+/// driver falls through to normal operation.
+fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("verify-cert") {
+        return None;
+    }
+
+    let mut dir_path: Option<PathBuf> = None;
+    let mut pubkey_path: Option<PathBuf> = None;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--pubkey" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --pubkey requires a path argument");
+                return Some(2);
+            }
+            pubkey_path = Some(PathBuf::from(&args[i]));
+        } else if let Some(p) = a.strip_prefix("--pubkey=") {
+            pubkey_path = Some(PathBuf::from(p));
+        } else if dir_path.is_none() {
+            dir_path = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to verify-cert", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(dir) = dir_path else {
+        eprintln!(
+            "Error: `resilient verify-cert <dir> [--pubkey <path>]` requires a directory"
+        );
+        return Some(2);
+    };
+
+    // Load the public key: supplied override or the embedded one.
+    let pub_b = match pubkey_path {
+        Some(p) => match fs::read_to_string(&p) {
+            Ok(pem) => match cert_sign::parse_public_key_pem(&pem) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Error: invalid --pubkey file {}: {}", p.display(), e);
+                    return Some(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("Error: could not read --pubkey {}: {}", p.display(), e);
+                return Some(2);
+            }
+        },
+        None => match cert_sign::parse_public_key_pem(cert_sign::EMBEDDED_PUBLIC_KEY_PEM) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Error: embedded public key failed to parse: {} (this is a bug)", e);
+                return Some(1);
+            }
+        },
+    };
+
+    // Load the signature.
+    let sig_path = dir.join("cert.sig");
+    let sig_hex = match fs::read_to_string(&sig_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", sig_path.display(), e);
+            return Some(2);
+        }
+    };
+    let sig = match cert_sign::parse_signature_hex(&sig_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: invalid cert.sig: {}", e);
+            return Some(1);
+        }
+    };
+
+    // Recompute the payload from the .smt2 files and verify.
+    let payload = match cert_sign::compute_cert_payload(&dir) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return Some(2);
+        }
+    };
+    match cert_sign::verify_payload(&pub_b, &payload, &sig) {
+        Ok(true) => {
+            println!("\x1B[32mcert: signature verified\x1B[0m for {}", dir.display());
+            Some(0)
+        }
+        Ok(false) => {
+            eprintln!(
+                "\x1B[31mcert: SIGNATURE MISMATCH\x1B[0m for {} — payload has been tampered with, or the wrong public key is being used",
+                dir.display()
+            );
+            Some(1)
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            Some(1)
+        }
+    }
+}
+
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
@@ -7818,9 +7971,19 @@ fn main() {
         std::process::exit(code);
     }
 
+    // RES-194: `verify-cert <dir>` — check the Ed25519 signature
+    // of a RES-071 certificate directory against the binary's
+    // embedded public key.
+    if let Some(code) = dispatch_verify_cert_subcommand(&args) {
+        std::process::exit(code);
+    }
+
     let mut type_check = false;
     let mut audit = false;
     let mut emit_cert_dir: Option<PathBuf> = None;
+    // RES-194: Ed25519 signing key — when present, the driver
+    // writes `cert.sig` alongside the `.smt2` files.
+    let mut sign_cert_key: Option<PathBuf> = None;
     let mut examples_dir: Option<PathBuf> = None;
     let mut use_vm = false;
     let mut use_jit = false;
@@ -7865,6 +8028,19 @@ fn main() {
                 emit_cert_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--emit-certificate=") {
                 emit_cert_dir = Some(PathBuf::from(dir));
+            } else if arg == "--sign-cert" {
+                // RES-194: --sign-cert <path-to-ed25519-priv-pem>.
+                // Only meaningful when paired with --emit-certificate.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!(
+                        "Error: --sign-cert requires a path to the Ed25519 private key PEM"
+                    );
+                    std::process::exit(2);
+                }
+                sign_cert_key = Some(PathBuf::from(&args[i]));
+            } else if let Some(p) = arg.strip_prefix("--sign-cert=") {
+                sign_cert_key = Some(PathBuf::from(p));
             } else if arg == "--vm" {
                 // RES-076: route through the bytecode VM instead of
                 // the tree-walking interpreter.
@@ -8073,6 +8249,7 @@ fn main() {
                 type_check,
                 audit,
                 emit_cert_dir.as_deref(),
+                sign_cert_key.as_deref(),
                 use_vm,
                 use_jit,
                 verifier_timeout_ms,
