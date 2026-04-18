@@ -1,7 +1,7 @@
 ---
 id: RES-204
 title: VS Code extension package connecting to the LSP server
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: tooling
 created: 2026-04-17
@@ -41,3 +41,4 @@ inside Resilient projects.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
