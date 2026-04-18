@@ -1,7 +1,7 @@
 ---
 id: RES-163
 title: `default =>` alias for `_ =>` in match arms
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G13
 created: 2026-04-17
@@ -34,3 +34,4 @@ alias.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
