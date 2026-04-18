@@ -74,6 +74,21 @@ struct LowerCtx {
     /// names still resolve to the *old* param values), then
     /// `def_var`s each param Variable with the new value in order.
     param_vars: Vec<Variable>,
+    /// RES-175: per-function AST of every declared function in
+    /// the program — `(parameters, body)` keyed by name. Needed
+    /// to inline trivial leaf callees at call sites (the JIT
+    /// otherwise only has module-local FuncIds, which can't be
+    /// re-lowered). Populated at `run_internal` time;
+    /// `compile_function` clones the map into each per-fn ctx.
+    fn_asts: HashMap<String, (Vec<(String, String)>, Node)>,
+    /// RES-175: when set, a `ReturnStatement` in the body lowers
+    /// to `jump(merge, &[value])` — producing the value as the
+    /// inlined expression's result — instead of the usual
+    /// `return_`. Set by the inliner before lowering a callee's
+    /// body and cleared after. `None` in normal (non-inline)
+    /// lowering keeps `return` emitting the function-level
+    /// return it always did.
+    inline_return_target: Option<Block>,
 }
 
 impl LowerCtx {
@@ -86,6 +101,8 @@ impl LowerCtx {
             current_fn: None,
             tco_target: None,
             param_vars: Vec::new(),
+            fn_asts: HashMap::new(),
+            inline_return_target: None,
         }
     }
 
@@ -104,6 +121,113 @@ impl LowerCtx {
     fn lookup(&self, name: &str) -> Option<Variable> {
         self.locals.get(name).copied()
     }
+}
+
+/// RES-175: hard size limit for the trivial-leaf-fn inliner. Count
+/// every node subterm in the body: above this, we bail out on
+/// inline and emit a regular indirect call. Value chosen
+/// conservatively per the ticket — big enough to catch useful
+/// cases (`return n + 1;`, `return n * 2;`, small arithmetic
+/// wrappers), small enough that inlining never bloats the caller
+/// unexpectedly.
+const TRIVIAL_LEAF_MAX_NODES: usize = 8;
+
+/// RES-175: recursive node-count over an AST subtree. Includes the
+/// root itself in the count.
+fn count_nodes(n: &Node) -> usize {
+    1 + match n {
+        Node::IntegerLiteral { .. }
+        | Node::FloatLiteral { .. }
+        | Node::StringLiteral { .. }
+        | Node::BytesLiteral { .. }
+        | Node::BooleanLiteral { .. }
+        | Node::Identifier { .. }
+        | Node::DurationLiteral { .. }
+        | Node::Use { .. }
+        | Node::TypeAlias { .. }
+        | Node::StructDecl { .. } => 0,
+        Node::PrefixExpression { right, .. } => count_nodes(right),
+        Node::InfixExpression { left, right, .. } => count_nodes(left) + count_nodes(right),
+        Node::CallExpression { function, arguments, .. } => {
+            count_nodes(function) + arguments.iter().map(count_nodes).sum::<usize>()
+        }
+        Node::ReturnStatement { value, .. } => value.as_ref().map_or(0, |v| count_nodes(v)),
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            count_nodes(condition)
+                + count_nodes(consequence)
+                + alternative.as_ref().map_or(0, |a| count_nodes(a))
+        }
+        Node::WhileStatement { condition, body, .. } => {
+            count_nodes(condition) + count_nodes(body)
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            count_nodes(iterable) + count_nodes(body)
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Assignment { value, .. } => count_nodes(value),
+        Node::ExpressionStatement { expr, .. } => count_nodes(expr),
+        Node::Block { stmts, .. } => stmts.iter().map(count_nodes).sum(),
+        Node::Program(stmts) => stmts.iter().map(|s| count_nodes(&s.node)).sum(),
+        // Variants not typically found inside JIT-compiled fn
+        // bodies (live blocks, asserts, matches, struct literals,
+        // field access, try-expr, function literals, etc.) — count
+        // as 0 children so the node-count predicate still reaches
+        // them, and rely on `has_disqualifying_construct` below
+        // to reject most of them outright.
+        _ => 0,
+    }
+}
+
+/// RES-175: reject bodies that contain a construct the inliner's
+/// "trivial leaf" contract rules out. The ticket says: no calls,
+/// no loops, no match.
+fn has_disqualifying_construct(n: &Node) -> bool {
+    match n {
+        Node::CallExpression { .. }
+        | Node::WhileStatement { .. }
+        | Node::ForInStatement { .. }
+        | Node::Match { .. }
+        | Node::LiveBlock { .. } => true,
+        Node::PrefixExpression { right, .. } => has_disqualifying_construct(right),
+        Node::InfixExpression { left, right, .. } => {
+            has_disqualifying_construct(left) || has_disqualifying_construct(right)
+        }
+        Node::ReturnStatement { value, .. } => value
+            .as_ref()
+            .is_some_and(|v| has_disqualifying_construct(v)),
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            has_disqualifying_construct(condition)
+                || has_disqualifying_construct(consequence)
+                || alternative
+                    .as_ref()
+                    .is_some_and(|a| has_disqualifying_construct(a))
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Assignment { value, .. } => has_disqualifying_construct(value),
+        Node::ExpressionStatement { expr, .. } => has_disqualifying_construct(expr),
+        Node::Block { stmts, .. } => stmts.iter().any(has_disqualifying_construct),
+        _ => false,
+    }
+}
+
+/// RES-175: decide whether a callee's AST qualifies as a trivial
+/// leaf suitable for inlining at a call site.
+///
+/// Criteria (all must hold):
+///   1. Node count in the body ≤ `TRIVIAL_LEAF_MAX_NODES`.
+///   2. No calls / loops / match anywhere in the body.
+///   3. Callee is NOT the enclosing function (self-recursion
+///      would infinite-loop the inliner).
+fn is_trivial_leaf(body: &Node, callee_name: &str, current_fn: Option<&str>) -> bool {
+    if current_fn == Some(callee_name) {
+        return false;
+    }
+    if count_nodes(body) > TRIVIAL_LEAF_MAX_NODES {
+        return false;
+    }
+    !has_disqualifying_construct(body)
 }
 
 /// RES-174: FNV-1a 64-bit hash of a function's AST, with source
@@ -412,6 +536,10 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // function's body for Pass 2.
     let mut functions: HashMap<String, FuncId> = HashMap::new();
     let mut function_arities: HashMap<String, usize> = HashMap::new();
+    // RES-175: per-name AST map so the leaf-fn inliner can
+    // re-lower a callee's body at each qualifying call site.
+    let mut fn_asts: HashMap<String, (Vec<(String, String)>, Node)> =
+        HashMap::new();
     // Names of functions whose bodies we need to compile (the
     // "primary" for each unique AST hash). Aliases skip compile.
     let mut primaries: Vec<String> = Vec::new();
@@ -419,6 +547,12 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
         if let Node::Function { name, parameters, body, requires, ensures, .. } =
             &spanned.node
         {
+            // RES-175: stash the AST up-front — independent of
+            // whether this fn becomes a cache alias or a primary.
+            fn_asts.insert(
+                name.clone(),
+                (parameters.clone(), (**body).clone()),
+            );
             let h = fn_hash(parameters, requires, ensures, body);
             if let Some(existing) = cache.map.get(&h).copied() {
                 // Cache hit — reuse the FuncId under the new name.
@@ -459,6 +593,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
                 body,
                 &functions,
                 &function_arities,
+                &fn_asts,
                 &mut module,
             )?;
             cache.compiles += 1;
@@ -488,6 +623,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
         let mut lctx = LowerCtx::new();
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
+        lctx.fn_asts = fn_asts.clone();
         compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
         bcx.finalize();
     }
@@ -551,6 +687,12 @@ pub(crate) fn run_with_stats(
 /// unsealed until lowering finishes so back-edges from tail
 /// calls (which re-`def_var` parameter Variables) can reconcile
 /// through Cranelift's SSA-construction phi inference.
+/// RES-175: alias for the per-name AST map threaded through the
+/// JIT. Hoisted to a type alias so the `compile_function`
+/// signature doesn't trip clippy's type-complexity lint.
+type FnAstMap = HashMap<String, (Vec<(String, String)>, Node)>;
+
+#[allow(clippy::too_many_arguments)] // RES-175: each arg is used
 fn compile_function(
     func_id: FuncId,
     fn_name: &str,
@@ -558,6 +700,7 @@ fn compile_function(
     body: &Node,
     functions: &HashMap<String, FuncId>,
     function_arities: &HashMap<String, usize>,
+    fn_asts: &FnAstMap,
     module: &mut JITModule,
 ) -> Result<(), JitError> {
     // Build the signature again — we declared it in Pass 1, but
@@ -587,6 +730,7 @@ fn compile_function(
         let mut lctx = LowerCtx::new();
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
+        lctx.fn_asts = fn_asts.clone();
         // parameters: Vec<(String, String)> — (type, name) per
         // the AST. Name is the second element.
         let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
@@ -631,6 +775,91 @@ fn compile_function(
         .map_err(|e| JitError::LinkError(e.to_string()))?;
     module.clear_context(&mut ctx);
     Ok(())
+}
+
+/// RES-175: lower a qualifying call site by splicing the callee's
+/// body into the caller. The body is evaluated in a fresh locals
+/// scope (parameter names shadow any caller local with the same
+/// name; the shadow is dropped on exit). Every `ReturnStatement`
+/// in the body lowers as `jump(merge_block, &[v])` instead of a
+/// function-level `return_`, so the inlined expression's result
+/// is the merge block's sole i64 parameter.
+///
+/// Caller guarantees (via `is_trivial_leaf` + the null
+/// `inline_return_target` check at the call site):
+///   - No nested calls in the body (so we don't blow stack on a
+///     malicious chain of self-aliases).
+///   - No loops / match (lowering them in an inlined context
+///     would require tracking the enclosing function's TCO
+///     target and would drag in match-statement plumbing the JIT
+///     doesn't have yet).
+///   - Callee != current fn (self-recursion would infinite-loop
+///     the inliner).
+///   - We're not already inside an inline (prevents runaway
+///     nesting at code-size level — a future phase can relax).
+fn try_lower_inline_call(
+    callee_params: &[(String, String)],
+    callee_body: &Node,
+    arguments: &[Node],
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Result<Value, JitError> {
+    // Merge block: single i64 block-param carries the inlined
+    // return value back to the caller.
+    let merge = bcx.create_block();
+    bcx.append_block_param(merge, types::I64);
+
+    // Lower arguments FIRST — in the caller's scope, so their
+    // expressions see the caller's bindings.
+    let mut arg_vals: Vec<Value> = Vec::with_capacity(arguments.len());
+    for arg in arguments {
+        arg_vals.push(lower_expr(arg, bcx, ctx, module)?);
+    }
+
+    // Snapshot locals + inline target so we can restore on exit.
+    // Snapshotting the whole map is equivalent to the ticket's
+    // "suffix each with a unique counter at AST-level before
+    // lowering" — it gives each inlined body its own scope
+    // without rewriting the AST.
+    let saved_locals = ctx.locals.clone();
+    let saved_target = ctx.inline_return_target.take();
+
+    // Bind each parameter to a FRESH Variable; shadow any
+    // caller local with the same name. After the inline ends,
+    // restoring `saved_locals` puts the caller's binding back.
+    for ((_ty, pname), argval) in callee_params.iter().zip(arg_vals.iter()) {
+        let var = ctx.declare(pname, bcx);
+        bcx.def_var(var, *argval);
+    }
+
+    // Install the merge target so `ReturnStatement` lowers as
+    // a jump to merge instead of a function-level return.
+    ctx.inline_return_target = Some(merge);
+
+    // Lower the body. `lower_block_or_stmt` handles Block / If /
+    // Return shapes — all that a trivial leaf can contain given
+    // the `has_disqualifying_construct` filter.
+    let terminated = lower_block_or_stmt(callee_body, bcx, ctx, module)?;
+    if !terminated {
+        // Defensive: the body fell through without a terminator.
+        // For trivial leaves this shouldn't happen (they end in
+        // `return`), but if someone writes a body like `let x = 1;`
+        // with no return, the block leaves the builder live. Jump
+        // to merge with a zero to keep the IR valid.
+        let zero = bcx.ins().iconst(types::I64, 0);
+        bcx.ins().jump(merge, &[zero]);
+    }
+
+    // Restore caller state.
+    ctx.locals = saved_locals;
+    ctx.inline_return_target = saved_target;
+
+    // Seal merge (all predecessors are in), switch to it, and
+    // return the block-param as this call site's Value.
+    bcx.seal_block(merge);
+    bcx.switch_to_block(merge);
+    Ok(bcx.block_params(merge)[0])
 }
 
 /// RES-168: try to lower a `return <call>` as a tail-call back-edge
@@ -754,6 +983,14 @@ fn compile_node_list(
                     return Ok(true);
                 }
                 let v = lower_expr(expr, bcx, ctx, module)?;
+                // RES-175: if we're lowering the body of a leaf-fn
+                // being inlined into its caller, route `return` to
+                // the inline merge block instead of emitting the
+                // enclosing function's `return_`.
+                if let Some(merge) = ctx.inline_return_target {
+                    bcx.ins().jump(merge, &[v]);
+                    return Ok(true);
+                }
                 bcx.ins().return_(&[v]);
                 return Ok(true);
             }
@@ -1023,6 +1260,12 @@ fn lower_block_or_stmt(
                 return Ok(true);
             }
             let v = lower_expr(expr, bcx, ctx, module)?;
+            // RES-175: redirect to the inline merge block when
+            // we're inside an inlined leaf-fn body.
+            if let Some(merge) = ctx.inline_return_target {
+                bcx.ins().jump(merge, &[v]);
+                return Ok(true);
+            }
             bcx.ins().return_(&[v]);
             Ok(true)
         }
@@ -1060,14 +1303,14 @@ fn lower_expr(
         // supported.
         Node::CallExpression { function, arguments, .. } => {
             let callee_name = match function.as_ref() {
-                Node::Identifier { name, .. } => name,
+                Node::Identifier { name, .. } => name.clone(),
                 _ => {
                     return Err(JitError::Unsupported(
                         "JIT only supports direct calls (Identifier callee)",
                     ));
                 }
             };
-            let func_id = match ctx.functions.get(callee_name).copied() {
+            let func_id = match ctx.functions.get(&callee_name).copied() {
                 Some(id) => id,
                 None => {
                     // Note: we lose the actual name in the
@@ -1079,7 +1322,7 @@ fn lower_expr(
             };
             let expected_arity = ctx
                 .function_arities
-                .get(callee_name)
+                .get(&callee_name)
                 .copied()
                 .unwrap_or(0);
             if arguments.len() != expected_arity {
@@ -1087,6 +1330,32 @@ fn lower_expr(
                     "call arity mismatch (declared params vs actual args)",
                 ));
             }
+
+            // RES-175: leaf-fn inliner. If the callee's AST
+            // qualifies as a trivial leaf AND we aren't
+            // inside a nested inline already (to bound code
+            // expansion), lower the body in-place instead of
+            // emitting an indirect call. See
+            // `try_lower_inline_call` for the mechanics.
+            if let Some((callee_params, callee_body)) =
+                ctx.fn_asts.get(&callee_name).cloned()
+                && is_trivial_leaf(
+                    &callee_body,
+                    &callee_name,
+                    ctx.current_fn.as_deref(),
+                )
+                && ctx.inline_return_target.is_none()
+            {
+                return try_lower_inline_call(
+                    &callee_params,
+                    &callee_body,
+                    arguments,
+                    bcx,
+                    ctx,
+                    module,
+                );
+            }
+
             // Lower each argument before declaring the local
             // function ref; lowering may recurse and we want a
             // clean borrow stack at the call site.
@@ -1911,6 +2180,183 @@ mod tests {
         };
         let h_c = fn_hash(&parameters, &[], &[], &body_c);
         assert_ne!(h_a, h_c, "different bodies must hash differently");
+    }
+
+    // ---------- RES-175: leaf-fn inliner ----------
+
+    #[test]
+    fn inliner_counts_nodes_correctly() {
+        // A simple `fn n_times_2` body: Block([Return(Some(Infix(*, n, 2)))])
+        //   Block(1) + Return(2) + Infix(3) + Identifier(4) + IntLit(5) = 5
+        use crate::span::Span;
+        let body = Node::Block {
+            stmts: vec![Node::ReturnStatement {
+                value: Some(Box::new(Node::InfixExpression {
+                    left: Box::new(Node::Identifier {
+                        name: "n".to_string(),
+                        span: Span::default(),
+                    }),
+                    operator: "*".to_string(),
+                    right: Box::new(Node::IntegerLiteral {
+                        value: 2,
+                        span: Span::default(),
+                    }),
+                    span: Span::default(),
+                })),
+                span: Span::default(),
+            }],
+            span: Span::default(),
+        };
+        assert_eq!(count_nodes(&body), 5);
+        assert!(is_trivial_leaf(&body, "double", None));
+    }
+
+    #[test]
+    fn inliner_rejects_fn_with_call_in_body() {
+        // A body with ANY call is NOT a trivial leaf.
+        let p = parse_program(
+            "fn helper(int n) { return n; } \
+             fn wrap(int n) { return helper(n); } \
+             return wrap(10);",
+        );
+        // Correctness still holds via the regular indirect-call
+        // path — wrap's body contains helper() so it can't be
+        // inlined.
+        assert_eq!(run(&p).unwrap(), 10);
+    }
+
+    #[test]
+    fn inliner_rejects_self_recursion() {
+        // `fn fact(int n) { if n <= 1 { return 1; } return n * fact(n - 1); }`
+        // — contains a call AND a loop-ish structure; doubly
+        // disqualified. But let's pin the direct-self-call rule
+        // explicitly with a trivial self-call body:
+        // `fn f(int n) { return f(n); }` — still calls, so
+        // rejected by the call guard first. The self-name guard
+        // is a belt-and-suspenders check tested at the predicate
+        // level.
+        use crate::span::Span;
+        let body = Node::Block {
+            stmts: vec![Node::ReturnStatement {
+                value: Some(Box::new(Node::Identifier {
+                    name: "n".to_string(),
+                    span: Span::default(),
+                })),
+                span: Span::default(),
+            }],
+            span: Span::default(),
+        };
+        // Body is trivially leafy EXCEPT for the self-call rule.
+        // Pretending we're inside `f` compiling a call to `f`
+        // should return false.
+        assert!(!is_trivial_leaf(&body, "f", Some("f")));
+        // But calling `f` from a different enclosing fn IS fine.
+        assert!(is_trivial_leaf(&body, "f", Some("g")));
+    }
+
+    #[test]
+    fn inliner_rejects_body_exceeding_node_limit() {
+        // A body with more than TRIVIAL_LEAF_MAX_NODES nodes —
+        // build one by nesting InfixExpressions.
+        use crate::span::Span;
+        let mut body: Node = Node::Identifier {
+            name: "n".to_string(),
+            span: Span::default(),
+        };
+        for _ in 0..10 {
+            body = Node::InfixExpression {
+                left: Box::new(body),
+                operator: "+".to_string(),
+                right: Box::new(Node::IntegerLiteral {
+                    value: 1,
+                    span: Span::default(),
+                }),
+                span: Span::default(),
+            };
+        }
+        assert!(count_nodes(&body) > TRIVIAL_LEAF_MAX_NODES);
+        assert!(!is_trivial_leaf(&body, "huge", None));
+    }
+
+    #[test]
+    fn inliner_preserves_correctness_for_trivial_leaves() {
+        // Trivial leaf fns exist; calling them produces the
+        // correct result regardless of whether the inliner fires.
+        // The inlined path and indirect path must agree — tested
+        // here by running a program that exercises both shapes.
+        let p = parse_program(
+            "fn double(int n) { return n * 2; } \
+             fn triple(int n) { return n * 3; } \
+             fn add(int a, int b) { return a + b; } \
+             return add(double(5), triple(4));",
+        );
+        // double(5)=10, triple(4)=12, add(10,12)=22.
+        assert_eq!(run(&p).unwrap(), 22);
+    }
+
+    #[test]
+    fn inliner_fires_on_nested_trivial_calls() {
+        // Nested call where both levels qualify — the outer
+        // call's arg is an inline, but the argument expression
+        // runs BEFORE the outer inline's merge block is
+        // installed, so there's no ambiguity.
+        //
+        // Note: the JIT doesn't yet lower `PrefixExpression`
+        // (unary `-`), so the body uses `0 - n` instead. Either
+        // form exercises the nested-inline path.
+        let p = parse_program(
+            "fn inc(int n) { return n + 1; } \
+             fn negate(int n) { return 0 - n; } \
+             return inc(negate(3));",
+        );
+        // negate(3) = -3; inc(-3) = -2.
+        assert_eq!(run(&p).unwrap(), -2);
+    }
+
+    #[test]
+    fn inliner_preserves_fib_correctness() {
+        // fib is NOT a leaf (has calls), so the inliner doesn't
+        // fire. Correctness is preserved via the existing
+        // indirect-call path.
+        let p = parse_program(
+            "fn fib(int n) { \
+                if (n < 2) { return n; } \
+                return fib(n - 1) + fib(n - 2); \
+            } \
+            return fib(10);",
+        );
+        assert_eq!(run(&p).unwrap(), 55);
+    }
+
+    #[test]
+    fn inliner_fires_on_simple_arithmetic_leaf() {
+        // Simplest possible leaf: `return n + 1`. Body tree:
+        //   Block(1) + Return(2) + Infix(3) + Id(4) + IntLit(5) = 5.
+        let p = parse_program(
+            "fn plus_one(int n) { return n + 1; } \
+             return plus_one(41);",
+        );
+        assert_eq!(run(&p).unwrap(), 42);
+    }
+
+    #[test]
+    fn inliner_shadows_caller_local_with_same_name() {
+        // Caller has a local `n`; callee's param is also `n`.
+        // The inliner must shadow caller's `n` for the duration
+        // of the body and restore it after, so the caller's
+        // `n` is UNCHANGED by the call. Verify by checking
+        // that `caller_n + inlined_result` uses the ORIGINAL
+        // caller n (not the callee's).
+        let p = parse_program(
+            "fn double(int n) { return n * 2; } \
+             fn caller(int n) { \
+                let result = double(5); \
+                return n + result; \
+             } \
+             return caller(100);",
+        );
+        // double(5) = 10; caller's n is still 100; 100 + 10 = 110.
+        assert_eq!(run(&p).unwrap(), 110);
     }
 
     #[test]

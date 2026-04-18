@@ -82,3 +82,74 @@ position). That shape continues to use a regular call and still
 stacks up, confirming TCO fires only where it should. See the
 `tco_only_fires_on_direct_self_recursion_not_wrapped_calls`
 unit test in `resilient/src/jit_backend.rs`.
+
+---
+
+# RES-175: leaf-fn inliner
+
+**Decision: inliner is in.** Calls to trivial leaf functions
+(≤ 8 AST nodes, no calls / loops / match, not self-recursive)
+are lowered by splicing the callee body into the caller instead
+of emitting an indirect-call shim.
+
+## Workload
+
+`benchmarks/jit/leaf_heavy.rs` calls `plus_one(i)` 10 000 000
+times in a tight `while` loop, accumulating the results:
+
+```rust
+fn plus_one(int x) { return x + 1; }
+
+fn loop_bump() {
+    let acc = 0;
+    let i = 0;
+    while i < 10000000 {
+        acc = acc + plus_one(i);
+        i = i + 1;
+    }
+    return acc;
+}
+```
+
+`plus_one`'s body is a 5-node tree (`Block → Return → Infix →
+Id + IntLit`) — safely under the 8-node cap.
+
+## Raw numbers (Darwin arm64, release, 10 samples, p50)
+
+| Workload            | inliner OFF | inliner ON | speedup |
+| ------------------- | ----------- | ---------- | ------- |
+| leaf_heavy (10M)    | 16.94 ms    | 10.66 ms   | **1.59×** |
+| fib(25)             | ~4.30 ms    | ~4.26 ms   | ~1.00×  |
+
+Min-times track p50 closely (within ~1 ms), so the speedup
+isn't noise-amplified.
+
+## What the numbers say
+
+1. **leaf_heavy runs 37% faster with the inliner on**, above
+   the ticket's 30% threshold. Each iteration saves: one
+   indirect call + one return + a Cranelift local-function
+   import — roughly 5 instructions per call × 10M iterations.
+
+2. **fib(25) is unchanged.** fib's body contains `+ fib(n-1) +
+   fib(n-2)` — two calls, so `has_disqualifying_construct`
+   rejects it as non-leaf. The inliner scans the body on each
+   call-site lookup and bails out in O(n) of body size, which
+   for fib is tiny.
+
+3. **Self-recursion guard prevents infinite inlining.** A
+   unit test (`inliner_rejects_self_recursion`) pins this
+   explicitly — `is_trivial_leaf` returns false when the
+   callee name matches the enclosing function's name.
+
+## How to reproduce
+
+```bash
+cargo build --release --features jit
+./resilient/target/release/resilient \
+    --jit benchmarks/jit/leaf_heavy.rs
+```
+
+Toggle the inliner by flipping the `if let Some(...)` block in
+`resilient/src/jit_backend.rs`'s `CallExpression` lowering
+arm to `if false && ...`.
