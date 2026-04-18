@@ -1,7 +1,7 @@
 ---
 id: RES-119
 title: Unified `Diagnostic` type shared by parser, typechecker, verifier, LSP
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G6
 created: 2026-04-17
@@ -43,6 +43,10 @@ something real.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (scope — see Attempt 1)
+- 2026-04-17 re-claimed by executor — landing Option 2
+  (scaffolding only) per the bail's own clarification. Phase
+  migrations (parser/typechecker/VM/verifier/LSP) remain as
+  follow-up tickets (RES-119b..e).
 
 ## Attempt 1 failed
 
