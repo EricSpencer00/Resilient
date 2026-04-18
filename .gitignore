@@ -4,6 +4,7 @@
 resilient/target
 resilient-runtime/target
 resilient-runtime-cortex-m-demo/target
+resilient-span/target
 
 # Ralph-loop runtime artifacts (logs grow, STOP is a local kill switch)
 .board/logs/

@@ -49,6 +49,12 @@ jit = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-native", "dep:cranel
 logos-lexer = ["dep:logos"]
 
 [dependencies]
+# RES-115: source-position types live in their own crate so
+# downstream tooling can depend on just the span layer without
+# pulling in the whole compiler. `resilient/src/span.rs` is now a
+# thin `pub use resilient_span::*;` shim; `resilient-runtime`
+# does *not* take this dep (it stays no_std-clean).
+resilient-span = { path = "../resilient-span" }
 clap = { version = "4.4", features = ["derive"] }
 logos = { version = "0.14", optional = true }
 rustyline = "12.0.0"

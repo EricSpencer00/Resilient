@@ -577,64 +577,9 @@ impl Lexer {
         }
     }
 
-    /// RES-110: single-pass scan that records the byte offset of each
-    /// line start. Entry `0` is always byte `0` (BOF); every
-    /// subsequent entry is the byte immediately after a `\n`. The
-    /// returned `Vec` has no EOF sentinel — callers binary-search it
-    /// and use the length as the implicit upper bound.
-    ///
-    /// Consumed by `pos_from_byte` below to back-fill `Pos` metadata
-    /// for the logos-based lexer (RES-108), which emits byte spans
-    /// natively but does not track line / column on its own.
-    #[allow(dead_code)]
-    pub fn build_line_table(src: &str) -> Vec<usize> {
-        // One entry per line is a reasonable upper-bound guess;
-        // allocate defensively for small inputs.
-        let mut table: Vec<usize> = Vec::with_capacity(src.len() / 40 + 1);
-        table.push(0);
-        for (i, b) in src.bytes().enumerate() {
-            if b == b'\n' {
-                table.push(i + 1);
-            }
-        }
-        table
-    }
-}
-
-/// RES-110: O(log n) byte-offset → `Pos` conversion. `table` must
-/// have been built via `Lexer::build_line_table` over the *same*
-/// source as `src`. `byte` may be any value in `0..=src.len()`; out-
-/// of-range queries are clamped.
-///
-/// Note on signature: the ticket sketched `pos_from_byte(table, byte)`
-/// — the accompanying UTF-8 note requires counting *characters* from
-/// the start of the line, which needs access to the source. We take
-/// `src` as a third parameter to honour that note; the promised
-/// O(log n) behaviour still applies to the line search over `table`.
-/// Character counting inside the current line is O(line-length).
-#[allow(dead_code)]
-pub fn pos_from_byte(table: &[usize], src: &str, byte: usize) -> span::Pos {
-    let byte = byte.min(src.len());
-    // Find the largest index i with table[i] <= byte.
-    let line_idx = match table.binary_search(&byte) {
-        Ok(i) => i,
-        // `Err(0)` means `byte < table[0]`, which is impossible since
-        // `table[0]` is always 0 — keep the arm for total coverage.
-        Err(0) => 0,
-        Err(i) => i - 1,
-    };
-    let line_start = table[line_idx];
-    let line = line_idx + 1;
-    // Column: characters between the line start and `byte`, 1-indexed.
-    // `src.get(..)` returns `None` if `byte` is not on a UTF-8
-    // boundary — logos spans always are, so the fallback matters only
-    // for defensive correctness.
-    let col_slice = src.get(line_start..byte).unwrap_or("");
-    let column = col_slice.chars().count() + 1;
-    // Offset: characters between BOF and `byte`. `Pos::offset` is
-    // documented as a 0-indexed character index.
-    let offset = src.get(..byte).map(|s| s.chars().count()).unwrap_or(0);
-    span::Pos::new(line, column, offset)
+    // RES-115: `build_line_table` / `pos_from_byte` moved to the
+    // `resilient-span` crate. Callers keep using the same names via
+    // the `crate::span::*` re-export shim in `span.rs`.
 }
 
 /// RES-039: patterns for `match` arms.
@@ -5343,27 +5288,27 @@ mod tests {
 
     #[test]
     fn line_table_empty_source_has_single_bof_entry() {
-        let table = Lexer::build_line_table("");
+        let table = span::build_line_table("");
         assert_eq!(table, vec![0]);
     }
 
     #[test]
     fn line_table_no_newlines_has_single_entry() {
-        let table = Lexer::build_line_table("abc");
+        let table = span::build_line_table("abc");
         assert_eq!(table, vec![0]);
     }
 
     #[test]
     fn line_table_newlines_record_byte_after_each() {
         let src = "abc\ndef\nghi";
-        let table = Lexer::build_line_table(src);
+        let table = span::build_line_table(src);
         assert_eq!(table, vec![0, 4, 8]);
     }
 
     #[test]
     fn line_table_trailing_newline_adds_final_entry_past_last_line() {
         let src = "abc\ndef\n";
-        let table = Lexer::build_line_table(src);
+        let table = span::build_line_table(src);
         // Three logical lines: "abc", "def", and the empty line after.
         assert_eq!(table, vec![0, 4, 8]);
     }
@@ -5371,25 +5316,25 @@ mod tests {
     #[test]
     fn pos_from_byte_start_of_file() {
         let src = "abc\ndef";
-        let table = Lexer::build_line_table(src);
-        assert_eq!(pos_from_byte(&table, src, 0), span::Pos::new(1, 1, 0));
+        let table = span::build_line_table(src);
+        assert_eq!(span::pos_from_byte(&table, src, 0), span::Pos::new(1, 1, 0));
     }
 
     #[test]
     fn pos_from_byte_end_of_file_no_trailing_newline() {
         let src = "abc";
-        let table = Lexer::build_line_table(src);
+        let table = span::build_line_table(src);
         // Last char 'c' is at byte 2; byte 3 is past the last byte
         // (EOF) and should still land on line 1.
-        assert_eq!(pos_from_byte(&table, src, 3), span::Pos::new(1, 4, 3));
+        assert_eq!(span::pos_from_byte(&table, src, 3), span::Pos::new(1, 4, 3));
     }
 
     #[test]
     fn pos_from_byte_end_of_file_with_trailing_newline() {
         let src = "abc\n";
-        let table = Lexer::build_line_table(src);
+        let table = span::build_line_table(src);
         // Byte 4 is the start of the implicit empty line after `\n`.
-        assert_eq!(pos_from_byte(&table, src, 4), span::Pos::new(2, 1, 4));
+        assert_eq!(span::pos_from_byte(&table, src, 4), span::Pos::new(2, 1, 4));
     }
 
     #[test]
@@ -5397,14 +5342,14 @@ mod tests {
         // Each Greek letter is 2 bytes in UTF-8, so column should be
         // counted in characters, not bytes.
         let src = "αβγ";
-        let table = Lexer::build_line_table(src);
+        let table = span::build_line_table(src);
         // Byte 2 sits between α and β — one full char before it.
-        let pos = pos_from_byte(&table, src, 2);
+        let pos = span::pos_from_byte(&table, src, 2);
         assert_eq!(pos.line, 1);
         assert_eq!(pos.column, 2);
         assert_eq!(pos.offset, 1);
         // Byte 4 sits between β and γ — two full chars before it.
-        let pos = pos_from_byte(&table, src, 4);
+        let pos = span::pos_from_byte(&table, src, 4);
         assert_eq!(pos.column, 3);
         assert_eq!(pos.offset, 2);
     }
@@ -5412,9 +5357,9 @@ mod tests {
     #[test]
     fn pos_from_byte_across_line_with_utf8_content() {
         let src = "αβ\nγδ";
-        let table = Lexer::build_line_table(src);
+        let table = span::build_line_table(src);
         // α β \n γ δ — bytes: 0,2 / 4 / 5,7; byte 7 is between γ and δ.
-        let pos = pos_from_byte(&table, src, 7);
+        let pos = span::pos_from_byte(&table, src, 7);
         assert_eq!(pos.line, 2);
         assert_eq!(pos.column, 2);
         // Offset is the total char count from BOF: α β \n γ = 4 chars

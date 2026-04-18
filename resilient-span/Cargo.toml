@@ -1,0 +1,15 @@
+[package]
+name = "resilient-span"
+version = "0.1.0"
+edition = "2024"
+description = "Source-position (Pos / Span / Spanned) types used by the Resilient compiler pipeline — lexer, parser, typechecker, LSP, and future tooling — extracted into a standalone crate so downstream tools can depend on just the span layer without pulling in the whole compiler (RES-115)."
+authors = ["Eric Spencer"]
+
+# Intentionally std: spans are a compile-time concept and every
+# current consumer (lexer / parser / typechecker / LSP) is std. We
+# do NOT go no_std here — that would force `alloc` on every
+# consumer for Spanned<T>'s `Vec`-adjacent ergonomics without any
+# real benefit. `resilient-runtime` is the no_std crate; it does
+# not (and must not, per the ticket) depend on this one.
+
+[dependencies]

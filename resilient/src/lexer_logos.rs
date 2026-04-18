@@ -218,7 +218,7 @@ pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
         0
     };
 
-    let table = crate::Lexer::build_line_table(src);
+    let table = crate::span::build_line_table(src);
 
     // Char count at the start of each line: entry `i` = total chars
     // in the prefix `src[..table[i]]`. Single O(n) pass over bytes;

@@ -1044,11 +1044,16 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "logos",
+ "resilient-span",
  "rustyline",
  "tokio",
  "tower-lsp",
  "z3",
 ]
+
+[[package]]
+name = "resilient-span"
+version = "0.1.0"
 
 [[package]]
 name = "rustc-hash"
