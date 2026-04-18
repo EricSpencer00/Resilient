@@ -1,7 +1,7 @@
 ---
 id: RES-147
 title: `clock_ms()` builtin returns monotonic milliseconds
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -35,3 +35,4 @@ only a monotonic variant.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
