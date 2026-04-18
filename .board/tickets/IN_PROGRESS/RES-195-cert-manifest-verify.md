@@ -1,7 +1,7 @@
 ---
 id: RES-195
 title: Certificate manifest + `verify-all` subcommand
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G19
 created: 2026-04-17
@@ -39,3 +39,4 @@ This is what a downstream regulator would consume.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
