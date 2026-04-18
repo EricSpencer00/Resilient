@@ -1,7 +1,7 @@
 ---
 id: RES-197
 title: `resilient fmt` subcommand: deterministic source formatter
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: tooling
 created: 2026-04-17
@@ -37,3 +37,4 @@ single blank line between top-level items.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
