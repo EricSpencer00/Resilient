@@ -3374,6 +3374,8 @@ fn register_builtins(env: &mut Environment) {
 const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("println", builtin_println),
     ("print", builtin_print),
+    // RES-144: single-line stdin read. std-only.
+    ("input", builtin_input),
     ("abs", builtin_abs),
     ("min", builtin_min),
     ("max", builtin_max),
@@ -3460,6 +3462,71 @@ fn builtin_print(args: &[Value]) -> RResult<Value> {
             Ok(Value::Void)
         }
         many => Err(format!("print expects 0 or 1 argument, got {}", many.len())),
+    }
+}
+
+/// RES-144: `input(prompt: String) -> String` — read one line from
+/// stdin, returning everything up to (but not including) the first
+/// `\n`. Any trailing `\r` is also stripped so Windows-style line
+/// endings round-trip cleanly. An empty `prompt` skips the prompt
+/// print; otherwise the prompt is written to stdout and flushed
+/// before the read begins so interactive shells see it immediately.
+///
+/// EOF before any bytes are read returns `""` (not an error) — this
+/// lets idiomatic `while input("> ") != "quit" { ... }` loops exit
+/// on ctrl-D without tripping an exception.
+///
+/// std-only: the no_std `resilient-runtime` crate has no builtins
+/// table and stays embedded-clean.
+fn builtin_input(args: &[Value]) -> RResult<Value> {
+    let prompt = match args {
+        [Value::String(s)] => s.clone(),
+        [other] => {
+            return Err(format!(
+                "input: expected String prompt, got {}",
+                other
+            ))
+        }
+        many => {
+            return Err(format!(
+                "input: expected 1 argument (prompt), got {}",
+                many.len()
+            ))
+        }
+    };
+    let stdin = std::io::stdin();
+    let mut lock = stdin.lock();
+    do_input(&mut lock, &prompt)
+}
+
+/// Core of `input()` factored out for unit testing — generic over
+/// `BufRead` so tests can drive it with a `std::io::Cursor` without
+/// blocking on real stdin (per the RES-144 acceptance criterion
+/// "stubbed stdin via `std::io::Cursor` injected through a small
+/// trait"; here `BufRead` is that trait).
+fn do_input<R: std::io::BufRead>(reader: &mut R, prompt: &str) -> RResult<Value> {
+    use std::io::Write as _;
+    if !prompt.is_empty() {
+        print!("{}", prompt);
+        // Flush so a prompt without a trailing newline appears
+        // before the reader blocks on input.
+        let _ = std::io::stdout().flush();
+    }
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => Ok(Value::String(String::new())), // EOF
+        Ok(_) => {
+            // Strip the trailing `\n` (always present on non-EOF)
+            // and an optional `\r` for CRLF line endings.
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            Ok(Value::String(line))
+        }
+        Err(e) => Err(format!("input: stdin read failed: {}", e)),
     }
 }
 
@@ -6416,6 +6483,90 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-144: input() builtin ---
+
+    /// Extract the String payload of a `Value::String` or panic with
+    /// context if the variant is wrong. Keeps the input tests concise
+    /// even though `Value` lacks `PartialEq`.
+    fn as_string(v: Value) -> String {
+        match v {
+            Value::String(s) => s,
+            other => panic!("expected Value::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn do_input_reads_single_line_and_strips_newline() {
+        // Basic happy path — no prompt, one line of data, trailing
+        // newline stripped from the returned String.
+        let mut r = std::io::Cursor::new(b"alice\n" as &[u8]);
+        let v = do_input(&mut r, "").unwrap();
+        assert_eq!(as_string(v), "alice");
+    }
+
+    #[test]
+    fn do_input_strips_crlf_line_endings() {
+        // Windows-style line endings: both the `\r` and the `\n` are
+        // stripped so downstream `if name == "alice"` comparisons
+        // behave the same on either platform.
+        let mut r = std::io::Cursor::new(b"alice\r\n" as &[u8]);
+        let v = do_input(&mut r, "").unwrap();
+        assert_eq!(as_string(v), "alice");
+    }
+
+    #[test]
+    fn do_input_returns_empty_string_on_eof() {
+        // EOF before any bytes is NOT an error per the ticket's
+        // Notes: users can write `while input("> ") != "quit"` and
+        // have ctrl-D exit the loop cleanly.
+        let mut r = std::io::Cursor::new(b"" as &[u8]);
+        let v = do_input(&mut r, "").unwrap();
+        assert_eq!(as_string(v), "");
+    }
+
+    #[test]
+    fn do_input_reads_only_first_line_if_multiple_present() {
+        // `read_line` stops at the first `\n`; the rest stays in the
+        // reader. A follow-up call would return the next line.
+        let mut r = std::io::Cursor::new(b"first\nsecond\n" as &[u8]);
+        let v1 = do_input(&mut r, "").unwrap();
+        assert_eq!(as_string(v1), "first");
+        let v2 = do_input(&mut r, "").unwrap();
+        assert_eq!(as_string(v2), "second");
+    }
+
+    #[test]
+    fn do_input_line_without_trailing_newline_still_returned() {
+        // If stdin ends with data but no trailing newline (e.g. piped
+        // heredoc), the bytes are still returned — `read_line`
+        // considers this a successful read.
+        let mut r = std::io::Cursor::new(b"no-newline" as &[u8]);
+        let v = do_input(&mut r, "").unwrap();
+        assert_eq!(as_string(v), "no-newline");
+    }
+
+    #[test]
+    fn builtin_input_rejects_non_string_prompt() {
+        let err = builtin_input(&[Value::Int(42)]).unwrap_err();
+        assert!(
+            err.contains("expected String prompt"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn builtin_input_rejects_wrong_arity() {
+        let err = builtin_input(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+        let err = builtin_input(&[
+            Value::String("a".into()),
+            Value::String("b".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
     // --- RES-143: file_read / file_write builtins ---

@@ -1,0 +1,5 @@
+RES-144: sidecar marker. Presence of this file tells the golden-test
+harness (tests/examples_golden.rs) to skip `interactive_greeter.rs`
+in CI, because it reads from stdin and would block forever without a
+terminal. The contents of the file are not examined; only its
+existence matters.

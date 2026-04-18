@@ -41,6 +41,16 @@ fn expected_path(example: &Path) -> PathBuf {
     example.with_file_name(format!("{stem}.expected.txt"))
 }
 
+/// RES-144: a sibling `<stem>.interactive` file marks an example as
+/// "don't run in CI" — typically because it reads from real stdin and
+/// would block forever, or it's a demo whose behaviour depends on
+/// runtime input. The golden harness skips such examples; the
+/// missing-expected-file audit also treats them as intentional.
+fn is_interactive(example: &Path) -> bool {
+    let stem = example.file_stem().and_then(|s| s.to_str()).unwrap();
+    example.with_file_name(format!("{stem}.interactive")).exists()
+}
+
 fn run(example: &Path) -> String {
     let output = Command::new(bin())
         .arg(example)
@@ -68,6 +78,12 @@ fn golden_outputs_match() {
     let mut failures = Vec::new();
 
     for example in list_examples() {
+        // RES-144: skip examples tagged as interactive (stdin-driven
+        // demos or live-clock experiments) — they have no reproducible
+        // stdout to match against.
+        if is_interactive(&example) {
+            continue;
+        }
         let expected_file = expected_path(&example);
         if !expected_file.exists() {
             continue;
@@ -112,7 +128,9 @@ fn golden_outputs_match() {
 fn missing_expected_files_are_intentional() {
     let missing: Vec<_> = list_examples()
         .into_iter()
-        .filter(|p| !expected_path(p).exists())
+        // RES-144: interactive examples intentionally have no
+        // `.expected.txt` — they're exempt from the audit.
+        .filter(|p| !is_interactive(p) && !expected_path(p).exists())
         .collect();
     if !missing.is_empty() {
         let names: Vec<_> = missing

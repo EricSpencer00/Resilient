@@ -509,6 +509,12 @@ impl TypeChecker {
             return_type: Box::new(Type::Int),
         });
 
+        // RES-144: one-line stdin reader (std-only).
+        env.set("input".to_string(), Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::String),
+        });
+
         // RES-143: file I/O builtins (std-only; the resilient-runtime
         // sibling crate has no builtins table so its no_std posture is
         // unaffected).
