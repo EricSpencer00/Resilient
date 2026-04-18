@@ -1,4 +1,5 @@
-# RES-201: cargo-fuzz workflow for the parser target.
+# RES-201 + RES-111: cargo-fuzz workflow for the lexer + parser
+# targets.
 #
 # Manual dispatch only — fuzzing is bursty work, not per-PR. Each
 # target runs for 30 seconds against its own corpus directory
@@ -6,11 +7,10 @@
 # corpora if we were to commit them, which we intentionally don't
 # today).
 #
-# RES-111 was expected to create this workflow with a `lex` target;
-# that ticket bailed, so RES-201 brings both workflow and its one
-# target up at once. When RES-111 lands (or is resequenced), its
-# `lex` target slots into the matrix below with zero workflow
-# changes.
+# Matrix: `parse` target landed with RES-201; `lex` target added
+# by RES-111. Both shell out to the built `resilient` binary
+# with feature-independent invocations (`-t` for parse,
+# `--dump-tokens` for lex).
 
 name: fuzz
 
@@ -31,6 +31,7 @@ jobs:
       matrix:
         target:
           - parse
+          - lex
     steps:
       - uses: actions/checkout@v4
 

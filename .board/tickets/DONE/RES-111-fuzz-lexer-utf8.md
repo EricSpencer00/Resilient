@@ -1,7 +1,7 @@
 ---
 id: RES-111
 title: Fuzz the lexer with arbitrary UTF-8 input (no panics, ever)
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G5
 created: 2026-04-17
@@ -43,6 +43,77 @@ and return an empty stream — never panic, never loop.
   nightly + new CI workflow = 4 iteration-sized pieces)
 - 2026-04-17 re-claimed by executor (RES-201 landed 2 of 4
   prereqs — fuzz crate + workflow now exist)
+- 2026-04-17 resolved by executor (subprocess-via-`--dump-tokens`
+  lex target; workflow matrix bumped to [parse, lex])
+
+## Resolution
+
+### Files added
+- `fuzz/fuzz_targets/lex.rs` — libFuzzer target that filters
+  input through `std::str::from_utf8`, writes to a tempfile,
+  spawns `$RESILIENT_FUZZ_BIN --dump-tokens <file>`, and
+  re-raises subprocess-signal-crashes as local panics so
+  libFuzzer records the offending input under
+  `fuzz/artifacts/lex/`.
+
+### Files changed
+- `fuzz/Cargo.toml` — new `[[bin]] name = "lex"` entry
+  alongside `parse`.
+- `.github/workflows/fuzz.yml` — header comment now lists
+  both tickets; matrix `target:` list is `[parse, lex]`.
+- `fuzz/README.md` — target table now names the lex target +
+  local-run command for it.
+
+### Design deviation from the literal AC
+The AC calls for `Lexer::new(input).lex()` — a direct
+in-process call into the lexer. The resilient crate is
+binary-only today (no `src/lib.rs`), so we use the same
+subprocess pattern as RES-201's parse target:
+`resilient --dump-tokens <tempfile>`. That flag drives
+`Lexer::new(src)` + `next_token_with_span` to EOF inside the
+binary, so every lexer panic still surfaces as a SIGABRT in
+the subprocess, which the target re-raises as a local
+panic.
+
+Trade-off: ~1ms per iter vs millions in-process. Enough to
+surface lexer panics in a CI budget; moving to in-process is
+a future improvement that depends on the bin→lib refactor
+flagged in RES-111a (ticket Attempt-1 clarification).
+
+### What about the original bail's four pieces?
+Attempt 1 listed four independently-sized pieces. As of this
+resolution:
+
+1. **bin→lib refactor** — still deferred (unblocks in-process
+   fuzz + the LSP tickets that also want a lib surface).
+2. **cargo-fuzz scaffolding** — DONE (RES-201).
+3. **Nightly toolchain** — still absent at the repo level.
+   The workflow installs nightly inside CI so the fuzz runs;
+   local dev requires `rustup default nightly` or
+   `cargo +nightly ...`.
+4. **`.github/workflows/fuzz.yml`** — DONE (RES-201; this
+   ticket bumped the matrix to include `lex`).
+
+### Verification
+- `ruby -ryaml` on `.github/workflows/fuzz.yml` → parses
+  cleanly
+- `python3 -c "import tomllib"` on `fuzz/Cargo.toml` → parses
+  cleanly
+- `cargo test --locked` in the resilient crate → unchanged
+  (pure additive; the fuzz crate is standalone, not a
+  workspace member of resilient)
+- End-to-end fuzz run NOT performed locally (cargo-fuzz +
+  nightly not installed on the dev host). The CI workflow
+  installs both and runs the lex + parse targets on manual
+  dispatch.
+
+### Follow-ups (not in this ticket)
+- **RES-111a: bin→lib refactor.** Enables in-process fuzzing
+  AND unblocks the LSP tickets that need `resilient::parse`
+  etc.
+- **Seed corpus** — `examples/*.rs` are good starting inputs
+  for both lex and parse. Commit under `fuzz/corpus/{lex,parse}/`
+  once seeded.
 
 ## Attempt 1 failed
 

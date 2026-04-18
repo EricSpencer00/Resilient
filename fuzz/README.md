@@ -6,14 +6,15 @@ libFuzzer.
 
 ## Targets
 
-| Target  | Ticket   | What it fuzzes                                         |
-| ------- | -------- | ------------------------------------------------------ |
-| `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `resilient --typecheck`. Fails on panic. |
+| Target  | Ticket   | What it fuzzes                                                                        |
+| ------- | -------- | ------------------------------------------------------------------------------------- |
+| `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `resilient -t`. Fails on panic.             |
+| `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `resilient --dump-tokens`. Fails on panic.   |
 
-Additional targets (e.g. `lex` for RES-111) slot in by adding a
-file under `fuzz_targets/` and a `[[bin]]` entry in
-`fuzz/Cargo.toml`; the GitHub Actions matrix in
-`.github/workflows/fuzz.yml` picks them up via the `target:` key.
+Additional targets slot in by adding a file under
+`fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`; the
+GitHub Actions matrix in `.github/workflows/fuzz.yml` picks
+them up via the `target:` key.
 
 ## Design note: subprocess, not in-process
 
@@ -42,6 +43,13 @@ cargo build --release --manifest-path resilient/Cargo.toml
 # Run the parse target for 30 seconds.
 RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/resilient \
   cargo +nightly fuzz run parse --manifest-path fuzz/Cargo.toml -- \
+    -max_total_time=30 \
+    -timeout=1
+
+# Or the lex target. Same runner invariants — fails on a
+# subprocess panic (SIGABRT) but otherwise passes.
+RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/resilient \
+  cargo +nightly fuzz run lex --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1
 ```
