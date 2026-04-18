@@ -196,6 +196,33 @@ for a buildable example that links the runtime with an
 cross-compile; the demo is a build check, not a runtime
 demonstration.
 
+#### RISC-V rv32imac (RES-176)
+
+The runtime also cross-compiles to
+`riscv32imac-unknown-none-elf` — the baseline ISA for HiFive,
+GD32V, and ESP32-C3 class chips. Both the default (alloc-free)
+and `alloc` feature sets build clean, and `embedded-alloc`'s
+`linked_list_allocator` backend works on RISC-V without target
+overrides.
+
+```bash
+rustup target add riscv32imac-unknown-none-elf
+cd resilient-runtime
+cargo build --target riscv32imac-unknown-none-elf
+cargo build --target riscv32imac-unknown-none-elf --features alloc
+cargo clippy --target riscv32imac-unknown-none-elf -- -D warnings
+```
+
+Run `scripts/build_riscv32.sh` from the repo root to execute all
+three steps in one shot. CI gates the RISC-V build via the
+`embedded` workflow (`.github/workflows/embedded.yml`) alongside
+the Cortex-M job.
+
+There's no separate RISC-V demo crate yet — one embedded demo
+(RES-101's Cortex-M4F) is enough to exercise the `#[global_allocator]`
+wiring; adding a second target would multiply maintenance for
+zero new coverage.
+
 ### Available Examples
 
 All in `resilient/examples/`. Each ships with a `.expected.txt`

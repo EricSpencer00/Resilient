@@ -1,0 +1,72 @@
+# RES-176: embedded cross-compile CI. Two jobs, one per target
+# class. Each installs the target via rustup and runs the
+# matching `scripts/build_*.sh` so the gate stays a single source
+# of truth — if someone runs the script locally, they see the
+# same commands CI does.
+#
+# No QEMU runners here; these are build gates, not runtime
+# exercises. A runtime job would need per-target QEMU and is
+# out of scope for this ticket.
+
+name: embedded
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cortex_m:
+    name: resilient-runtime-cortex-m-demo (thumbv7em-none-eabihf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+          targets: thumbv7em-none-eabihf
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            resilient-runtime-cortex-m-demo/target
+          key: cortex-m-${{ hashFiles('resilient-runtime-cortex-m-demo/Cargo.lock', 'resilient-runtime/Cargo.lock') }}
+
+      - name: build_cortex_m_demo.sh
+        run: scripts/build_cortex_m_demo.sh
+
+  riscv32:
+    name: resilient-runtime (riscv32imac-unknown-none-elf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+          targets: riscv32imac-unknown-none-elf
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            resilient-runtime/target
+          key: riscv32-${{ hashFiles('resilient-runtime/Cargo.lock') }}
+
+      - name: build_riscv32.sh
+        run: scripts/build_riscv32.sh
