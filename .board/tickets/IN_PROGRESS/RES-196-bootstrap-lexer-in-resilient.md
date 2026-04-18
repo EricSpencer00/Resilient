@@ -1,7 +1,7 @@
 ---
 id: RES-196
 title: Bootstrap experiment: self-host the lexer in Resilient
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G20
 created: 2026-04-17
@@ -38,3 +38,4 @@ lexer, but proof that the language can express it.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
