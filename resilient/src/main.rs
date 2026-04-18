@@ -1254,6 +1254,13 @@ struct Parser {
     peek_line: usize,
     peek_column: usize,
     errors: Vec<String>,
+    /// RES-156: fresh-name counter for array-comprehension
+    /// desugaring. Each comprehension bumps this to mint a unique
+    /// `_r$N` accumulator so nested / multiple comprehensions
+    /// don't shadow each other's internal name (the `$` is not a
+    /// legal identifier char in user code, so user bindings
+    /// can't collide).
+    comprehension_counter: u32,
 }
 
 impl Parser {
@@ -1267,6 +1274,7 @@ impl Parser {
             peek_line: 1,
             peek_column: 1,
             errors: Vec::new(),
+            comprehension_counter: 0,
         };
 
         parser.next_token();
@@ -3146,6 +3154,13 @@ impl Parser {
         }
         self.next_token(); // skip '['
         if let Some(first) = self.parse_expression(0) {
+            // RES-156: if the next token after the first expression
+            // is `for`, this is a comprehension, not an array
+            // literal. Steal the first expression as the
+            // comprehension's result expression and desugar.
+            if self.peek_token == Token::For {
+                return self.parse_array_comprehension(first, bracket_span);
+            }
             items.push(first);
         }
         while self.peek_token == Token::Comma {
@@ -3169,6 +3184,188 @@ impl Parser {
             self.next_token(); // to ]
         }
         Node::ArrayLiteral { items, span: bracket_span }
+    }
+
+    /// RES-156: desugar `[<expr> for <binding> in <iterable> (if
+    /// <guard>)?]` into an immediately-invoked fn:
+    ///
+    /// ```text
+    /// (fn() {
+    ///   let _r$N = [];
+    ///   for <binding> in <iterable> {
+    ///     if (<guard>) { _r$N = push(_r$N, <expr>); }
+    ///   }
+    ///   return _r$N;
+    /// })()
+    /// ```
+    ///
+    /// On entry, `current_token` sits at the last token of
+    /// `<expr>`; `peek_token == For`. On exit, `current_token` is
+    /// the closing `]` so `parse_expression`'s tail handling works
+    /// unchanged. `first_expr` is the already-parsed result
+    /// expression.
+    fn parse_array_comprehension(
+        &mut self,
+        first_expr: Node,
+        bracket_span: span::Span,
+    ) -> Node {
+        // Advance from the end of <expr> to `for`.
+        self.next_token(); // current_token == Token::For
+        self.next_token(); // past `for` to the binding identifier
+
+        let binding = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected binding name after `for` in comprehension, found {}",
+                    tok
+                ));
+                // Best-effort fallback: synthesize a placeholder so
+                // parsing proceeds — the user will see the recorded
+                // error.
+                "_comp_err".to_string()
+            }
+        };
+        self.next_token(); // past binding
+
+        if self.current_token != Token::In {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `in` after comprehension binding `{}`, found {}",
+                binding, tok
+            ));
+        } else {
+            self.next_token(); // past `in`
+        }
+
+        let iterable = self
+            .parse_expression(0)
+            .unwrap_or(Node::ArrayLiteral {
+                items: Vec::new(),
+                span: span::Span::default(),
+            });
+
+        // Optional guard: `if <expr>`.
+        let guard = if self.peek_token == Token::If {
+            self.next_token(); // current_token == `if`
+            self.next_token(); // past `if`
+            self.parse_expression(0)
+        } else {
+            None
+        };
+
+        // Expect the closing `]`.
+        if self.peek_token != Token::RightBracket {
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected `]` to close array comprehension, found {}",
+                tok
+            ));
+        } else {
+            self.next_token(); // to `]`
+        }
+
+        // ---------- Desugar ----------
+        let acc = format!("_r${}", self.comprehension_counter);
+        self.comprehension_counter += 1;
+        let default = span::Span::default;
+
+        // push(_r, <expr>)
+        let push_call = Node::CallExpression {
+            function: Box::new(Node::Identifier {
+                name: "push".to_string(),
+                span: default(),
+            }),
+            arguments: vec![
+                Node::Identifier {
+                    name: acc.clone(),
+                    span: default(),
+                },
+                first_expr,
+            ],
+            span: default(),
+        };
+
+        // _r = push(_r, <expr>);
+        let push_assign = Node::Assignment {
+            name: acc.clone(),
+            value: Box::new(push_call),
+            span: default(),
+        };
+
+        // Loop body: either wrapped in `if <guard> { ... }` or the
+        // bare assign. Keep the inner structure a Block either way
+        // so `ForInStatement`'s body shape is uniform.
+        let inner_block = match guard {
+            Some(g) => Node::Block {
+                stmts: vec![Node::IfStatement {
+                    condition: Box::new(g),
+                    consequence: Box::new(Node::Block {
+                        stmts: vec![push_assign],
+                        span: default(),
+                    }),
+                    alternative: None,
+                    span: default(),
+                }],
+                span: default(),
+            },
+            None => Node::Block {
+                stmts: vec![push_assign],
+                span: default(),
+            },
+        };
+
+        // for <binding> in <iterable> { body }
+        let for_stmt = Node::ForInStatement {
+            name: binding,
+            iterable: Box::new(iterable),
+            body: Box::new(inner_block),
+            span: default(),
+        };
+
+        // let _r = [];
+        let init_let = Node::LetStatement {
+            name: acc.clone(),
+            value: Box::new(Node::ArrayLiteral {
+                items: Vec::new(),
+                span: default(),
+            }),
+            type_annot: None,
+            span: default(),
+        };
+
+        // return _r;
+        let ret_stmt = Node::ReturnStatement {
+            value: Some(Box::new(Node::Identifier {
+                name: acc,
+                span: default(),
+            })),
+            span: default(),
+        };
+
+        // { let _r = []; for ... { ... } return _r; }
+        let body_block = Node::Block {
+            stmts: vec![init_let, for_stmt, ret_stmt],
+            span: default(),
+        };
+
+        // fn() { body_block }
+        let fn_lit = Node::FunctionLiteral {
+            parameters: Vec::new(),
+            body: Box::new(body_block),
+            requires: Vec::new(),
+            ensures: Vec::new(),
+            return_type: None,
+            span: bracket_span,
+        };
+
+        // (fn() { ... })()
+        Node::CallExpression {
+            function: Box::new(fn_lit),
+            arguments: Vec::new(),
+            span: bracket_span,
+        }
     }
 
     /// RES-148: parse a map literal — `{k -> v, k2 -> v2, ...}`.
@@ -7745,6 +7942,151 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-156: array comprehensions ---
+
+    /// Evaluate a program returning an Int — helper for assertion
+    /// round-tripping through parse + eval.
+    fn eval_to_int(src: &str) -> i64 {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    /// Evaluate a program returning an Array — unwrap to Vec<i64>.
+    fn eval_to_int_array(src: &str) -> Vec<i64> {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int items, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn comprehension_simple_map() {
+        let src = "\
+            fn main(int _d) {\n\
+                let xs = [1, 2, 3];\n\
+                return [x * 2 for x in xs];\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_eq!(eval_to_int_array(src), vec![2, 4, 6]);
+    }
+
+    #[test]
+    fn comprehension_map_and_filter() {
+        let src = "\
+            fn main(int _d) {\n\
+                let xs = [1, 2, 3, 4, 5];\n\
+                return [x * x for x in xs if x % 2 == 0];\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_eq!(eval_to_int_array(src), vec![4, 16]);
+    }
+
+    #[test]
+    fn comprehension_binding_does_not_leak() {
+        // The `y` binding inside the comprehension must not leak
+        // into the enclosing scope. If the desugar used the
+        // enclosing scope directly, the outer assertion below
+        // would see `y` bound.
+        let src = "\
+            fn main(int _d) {\n\
+                let y = 100;\n\
+                let xs = [1, 2, 3];\n\
+                let out = [y for y in xs];\n\
+                // Outer `y` still 100 — comprehension's `y` was
+                // scoped to the IIFE body.\n\
+                return y;\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_eq!(eval_to_int(src), 100);
+    }
+
+    #[test]
+    fn comprehension_accumulator_name_does_not_shadow_user_r() {
+        // A user variable literally named `_r` must still be
+        // visible inside the comprehension's result expression —
+        // the desugar uses `_r$N` (with `$`) which cannot collide
+        // with any legal user identifier.
+        let src = "\
+            fn main(int _d) {\n\
+                let _r = 10;\n\
+                let xs = [1, 2, 3];\n\
+                let out = [x + _r for x in xs];\n\
+                // Sum of [11, 12, 13] == 36.\n\
+                let s = 0;\n\
+                for v in out { s = s + v; }\n\
+                return s;\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_eq!(eval_to_int(src), 36);
+    }
+
+    #[test]
+    fn comprehension_over_set_via_set_items() {
+        // Comprehensions iterate over arrays; users lift Sets via
+        // `set_items` (RES-149), which returns a sorted Array.
+        let src = "\
+            fn main(int _d) {\n\
+                let s = #{3, 1, 2};\n\
+                return [x * 10 for x in set_items(s)];\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert_eq!(eval_to_int_array(src), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn comprehension_empty_iterable_produces_empty_array() {
+        let src = "\
+            fn main(int _d) {\n\
+                let xs = [];\n\
+                return [x for x in xs];\n\
+            }\n\
+            main(0);\n\
+        ";
+        assert!(eval_to_int_array(src).is_empty());
+    }
+
+    #[test]
+    fn comprehension_counter_bumps_for_each_comprehension() {
+        // Two comprehensions in the same program must mint
+        // distinct accumulator names so nested / sequential uses
+        // don't clash. End-to-end correctness of both invocations
+        // is sufficient evidence; if the counter didn't bump, the
+        // second call would overwrite the first's internal state.
+        let src = "\
+            fn main(int _d) {\n\
+                let xs = [1, 2];\n\
+                let a = [x for x in xs];\n\
+                let b = [x * 10 for x in xs];\n\
+                let sum = 0;\n\
+                for v in a { sum = sum + v; }\n\
+                for v in b { sum = sum + v; }\n\
+                return sum;\n\
+            }\n\
+            main(0);\n\
+        ";
+        // [1,2] sum 3 plus [10,20] sum 30 = 33.
+        assert_eq!(eval_to_int(src), 33);
     }
 
     // --- RES-155: struct destructuring let ---
