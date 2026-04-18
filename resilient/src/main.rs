@@ -7772,6 +7772,31 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
         let pct = (stats.requires_discharged_at_compile as f64 / total_callsite as f64) * 100.0;
         println!("  static coverage:                          \x1B[36m{:.0}%\x1B[0m", pct);
     }
+
+    // RES-192: per-fn inferred effect set. Sorted so the output
+    // is stable across runs; color green for pure, yellow for
+    // IO. Skips the table entirely when no user fn was seen
+    // (e.g. a one-liner script).
+    if !stats.fn_effects.is_empty() {
+        let mut names: Vec<&String> = stats.fn_effects.keys().collect();
+        names.sort();
+        let io_count = stats.fn_effects.values().filter(|&&v| v).count();
+        println!();
+        println!(
+            "  effects (inferred): \x1B[33m{}\x1B[0m / \x1B[36m{}\x1B[0m fns reach IO",
+            io_count,
+            stats.fn_effects.len(),
+        );
+        for name in names {
+            let has_io = stats.fn_effects.get(name).copied().unwrap_or(false);
+            let tag = if has_io {
+                "\x1B[33m[effects: IO]\x1B[0m"
+            } else {
+                "\x1B[32m[effects: {}]\x1B[0m"
+            };
+            println!("    {:<32} {}", name, tag);
+        }
+    }
 }
 
 // Example programs

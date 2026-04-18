@@ -375,6 +375,12 @@ pub struct VerificationStats {
     /// checks for those functions.
     pub per_fn_discharged: std::collections::HashMap<String, usize>,
     pub per_fn_runtime: std::collections::HashMap<String, usize>,
+    /// RES-192: inferred effect set per top-level user fn. `true`
+    /// = reaches IO (direct or transitive call to an impure
+    /// builtin, or to another IO fn, or to an unresolvable
+    /// callee). `false` = pure. Populated by
+    /// `infer_fn_effects` during `check_program_with_source`.
+    pub fn_effects: std::collections::HashMap<String, bool>,
 }
 
 impl VerificationStats {
@@ -861,6 +867,14 @@ impl TypeChecker {
                 // Failures prepend the same file:line:col prefix as
                 // above so users land on the violating site.
                 check_program_purity(statements, source_path)?;
+
+                // RES-192: IO-effect inference. Binary lattice
+                // (pure / IO). Fixpoint over the call graph: a fn
+                // is tagged IO iff it calls an impure builtin, an
+                // already-IO user fn, or an unresolvable callee.
+                // Non-error — just populates the `fn_effects`
+                // stats field for the --audit column.
+                self.stats.fn_effects = infer_fn_effects(statements);
 
                 Ok(result_type)
             }
@@ -2125,6 +2139,177 @@ fn is_known_pure_builtin(name: &str) -> bool {
     PURE_BUILTINS.contains(&name)
 }
 
+// ============================================================
+// RES-192: IO-effect inference (fixpoint over the call graph).
+// ============================================================
+//
+// Lattice: `{}` (pure) or `{IO}`, represented as a single `bool`
+// because the MVP only tracks one effect. Union = logical OR.
+//
+// Rules:
+// - A builtin in `IMPURE_BUILTINS` has `IO`.
+// - A call to a builtin name that's neither impure nor known-pure
+//   is conservatively `IO` (unknown-callee = assume worst).
+// - A user fn has `IO` iff any call site in its body calls
+//   something with `IO`.
+// - A `LiveBlock` is NOT inherently IO (the ticket specifically
+//   calls out "reach println or file_*"; a retry loop over pure
+//   work is still pure).
+//
+// Fixpoint: initialize every user fn to pure; iterate body-walks
+// until no effect flips. Terminates in O(|fns|²) iterations since
+// each pass can only flip pure→IO once per fn.
+
+/// RES-192: build the call-graph edge set for `statements`, then
+/// run the fixpoint. Returns `name → has_io` for every top-level
+/// user fn. Non-function statements contribute nothing.
+pub fn infer_fn_effects(
+    statements: &[crate::span::Spanned<Node>],
+) -> std::collections::HashMap<String, bool> {
+    // Step 1: collect user-fn names + their body references.
+    let mut fn_bodies: std::collections::HashMap<String, &Node> =
+        std::collections::HashMap::new();
+    for stmt in statements {
+        if let Node::Function { name, body, .. } = &stmt.node {
+            fn_bodies.insert(name.clone(), body.as_ref());
+        }
+    }
+
+    // Step 2: initialize every fn as pure.
+    let mut effects: std::collections::HashMap<String, bool> =
+        fn_bodies.keys().map(|n| (n.clone(), false)).collect();
+
+    // Step 3: fixpoint — iterate body-walks until no effect flips.
+    // Upper bound: one flip per fn, so at most |fns| passes.
+    let max_passes = fn_bodies.len().saturating_add(1);
+    for _ in 0..max_passes {
+        let mut changed = false;
+        for (name, body) in &fn_bodies {
+            if *effects.get(name).unwrap_or(&false) {
+                continue; // already IO — nothing to update
+            }
+            if body_reaches_io(body, &effects) {
+                effects.insert(name.clone(), true);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    effects
+}
+
+/// RES-192: body-level check for IO reachability under the
+/// current `effects` snapshot. Used inside the fixpoint loop —
+/// each iteration treats `effects` as a frozen best-estimate and
+/// asks "does this body reach anything marked IO today?".
+fn body_reaches_io(
+    node: &Node,
+    effects: &std::collections::HashMap<String, bool>,
+) -> bool {
+    match node {
+        Node::Block { stmts, .. } => stmts.iter().any(|s| body_reaches_io(s, effects)),
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            body_reaches_io(value, effects)
+        }
+        Node::ReturnStatement { value: Some(v), .. } => body_reaches_io(v, effects),
+        Node::ReturnStatement { value: None, .. } => false,
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            body_reaches_io(condition, effects)
+                || body_reaches_io(consequence, effects)
+                || alternative
+                    .as_ref()
+                    .is_some_and(|a| body_reaches_io(a, effects))
+        }
+        Node::WhileStatement { condition, body, .. } => {
+            body_reaches_io(condition, effects) || body_reaches_io(body, effects)
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            body_reaches_io(iterable, effects) || body_reaches_io(body, effects)
+        }
+        Node::Assert { condition, .. } => body_reaches_io(condition, effects),
+        Node::LiveBlock { body, invariants, .. } => {
+            // A `live` block is NOT intrinsically IO (retries on
+            // failure observe error state, but not IO per the
+            // ticket's definition). If the body reaches IO, the
+            // outer fn still does.
+            body_reaches_io(body, effects)
+                || invariants.iter().any(|inv| body_reaches_io(inv, effects))
+        }
+        Node::InfixExpression { left, right, .. } => {
+            body_reaches_io(left, effects) || body_reaches_io(right, effects)
+        }
+        Node::PrefixExpression { right, .. } => body_reaches_io(right, effects),
+        Node::CallExpression { function, arguments, .. } => {
+            // Any arg side-effecting → IO.
+            if arguments.iter().any(|a| body_reaches_io(a, effects)) {
+                return true;
+            }
+            // The callee itself.
+            if body_reaches_io(function, effects) {
+                return true;
+            }
+            if let Node::Identifier { name: callee, .. } = function.as_ref() {
+                if IMPURE_BUILTINS.contains(&callee.as_str()) {
+                    return true;
+                }
+                if is_known_pure_builtin(callee) {
+                    return false;
+                }
+                // A user-fn call: inherit that fn's current
+                // best-estimate effect. Unknown user fn (rare —
+                // typechecker would have rejected earlier) →
+                // conservatively IO.
+                match effects.get(callee) {
+                    Some(&true) => return true,
+                    Some(&false) => return false,
+                    None => return true, // unknown = IO (conservative)
+                }
+            }
+            // Indirect / method callee — can't resolve statically;
+            // conservatively mark IO.
+            true
+        }
+        Node::FieldAccess { target, .. } => body_reaches_io(target, effects),
+        Node::FieldAssignment { target, value, .. } => {
+            body_reaches_io(target, effects) || body_reaches_io(value, effects)
+        }
+        Node::Assignment { value, .. } => body_reaches_io(value, effects),
+        Node::IndexExpression { target, index, .. } => {
+            body_reaches_io(target, effects) || body_reaches_io(index, effects)
+        }
+        Node::IndexAssignment { target, index, value, .. } => {
+            body_reaches_io(target, effects)
+                || body_reaches_io(index, effects)
+                || body_reaches_io(value, effects)
+        }
+        Node::ArrayLiteral { items, .. } => {
+            items.iter().any(|i| body_reaches_io(i, effects))
+        }
+        Node::StructLiteral { fields, .. } => {
+            fields.iter().any(|(_, v)| body_reaches_io(v, effects))
+        }
+        Node::Match { scrutinee, arms, .. } => {
+            if body_reaches_io(scrutinee, effects) {
+                return true;
+            }
+            arms.iter().any(|(_pat, guard, arm_body)| {
+                guard.as_ref().is_some_and(|g| body_reaches_io(g, effects))
+                    || body_reaches_io(arm_body, effects)
+            })
+        }
+        Node::ExpressionStatement { expr, .. } => body_reaches_io(expr, effects),
+        Node::TryExpression { expr, .. } => body_reaches_io(expr, effects),
+        // Nested fn decls are rare but handled — recurse into
+        // their body too. Today the parser doesn't emit these;
+        // future closures will.
+        Node::Function { body, .. } => body_reaches_io(body, effects),
+        // Pure literals / identifier reads / etc.
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod purity_tests {
     use super::*;
@@ -2268,5 +2453,134 @@ mod purity_tests {
             err.starts_with("src/thing.rs:"),
             "expected RES-080 prefix `<path>:<line>:<col>:`, got: {err}"
         );
+    }
+
+    // ---------- RES-192: IO-effect inference ----------
+
+    /// AC: a chain `caller -> helper -> println` has IO at every
+    /// level.
+    #[test]
+    fn effect_chain_propagates_io_transitively() {
+        let src = "\
+            fn helper() { println(\"hi\"); return 0; }\n\
+            fn caller() { return helper(); }\n\
+            fn top() { return caller(); }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("helper"), Some(&true), "helper should be IO");
+        assert_eq!(eff.get("caller"), Some(&true), "caller should be IO");
+        assert_eq!(eff.get("top"), Some(&true), "top should be IO");
+    }
+
+    /// AC: a leaf fn that only does arithmetic is tagged pure.
+    #[test]
+    fn arithmetic_only_leaf_is_pure() {
+        let src = "fn double(int x) { return x * 2; }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("double"), Some(&false), "pure arithmetic");
+    }
+
+    #[test]
+    fn fixpoint_handles_mutual_recursion() {
+        // Two fns that call each other but neither does IO.
+        let src = "\
+            fn a(int n) { return b(n); }\n\
+            fn b(int n) { return a(n); }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("a"), Some(&false), "pure mutual recursion");
+        assert_eq!(eff.get("b"), Some(&false));
+    }
+
+    #[test]
+    fn io_reaches_through_mutual_recursion() {
+        let src = "\
+            fn a(int n) { return b(n); }\n\
+            fn b(int n) { println(\"x\"); return a(n); }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("a"), Some(&true), "a reaches IO via b");
+        assert_eq!(eff.get("b"), Some(&true));
+    }
+
+    #[test]
+    fn file_io_builtins_flag_io() {
+        let src = "\
+            fn writer() { file_write(\"f\", \"data\"); return 0; }\n\
+            fn reader() { return file_read(\"f\"); }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("writer"), Some(&true));
+        assert_eq!(eff.get("reader"), Some(&true));
+    }
+
+    #[test]
+    fn clock_and_random_flag_io() {
+        // Nondeterminism counts as IO per the broader "impure
+        // builtin" policy inherited from RES-191.
+        let src = "\
+            fn now() { return clock_ms(); }\n\
+            fn rand() { return random_int(0, 10); }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("now"), Some(&true));
+        assert_eq!(eff.get("rand"), Some(&true));
+    }
+
+    #[test]
+    fn pure_builtin_calls_stay_pure() {
+        let src = "\
+            fn compute(int x) { return abs(x); }\n\
+            fn compose(int x) { let y = compute(x); return min(y, 10); }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("compute"), Some(&false), "abs is pure");
+        assert_eq!(eff.get("compose"), Some(&false));
+    }
+
+    #[test]
+    fn live_block_alone_is_not_io() {
+        // A live block with a pure body is still pure. The ticket
+        // tracks "reach println or file_*"; retries alone don't
+        // qualify.
+        let src = "fn f(int x) { live { return x; } return 0; }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("f"), Some(&false), "pure live body");
+    }
+
+    #[test]
+    fn live_block_with_io_body_is_io() {
+        let src = "fn f(int x) { live { println(\"r\"); } return x; }\n";
+        let s = stmts(src);
+        let eff = infer_fn_effects(&s);
+        assert_eq!(eff.get("f"), Some(&true));
+    }
+
+    #[test]
+    fn empty_program_produces_empty_effects() {
+        let s = stmts("");
+        assert!(infer_fn_effects(&s).is_empty());
+    }
+
+    #[test]
+    fn stats_field_populated_by_full_check() {
+        // End-to-end: running the typechecker populates
+        // `stats.fn_effects`. Confirms the call-site inside
+        // `check_program_with_source` is wired.
+        let src = "\
+            fn noisy() { println(\"h\"); return 0; }\n\
+            fn quiet() { return 0; }\n\
+            fn main(int _d) { noisy(); return quiet(); }\n\
+            main(0);\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        tc.check_program_with_source(&program, "<t>")
+            .expect("typecheck should succeed");
+        assert_eq!(tc.stats.fn_effects.get("noisy"), Some(&true));
+        assert_eq!(tc.stats.fn_effects.get("quiet"), Some(&false));
+        assert_eq!(tc.stats.fn_effects.get("main"), Some(&true));
     }
 }
