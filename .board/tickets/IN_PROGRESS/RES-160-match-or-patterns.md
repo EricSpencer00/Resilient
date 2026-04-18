@@ -1,7 +1,7 @@
 ---
 id: RES-160
 title: Or-patterns in match arms `case 0 | 1 | 2 => ...`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G13
 created: 2026-04-17
@@ -33,3 +33,4 @@ which is natural in the coalescing algorithm from RES-129.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
