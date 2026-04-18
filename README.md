@@ -196,6 +196,38 @@ for a buildable example that links the runtime with an
 cross-compile; the demo is a build check, not a runtime
 demonstration.
 
+#### Code-size budget (RES-179)
+
+CI runs `cargo bloat` against the release Cortex-M4F demo on
+every push + PR via the `size-gate` workflow. The gate fails
+if the `.text` section exceeds **64 KiB** (overridable via the
+`SIZE_BUDGET_KIB` env var in `.github/workflows/size_gate.yml`).
+
+Current measurement (release, `thumbv7em-none-eabihf`):
+
+| Section | Size       | % of budget |
+| ------- | ---------- | ----------- |
+| `.text` | **2.3 KiB** (~2 355 bytes) | **3.6 %** |
+
+Plenty of headroom — the budget is deliberately generous per the
+ticket Notes; tighten in a follow-up once we have a stable
+baseline across releases. The top .text contributors today are
+`compiler_builtins::mem::memcpy` (~31 %), the demo's own `main`
+(~21 %), and `embedded_alloc`'s `dealloc` / `alloc` wrappers
+(~12 % / ~11 % respectively) — everything else is single-digit
+bytes.
+
+Run locally:
+
+```bash
+scripts/check_size_budget.sh                     # default 64 KiB
+SIZE_BUDGET_KIB=32 scripts/check_size_budget.sh  # tighter budget
+```
+
+The script prints `cargo bloat`'s top-20 symbol table either
+way, so a failing run attributes the regression without needing
+to re-run anything.
+
 #### `--features static-only` (RES-178)
 
 For safety-critical projects that forbid dynamic allocation

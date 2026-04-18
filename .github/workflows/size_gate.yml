@@ -1,0 +1,63 @@
+# RES-179: code-size budget CI gate. Runs cargo-bloat on the
+# Cortex-M4F demo release build; fails if the `.text` section
+# exceeds a configurable budget (64 KiB by default, override
+# via the `SIZE_BUDGET_KIB` env var in this workflow). The
+# script prints the top-20 symbol breakdown either way, so
+# when a regression trips the gate the CI log tells you which
+# crate / function grew.
+#
+# Separate from the `embedded` workflow (which gates build
+# success) because this is a soft-quality gate — we want it
+# to run on every push but not block every unrelated change
+# with a rebuild if the caches don't help.
+
+name: size-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Budget in KiB. Tighten in a follow-up once we have a stable
+# baseline per the ticket's Notes ("start at 64 KiB (generous)").
+env:
+  SIZE_BUDGET_KIB: 64
+
+jobs:
+  size_gate:
+    name: cortex-m demo .text <= ${{ env.SIZE_BUDGET_KIB }} KiB
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: thumbv7em-none-eabihf
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            resilient-runtime-cortex-m-demo/target
+          key: size-gate-${{ hashFiles('resilient-runtime-cortex-m-demo/Cargo.lock', 'resilient-runtime/Cargo.lock') }}
+
+      - name: Install cargo-bloat
+        # The script installs it if missing, but caching the
+        # install here short-circuits the cargo-install compile
+        # (~30s) when the cargo-bin cache hits.
+        run: command -v cargo-bloat || cargo install --locked cargo-bloat
+
+      - name: check_size_budget.sh
+        env:
+          SIZE_BUDGET_KIB: ${{ env.SIZE_BUDGET_KIB }}
+        run: scripts/check_size_budget.sh
