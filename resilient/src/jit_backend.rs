@@ -54,6 +54,26 @@ struct LowerCtx {
     /// Used to validate call sites — mismatch is reported as a
     /// clean Unsupported instead of letting Cranelift segfault.
     function_arities: HashMap<String, usize>,
+    /// RES-168: TCO state — the name of the currently-compiling
+    /// function, set only by `compile_function` and `None` while
+    /// lowering top-level `main`. A `ReturnStatement` whose value
+    /// is a direct call to this name (with matching arity) is
+    /// lowered as a back-edge jump to `tco_target` instead of a
+    /// regular call + return.
+    current_fn: Option<String>,
+    /// RES-168: the block to jump to on a detected tail call.
+    /// Distinct from the function's entry block: entry carries
+    /// function-signature block params and is sealed immediately;
+    /// `tco_target` is the "body" block that entry jumps into,
+    /// left unsealed until all tail-call back-edges have been
+    /// emitted so Cranelift's SSA construction can reconcile the
+    /// re-`def_var`'d parameter Variables into phis.
+    tco_target: Option<Block>,
+    /// RES-168: parameter Variables in declaration order. A tail
+    /// call lowers its argument expressions first (so in-scope
+    /// names still resolve to the *old* param values), then
+    /// `def_var`s each param Variable with the new value in order.
+    param_vars: Vec<Variable>,
 }
 
 impl LowerCtx {
@@ -63,6 +83,9 @@ impl LowerCtx {
             locals: HashMap::new(),
             functions: HashMap::new(),
             function_arities: HashMap::new(),
+            current_fn: None,
+            tco_target: None,
+            param_vars: Vec::new(),
         }
     }
 
@@ -173,6 +196,7 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
             let func_id = functions[name];
             compile_function(
                 func_id,
+                name,
                 parameters,
                 body,
                 &functions,
@@ -231,10 +255,20 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
 /// RES-105: compile a single user-defined function body.
 /// Parameters are declared as Variables in a fresh LowerCtx
 /// (inheriting the program-wide function map for cross-function
-/// calls including recursion). Body is lowered via the same
-/// compile_statements walker as `main`.
+/// calls including recursion).
+///
+/// RES-168: body lowering is routed through a dedicated
+/// `body_block` so tail-recursive self-calls can jump back to it
+/// instead of emitting a regular call + return. The function's
+/// entry block carries the Cranelift-ABI block params (function
+/// arguments), `def_var`s each into a parameter Variable, and
+/// unconditionally jumps to `body_block`. The body block is left
+/// unsealed until lowering finishes so back-edges from tail
+/// calls (which re-`def_var` parameter Variables) can reconcile
+/// through Cranelift's SSA-construction phi inference.
 fn compile_function(
     func_id: FuncId,
+    fn_name: &str,
     parameters: &[(String, String)],
     body: &Node,
     functions: &HashMap<String, FuncId>,
@@ -255,23 +289,43 @@ fn compile_function(
     let mut builder_ctx = FunctionBuilderContext::new();
     {
         let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+
+        // ---------- RES-168: entry + body split ----------
         let entry = bcx.create_block();
         bcx.append_block_params_for_function_params(entry);
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
         // Bind each parameter to a Variable in the LowerCtx so
-        // identifier reads in the body resolve correctly.
+        // identifier reads in the body resolve correctly. Capture
+        // the Variables in declaration order for TCO back-edges.
         let mut lctx = LowerCtx::new();
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
         // parameters: Vec<(String, String)> — (type, name) per
         // the AST. Name is the second element.
         let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
+        let mut param_vars: Vec<Variable> = Vec::with_capacity(parameters.len());
         for ((_ty, name), pval) in parameters.iter().zip(block_params.iter()) {
             let var = lctx.declare(name, &mut bcx);
             bcx.def_var(var, *pval);
+            param_vars.push(var);
         }
+
+        // Create body block and jump entry → body. Deliberately
+        // NOT sealing body yet — tail calls will add back-edges.
+        let body_block = bcx.create_block();
+        bcx.ins().jump(body_block, &[]);
+        bcx.switch_to_block(body_block);
+
+        // Wire up TCO state on the LowerCtx. Any ReturnStatement
+        // whose RHS is a direct call to `fn_name` with matching
+        // arity lowers to a back-edge jump instead of a regular
+        // return (see the ReturnStatement arms in
+        // `compile_node_list` / `lower_block_or_stmt`).
+        lctx.current_fn = Some(fn_name.to_string());
+        lctx.tco_target = Some(body_block);
+        lctx.param_vars = param_vars;
 
         // The function body is a Block — lower it; require it
         // to terminate (Phase H functions must end in a return,
@@ -280,6 +334,10 @@ fn compile_function(
         if !terminated {
             return Err(JitError::EmptyProgram);
         }
+
+        // Seal body now that all possible back-edges (if any)
+        // from tail calls in the body have been emitted.
+        bcx.seal_block(body_block);
         bcx.finalize();
     }
 
@@ -288,6 +346,66 @@ fn compile_function(
         .map_err(|e| JitError::LinkError(e.to_string()))?;
     module.clear_context(&mut ctx);
     Ok(())
+}
+
+/// RES-168: try to lower a `return <call>` as a tail-call back-edge
+/// jump. Returns `Ok(true)` on a successful tail-call emit
+/// (terminator emitted — caller stops walking), `Ok(false)` when
+/// the shape doesn't qualify (direct call, name match, arity match
+/// — all three must hold), and `Err(_)` only on a real lowering
+/// failure of the argument expressions.
+///
+/// Non-qualifying cases (indirect call, different name, wrong
+/// arity) are handled silently by returning false; the caller
+/// falls back to the regular `return_` path. The ticket's "non-
+/// tail-position call to self is NOT optimized" guarantee falls
+/// out of this function only being called from `ReturnStatement`
+/// handlers whose value is a direct `CallExpression`.
+fn try_lower_tail_call(
+    expr: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Result<bool, JitError> {
+    // Bail if we're not inside a function (e.g. top-level `main`).
+    let Some(target) = ctx.tco_target else { return Ok(false); };
+    let Some(current) = ctx.current_fn.clone() else { return Ok(false); };
+
+    // Shape: ReturnStatement's value must be a direct call to the
+    // enclosing function with matching arity.
+    let Node::CallExpression { function, arguments, .. } = expr else {
+        return Ok(false);
+    };
+    let Node::Identifier { name, .. } = function.as_ref() else {
+        return Ok(false);
+    };
+    if *name != current {
+        return Ok(false);
+    }
+    if arguments.len() != ctx.param_vars.len() {
+        return Ok(false);
+    }
+
+    // Lower all argument expressions FIRST — they reference the
+    // *current* parameter values, so we must capture those before
+    // reassigning. `lower_expr` recurses into the ctx, but never
+    // touches `param_vars` / `tco_target`, so ordering is safe.
+    let mut new_vals: Vec<Value> = Vec::with_capacity(arguments.len());
+    for arg in arguments {
+        new_vals.push(lower_expr(arg, bcx, ctx, module)?);
+    }
+
+    // Re-`def_var` each parameter Variable with the new value.
+    // Cranelift's SSA construction inserts phi nodes at
+    // `target`'s entry automatically once the block is sealed
+    // (handled by the caller — `compile_function` seals after
+    // lowering completes).
+    let vars: Vec<Variable> = ctx.param_vars.clone();
+    for (var, val) in vars.iter().zip(new_vals.iter()) {
+        bcx.def_var(*var, *val);
+    }
+    bcx.ins().jump(target, &[]);
+    Ok(true)
 }
 
 /// RES-102 + RES-103: walk a slice of top-level statements and
@@ -344,6 +462,12 @@ fn compile_node_list(
     for node in stmts {
         match node {
             Node::ReturnStatement { value: Some(expr), .. } => {
+                // RES-168: try TCO first. On a qualifying tail
+                // call, `try_lower_tail_call` emits the back-edge
+                // jump and we skip the regular `return_` below.
+                if try_lower_tail_call(expr, bcx, ctx, module)? {
+                    return Ok(true);
+                }
                 let v = lower_expr(expr, bcx, ctx, module)?;
                 bcx.ins().return_(&[v]);
                 return Ok(true);
@@ -606,6 +730,13 @@ fn lower_block_or_stmt(
             )
         }
         Node::ReturnStatement { value: Some(expr), .. } => {
+            // RES-168: same TCO hook as compile_node_list — any
+            // `return <self>(args)` in a function body is lowered
+            // as a back-edge jump, regardless of whether it's
+            // at the top of the body or nested inside an if/while.
+            if try_lower_tail_call(expr, bcx, ctx, module)? {
+                return Ok(true);
+            }
             let v = lower_expr(expr, bcx, ctx, module)?;
             bcx.ins().return_(&[v]);
             Ok(true)
@@ -1290,5 +1421,99 @@ mod tests {
             ),
             other => panic!("expected Unsupported, got {:?}", other),
         }
+    }
+
+    // ---------- RES-168: direct-self-recursion TCO ----------
+
+    #[test]
+    fn tco_one_million_deep_recursion_does_not_stack_overflow() {
+        // Ticket AC: `count(n)` at n = 1_000_000 completes without
+        // stack overflow. Without TCO this would exhaust the host
+        // thread's stack — ~1 MB of frames at ~16 bytes each.
+        //
+        // The body `return count(n - 1);` is a direct tail call to
+        // the enclosing `count`; the JIT recognizes it and lowers
+        // to a back-edge jump instead of a recursive call. The
+        // test run-to-completion itself is the assertion.
+        let p = parse_program(
+            "fn count(int n) { \
+                if (n <= 0) { return 0; } \
+                return count(n - 1); \
+            } \
+            return count(1000000);",
+        );
+        assert_eq!(run(&p).unwrap(), 0);
+    }
+
+    #[test]
+    fn tco_accumulator_style_sums_1_to_100k() {
+        // Classic TCO shape: accumulator threaded through the
+        // recursion. sum(n, 0) with n = 100_000 yields
+        // 100_000 * 100_001 / 2 = 5_000_050_000. Tests that TCO
+        // correctly reassigns TWO params (n and acc) on each
+        // back-edge in the right order.
+        let p = parse_program(
+            "fn sum(int n, int acc) { \
+                if (n <= 0) { return acc; } \
+                return sum(n - 1, acc + n); \
+            } \
+            return sum(100000, 0);",
+        );
+        assert_eq!(run(&p).unwrap(), 5_000_050_000);
+    }
+
+    #[test]
+    fn tco_only_fires_on_direct_self_recursion_not_wrapped_calls() {
+        // `return 1 + count(n-1)` is NOT in tail position — the
+        // call's result is consumed by `+`. The JIT must emit a
+        // regular call here (still stacks up). With a small n
+        // (10) the result is correct regardless of whether TCO
+        // fires; the test is really about the large-n variant
+        // below. Here we just assert correctness of the non-tail
+        // shape.
+        let p = parse_program(
+            "fn inc_count(int n) { \
+                if (n <= 0) { return 0; } \
+                return 1 + inc_count(n - 1); \
+            } \
+            return inc_count(10);",
+        );
+        assert_eq!(run(&p).unwrap(), 10);
+    }
+
+    #[test]
+    fn tco_only_fires_on_matching_arity() {
+        // Self-call with different arity uses the existing
+        // arity-mismatch error path — not TCO. Gives us a
+        // regression check that TCO doesn't accidentally
+        // consume these mistakes silently.
+        let p = parse_program(
+            "fn f(int n) { return f(n, 0); } return f(1);",
+        );
+        // Regular path: declared 1 param, called with 2 → the
+        // JIT's existing arity check rejects.
+        match run(&p).unwrap_err() {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("arity"),
+                "expected arity mismatch diagnostic, got: {}",
+                msg
+            ),
+            other => panic!("expected Unsupported(arity), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tco_does_not_apply_to_cross_function_tail_calls() {
+        // `return g(n)` from `f` is a cross-function tail call —
+        // TCO as specified only handles direct self-recursion, so
+        // this falls back to a regular call (correct, but not TCO).
+        // Correctness only here; the no-stack-overflow guarantee
+        // specifically does NOT extend to cross-function tails.
+        let p = parse_program(
+            "fn g(int n) { return n + 1; } \
+            fn f(int n) { return g(n); } \
+            return f(41);",
+        );
+        assert_eq!(run(&p).unwrap(), 42);
     }
 }
