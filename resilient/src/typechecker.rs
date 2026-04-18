@@ -479,6 +479,18 @@ impl TypeChecker {
             params: vec![Type::String],
             return_type: Box::new(Type::String),
         });
+        // RES-145: replace + format.
+        env.set("replace".to_string(), Type::Function {
+            params: vec![Type::String, Type::String, Type::String],
+            return_type: Box::new(Type::String),
+        });
+        // `format`'s second argument is `Array<?>` — the prelude
+        // `Type::Array` is untyped (no element-type parameter yet),
+        // which fits the ticket's `Array<?>` signature.
+        env.set("format".to_string(), Type::Function {
+            params: vec![Type::String, Type::Array],
+            return_type: Box::new(Type::String),
+        });
 
         // RES-130: explicit int ↔ float conversions. These are the
         // only supported bridge between the two numeric types —

@@ -3400,6 +3400,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("contains", builtin_contains),
     ("to_upper", builtin_to_upper),
     ("to_lower", builtin_to_lower),
+    // RES-145: string manipulation expansion.
+    ("replace", builtin_replace),
+    ("format", builtin_format),
     ("Ok", builtin_ok),
     ("Err", builtin_err),
     ("is_ok", builtin_is_ok),
@@ -3708,22 +3711,158 @@ fn builtin_contains(args: &[Value]) -> RResult<Value> {
     }
 }
 
-/// `to_upper(s)` — Unicode uppercase.
+/// `to_upper(s)` — **ASCII-only** uppercase. Bytes in `a..=z` are
+/// mapped to `A..=Z`; every other byte (including all non-ASCII
+/// characters) passes through unchanged. Chosen over Unicode
+/// `to_uppercase` to avoid locale surprises (e.g. Turkish dotted-i)
+/// in safety-critical contexts — predictable beats "right for this
+/// locale" when logging or verifying. Per RES-145.
 fn builtin_to_upper(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(s)] => Ok(Value::String(s.to_uppercase())),
+        [Value::String(s)] => Ok(Value::String(s.to_ascii_uppercase())),
         [other] => Err(format!("to_upper: expected string, got {}", other)),
         _ => Err(format!("to_upper: expected 1 argument, got {}", args.len())),
     }
 }
 
-/// `to_lower(s)` — Unicode lowercase.
+/// `to_lower(s)` — **ASCII-only** lowercase; see `to_upper` for the
+/// rationale. Per RES-145.
 fn builtin_to_lower(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(s)] => Ok(Value::String(s.to_lowercase())),
+        [Value::String(s)] => Ok(Value::String(s.to_ascii_lowercase())),
         [other] => Err(format!("to_lower: expected string, got {}", other)),
         _ => Err(format!("to_lower: expected 1 argument, got {}", args.len())),
     }
+}
+
+/// RES-145: `replace(s, from, to)` — returns a new string with every
+/// non-overlapping, left-to-right occurrence of `from` in `s`
+/// replaced by `to`. `from == ""` is a hard error (matches Rust's
+/// `str::replace` behaviour, which would splice `to` between every
+/// character — almost always a bug). The input string is not
+/// mutated.
+fn builtin_replace(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(from), Value::String(to)] => {
+            if from.is_empty() {
+                return Err(
+                    "replace: `from` must be non-empty".to_string(),
+                );
+            }
+            Ok(Value::String(s.replace(from.as_str(), to)))
+        }
+        [a, b, c] => Err(format!(
+            "replace: expected (string, string, string), got ({:?}, {:?}, {:?})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "replace: expected 3 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-145: `format(fmt, args)` — interpolate an array of values into
+/// a format string. Grammar:
+///
+/// - `{}` consumes the next argument, left-to-right. The value is
+///   rendered via its runtime `Display` impl (so strings print
+///   unquoted, like `println`).
+/// - `{{` / `}}` escape to a literal `{` / `}`.
+/// - Any other use of `{` / `}` is a runtime error: unmatched open,
+///   unmatched close, or a non-empty specifier like `{:width}`
+///   (deliberately out of scope — this is not printf; see the
+///   ticket's Notes).
+/// - Mismatched arg count (fewer args than `{}` placeholders, or
+///   leftover args) is a runtime error.
+fn builtin_format(args: &[Value]) -> RResult<Value> {
+    let (fmt, pool) = match args {
+        [Value::String(f), Value::Array(a)] => (f, a),
+        [a, b] => {
+            return Err(format!(
+                "format: expected (string, array), got ({:?}, {:?})",
+                a, b
+            ))
+        }
+        many => {
+            return Err(format!(
+                "format: expected 2 arguments (fmt, args), got {}",
+                many.len()
+            ))
+        }
+    };
+
+    let mut out = String::with_capacity(fmt.len());
+    let mut idx: usize = 0;
+    let bytes = fmt.as_bytes();
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                // `{{` → literal `{`.
+                if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                    out.push('{');
+                    i += 2;
+                    continue;
+                }
+                // `{}` → consume next arg.
+                if i + 1 < bytes.len() && bytes[i + 1] == b'}' {
+                    let v = pool.get(idx).ok_or_else(|| {
+                        format!(
+                            "format: not enough arguments — placeholder #{} has no value (got {} total)",
+                            idx + 1,
+                            pool.len()
+                        )
+                    })?;
+                    match v {
+                        Value::String(s) => out.push_str(s),
+                        other => out.push_str(&format!("{}", other)),
+                    }
+                    idx += 1;
+                    i += 2;
+                    continue;
+                }
+                // Anything else after `{` is rejected — either an
+                // unmatched `{` or a specifier like `{:04}` which
+                // the MVP deliberately doesn't parse.
+                return Err(format!(
+                    "format: unexpected `{{` at byte {} — only `{{}}` (placeholder) and `{{{{` (escaped brace) are supported",
+                    i
+                ));
+            }
+            b'}' => {
+                // `}}` → literal `}`.
+                if i + 1 < bytes.len() && bytes[i + 1] == b'}' {
+                    out.push('}');
+                    i += 2;
+                    continue;
+                }
+                return Err(format!(
+                    "format: unmatched `}}` at byte {} — use `}}}}` to embed a literal `}}`",
+                    i
+                ));
+            }
+            _ => {
+                // Copy one UTF-8 scalar at a time using the string
+                // slice: `char_indices` would do this, but we're
+                // already walking bytes. Find the next char boundary.
+                let rest = &fmt[i..];
+                let ch = rest.chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+
+    if idx < pool.len() {
+        return Err(format!(
+            "format: too many arguments — {} placeholder(s) consumed, {} leftover",
+            idx,
+            pool.len() - idx
+        ));
+    }
+
+    Ok(Value::String(out))
 }
 
 /// `push(arr, x)` — returns a new array with `x` appended. The input
@@ -6483,6 +6622,153 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-145: string builtins — replace / to_upper / to_lower / format ---
+
+    /// Same extractor as `as_string` — but local to the RES-145 block
+    /// since it's defined inside RES-144's block below. Using an
+    /// inline helper keeps the tests readable.
+    fn s145(v: Value) -> String {
+        match v {
+            Value::String(s) => s,
+            other => panic!("expected Value::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn replace_substitutes_all_occurrences() {
+        let v = builtin_replace(&[
+            Value::String("foo bar foo baz foo".into()),
+            Value::String("foo".into()),
+            Value::String("XX".into()),
+        ])
+        .unwrap();
+        assert_eq!(s145(v), "XX bar XX baz XX");
+    }
+
+    #[test]
+    fn replace_empty_from_errors() {
+        // Rust's str::replace on an empty pattern inserts the
+        // replacement between every character — almost always a
+        // bug. We hard-error instead.
+        let err = builtin_replace(&[
+            Value::String("abc".into()),
+            Value::String("".into()),
+            Value::String("Z".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("`from` must be non-empty"), "err was: {}", err);
+    }
+
+    #[test]
+    fn to_upper_is_ascii_only() {
+        // ASCII-only semantics: `to_upper` only maps a..=z → A..=Z;
+        // non-ASCII code points pass through untouched. Without this
+        // choice, Turkish locale conventions would capitalize a
+        // dotless `i` to `İ` (U+0130), breaking case-insensitive
+        // equality on ASCII-only inputs.
+        let v = builtin_to_upper(&[Value::String("ábc xYz".into())]).unwrap();
+        assert_eq!(s145(v), "áBC XYZ");
+    }
+
+    #[test]
+    fn to_upper_rejects_non_string() {
+        let err = builtin_to_upper(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected string"), "err was: {}", err);
+    }
+
+    #[test]
+    fn to_lower_is_ascii_only() {
+        let v = builtin_to_lower(&[Value::String("ÁBC XyZ".into())]).unwrap();
+        // `Á` untouched (non-ASCII); ASCII letters lowered.
+        assert_eq!(s145(v), "Ábc xyz");
+    }
+
+    #[test]
+    fn to_lower_rejects_non_string() {
+        let err = builtin_to_lower(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected string"), "err was: {}", err);
+    }
+
+    #[test]
+    fn format_interpolates_placeholders_in_order() {
+        let v = builtin_format(&[
+            Value::String("hello {}, you are {} years old".into()),
+            Value::Array(vec![
+                Value::String("alice".into()),
+                Value::Int(30),
+            ]),
+        ])
+        .unwrap();
+        assert_eq!(s145(v), "hello alice, you are 30 years old");
+    }
+
+    #[test]
+    fn format_escapes_double_braces() {
+        // `{{` and `}}` collapse to literal `{` / `}`. The remaining
+        // `{}` still consumes an arg.
+        let v = builtin_format(&[
+            Value::String("{{ literal }} then {}".into()),
+            Value::Array(vec![Value::Int(7)]),
+        ])
+        .unwrap();
+        assert_eq!(s145(v), "{ literal } then 7");
+    }
+
+    #[test]
+    fn format_errors_on_too_few_args() {
+        let err = builtin_format(&[
+            Value::String("a={} b={}".into()),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("not enough arguments"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_errors_on_too_many_args() {
+        let err = builtin_format(&[
+            Value::String("a={}".into()),
+            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("too many arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn format_errors_on_unmatched_close_brace() {
+        let err = builtin_format(&[
+            Value::String("close }here".into()),
+            Value::Array(vec![]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unmatched `}`"), "err was: {}", err);
+    }
+
+    #[test]
+    fn format_errors_on_unsupported_specifier() {
+        // `{:04}` is printf-style, out of scope for this MVP.
+        let err = builtin_format(&[
+            Value::String("{:04}".into()),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unexpected `{`"), "err was: {}", err);
+    }
+
+    #[test]
+    fn format_rejects_non_array_second_arg() {
+        let err = builtin_format(&[
+            Value::String("{}".into()),
+            Value::Int(42),
+        ])
+        .unwrap_err();
+        assert!(err.contains("expected (string, array)"), "err was: {}", err);
     }
 
     // --- RES-144: input() builtin ---
