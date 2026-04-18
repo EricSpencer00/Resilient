@@ -67,6 +67,38 @@ fn compatible(a: &Type, b: &Type) -> bool {
     a == b || matches!(a, Type::Any) || matches!(b, Type::Any)
 }
 
+/// RES-130: arithmetic operators (`+ - * / %`) require both
+/// operands to be the same numeric type — no implicit int ↔ float
+/// coercion. Any/Any fall through as Any for the inference-in-
+/// progress path.
+///
+/// Returns the result type on success or a type-error diagnostic
+/// pointing users at the explicit `to_float(x)` / `to_int(x)`
+/// conversions when they mixed the two.
+fn check_numeric_same_type(
+    op: &str,
+    left: &Type,
+    right: &Type,
+) -> Result<Type, String> {
+    match (left, right) {
+        (Type::Int, Type::Int) => Ok(Type::Int),
+        (Type::Float, Type::Float) => Ok(Type::Float),
+        (Type::Any, Type::Any) => Ok(Type::Any),
+        // Any + Int / Any + Float — propagate the concrete side so
+        // downstream inference can tighten.
+        (Type::Int, Type::Any) | (Type::Any, Type::Int) => Ok(Type::Int),
+        (Type::Float, Type::Any) | (Type::Any, Type::Float) => Ok(Type::Float),
+        (Type::Int, Type::Float) | (Type::Float, Type::Int) => Err(format!(
+            "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
+            op
+        )),
+        _ => Err(format!(
+            "Cannot apply '{}' to {} and {}",
+            op, left, right
+        )),
+    }
+}
+
 /// RES-060/061: fold a contract expression down to a concrete boolean.
 /// `bindings` maps identifier names to known integer values — used at
 /// call sites where the typechecker has constant arguments to
@@ -427,6 +459,19 @@ impl TypeChecker {
         env.set("to_lower".to_string(), Type::Function {
             params: vec![Type::String],
             return_type: Box::new(Type::String),
+        });
+
+        // RES-130: explicit int ↔ float conversions. These are the
+        // only supported bridge between the two numeric types —
+        // arithmetic and literal-match pattern equality both reject
+        // implicit coercion (see `check_numeric_same_type`).
+        env.set("to_float".to_string(), Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Float),
+        });
+        env.set("to_int".to_string(), Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int),
         });
 
         // RES-143: file I/O builtins (std-only; the resilient-runtime
@@ -1114,7 +1159,10 @@ impl TypeChecker {
                 let left_type = self.check_node(left)?;
                 let right_type = self.check_node(right)?;
 
-                let is_numeric = |t: &Type| matches!(t, Type::Int | Type::Float | Type::Any);
+                // RES-130: `is_numeric` retired for `+ - * / %`; the
+                // `check_numeric_same_type` helper now enforces the
+                // no-coercion rule. `is_bool` stays for the logical
+                // operator arm.
                 let is_bool = |t: &Type| matches!(t, Type::Bool | Type::Any);
 
                 match operator.as_str() {
@@ -1130,32 +1178,17 @@ impl TypeChecker {
                         {
                             return Ok(Type::Array);
                         }
-                        if is_numeric(&left_type) && is_numeric(&right_type) {
-                            if left_type == Type::Float || right_type == Type::Float {
-                                Ok(Type::Float)
-                            } else {
-                                Ok(Type::Int)
-                            }
-                        } else {
-                            Err(format!(
-                                "Cannot apply '+' to {} and {}",
-                                left_type, right_type
-                            ))
-                        }
+                        // RES-130: no implicit int ↔ float coercion.
+                        // `Int + Int` → Int, `Float + Float` → Float;
+                        // mixed is a type error. Users route through
+                        // the explicit `to_float(x)` / `to_int(x)`
+                        // builtins when they really need the conversion.
+                        check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "-" | "*" | "/" | "%" => {
-                        if is_numeric(&left_type) && is_numeric(&right_type) {
-                            if left_type == Type::Float || right_type == Type::Float {
-                                Ok(Type::Float)
-                            } else {
-                                Ok(Type::Int)
-                            }
-                        } else {
-                            Err(format!(
-                                "Cannot apply '{}' to {} and {}",
-                                operator, left_type, right_type
-                            ))
-                        }
+                        // RES-130: same policy as `+` — no mixed int /
+                        // float.
+                        check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "&" | "|" | "^" | "<<" | ">>" => {
                         // Bitwise operators are int-only.

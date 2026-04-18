@@ -3117,6 +3117,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("abs", builtin_abs),
     ("min", builtin_min),
     ("max", builtin_max),
+    // RES-130: explicit int ↔ float conversions.
+    ("to_float", builtin_to_float),
+    ("to_int", builtin_to_int),
     ("sqrt", builtin_sqrt),
     ("pow", builtin_pow),
     ("floor", builtin_floor),
@@ -3538,6 +3541,63 @@ fn builtin_max(args: &[Value]) -> RResult<Value> {
         [Value::Float(a), Value::Int(b)] => Ok(Value::Float(a.max(*b as f64))),
         [a, b] => Err(format!("max: expected numeric args, got {:?} and {:?}", a, b)),
         _ => Err(format!("max: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-130: explicit widening from int to float.
+fn builtin_to_float(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Float(*i as f64)),
+        [Value::Float(f)] => Ok(Value::Float(*f)),
+        [other] => Err(format!(
+            "to_float: expected Int or Float argument, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "to_float: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-130: explicit narrowing from float to int. Truncates toward
+/// zero (matches Rust's `as i64` cast semantics for finite values).
+/// `NaN` and ±∞ are **runtime errors** rather than silent garbage —
+/// propagating `i64::MIN` for NaN or clamping to `i64::MAX` for
+/// +∞ would be the same kind of invisible bug this language exists
+/// to eliminate.
+fn builtin_to_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i)),
+        [Value::Float(f)] => {
+            if f.is_nan() {
+                return Err("to_int: cannot convert NaN to int".to_string());
+            }
+            if f.is_infinite() {
+                return Err(format!(
+                    "to_int: cannot convert {} infinity to int",
+                    if *f > 0.0 { "positive" } else { "negative" }
+                ));
+            }
+            // `f as i64` saturates on out-of-range finite values in
+            // Rust — that silent saturation is exactly the invisible
+            // bug we're trying to avoid, so reject it too.
+            if *f < (i64::MIN as f64) || *f > (i64::MAX as f64) {
+                return Err(format!(
+                    "to_int: value {} is out of i64 range",
+                    f
+                ));
+            }
+            Ok(Value::Int(*f as i64))
+        }
+        [other] => Err(format!(
+            "to_int: expected Int or Float argument, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "to_int: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -4397,8 +4457,17 @@ impl Interpreter {
         match (left.clone(), right.clone()) {
             (Value::Int(l), Value::Int(r)) => self.eval_integer_infix_expression(operator, l, r),
             (Value::Float(l), Value::Float(r)) => self.eval_float_infix_expression(operator, l, r),
-            (Value::Int(l), Value::Float(r)) => self.eval_float_infix_expression(operator, l as f64, r),
-            (Value::Float(l), Value::Int(r)) => self.eval_float_infix_expression(operator, l, r as f64),
+            // RES-130: no implicit int ↔ float coercion at runtime.
+            // The typechecker rejects this before eval when the
+            // program is typechecked; the runtime guard below
+            // catches the same shape for programs bypassing
+            // `--typecheck`.
+            (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => {
+                Err(format!(
+                    "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
+                    operator
+                ))
+            }
             (Value::String(l), Value::String(r)) => self.eval_string_infix_expression(operator, l, r),
             (Value::Bool(l), Value::Bool(r)) => self.eval_boolean_infix_expression(operator, l, r),
             _ => Err(format!("Type mismatch: {} {} {}", left, operator, right)),
@@ -4600,11 +4669,12 @@ impl Interpreter {
             Pattern::Identifier(name) => Ok(Some(Some((name.clone(), value.clone())))),
             Pattern::Literal(node) => {
                 let pat_val = self.eval(node)?;
+                // RES-130: no int ↔ float coercion for literal-
+                // pattern matching either. Different numeric types
+                // just don't match — same policy as arithmetic.
                 let is_equal = match (&pat_val, value) {
                     (Value::Int(a), Value::Int(b)) => a == b,
                     (Value::Float(a), Value::Float(b)) => a == b,
-                    (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
-                    (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
                     (Value::String(a), Value::String(b)) => a == b,
                     (Value::Bool(a), Value::Bool(b)) => a == b,
                     _ => false,
@@ -8691,6 +8761,93 @@ mod tests {
     }
 
     // --- RES-123: optional (inferred) return type annotations ---
+
+    // --- RES-130: no implicit int ↔ float coercion ---
+
+    /// Helper: assert that typechecking `src` fails with a message
+    /// mentioning both `int and float` and the `to_float` /
+    /// `to_int` hint — the coercion-policy diagnostic shape.
+    fn assert_coercion_error(src: &str) {
+        let (program, parse_errs) = parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("mixed int/float arith must fail typecheck");
+        assert!(
+            err.contains("int and float"),
+            "expected coercion-policy diagnostic, got: {}",
+            err
+        );
+        assert!(
+            err.contains("to_float") || err.contains("to_int"),
+            "diagnostic should mention the explicit conversion hint: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn no_coercion_plus()  { assert_coercion_error("let a = 1 + 2.0;"); }
+    #[test]
+    fn no_coercion_minus() { assert_coercion_error("let a = 1 - 2.0;"); }
+    #[test]
+    fn no_coercion_mul()   { assert_coercion_error("let a = 1 * 2.0;"); }
+    #[test]
+    fn no_coercion_div()   { assert_coercion_error("let a = 1 / 2.0;"); }
+    #[test]
+    fn no_coercion_mod()   { assert_coercion_error("let a = 1 % 2.0;"); }
+
+    #[test]
+    fn no_coercion_float_int_reversed() {
+        // Symmetry: float-on-left / int-on-right also rejects.
+        assert_coercion_error("let a = 1.0 + 2;");
+    }
+
+    #[test]
+    fn to_float_then_arith_succeeds() {
+        // Explicit conversion fixes the mismatch — same-type
+        // arithmetic proceeds normally.
+        let (program, errs) = parse("let a = to_float(1) + 2.0;");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        assert!(
+            tc.check_program(&program).is_ok(),
+            "typecheck of explicit to_float should succeed"
+        );
+    }
+
+    #[test]
+    fn to_int_nan_is_runtime_error() {
+        // `to_int(NaN)` surfaces a clean runtime error rather than
+        // silently producing `0` / `i64::MIN`. Driven through the
+        // builtin directly because Resilient doesn't currently have
+        // a surface-syntax way to produce a NaN (float `0.0 / 0.0`
+        // is caught by the interpreter's divide-by-zero guard
+        // BEFORE IEEE-754 semantics kick in).
+        let err = builtin_to_int(&[Value::Float(f64::NAN)]).unwrap_err();
+        assert!(
+            err.contains("NaN"),
+            "expected NaN diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn to_int_infinity_is_runtime_error() {
+        let err = builtin_to_int(&[Value::Float(f64::INFINITY)]).unwrap_err();
+        assert!(err.contains("positive infinity"), "got: {}", err);
+        let err = builtin_to_int(&[Value::Float(f64::NEG_INFINITY)]).unwrap_err();
+        assert!(err.contains("negative infinity"), "got: {}", err);
+    }
+
+    #[test]
+    fn to_float_round_trip_preserves_int() {
+        let (program, errs) = parse("let n = to_int(to_float(42));");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        assert!(matches!(interp.env.get("n"), Some(Value::Int(42))));
+    }
 
     // --- RES-128: type alias declarations ---
 

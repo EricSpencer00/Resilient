@@ -150,6 +150,32 @@ assert(fuel >= 0, "Fuel must be non-negative");
 //   - condition -5 >= 0 was false
 ```
 
+## Numeric coercion policy
+
+**Resilient does not implicitly coerce between numeric types.**
+Mixing `int` and `float` in arithmetic (`+ - * / %`), comparison
+patterns, or any other operator is a **type error**. Users must
+convert explicitly:
+
+```rust
+let a = 1 + 2.0;              // ERROR: Cannot apply '+' to int and float
+let b = to_float(1) + 2.0;    // ok → float 3.0
+let c = 1 + to_int(2.0);      // ok → int 3
+```
+
+Two builtins handle the bridge:
+
+| Signature | Semantics |
+|---|---|
+| `to_float(int) -> float` | widen with exact representation (for `abs(x) < 2^53`) |
+| `to_int(float) -> int` | truncate toward zero; `NaN` / `±∞` / out-of-range are **runtime errors** (not silent saturation) |
+
+Rationale: a safety-critical language should surface numeric-
+domain changes at the source rather than paper over them. The
+RES-130 change is a one-time break for pre-1.0 code that relied
+on silent coercion; the errors explicitly point users at the
+`to_float` / `to_int` hint.
+
 ## Data Types
 
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
