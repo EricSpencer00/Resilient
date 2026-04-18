@@ -553,7 +553,18 @@ impl Lexer {
     }
     
     fn is_letter(&self, ch: char) -> bool {
-        ch.is_alphabetic() || ch == '_'
+        // RES-114: ASCII-only identifier policy. Restrict to
+        // `[A-Za-z_]` so homoglyph attacks (Cyrillic `kafa` vs
+        // Latin `kafa`, Greek `Α` vs Latin `A`, etc.) can't
+        // produce visually-identical but distinct identifiers.
+        // String / comment bodies retain full UTF-8 — only
+        // identifier scanning is tightened. The logos lexer's
+        // identifier regex is already ASCII-only, so both paths
+        // agree. Non-ASCII at an identifier position falls through
+        // to `Token::Unknown(ch)`; the parser's record_error
+        // branch on that arm surfaces the dedicated diagnostic
+        // "identifier contains non-ASCII character".
+        ch.is_ascii_alphabetic() || ch == '_'
     }
     
     fn is_digit(&self, ch: char) -> bool {
@@ -1038,7 +1049,22 @@ impl Parser {
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
             Token::Unknown(ch) => {
-                self.record_error(format!("Unexpected character '{}'", ch));
+                // RES-114: if the offending char is alphabetic (in
+                // the Unicode sense), the lexer's ASCII-only
+                // policy rejected it specifically as a non-ASCII
+                // identifier candidate. Surface a dedicated
+                // message so users grep for "non-ASCII" rather
+                // than chasing a generic "Unexpected character".
+                let msg = if ch.is_alphabetic() && !ch.is_ascii() {
+                    format!(
+                        "identifier contains non-ASCII character '{}' \
+                         — Resilient identifiers are ASCII-only (see SYNTAX.md)",
+                        ch
+                    )
+                } else {
+                    format!("Unexpected character '{}'", ch)
+                };
+                self.record_error(msg);
                 None
             }
             // Assignment: `IDENT = EXPR;` — disambiguated from an
@@ -8319,5 +8345,78 @@ mod tests {
         let mut lex = Lexer::new(src.to_string());
         let tok = lex.next_token();
         assert!(matches!(tok, Token::Eof), "got {:?}", tok);
+    }
+
+    // --- RES-114: ASCII-only identifier policy ---
+
+    #[test]
+    fn lexer_rejects_cyrillic_identifier() {
+        // Cyrillic `кафа` and Latin `kafa` look visually identical
+        // in most fonts — the ASCII-only policy is the defense
+        // against that class of homoglyph attack.
+        let src = "let кафа = 1;";
+        let mut lex = Lexer::new(src.to_string());
+        let mut saw_non_ascii = false;
+        loop {
+            let tok = lex.next_token();
+            if matches!(tok, Token::Eof) {
+                break;
+            }
+            if let Token::Unknown(c) = tok
+                && !c.is_ascii()
+            {
+                saw_non_ascii = true;
+            }
+        }
+        assert!(
+            saw_non_ascii,
+            "expected non-ASCII char to surface as Token::Unknown"
+        );
+    }
+
+    #[test]
+    fn lexer_rejects_mixed_latin_greek() {
+        // `Αlpha` at the statement head — uppercase Greek Alpha
+        // (U+0391) then Latin `lpha`. The Greek start char falls
+        // through to parse_statement's `Token::Unknown` arm,
+        // which routes it through the dedicated non-ASCII
+        // diagnostic. (Bare `let Αlpha` would hit the let-parser's
+        // "expected identifier" error first; using a statement-
+        // level position exercises the path the policy is actually
+        // designed for.)
+        let src = "Αlpha;";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("non-ASCII")),
+            "expected non-ASCII diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn lexer_accepts_underscored_names() {
+        // Plain ASCII underscores + digits + letters continue to
+        // lex as a single Identifier (sanity check that the policy
+        // tightening didn't regress the common case).
+        let src = "let _leading_underscore_123 = 1;";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.is_empty(),
+            "expected no parse errors for ASCII ident, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn lexer_keeps_utf8_in_string_literals() {
+        // RES-114: the policy ONLY tightens identifier scanning;
+        // string bodies retain full UTF-8.
+        let src = r#"let s = "Привет, мир";"#;
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.is_empty(),
+            "UTF-8 inside a string literal must parse, got: {:?}",
+            errs
+        );
     }
 }

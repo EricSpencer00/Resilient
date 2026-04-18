@@ -26,6 +26,29 @@ fn caller() { return callee(); }
 fn callee() { return 42; }
 ```
 
+## Lexical: identifiers
+
+Identifiers match `[A-Za-z_][A-Za-z0-9_]*` — **ASCII only**. Non-
+ASCII letters (Cyrillic, Greek, accented Latin, CJK, etc.) are
+*rejected* in identifier position with a dedicated diagnostic:
+
+```
+1:1: identifier contains non-ASCII character 'ф' — Resilient
+identifiers are ASCII-only (see SYNTAX.md)
+```
+
+Rationale: this is a safety-critical language. Homoglyph attacks
+— two identifiers that render identically in most fonts but have
+different code points (Cyrillic `кафа` vs Latin `kafa`, Greek
+`Α` vs Latin `A`) — make code review unreliable. Forbidding
+non-ASCII in identifiers eliminates the class outright.
+
+String literals, comments, and file contents generally retain
+full UTF-8 — the policy tightens *only* identifier scanning. If
+a real user asks for a non-ASCII opt-in, we'll revisit under a
+new ticket with an explicit flag; we don't build the escape
+hatch speculatively (RES-114).
+
 ## Variable Declarations
 
 ```rust
