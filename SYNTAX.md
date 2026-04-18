@@ -397,6 +397,30 @@ Guards can call impure functions or inspect mutable state, but
 this is strongly discouraged: the verifier (G9) will refuse to
 reason about them.
 
+### Or-patterns (RES-160)
+
+Alternatives can share an arm — `<p1> | <p2> | ...`. First match
+wins, and exhaustiveness unions the covered space across
+branches:
+
+```rust
+match d {
+    0 | 6         => "weekend",
+    1 | 2 | 3 | 4 | 5 => "weekday",
+    _             => "invalid",
+}
+
+match b {
+    true | false => "any bool",   // exhaustive, no `_` needed
+}
+```
+
+Every branch of an or-pattern must bind the same names.
+`x | 0 => ...` is rejected at typecheck with "or-pattern
+branches bind different names" — the body would otherwise
+reference a binding whose presence depends on which branch
+fired. This mirrors Rust's rule.
+
 ```rust
 // line comment
 /* block comment, can

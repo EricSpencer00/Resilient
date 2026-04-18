@@ -829,6 +829,12 @@ enum Pattern {
     Identifier(String),
     /// Matches anything without binding (`_`).
     Wildcard,
+    /// RES-160: `p1 | p2 | ...` — matches if any branch matches.
+    /// First-match wins. All branches must bind the same set of
+    /// names (checked at typecheck time) so the arm body can
+    /// reliably reference bindings regardless of which branch
+    /// fired.
+    Or(Vec<Pattern>),
 }
 
 /// RES-139: exponential-backoff policy for a `live` block. Sleep
@@ -3119,9 +3125,33 @@ impl Parser {
         }
     }
 
-    /// Parse a single match pattern. On exit current_token is the
-    /// pattern's last token.
+    /// Parse a single match pattern, possibly with `|` alternatives
+    /// (RES-160). On exit, `current_token` is the last token of the
+    /// last atom (so the caller's `next_token()` advances past the
+    /// pattern as a whole).
     fn parse_pattern(&mut self) -> Pattern {
+        let first = self.parse_pattern_atom();
+        // RES-160: collect `| <pattern>` tails. `|` is
+        // `Token::BitOr`; a lone `|` in pattern position is
+        // unambiguous since no pattern atom starts with `|`.
+        if self.peek_token != Token::BitOr {
+            return first;
+        }
+        let mut branches: Vec<Pattern> = vec![first];
+        while self.peek_token == Token::BitOr {
+            self.next_token(); // current_token = `|`
+            self.next_token(); // past `|` to the next atom
+            let next = self.parse_pattern_atom();
+            branches.push(next);
+        }
+        Pattern::Or(branches)
+    }
+
+    /// RES-160: parse a single, atomic match pattern (no top-level
+    /// `|`). Single-token patterns only for now — structural
+    /// patterns (tuples, struct destructure in match) land with
+    /// RES-161 and friends.
+    fn parse_pattern_atom(&mut self) -> Pattern {
         let tok_span = self.span_at_current();
         match &self.current_token {
             Token::Underscore => Pattern::Wildcard,
@@ -3139,8 +3169,6 @@ impl Parser {
                 Pattern::Wildcard
             }
         }
-        // Caller expects current_token on the last token of the pattern.
-        // All of the above are single-token patterns, so no advance.
     }
 
     /// Parse `.field`. current_token is `.` on entry; on exit current is `field`.
@@ -6693,6 +6721,19 @@ impl Interpreter {
                 };
                 Ok(if is_equal { Some(None) } else { None })
             }
+            // RES-160: first-match wins. The typechecker's
+            // same-bindings-across-branches check (see
+            // `pattern_bindings` in typechecker.rs) guarantees
+            // the returned binding shape is consistent, so the
+            // caller doesn't need to reconcile.
+            Pattern::Or(branches) => {
+                for b in branches {
+                    if let Some(binding) = self.match_pattern(b, value)? {
+                        return Ok(Some(binding));
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -7985,6 +8026,173 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-160: or-patterns in match arms ---
+
+    #[test]
+    fn or_pattern_int_any_branch_matches() {
+        // Weekend classifier — `0 | 6` means Sunday or Saturday.
+        let src = "\
+            fn day_of_week(int d) -> string {\n\
+                return match d {\n\
+                    0 | 6 => \"weekend\",\n\
+                    1 | 2 | 3 | 4 | 5 => \"weekday\",\n\
+                    _ => \"invalid\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) {\n\
+                let a = day_of_week(0);\n\
+                let b = day_of_week(3);\n\
+                let c = day_of_week(6);\n\
+                let d = day_of_week(99);\n\
+                return len(a) + len(b) + len(c) + len(d);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // weekend(7) + weekday(7) + weekend(7) + invalid(7) = 28
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 28),
+            other => panic!("expected Int(28), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_string_any_branch_matches() {
+        let src = "\
+            fn classify(string s) -> string {\n\
+                return match s {\n\
+                    \"yes\" | \"y\" | \"Y\" => \"affirmative\",\n\
+                    \"no\"  | \"n\" | \"N\" => \"negative\",\n\
+                    _ => \"unknown\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) {\n\
+                let a = classify(\"yes\");\n\
+                let b = classify(\"N\");\n\
+                let c = classify(\"maybe\");\n\
+                return len(a) + len(b) + len(c);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // affirmative(11) + negative(8) + unknown(7) = 26
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 26),
+            other => panic!("expected Int(26), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_mismatched_bindings_error() {
+        // One branch binds `x`, the other doesn't — rejected at
+        // typecheck with the ticket's diagnostic shape.
+        let src = "\
+            fn f(int n) -> int {\n\
+                return match n {\n\
+                    x | 0 => 1,\n\
+                    _ => 2,\n\
+                };\n\
+            }\n\
+            fn main(int _d) { return f(0); }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("or-pattern branches bind different names"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn or_pattern_bool_both_branches_is_exhaustive() {
+        // `true | false => ...` should cover the full bool domain.
+        let src = "\
+            fn main(int _d) {\n\
+                let b = true;\n\
+                return match b {\n\
+                    true | false => 1,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).expect("should typecheck");
+    }
+
+    #[test]
+    fn or_pattern_wildcard_branch_counts_as_default() {
+        // `0 | _ => ...` counts as a default — no further wildcard
+        // arm needed even for a non-finite scrutinee (int).
+        let src = "\
+            fn main(int _d) {\n\
+                let n = 7;\n\
+                return match n {\n\
+                    0 | _ => 1,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).expect("should typecheck");
+    }
+
+    #[test]
+    fn or_pattern_all_branches_bind_same_name_is_valid() {
+        // Matching Rust's shape: identical binding name across
+        // branches is accepted. The body can reference the
+        // binding unconditionally.
+        let src = "\
+            fn f(int n) -> int {\n\
+                return match n {\n\
+                    x | x => x + 1,\n\
+                };\n\
+            }\n\
+            fn main(int _d) { return f(5); }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 6),
+            other => panic!("expected Int(6), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_no_match_falls_through() {
+        // None of the or-branches match → next arm fires.
+        let src = "\
+            fn f(int n) -> int {\n\
+                return match n {\n\
+                    0 | 1 | 2 => 10,\n\
+                    _ => 20,\n\
+                };\n\
+            }\n\
+            fn main(int _d) { return f(5); }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 20),
+            other => panic!("expected Int(20), got {:?}", other),
+        }
     }
 
     // --- RES-159: match arm guards ---

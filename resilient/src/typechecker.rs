@@ -74,6 +74,60 @@ fn compatible(a: &Type, b: &Type) -> bool {
     a == b || matches!(a, Type::Any) || matches!(b, Type::Any)
 }
 
+/// RES-160: collect the binding names a pattern introduces, in
+/// source order. Used to verify that all branches of an or-pattern
+/// bind the same names.
+fn pattern_bindings(p: &Pattern) -> Vec<String> {
+    match p {
+        Pattern::Identifier(n) => vec![n.clone()],
+        Pattern::Wildcard | Pattern::Literal(_) => Vec::new(),
+        Pattern::Or(branches) => {
+            // By induction (checked at each arm) every branch
+            // introduces the same names — pick the first branch's
+            // list. Callers use this helper AFTER the consistency
+            // check.
+            branches
+                .first()
+                .map(pattern_bindings)
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// RES-160: if a pattern introduces exactly one identifier binding
+/// (directly or through every branch of an or-pattern), return it;
+/// otherwise `None`. Used to hook the match-arm scope.
+fn pattern_single_binding(p: &Pattern) -> Option<String> {
+    let bs = pattern_bindings(p);
+    match bs.len() {
+        1 => Some(bs.into_iter().next().unwrap()),
+        _ => None,
+    }
+}
+
+/// RES-160: does the pattern match every value (i.e. a
+/// wildcard / identifier, or an or-pattern with at least one
+/// always-matching branch)? Counts as a "default" arm for
+/// exhaustiveness.
+fn pattern_is_default(p: &Pattern) -> bool {
+    match p {
+        Pattern::Wildcard | Pattern::Identifier(_) => true,
+        Pattern::Literal(_) => false,
+        Pattern::Or(branches) => branches.iter().any(pattern_is_default),
+    }
+}
+
+/// RES-160: does the pattern include a literal-bool match for
+/// `want`? Recurses through or-patterns so `true | false` covers
+/// both branches.
+fn pattern_covers_bool(p: &Pattern, want: bool) -> bool {
+    match p {
+        Pattern::Literal(Node::BooleanLiteral { value, .. }) => *value == want,
+        Pattern::Or(branches) => branches.iter().any(|b| pattern_covers_bool(b, want)),
+        _ => false,
+    }
+}
+
 /// RES-130: arithmetic operators (`+ - * / %`) require both
 /// operands to be the same numeric type — no implicit int ↔ float
 /// coercion. Any/Any fall through as Any for the inference-in-
@@ -1129,18 +1183,37 @@ impl TypeChecker {
             Node::Match { scrutinee, arms, .. } => {
                 let scrutinee_type = self.check_node(scrutinee)?;
                 for (pattern, guard, body) in arms {
-                    // RES-159: if the arm's pattern binds an identifier,
-                    // register that binding (as the scrutinee's type) so
-                    // guards and bodies can reference it. The env entry
-                    // is rolled back after the arm so it doesn't leak.
-                    // This matches the interpreter's scoping behaviour
-                    // (see the `Match` eval arm) — previously the
-                    // typechecker just rejected any use of the binding.
+                    // RES-160: or-pattern binding consistency —
+                    // every branch must bind the same set of names,
+                    // otherwise the arm body's reference to a
+                    // binding would be conditional on which branch
+                    // fired, which is confusing and error-prone.
+                    if let Pattern::Or(branches) = pattern {
+                        let first = pattern_bindings(&branches[0]);
+                        for b in &branches[1..] {
+                            let other = pattern_bindings(b);
+                            if other != first {
+                                return Err(format!(
+                                    "or-pattern branches bind different names: {:?} vs {:?}",
+                                    first, other
+                                ));
+                            }
+                        }
+                    }
+
+                    // RES-159 + RES-160: if the arm's pattern binds
+                    // an identifier — either directly or through
+                    // every branch of an Or — register that binding
+                    // (as the scrutinee's type) so guards and bodies
+                    // can reference it. Rolled back after the arm so
+                    // it doesn't leak. Mirrors the interpreter's
+                    // scoping behaviour.
+                    let binding_name = pattern_single_binding(pattern);
                     let rollback_ident: Option<(String, Option<Type>)> =
-                        if let Pattern::Identifier(n) = pattern {
-                            let prev = self.env.get(n);
+                        if let Some(n) = binding_name {
+                            let prev = self.env.get(&n);
                             self.env.set(n.clone(), scrutinee_type.clone());
-                            Some((n.clone(), prev))
+                            Some((n, prev))
                         } else {
                             None
                         };
@@ -1175,29 +1248,28 @@ impl TypeChecker {
                     let _ = body_res?;
                 }
 
-                // RES-054 + RES-159: exhaustiveness check.
-                // Any wildcard or identifier pattern makes the match
-                // trivially exhaustive — but ONLY if that arm is
-                // unguarded. A guarded catch-all doesn't necessarily
-                // fire, so it can't count as covering.
+                // RES-054 + RES-159 + RES-160: exhaustiveness check.
+                // An arm is "covering" when it's unguarded AND its
+                // pattern contains at least one wildcard / identifier
+                // branch — `pattern_is_default` recurses through
+                // or-patterns so `_ | x` and `0 | _` both count.
                 let has_default = arms.iter().any(|(p, guard, _)| {
-                    guard.is_none()
-                        && matches!(p, Pattern::Wildcard | Pattern::Identifier(_))
+                    guard.is_none() && pattern_is_default(p)
                 });
 
                 if !has_default {
                     match scrutinee_type {
                         // Bool is the only finite-domain scalar; require
                         // coverage of both true and false via UNGUARDED
-                        // arms (guarded arms don't count).
+                        // arms (guarded arms don't count). Or-patterns
+                        // union their branches' coverage, so
+                        // `true | false => ...` fully covers.
                         Type::Bool => {
                             let has_true = arms.iter().any(|(p, guard, _)| {
-                                guard.is_none()
-                                    && matches!(p, Pattern::Literal(Node::BooleanLiteral { value: true, .. }))
+                                guard.is_none() && pattern_covers_bool(p, true)
                             });
                             let has_false = arms.iter().any(|(p, guard, _)| {
-                                guard.is_none()
-                                    && matches!(p, Pattern::Literal(Node::BooleanLiteral { value: false, .. }))
+                                guard.is_none() && pattern_covers_bool(p, false)
                             });
                             if !(has_true && has_false) {
                                 return Err(format!(
