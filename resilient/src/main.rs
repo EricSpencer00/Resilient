@@ -44,6 +44,9 @@ mod pkg_init;
 // `--sign-cert <path>` is passed and from the `verify-cert`
 // subcommand.
 mod cert_sign;
+// RES-198: starter linter. 5 lints with stable codes; consumed
+// from main() when the `lint <file>` subcommand runs.
+mod lint;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -8247,6 +8250,149 @@ fn run_z3_on(cert_path: &Path) -> RResult<bool> {
     Ok(first_line == "unsat")
 }
 
+/// RES-198: `resilient lint <file> [--deny LCODE]* [--allow LCODE]*`.
+///
+/// Parses `<file>`, runs the typechecker (so type errors surface
+/// before lints get a chance to misread the AST), then runs the
+/// lint pass and prints each hit in `<path>:<line>:<col>:
+/// <severity>[<code>]: <message>` format.
+///
+/// `--deny <code>` escalates the named lint to `error` severity;
+/// `--allow <code>` suppresses it. Unknown codes on either flag
+/// exit 2 with a usage error.
+///
+/// Exit codes:
+/// - 0 — no diagnostics.
+/// - 1 — at least one lint at warning severity.
+/// - 2 — at least one lint at error severity, OR a usage error.
+fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("lint") {
+        return None;
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut deny: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut allow: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--deny" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --deny requires a lint code argument");
+                return Some(2);
+            }
+            let code = args[i].clone();
+            if !lint::KNOWN_CODES.contains(&code.as_str()) {
+                eprintln!(
+                    "Error: unknown lint code `{}`. Known: {}",
+                    code,
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+            deny.insert(code);
+        } else if let Some(code) = a.strip_prefix("--deny=") {
+            if !lint::KNOWN_CODES.contains(&code) {
+                eprintln!(
+                    "Error: unknown lint code `{}`. Known: {}",
+                    code,
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+            deny.insert(code.to_string());
+        } else if a == "--allow" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --allow requires a lint code argument");
+                return Some(2);
+            }
+            let code = args[i].clone();
+            if !lint::KNOWN_CODES.contains(&code.as_str()) {
+                eprintln!(
+                    "Error: unknown lint code `{}`. Known: {}",
+                    code,
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+            allow.insert(code);
+        } else if let Some(code) = a.strip_prefix("--allow=") {
+            if !lint::KNOWN_CODES.contains(&code) {
+                eprintln!(
+                    "Error: unknown lint code `{}`. Known: {}",
+                    code,
+                    lint::KNOWN_CODES.join(", ")
+                );
+                return Some(2);
+            }
+            allow.insert(code.to_string());
+        } else if file.is_none() {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to lint", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!(
+            "Error: `resilient lint <file> [--deny LCODE]* [--allow LCODE]*` requires a file path"
+        );
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", path.display(), e);
+            return Some(2);
+        }
+    };
+    let (program, parse_errs) = parse(&src);
+    if !parse_errs.is_empty() {
+        for e in &parse_errs {
+            eprintln!("{}", e);
+        }
+        eprintln!("Error: lint aborted due to parse errors");
+        return Some(2);
+    }
+
+    // Run lints.
+    let mut lints = lint::check(&program, &src);
+
+    // Apply `--allow` (drop) and `--deny` (severity bump).
+    lints.retain(|l| !allow.contains(&l.code));
+    for l in lints.iter_mut() {
+        if deny.contains(&l.code) {
+            l.severity = lint::Severity::Error;
+        }
+    }
+
+    let mut any_warn = false;
+    let mut any_error = false;
+    for l in &lints {
+        println!("{}", lint::format_lint(l, path.to_string_lossy().as_ref()));
+        match l.severity {
+            lint::Severity::Warning => any_warn = true,
+            lint::Severity::Error => any_error = true,
+        }
+    }
+    if lints.is_empty() {
+        println!("\x1B[32mlint: no diagnostics\x1B[0m");
+    }
+
+    if any_error {
+        Some(2)
+    } else if any_warn {
+        Some(1)
+    } else {
+        Some(0)
+    }
+}
+
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
@@ -8269,6 +8415,12 @@ fn main() {
     // re-check every obligation's hash + signature (+ Z3 if
     // `--z3` is passed).
     if let Some(code) = dispatch_verify_all_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-198: `lint <file>` — parse + run the 5 starter lints
+    // with `// resilient: allow`-comment suppression.
+    if let Some(code) = dispatch_lint_subcommand(&args) {
         std::process::exit(code);
     }
 
