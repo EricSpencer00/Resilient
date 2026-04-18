@@ -1,7 +1,7 @@
 ---
 id: RES-207
 title: Tutorial series — 5 lesson pages on the docs site
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: docs
 created: 2026-04-17
@@ -41,3 +41,4 @@ error index as the two main docs deliverables.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
