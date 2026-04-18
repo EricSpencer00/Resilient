@@ -3273,6 +3273,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("to_int", builtin_to_int),
     // RES-138: read the current retry count inside a live block.
     ("live_retries", builtin_live_retries),
+    // RES-141: process-wide live-block telemetry.
+    ("live_total_retries", builtin_live_total_retries),
+    ("live_total_exhaustions", builtin_live_total_exhaustions),
     ("sqrt", builtin_sqrt),
     ("pow", builtin_pow),
     ("floor", builtin_floor),
@@ -3977,6 +3980,50 @@ impl Drop for LiveRetryGuard {
     }
 }
 
+// --- RES-141: process-wide live-block telemetry counters ---
+//
+// Two `AtomicU32`s that accumulate across the whole `resilient`
+// run. `LIVE_TOTAL_RETRIES` bumps every time an inner body fails
+// and the block schedules a retry; `LIVE_TOTAL_EXHAUSTIONS` bumps
+// every time a block gives up after `MAX_RETRIES`. Reads use
+// `Relaxed` ordering — for diagnostic-quality counters we only
+// need eventual visibility, not a happens-before guarantee.
+//
+// `u32` (not `u64`) so the same counter shape works on ARM
+// Cortex-M where only 32-bit atomics are native. 2^32 retries is
+// plenty of headroom for diagnostic runs.
+
+static LIVE_TOTAL_RETRIES: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+static LIVE_TOTAL_EXHAUSTIONS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// RES-141: `live_total_retries() -> Int` — cumulative count of
+/// live-block retries since the process started.
+fn builtin_live_total_retries(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "live_total_retries: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let n = LIVE_TOTAL_RETRIES.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(Value::Int(n as i64))
+}
+
+/// RES-141: `live_total_exhaustions() -> Int` — cumulative count
+/// of live blocks that exhausted their retry budget.
+fn builtin_live_total_exhaustions(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "live_total_exhaustions: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let n = LIVE_TOTAL_EXHAUSTIONS.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(Value::Int(n as i64))
+}
+
 /// RES-138: `live_retries() -> Int`. Inside a `live { ... }`
 /// block returns the current retry count (0 on the first
 /// attempt, 1..∞ thereafter). Nested `live` blocks read the
@@ -4557,6 +4604,16 @@ impl Interpreter {
                     // the NEXT attempt sees the current retry
                     // number (0 on first attempt, then 1, 2, …).
                     LiveRetryGuard::set(retry_count);
+                    // RES-141: bump the process-wide retry counter
+                    // only when we actually retry — an exhausting
+                    // failure below doesn't retry, it gives up
+                    // (that's the `exhaustions` counter's job).
+                    // Relaxed is fine; counters are diagnostic-
+                    // quality, not a synchronization primitive.
+                    if retry_count < MAX_RETRIES {
+                        LIVE_TOTAL_RETRIES
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
 
                     eprintln!(
                         "\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m",
@@ -4567,6 +4624,12 @@ impl Interpreter {
                         eprintln!(
                             "\x1B[31m[LIVE BLOCK] Maximum retry attempts reached, propagating error\x1B[0m"
                         );
+                        // RES-141: bump the exhaustion counter
+                        // before returning — tracks how many
+                        // times any live block gave up across the
+                        // whole run.
+                        LIVE_TOTAL_EXHAUSTIONS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // RES-140: footer note recording the
                         // nesting depth at which exhaustion fired.
                         // `LIVE_RETRY_STACK.len()` at this point
@@ -9062,6 +9125,90 @@ mod tests {
     }
 
     // --- RES-123: optional (inferred) return type annotations ---
+
+    // --- RES-141: process-wide live-block telemetry ---
+
+    #[test]
+    fn live_total_retries_zero_arity() {
+        // Zero-arg contract.
+        let err = builtin_live_total_retries(&[Value::Int(0)]).unwrap_err();
+        assert!(
+            err.contains("expected 0 arguments"),
+            "got: {}",
+            err
+        );
+        let err = builtin_live_total_exhaustions(&[Value::Int(0)]).unwrap_err();
+        assert!(
+            err.contains("expected 0 arguments"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn live_total_counters_advance_on_retries_and_exhaustions() {
+        // Deltas, not absolutes — the counters are process-wide
+        // atomics and other tests running in parallel can bump
+        // them. We take a before/after snapshot around this test's
+        // own live-block work and assert the diff.
+        use std::sync::atomic::Ordering::Relaxed;
+        let before_retries = LIVE_TOTAL_RETRIES.load(Relaxed);
+        let before_exhaust = LIVE_TOTAL_EXHAUSTIONS.load(Relaxed);
+
+        // Workload: two nested always-fail blocks. Inner + outer
+        // each exhaust their 3-retry budgets → 3 × 3 = 9 inner
+        // invocations, each contributing one retry (except the
+        // successful terminators, which don't exist here because
+        // everything fails). Let's count carefully:
+        //
+        //   - Outer attempt 1 runs inner. Inner fails 3 times.
+        //     Inner retries 2 (from fail 1→2 and 2→3); inner
+        //     exhausts (1 exhaustion). Outer sees the escalated
+        //     error → outer retries (1 outer retry).
+        //   - Outer attempt 2: same pattern. 2 inner retries + 1
+        //     inner exhaustion + 1 outer retry.
+        //   - Outer attempt 3: 2 inner retries + 1 inner
+        //     exhaustion. Outer retry counter hits 3 → outer
+        //     exhausts (1 exhaustion), no outer retry.
+        //
+        // Totals: inner_retries = 3 * 2 = 6. Outer retries = 2.
+        // Inner exhaustions = 3. Outer exhaustions = 1.
+        // Total retries = 8. Total exhaustions = 4.
+        let src = "\
+            fn always_fail() {\n\
+                assert(false, \"forced\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live {\n\
+                    live { let r = always_fail(); }\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let _ = interp.eval(&program); // expect exhaust; don't fail the test on it
+
+        let retries = LIVE_TOTAL_RETRIES.load(Relaxed) - before_retries;
+        let exhaust = LIVE_TOTAL_EXHAUSTIONS.load(Relaxed) - before_exhaust;
+        // Lower-bound assertions — other tests running in parallel
+        // bump the same process-wide atomics, inflating our delta.
+        // The test's own workload contributes at least 8 retries
+        // and 4 exhaustions (inner 6 + outer 2 retries; inner 3 +
+        // outer 1 exhaustions), so >= is robust.
+        assert!(
+            retries >= 8,
+            "expected >= 8 retries (this test contributes 8), got {}",
+            retries
+        );
+        assert!(
+            exhaust >= 4,
+            "expected >= 4 exhaustions (this test contributes 4), got {}",
+            exhaust
+        );
+    }
 
     // --- RES-140: nested live-block escalation ---
 
