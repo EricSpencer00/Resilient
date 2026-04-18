@@ -1,7 +1,7 @@
 ---
 id: RES-199
 title: Property-based test: `format(parse(src)) == src` for canonical files
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: testing
 created: 2026-04-17
@@ -39,3 +39,4 @@ property.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
