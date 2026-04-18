@@ -8,6 +8,12 @@ pub enum Type {
     Float,
     String,
     Bool,
+    /// RES-152: raw byte sequence, distinct from `String`. Protocol
+    /// frames, register maps, packed on-the-wire structs. Unify
+    /// rules mirror `String` but the two types don't interchange —
+    /// users bridge via explicit conversion builtins (a follow-up
+    /// ticket per RES-152's Notes).
+    Bytes,
     Function {
         params: Vec<Type>,
         return_type: Box<Type>,
@@ -41,6 +47,7 @@ impl std::fmt::Display for Type {
             Type::Float => write!(f, "float"),
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
+            Type::Bytes => write!(f, "bytes"),
             Type::Function { params, return_type } => {
                 write!(f, "fn(")?;
                 for (i, param) in params.iter().enumerate() {
@@ -632,6 +639,21 @@ impl TypeChecker {
         env.set("set_items".to_string(), Type::Function {
             params: vec![Type::Any],
             return_type: Box::new(Type::Array),
+        });
+
+        // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
+        // `byte_at` returns Int — the language has no `u8` yet.
+        env.set("bytes_len".to_string(), Type::Function {
+            params: vec![Type::Bytes],
+            return_type: Box::new(Type::Int),
+        });
+        env.set("bytes_slice".to_string(), Type::Function {
+            params: vec![Type::Bytes, Type::Int, Type::Int],
+            return_type: Box::new(Type::Bytes),
+        });
+        env.set("byte_at".to_string(), Type::Function {
+            params: vec![Type::Bytes, Type::Int],
+            return_type: Box::new(Type::Int),
         });
 
         // Result builtins
@@ -1294,6 +1316,7 @@ impl TypeChecker {
             Node::IntegerLiteral { .. } => Ok(Type::Int),
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::StringLiteral { .. } => Ok(Type::String),
+            Node::BytesLiteral { .. } => Ok(Type::Bytes),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
             
             Node::PrefixExpression { operator, right, .. } => {

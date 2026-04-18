@@ -79,6 +79,14 @@ enum Token {
     FloatLiteral(f64),
     StringLiteral(String),
     BoolLiteral(bool),
+    /// RES-152: `b"..."` byte-string literal. The lexer decodes the
+    /// contents into raw `Vec<u8>` at tokenization time — hex
+    /// escapes (`\xNN`), the five named escapes (`\n`, `\t`, `\r`,
+    /// `\0`, `\\`, `\"`), and any ASCII-printable bytes. Unknown
+    /// escapes (including `\u{...}`, which is deliberately NOT a
+    /// Unicode code-point at the bytes level) pass through as the
+    /// literal two bytes `\` + char — see ticket Notes.
+    BytesLiteral(Vec<u8>),
     
     // Operators
     Plus,
@@ -209,6 +217,7 @@ impl Token {
             Token::IntLiteral(v) => format!("integer literal `{}`", v),
             Token::FloatLiteral(v) => format!("float literal `{}`", v),
             Token::StringLiteral(_) => "string literal".to_string(),
+            Token::BytesLiteral(_) => "bytes literal".to_string(),
             Token::BoolLiteral(b) => format!("`{}`", b),
             Token::Eof => "end of input".to_string(),
             Token::Unknown(c) => format!("unrecognized character `{}`", c),
@@ -507,6 +516,16 @@ impl Lexer {
                 let str_value = self.read_string();
                 Token::StringLiteral(str_value)
             },
+            // RES-152: `b"..."` byte-string literal. The guard on
+            // the next char distinguishes from a bare identifier
+            // that starts with `b` — ASCII letters still fall
+            // through to `read_identifier` below.
+            'b' if self.peek_char() == '"' => {
+                self.read_char(); // consume `b`; self.ch == '"'
+                self.read_char(); // consume `"`; self.ch is first content byte or closing `"`
+                let bytes = self.read_bytes();
+                Token::BytesLiteral(bytes)
+            },
             '\0' => Token::Eof,
             _ => {
                 if self.is_letter(self.ch) {
@@ -658,12 +677,12 @@ impl Lexer {
     fn read_string(&mut self) -> String {
         let _position = self.position;
         let mut result = String::new();
-        
+
         while self.ch != '"' && self.ch != '\0' {
             // Handle escape sequences
             if self.ch == '\\' && self.read_position < self.input.len() {
                 self.read_char(); // Skip the backslash
-                
+
                 // Process escape sequence
                 match self.ch {
                     'n' => result.push('\n'),
@@ -680,11 +699,95 @@ impl Lexer {
             } else {
                 result.push(self.ch);
             }
-            
+
             self.read_char();
         }
-        
+
         result
+    }
+
+    /// RES-152: read the contents of a `b"..."` byte literal, leaving
+    /// `self.ch` at the closing `"` so the outer `next_token` tail
+    /// can consume it (mirrors `read_string`). Supported escapes:
+    /// `\xNN` (two hex digits), `\n`, `\t`, `\r`, `\0`, `\\`, `\"`.
+    /// Unknown escapes (including `\u{...}`) pass through as the
+    /// literal two bytes `\` + the following char per the ticket's
+    /// "Unicode escapes are disallowed" guidance: we simply don't
+    /// interpret them — users who write `\u` get the six literal
+    /// bytes, not a code point.
+    fn read_bytes(&mut self) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        while self.ch != '"' && self.ch != '\0' {
+            if self.ch == '\\' && self.read_position < self.input.len() {
+                self.read_char(); // past `\`
+                match self.ch {
+                    'n' => out.push(b'\n'),
+                    't' => out.push(b'\t'),
+                    'r' => out.push(b'\r'),
+                    '0' => out.push(0),
+                    '\\' => out.push(b'\\'),
+                    '"' => out.push(b'"'),
+                    'x' => {
+                        // `\xNN` — exactly two hex digits.
+                        let hi = self.peek_char();
+                        // We need to peek two ahead, but the lexer
+                        // only exposes a single-char peek. Advance
+                        // manually so we can re-read.
+                        self.read_char(); // self.ch == first hex digit
+                        let lo = self.peek_char();
+                        self.read_char(); // self.ch == second hex digit
+                        let nibble = |c: char| -> Option<u8> {
+                            match c {
+                                '0'..='9' => Some(c as u8 - b'0'),
+                                'a'..='f' => Some(c as u8 - b'a' + 10),
+                                'A'..='F' => Some(c as u8 - b'A' + 10),
+                                _ => None,
+                            }
+                        };
+                        match (nibble(hi), nibble(lo)) {
+                            (Some(h), Some(l)) => out.push((h << 4) | l),
+                            _ => {
+                                // Malformed — emit literal `\x` plus
+                                // whatever bytes we consumed so the
+                                // source is still recoverable.
+                                out.extend_from_slice(b"\\x");
+                                if hi.is_ascii() {
+                                    out.push(hi as u8);
+                                }
+                                if lo.is_ascii() {
+                                    out.push(lo as u8);
+                                }
+                            }
+                        }
+                    }
+                    other => {
+                        // Unknown escape. Pass through as `\` + the
+                        // following char (best-effort), matching
+                        // `read_string`'s forgiveness. Notably
+                        // includes `\u{...}` — byte literals don't
+                        // honor Unicode escapes per the ticket's
+                        // Notes.
+                        out.push(b'\\');
+                        if other.is_ascii() {
+                            out.push(other as u8);
+                        }
+                    }
+                }
+            } else if self.ch.is_ascii() {
+                out.push(self.ch as u8);
+            } else {
+                // Non-ASCII char inside a byte literal: store its
+                // UTF-8 encoding as-is. The ticket nudges users
+                // toward `\xNN` for anything non-printable, but we
+                // don't force them; emitting the UTF-8 bytes keeps
+                // the lexer predictable.
+                let mut buf = [0u8; 4];
+                let s = self.ch.encode_utf8(&mut buf);
+                out.extend_from_slice(s.as_bytes());
+            }
+            self.read_char();
+        }
+        out
     }
     
     fn is_letter(&self, ch: char) -> bool {
@@ -939,6 +1042,15 @@ enum Node {
     },
     StringLiteral {
         value: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-152: byte-string literal — `b"\x00\x01"`. Payload is the
+    /// decoded `Vec<u8>` that the lexer produced from the source
+    /// escape sequences. Value is cloned into `Value::Bytes` at
+    /// eval time.
+    BytesLiteral {
+        value: Vec<u8>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2342,6 +2454,8 @@ impl Parser {
             Token::IntLiteral(value) => Some(Node::IntegerLiteral { value: *value, span: tok_span }),
             Token::FloatLiteral(value) => Some(Node::FloatLiteral { value: *value, span: tok_span }),
             Token::StringLiteral(value) => Some(Node::StringLiteral { value: value.clone(), span: tok_span }),
+            // RES-152: byte-string literal, lexed to Vec<u8>.
+            Token::BytesLiteral(value) => Some(Node::BytesLiteral { value: value.clone(), span: tok_span }),
             Token::BoolLiteral(value) => Some(Node::BooleanLiteral { value: *value, span: tok_span }),
             // RES-012: prefix operators `!` and `-`. Precedence is higher
             // than any infix operator, so the operand consumes only the
@@ -3084,6 +3198,13 @@ enum Value {
     /// with `BTreeSet` for sorted iteration (tracked as a follow-up
     /// when the runtime grows a set value type).
     Set(std::collections::HashSet<MapKey>),
+    /// RES-152: raw byte sequence — protocol frames, register maps,
+    /// packed on-the-wire layouts. Distinct from `String`: users
+    /// bridge via explicit builtins, and the typechecker rejects
+    /// passing a `Bytes` where a `String` is expected and vice
+    /// versa. No interior mutability — `bytes_slice` returns a new
+    /// `Value::Bytes`.
+    Bytes(Vec<u8>),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -3155,6 +3276,7 @@ impl std::fmt::Debug for Value {
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
+            Value::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
         }
     }
 }
@@ -3216,6 +3338,30 @@ impl std::fmt::Display for Value {
                     write!(f, "{} -> {}", k, m.get(k).expect("key is from map"))?;
                 }
                 write!(f, "}}")
+            }
+            Value::Bytes(b) => {
+                // RES-152: print as a `b"..."` literal with hex
+                // escapes for non-printable bytes and the five
+                // named escapes, so Display round-trips through the
+                // lexer.
+                write!(f, "b\"")?;
+                for &byte in b {
+                    match byte {
+                        b'\\' => write!(f, "\\\\")?,
+                        b'"' => write!(f, "\\\"")?,
+                        b'\n' => write!(f, "\\n")?,
+                        b'\r' => write!(f, "\\r")?,
+                        b'\t' => write!(f, "\\t")?,
+                        // Printable ASCII (space through `~`)
+                        // renders as itself — everything else as
+                        // `\xNN`. Matches the ticket's
+                        // "hex escapes required for non-printable
+                        // bytes" guidance.
+                        0x20..=0x7E => write!(f, "{}", byte as char)?,
+                        _ => write!(f, "\\x{:02x}", byte)?,
+                    }
+                }
+                write!(f, "\"")
             }
             Value::Set(s) => {
                 // RES-149: mirror Map's Display — sort keys for
@@ -3543,6 +3689,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_has", builtin_set_has),
     ("set_len", builtin_set_len),
     ("set_items", builtin_set_items),
+    // RES-152: Bytes builtins.
+    ("bytes_len", builtin_bytes_len),
+    ("bytes_slice", builtin_bytes_slice),
+    ("byte_at", builtin_byte_at),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -4699,6 +4849,95 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
     }
 }
 
+// --- RES-152: Bytes builtins ---
+//
+// Three immutable accessors: length, range slice, and per-byte
+// indexed read. Mirrors the Array shape (`len`, `slice`) with a
+// distinct naming prefix so Bytes / Array stay in separate
+// name-spaces. `byte_at` returns `Int` (i64) — the language has
+// no `u8` type and narrowing belongs to a future fixed-width
+// ticket per RES-152's Notes.
+
+/// `bytes_len(b) -> Int` — number of bytes.
+fn builtin_bytes_len(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(b)] => Ok(Value::Int(b.len() as i64)),
+        [other] => Err(format!(
+            "bytes_len: expected Bytes, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "bytes_len: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `bytes_slice(b, start, end) -> Bytes` — half-open `[start, end)`
+/// slice. Errors on reversed bounds or out-of-range indices with a
+/// runtime diagnostic; callers get a span via the interpreter's
+/// error-wrapping layer (RES-116).
+fn builtin_bytes_slice(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(b), Value::Int(start), Value::Int(end)] => {
+            let len = b.len() as i64;
+            if *start < 0 || *end < 0 {
+                return Err(format!(
+                    "bytes_slice: negative index — start={}, end={}",
+                    start, end
+                ));
+            }
+            if start > end {
+                return Err(format!(
+                    "bytes_slice: start must be <= end — got start={}, end={}",
+                    start, end
+                ));
+            }
+            if *end > len {
+                return Err(format!(
+                    "bytes_slice: end {} out of range for Bytes of length {}",
+                    end, len
+                ));
+            }
+            let out: Vec<u8> = b[(*start as usize)..(*end as usize)].to_vec();
+            Ok(Value::Bytes(out))
+        }
+        [a, b, c] => Err(format!(
+            "bytes_slice: expected (Bytes, Int, Int), got ({:?}, {:?}, {:?})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "bytes_slice: expected 3 arguments (bytes, start, end), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `byte_at(b, i) -> Int` — returns the i-th byte as an Int in
+/// `0..=255`. Out-of-range `i` is a runtime error.
+fn builtin_byte_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(b), Value::Int(i)] => {
+            if *i < 0 || (*i as usize) >= b.len() {
+                return Err(format!(
+                    "byte_at: index {} out of range for Bytes of length {}",
+                    i,
+                    b.len()
+                ));
+            }
+            Ok(Value::Int(b[*i as usize] as i64))
+        }
+        [a, b] => Err(format!(
+            "byte_at: expected (Bytes, Int), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!(
+            "byte_at: expected 2 arguments (bytes, index), got {}",
+            args.len()
+        )),
+    }
+}
+
 // --- RES-149: Set builtins ---
 //
 // Value restrictions mirror Map: Int / String / Bool only. Immutable
@@ -5123,6 +5362,7 @@ impl Interpreter {
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            Node::BytesLiteral { value, .. } => Ok(Value::Bytes(value.clone())),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::PrefixExpression { operator, right, .. } => {
                 let right_val = self.eval(right)?;
@@ -7260,6 +7500,144 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-152: Bytes value type + builtins ---
+
+    fn as_bytes(v: Value) -> Vec<u8> {
+        match v {
+            Value::Bytes(b) => b,
+            other => panic!("expected Value::Bytes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_literal_hex_named_and_printable_escapes() {
+        // The three escape forms the ticket's test requires:
+        //   - hex (`\x00`, `\x7f`) for non-printable bytes
+        //   - named (`\n`, `\t`, `\r`, `\0`, `\\`, `\"`)
+        //   - raw printable ASCII (`Hello`)
+        let src = "fn main(int _d) { return b\"\\x00\\x7fHello\\n\\t\\\\\\\"\"; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let v = interp.eval(&program).unwrap();
+        let got = match v {
+            Value::Return(inner) => as_bytes(*inner),
+            other => as_bytes(other),
+        };
+        assert_eq!(
+            got,
+            b"\x00\x7fHello\n\t\\\"".to_vec(),
+            "decoded bytes mismatch"
+        );
+    }
+
+    #[test]
+    fn bytes_literal_treats_unicode_escape_as_literal() {
+        // Ticket: "Unicode escapes are disallowed (this is a byte
+        // literal, not a string)." We honor that by NOT
+        // interpreting `\u` — the sequence passes through as the
+        // literal two bytes `\` + `u`, plus whatever follows. A
+        // user writing `b"\u{41}"` does NOT get `b"A"`.
+        let src = "fn main(int _d) { return b\"\\u{41}\"; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let v = interp.eval(&program).unwrap();
+        let got = match v {
+            Value::Return(inner) => as_bytes(*inner),
+            other => as_bytes(other),
+        };
+        // Must not be `b"A"` (which would be the Unicode
+        // interpretation); must contain the raw `\u` bytes.
+        assert_ne!(got, b"A".to_vec(), "accidentally interpreted \\u");
+        assert!(
+            got.starts_with(b"\\u"),
+            "expected raw `\\u` bytes at start, got {:?}",
+            got
+        );
+    }
+
+    #[test]
+    fn bytes_len_counts_bytes() {
+        let v = builtin_bytes_len(&[Value::Bytes(vec![1, 2, 3, 4])]).unwrap();
+        match v {
+            Value::Int(n) => assert_eq!(n, 4),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_len_rejects_non_bytes() {
+        let err = builtin_bytes_len(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected Bytes"), "err was: {}", err);
+    }
+
+    #[test]
+    fn bytes_slice_returns_new_bytes() {
+        let b = Value::Bytes(vec![10, 20, 30, 40, 50]);
+        let v = builtin_bytes_slice(&[b, Value::Int(1), Value::Int(4)]).unwrap();
+        assert_eq!(as_bytes(v), vec![20, 30, 40]);
+    }
+
+    #[test]
+    fn bytes_slice_rejects_out_of_range() {
+        let b = Value::Bytes(vec![1, 2, 3]);
+        let err = builtin_bytes_slice(&[b.clone(), Value::Int(0), Value::Int(10)])
+            .unwrap_err();
+        assert!(err.contains("out of range"), "err was: {}", err);
+        let err =
+            builtin_bytes_slice(&[b.clone(), Value::Int(-1), Value::Int(1)])
+                .unwrap_err();
+        assert!(err.contains("negative index"), "err was: {}", err);
+        let err = builtin_bytes_slice(&[b, Value::Int(2), Value::Int(1)])
+            .unwrap_err();
+        assert!(err.contains("start must be <= end"), "err was: {}", err);
+    }
+
+    #[test]
+    fn byte_at_in_bounds_returns_int_0_to_255() {
+        let b = Value::Bytes(vec![0, 128, 255]);
+        for (i, want) in [(0_i64, 0_i64), (1, 128), (2, 255)] {
+            let v = builtin_byte_at(&[b.clone(), Value::Int(i)]).unwrap();
+            match v {
+                Value::Int(n) => {
+                    assert_eq!(n, want);
+                    assert!((0..=255).contains(&n), "byte out of 0..255: {}", n);
+                }
+                other => panic!("expected Int, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn byte_at_out_of_bounds_errors() {
+        let b = Value::Bytes(vec![1, 2, 3]);
+        let err = builtin_byte_at(&[b.clone(), Value::Int(3)]).unwrap_err();
+        assert!(err.contains("out of range"), "err was: {}", err);
+        let err = builtin_byte_at(&[b, Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("out of range"), "err was: {}", err);
+    }
+
+    #[test]
+    fn byte_at_rejects_non_bytes_first_arg() {
+        let err = builtin_byte_at(&[Value::Int(1), Value::Int(0)]).unwrap_err();
+        assert!(
+            err.contains("expected (Bytes, Int)"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bytes_display_roundtrips_through_hex_escapes() {
+        // Value::Bytes prints as `b"..."` with the same escape
+        // alphabet the lexer recognizes — so the output is itself
+        // a parseable literal.
+        let v = Value::Bytes(vec![0x00, 0x41, 0x7F, 0xFF, b'\n']);
+        let s = format!("{}", v);
+        assert_eq!(s, "b\"\\x00A\\x7f\\xff\\n\"");
     }
 
     // --- RES-151: env() builtin (read-only) ---

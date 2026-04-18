@@ -119,6 +119,7 @@ impl Substitution {
             Type::Int
             | Type::Float
             | Type::String
+            | Type::Bytes
             | Type::Bool
             | Type::Array
             | Type::Result

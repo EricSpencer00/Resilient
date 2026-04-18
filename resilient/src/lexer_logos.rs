@@ -102,6 +102,13 @@ enum Tok {
     // (including newlines). `string_lit` post-processes escapes.
     #[regex(r#""([^"\\]|\\[\s\S])*""#, string_lit)]
     Str(String),
+    // RES-152: byte-string literal `b"..."`. Same inner-char regex
+    // as `Str` with a mandatory `b` prefix. `bytes_lit` post-
+    // processes escapes (named + `\xNN`) into a `Vec<u8>`. Priority
+    // is bumped above `Ident` so a bare `b` followed immediately by
+    // `"..."` never decomposes into `Ident("b") Str(...)`.
+    #[regex(r#"b"([^"\\]|\\[\s\S])*""#, bytes_lit, priority = 3)]
+    BytesLit(Vec<u8>),
 
     // --- keywords ---
     #[token("fn")] Fn,
@@ -151,6 +158,72 @@ fn hex_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
 fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     let body = lex.slice()[2..].replace('_', "");
     Some(i64::from_str_radix(&body, 2).unwrap_or(0))
+}
+
+fn bytes_lit(lex: &mut logos::Lexer<Tok>) -> Vec<u8> {
+    // The matched slice is `b"..."`; strip the `b"` prefix and the
+    // trailing `"`.
+    let slice = lex.slice();
+    let inner = &slice[2..slice.len().saturating_sub(1)];
+    let mut out: Vec<u8> = Vec::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push(b'\n'),
+                Some('t') => out.push(b'\t'),
+                Some('r') => out.push(b'\r'),
+                Some('0') => out.push(0),
+                Some('\\') => out.push(b'\\'),
+                Some('"') => out.push(b'"'),
+                Some('x') => {
+                    // `\xNN` — exactly two hex digits.
+                    let hi = chars.next();
+                    let lo = chars.next();
+                    let nibble = |c: Option<char>| -> Option<u8> {
+                        match c {
+                            Some('0'..='9') => Some(c.unwrap() as u8 - b'0'),
+                            Some('a'..='f') => Some(c.unwrap() as u8 - b'a' + 10),
+                            Some('A'..='F') => Some(c.unwrap() as u8 - b'A' + 10),
+                            _ => None,
+                        }
+                    };
+                    match (nibble(hi), nibble(lo)) {
+                        (Some(h), Some(l)) => out.push((h << 4) | l),
+                        _ => {
+                            out.extend_from_slice(b"\\x");
+                            if let Some(c) = hi
+                                && c.is_ascii()
+                            {
+                                out.push(c as u8);
+                            }
+                            if let Some(c) = lo
+                                && c.is_ascii()
+                            {
+                                out.push(c as u8);
+                            }
+                        }
+                    }
+                }
+                Some(other) => {
+                    // Unknown escape (including `\u{...}`) — pass
+                    // through as literal `\` + following char.
+                    out.push(b'\\');
+                    if other.is_ascii() {
+                        out.push(other as u8);
+                    }
+                }
+                None => out.push(b'\\'),
+            }
+        } else if c.is_ascii() {
+            out.push(c as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            out.extend_from_slice(s.as_bytes());
+        }
+    }
+    out
 }
 
 fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
@@ -364,6 +437,7 @@ fn convert(t: Tok) -> Token {
         Tok::Int(n) => Token::IntLiteral(n),
         Tok::Float(f) => Token::FloatLiteral(f),
         Tok::Str(s) => Token::StringLiteral(s),
+        Tok::BytesLit(b) => Token::BytesLiteral(b),
         Tok::Ident(s) => Token::Identifier(s),
         // `BlockComment` is never emitted — its callback always
         // returns `logos::Skip`. Presence here guards the match's
