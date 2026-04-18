@@ -3527,6 +3527,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
     ("file_write", builtin_file_write),
+    // RES-151: read-only env-var accessor, std-only.
+    ("env", builtin_env),
     // RES-148: Map builtins.
     ("map_new", builtin_map_new),
     ("map_insert", builtin_map_insert),
@@ -4494,6 +4496,52 @@ fn builtin_file_read(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "file_read: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-151: `env(key: String) -> Result<String, String>` — read an
+/// environment variable. `Ok(val)` when present, `Err("not set")`
+/// when absent. Deliberately returns a Result so "the variable is
+/// missing" is a first-class programmable outcome, not a runtime
+/// halt.
+///
+/// Read-only by design: there is no matching `set_env` builtin.
+/// Mutating a process's environment at runtime is a threading
+/// footgun on hosts (Rust's `std::env::set_var` is `unsafe` on
+/// recent editions for the same reason). std-only; the no_std
+/// `resilient-runtime` sibling never gets this.
+///
+/// A non-UTF-8 environment value also surfaces as
+/// `Err("invalid utf-8")` rather than a panic — consistent with
+/// the ticket's spirit that absence isn't a runtime error.
+fn builtin_env(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(key)] => {
+            match std::env::var(key) {
+                Ok(val) => Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(Value::String(val)),
+                }),
+                Err(std::env::VarError::NotPresent) => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String("not set".to_string())),
+                }),
+                Err(std::env::VarError::NotUnicode(_)) => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String(
+                        "invalid utf-8".to_string(),
+                    )),
+                }),
+            }
+        }
+        [other] => Err(format!(
+            "env: expected String argument, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "env: expected 1 argument (key), got {}",
             args.len()
         )),
     }
@@ -7212,6 +7260,87 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-151: env() builtin (read-only) ---
+
+    /// Guard that serializes env-touching tests — `std::env::set_var`
+    /// / `remove_var` mutate process state, so parallel tests that
+    /// set and read overlap can see each other's writes. Independent
+    /// of the RNG lock because the two resources are unrelated.
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Build an env-var name unique to this test run so two tests
+    /// using `env()` in parallel still don't collide even if the
+    /// lock above were skipped. Uses pid + a bumping counter.
+    fn env_name(tag: &str) -> String {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("RES_151_TEST_{}_{}_{}", tag, std::process::id(), n)
+    }
+
+    #[test]
+    fn env_returns_ok_for_set_variable() {
+        let _g = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let key = env_name("ok");
+        // SAFETY: `set_var` is `unsafe` on newer Rust editions
+        // because concurrent readers can observe a torn env
+        // table on some platforms. The `ENV_TEST_LOCK` mutex
+        // serializes every test that touches the process env,
+        // and the key is unique per call via `env_name`, so
+        // the race window this API guards against doesn't
+        // exist here.
+        unsafe { std::env::set_var(&key, "hello"); }
+        let got = builtin_env(&[Value::String(key.clone())]).unwrap();
+        match got {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::String(s) => assert_eq!(s, "hello"),
+                other => panic!("expected String payload, got {:?}", other),
+            },
+            other => panic!("expected Ok(_), got {:?}", other),
+        }
+        // SAFETY: same rationale as the set_var above —
+        // serialized by ENV_TEST_LOCK, unique key.
+        unsafe { std::env::remove_var(&key); }
+    }
+
+    #[test]
+    fn env_returns_err_not_set_for_missing_variable() {
+        let _g = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let key = env_name("missing");
+        // Belt-and-suspenders: ensure the name is absent. We mint
+        // unique names but a test runner with inherited env could
+        // still have collisions.
+        // SAFETY: same rationale as the set_var above — serialized
+        // by ENV_TEST_LOCK, unique key.
+        unsafe { std::env::remove_var(&key); }
+        let got = builtin_env(&[Value::String(key)]).unwrap();
+        match got {
+            Value::Result { ok: false, payload } => match *payload {
+                Value::String(s) => assert_eq!(s, "not set"),
+                other => panic!("expected String payload, got {:?}", other),
+            },
+            other => panic!("expected Err(_), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn env_rejects_non_string_key() {
+        let err = builtin_env(&[Value::Int(5)]).unwrap_err();
+        assert!(err.contains("expected String argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn env_rejects_wrong_arity() {
+        let err = builtin_env(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+        let err = builtin_env(&[
+            Value::String("A".into()),
+            Value::String("B".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
     // --- RES-150: seedable SplitMix64 random builtins ---

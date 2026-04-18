@@ -571,6 +571,13 @@ impl TypeChecker {
             return_type: Box::new(Type::Void),
         });
 
+        // RES-151: read-only env-var accessor. `Result<String, String>`
+        // — absence is a first-class outcome, not a runtime halt.
+        env.set("env".to_string(), Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::Result),
+        });
+
         // RES-148: Map builtins. The typechecker doesn't (yet) carry
         // a dedicated `Type::Map<K, V>` constructor — following the
         // same permissive-Any convention as the Array / Result
