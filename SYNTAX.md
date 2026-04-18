@@ -26,6 +26,29 @@ fn caller() { return callee(); }
 fn callee() { return 42; }
 ```
 
+### Return types
+
+A `-> TYPE` annotation is **optional** (RES-123). When omitted, the
+return type is inferred from the body — identical to what you'd get
+by writing it out explicitly:
+
+```rust
+// Both of these typecheck to `int`. The version without `-> int`
+// is inferred; writing it out is still supported and still checked
+// against the body.
+fn square(int x) -> int { return x * x; }
+fn square(int x)        { return x * x; }
+
+// Body with no `return` statement infers `void`:
+fn log_once(string msg) { println(msg); }
+```
+
+If you DO write the annotation and it disagrees with the body, the
+typechecker rejects with a clean `return type mismatch — declared
+<X>, body produces <Y>` diagnostic. **Parameter types stay
+required** — inferring them from call-site usage is a worse DX
+(errors fire at callers, not at the definition).
+
 ## Lexical: identifiers
 
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*` — **ASCII only**. Non-

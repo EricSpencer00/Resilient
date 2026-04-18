@@ -8611,6 +8611,65 @@ mod tests {
         assert!(s.ends_with(", got `x`"), "unexpected tail: {}", s);
     }
 
+    // --- RES-123: optional (inferred) return type annotations ---
+
+    #[test]
+    fn fn_without_return_type_annotation_typechecks() {
+        // Omitting `-> TYPE` is supported: the typechecker falls
+        // through to the body's inferred type (`body_type` in
+        // `check_node`'s Function arm).
+        let src = "fn square(int x) { return x * x; }";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let res = tc.check_program(&program);
+        assert!(res.is_ok(), "typecheck should succeed: {:?}", res);
+    }
+
+    #[test]
+    fn fn_with_explicit_return_type_still_checks_against_body() {
+        // Explicit annotation still overrides — declaring `-> bool`
+        // against an `int` body is the canonical RES-053 mismatch
+        // error, unchanged by RES-123.
+        let src = "fn square(int x) -> bool { return x * x; }";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("bool-declared int body should fail typecheck");
+        assert!(
+            err.contains("return type mismatch"),
+            "expected return-type mismatch diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn fn_with_no_return_stmt_infers_void() {
+        // Body with no `return` should infer `Type::Void`. We
+        // verify by declaring an explicit `-> void` on ONE overload
+        // and omitting the annotation on another — both must
+        // typecheck against the same body.
+        let src_explicit = "fn sink(int x) -> void { println(x); }";
+        let (p1, e1) = parse(src_explicit);
+        assert!(e1.is_empty(), "parse errors: {:?}", e1);
+        let mut tc1 = typechecker::TypeChecker::new();
+        assert!(
+            tc1.check_program(&p1).is_ok(),
+            "explicit `-> void` should typecheck"
+        );
+
+        let src_inferred = "fn sink(int x) { println(x); }";
+        let (p2, e2) = parse(src_inferred);
+        assert!(e2.is_empty(), "parse errors: {:?}", e2);
+        let mut tc2 = typechecker::TypeChecker::new();
+        assert!(
+            tc2.check_program(&p2).is_ok(),
+            "inferred-void body should typecheck"
+        );
+    }
+
     #[test]
     fn token_display_syntax_renders_source_form() {
         // Punctuation → backticked source form. Keywords → backticked
