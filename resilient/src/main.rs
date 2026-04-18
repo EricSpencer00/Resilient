@@ -1128,6 +1128,22 @@ enum Node {
         /// RES-088: span of the `struct` keyword. Consumed in follow-ups.
         span: span::Span,
     },
+    /// RES-155: `let <StructName> { field1, field2: local, .. } = expr;`
+    /// struct destructuring. `fields` holds `(field_name, local_name)`
+    /// pairs; `local_name == field_name` when the shorthand form
+    /// `{ x }` is used. `has_rest` marks the `..` trailing token:
+    /// when true, fields not in the pattern are silently ignored;
+    /// when false, the typechecker enforces exhaustiveness and
+    /// errors listing any missing field names.
+    LetDestructureStruct {
+        struct_name: String,
+        fields: Vec<(String, String)>, // (field_name, local_name)
+        has_rest: bool,
+        value: Box<Node>,
+        /// RES-088: span of the `let` keyword.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-038: `NAME { field: expr, ... }` struct literal.
     StructLiteral {
         name: String,
@@ -1978,6 +1994,15 @@ impl Parser {
 
         self.next_token(); // Skip name
 
+        // RES-155: struct destructuring form — `let <StructName> { ... } = expr;`.
+        // The `{` immediately after an identifier (no `:` or `=`) is
+        // unambiguous: the simple-let and annotated-let forms both
+        // require those tokens next. We reroute here and let the
+        // dedicated parser take over.
+        if self.current_token == Token::LeftBrace {
+            return self.parse_let_destructure_struct(name, stmt_span);
+        }
+
         // RES-052: optional `: TYPE` annotation.
         let type_annot = if self.current_token == Token::Colon {
             self.next_token(); // skip ':'
@@ -2021,6 +2046,157 @@ impl Parser {
             name,
             value: Box::new(value),
             type_annot,
+            span: stmt_span,
+        }
+    }
+
+    /// RES-155: parse a struct-destructure `let` —
+    /// `let <StructName> { field1, field2: local, .. } = expr;`.
+    /// On entry, `current_token` is `{` (the caller has already
+    /// consumed `let` and the `StructName` identifier). On exit,
+    /// `current_token` sits on the last token of the value
+    /// expression; `parse_statement` handles the trailing `;`.
+    fn parse_let_destructure_struct(
+        &mut self,
+        struct_name: String,
+        stmt_span: span::Span,
+    ) -> Node {
+        self.next_token(); // skip `{`
+        let mut fields: Vec<(String, String)> = Vec::new();
+        let mut has_rest = false;
+
+        loop {
+            // Trailing `}` (empty or end of list).
+            if self.current_token == Token::RightBrace {
+                break;
+            }
+
+            // Rest pattern `..` — must be the last element before `}`.
+            // We accept it mid-list leniently but don't reorder.
+            if self.current_token == Token::Dot {
+                if self.peek_token == Token::Dot {
+                    self.next_token(); // second `.`
+                    has_rest = true;
+                    self.next_token(); // advance past `..` to `,` or `}`
+                    if self.current_token == Token::Comma {
+                        self.next_token(); // trailing `,` after `..`
+                    }
+                    if self.current_token != Token::RightBrace {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "After `..` rest pattern, expected `}}`, found {}",
+                            tok
+                        ));
+                    }
+                    break;
+                } else {
+                    self.record_error(
+                        "Expected `..` (two dots) for rest pattern, found single `.`"
+                            .to_string(),
+                    );
+                    break;
+                }
+            }
+
+            let field_name = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected field name in struct destructure, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // advance past field name
+
+            // Optional `: local_name` rename.
+            let local_name = if self.current_token == Token::Colon {
+                self.next_token(); // skip `:`
+                let local = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected local binding name after `:`, found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                };
+                self.next_token(); // advance past local name
+                local
+            } else {
+                // Shorthand: field binds to a local of the same name,
+                // matching RES-154's struct-literal shorthand on the
+                // construction side.
+                field_name.clone()
+            };
+
+            fields.push((field_name, local_name));
+
+            if self.current_token == Token::Comma {
+                self.next_token();
+                continue;
+            }
+            if self.current_token == Token::RightBrace {
+                break;
+            }
+            let tok_syntax = self.current_token.display_syntax();
+            self.record_error(format!(
+                "in struct destructure: {}",
+                format_expected(&["`,`", "`}`", "`..`"], &tok_syntax)
+            ));
+            break;
+        }
+
+        // Consume the closing `}`.
+        if self.current_token != Token::RightBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `}}` to close struct destructure, found {}",
+                tok
+            ));
+        } else {
+            self.next_token(); // past `}`
+        }
+
+        // Now the `=` and value expression.
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `=` after struct destructure pattern, found {}",
+                tok
+            ));
+            return Node::LetDestructureStruct {
+                struct_name,
+                fields,
+                has_rest,
+                value: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `=`
+        let value = self
+            .parse_expression(0)
+            .unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::LetDestructureStruct {
+            struct_name,
+            fields,
+            has_rest,
+            value: Box::new(value),
             span: stmt_span,
         }
     }
@@ -5296,6 +5472,45 @@ impl Interpreter {
                 self.env.set(name.clone(), val);
                 Ok(Value::Void)
             },
+            Node::LetDestructureStruct {
+                struct_name,
+                fields,
+                value,
+                ..
+            } => {
+                let val = self.eval(value)?;
+                if matches!(val, Value::Return(_)) {
+                    return Ok(val);
+                }
+                let (obs_name, obs_fields) = match &val {
+                    Value::Struct { name, fields } => (name.clone(), fields.clone()),
+                    other => {
+                        return Err(format!(
+                            "Cannot destructure non-struct value as {}: got {}",
+                            struct_name, other
+                        ));
+                    }
+                };
+                if obs_name != *struct_name {
+                    return Err(format!(
+                        "Destructure expected struct {}, got {}",
+                        struct_name, obs_name
+                    ));
+                }
+                // Bind each requested field into the environment.
+                for (field_name, local_name) in fields {
+                    let Some((_, field_val)) =
+                        obs_fields.iter().find(|(n, _)| n == field_name)
+                    else {
+                        return Err(format!(
+                            "Struct {} has no field `{}`",
+                            struct_name, field_name
+                        ));
+                    };
+                    self.env.set(local_name.clone(), field_val.clone());
+                }
+                Ok(Value::Void)
+            }
             Node::StaticLet { name, value, .. } => {
                 // Initialize only once. Subsequent executions of the
                 // same declaration are no-ops (the value persists in
@@ -7530,6 +7745,221 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-155: struct destructuring let ---
+
+    /// Grab the value bound to `name` from the interpreter's env
+    /// after evaluating `src`, or panic with context. Used by the
+    /// destructure tests to verify each local got the right
+    /// field value.
+    fn eval_and_lookup(src: &str, name: &str) -> Value {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("eval");
+        interp
+            .env
+            .get(name)
+            .unwrap_or_else(|| panic!("binding `{}` not found after eval", name))
+    }
+
+    #[test]
+    fn let_destructure_full_binds_every_field_shorthand() {
+        // `let Point { x, y } = p;` binds `x` and `y` locally.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let p = new Point { x: 3, y: 4 };\n\
+                let Point { x, y } = p;\n\
+                return x + y;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // The destructure lives inside `main`, whose locals
+        // disappear on return. Assert on the return value of
+        // `main(0)` instead, which is `x + y == 7`.
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 7),
+            other => panic!("expected Int(7), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn let_destructure_renames_field_to_local() {
+        // `let Point { x: a, y: b } = p;` binds new locals `a`, `b`.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let p = new Point { x: 5, y: 6 };\n\
+                let Point { x: a, y: b } = p;\n\
+                return a * 10 + b;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 56),
+            other => panic!("expected Int(56), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn let_destructure_rest_pattern_ignores_remaining_fields() {
+        // `let Foo { a, .. } = f;` only binds `a`; b / c silently
+        // dropped. Without `..`, the typechecker would reject.
+        let src = "\
+            struct Foo { int a, int b, int c }\n\
+            fn main(int _d) {\n\
+                let f = new Foo { a: 1, b: 2, c: 3 };\n\
+                let Foo { a, .. } = f;\n\
+                return a;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 1),
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn let_destructure_mixed_shorthand_and_rename() {
+        // One shorthand field, one renamed — both in the same
+        // pattern. `..` ignores the remaining field.
+        let src = "\
+            struct Foo { int a, int b, int c }\n\
+            fn main(int _d) {\n\
+                let f = new Foo { a: 1, b: 2, c: 3 };\n\
+                let Foo { a, b: mine, .. } = f;\n\
+                return a + mine;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn let_destructure_non_exhaustive_without_rest_is_typecheck_error() {
+        // Ticket acceptance: missing fields without `..` must
+        // produce a typecheck error listing the missing names.
+        let src = "\
+            struct Foo { int a, int b, int c }\n\
+            fn main(int _d) {\n\
+                let f = new Foo { a: 1, b: 2, c: 3 };\n\
+                let Foo { a } = f;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("Non-exhaustive destructure of Foo"),
+            "err was: {}",
+            err
+        );
+        assert!(
+            err.contains("missing field(s) b, c"),
+            "expected `b, c` missing-list, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn let_destructure_unknown_field_is_typecheck_error() {
+        // Pattern field doesn't exist on the struct → clean error.
+        let src = "\
+            struct Foo { int a, int b }\n\
+            fn main(int _d) {\n\
+                let f = new Foo { a: 1, b: 2 };\n\
+                let Foo { zzz } = f;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("Struct Foo has no field `zzz`"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn let_destructure_wrong_struct_name_is_runtime_error() {
+        // Pattern struct name must match the value's struct name.
+        // The typechecker tolerates this (it walks the value expr
+        // only loosely); runtime catches it.
+        let src = "\
+            struct Foo { int a }\n\
+            struct Bar { int a }\n\
+            fn main(int _d) {\n\
+                let f = new Foo { a: 1 };\n\
+                let Bar { a } = f;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("Destructure expected struct Bar"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn let_destructure_non_struct_value_is_runtime_error() {
+        // Destructuring a non-struct value (e.g. an Int) must fail
+        // with a clean message.
+        let src = "\
+            struct Foo { int a }\n\
+            fn main(int _d) {\n\
+                let x = 42;\n\
+                let Foo { a } = x;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("Cannot destructure non-struct"),
+            "err was: {}",
+            err
+        );
+    }
+
+    // keep the helper used by other RES-155 tests — silence the
+    // unused warning if this file grows more tests later.
+    #[allow(dead_code)]
+    fn _exercise_eval_and_lookup() {
+        let _ = eval_and_lookup("fn main(int _d) { return 0; } main(0);", "main");
     }
 
     // --- RES-154: struct-literal field shorthand ---

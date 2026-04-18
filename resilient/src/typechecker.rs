@@ -989,6 +989,73 @@ impl TypeChecker {
                 Ok(Type::Void)
             },
 
+            // RES-155: `let <StructName> { field1, field2: local, .. } = expr;`.
+            // Exhaustiveness: without `..`, every struct field must
+            // appear in the pattern; missing fields → error listing
+            // them. Then we register each local binding in the env
+            // with the declared field type (or `Any` if unknown).
+            Node::LetDestructureStruct {
+                struct_name,
+                fields,
+                has_rest,
+                value,
+                ..
+            } => {
+                let _ = self.check_node(value)?;
+                // Look up the struct's declared field list (may be
+                // absent if the struct hasn't been declared — we
+                // tolerate that and fall back to Any bindings so a
+                // partial program still typechecks past this point).
+                let declared = self.struct_fields.get(struct_name).cloned();
+
+                if let Some(declared_fields) = &declared {
+                    // Reject unknown pattern-field names FIRST — a
+                    // typo in the pattern produces a clearer
+                    // diagnostic than the missing-field cascade it
+                    // would otherwise generate.
+                    for (pf, _) in fields {
+                        if !declared_fields.iter().any(|(fname, _)| fname == pf) {
+                            return Err(format!(
+                                "Struct {} has no field `{}`",
+                                struct_name, pf
+                            ));
+                        }
+                    }
+                    // Exhaustiveness check when `..` is not used.
+                    if !has_rest {
+                        let mut missing: Vec<&str> = declared_fields
+                            .iter()
+                            .filter(|(fname, _)| {
+                                !fields.iter().any(|(pf, _)| pf == fname)
+                            })
+                            .map(|(fname, _)| fname.as_str())
+                            .collect();
+                        if !missing.is_empty() {
+                            missing.sort();
+                            return Err(format!(
+                                "Non-exhaustive destructure of {}: missing field(s) {} — add `..` to ignore them",
+                                struct_name,
+                                missing.join(", ")
+                            ));
+                        }
+                    }
+                }
+
+                // Bind each local name with the declared field type,
+                // or `Any` if the struct's declaration is unavailable.
+                for (field_name, local_name) in fields {
+                    let ty = declared
+                        .as_ref()
+                        .and_then(|dfs| {
+                            dfs.iter().find(|(fn_, _)| fn_ == field_name).map(|(_, t)| t.clone())
+                        })
+                        .unwrap_or(Type::Any);
+                    self.env.set(local_name.clone(), ty);
+                    self.const_bindings.remove(local_name);
+                }
+                Ok(Type::Void)
+            }
+
             Node::ArrayLiteral { items, .. } => {
                 for item in items {
                     let _ = self.check_node(item)?;

@@ -291,6 +291,34 @@ The shorthand is pure parser sugar — the AST reconstructs the
 unbound name produces the same `Identifier not found` diagnostic as
 any other use.
 
+### Destructuring let (RES-155)
+
+`let <StructName> { ... } = expr;` pulls fields into local
+bindings in a single statement:
+
+```rust
+let p = new Point { x: 3, y: 4 };
+
+// Full destructure — shorthand form mirrors the struct-literal
+// shorthand on the construction side.
+let Point { x, y } = p;
+
+// Renaming — `field: local_name` binds the field to a
+// differently-named local.
+let Point { x: a, y: b } = p;
+
+// `..` rest pattern ignores the remaining fields; without it,
+// every declared field must appear in the pattern or the
+// typechecker errors listing what's missing.
+struct Foo { int a, int b, int c, }
+let f = new Foo { a: 1, b: 2, c: 3 };
+let Foo { a, .. } = f;           // ok — ignores b, c
+// let Foo { a } = f;            // type error: missing field(s) b, c
+```
+
+Only one layer deep — nested struct patterns are a follow-up. The
+pattern struct name must match the value's struct name at runtime.
+
 ## Data Types
 
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
