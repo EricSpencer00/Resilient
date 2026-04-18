@@ -1,7 +1,7 @@
 ---
 id: RES-145
 title: String builtins: replace / to_upper / to_lower / format
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -36,3 +36,4 @@ string function. Lock down a small, predictable surface.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
