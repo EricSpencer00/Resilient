@@ -1,7 +1,7 @@
 ---
 id: RES-150
 title: `random()` builtin with deterministic `--seed` flag
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -36,3 +36,4 @@ at program start so a failing run can be reproduced.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
