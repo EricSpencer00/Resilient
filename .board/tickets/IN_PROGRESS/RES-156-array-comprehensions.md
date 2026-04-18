@@ -1,7 +1,7 @@
 ---
 id: RES-156
 title: Array comprehensions `[f(x) for x in xs if p(x)]`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G12
 created: 2026-04-17
@@ -36,3 +36,4 @@ comprehensions with optional filter. Desugars to a simple for-loop
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
