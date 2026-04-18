@@ -1,7 +1,7 @@
 ---
 id: RES-186
 title: LSP: workspace-symbol search across all project files
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G17
 created: 2026-04-17
@@ -32,3 +32,4 @@ match.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
