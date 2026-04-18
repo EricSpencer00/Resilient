@@ -185,6 +185,21 @@ impl Lexer {
                 last_token_offset: 0,
             };
             lexer.read_char();
+            // RES-113: silently consume a leading shebang line
+            // (`#!...\n`) at byte 0 of the input so users can make
+            // Resilient scripts executable with `#!/usr/bin/env
+            // resilient`. `read_char` naturally advances
+            // `line / column / position`, so the first real token's
+            // span points at its true byte offset — we don't
+            // subtract the shebang length.
+            if lexer.ch == '#' && lexer.peek_char() == '!' {
+                while lexer.ch != '\n' && lexer.ch != '\0' {
+                    lexer.read_char();
+                }
+                if lexer.ch == '\n' {
+                    lexer.read_char();
+                }
+            }
             lexer
         }
     }
@@ -5205,6 +5220,17 @@ mod tests {
             logos_tokens: None,
         };
         lex.read_char();
+        // RES-113: mirror the shebang-skip that `Lexer::new` applies
+        // on the non-logos path. Without this, the parity test
+        // diverges on examples that start with `#!`.
+        if lex.ch == '#' && lex.peek_char() == '!' {
+            while lex.ch != '\n' && lex.ch != '\0' {
+                lex.read_char();
+            }
+            if lex.ch == '\n' {
+                lex.read_char();
+            }
+        }
         let mut out = Vec::new();
         loop {
             let (tok, span) = lex.next_token_with_span();
@@ -8228,5 +8254,70 @@ mod tests {
     fn format_interpreter_error_falls_back_when_undecorated() {
         let out = format_interpreter_error("/tmp/foo.rs", "something went wrong");
         assert_eq!(out, "Runtime error: something went wrong");
+    }
+
+    // --- RES-113: shebang line at start of file ---
+
+    #[test]
+    fn lexer_shebang_line_ignored() {
+        // A leading shebang line is silently consumed; the first
+        // real token (`println`) lands on line 2, col 1.
+        let src = "#!/usr/bin/env resilient\nprintln(\"ok\");";
+        let mut lex = Lexer::new(src.to_string());
+        let (tok, span) = lex.next_token_with_span();
+        match tok {
+            Token::Identifier(ref n) => assert_eq!(n, "println"),
+            other => panic!("expected Identifier(println), got {:?}", other),
+        }
+        assert_eq!(span.start.line, 2);
+        assert_eq!(span.start.column, 1);
+    }
+
+    #[test]
+    fn lexer_shebang_not_at_start_errors() {
+        // `#!` anywhere other than byte 0 must lex as an Unknown
+        // `#` token — no free comment syntax from this change.
+        let src = "println(\"hi\");\n#!/bin/sh";
+        let mut lex = Lexer::new(src.to_string());
+        // Drain the legitimate prefix.
+        let mut saw_unknown_hash = false;
+        loop {
+            let tok = lex.next_token();
+            if matches!(tok, Token::Eof) {
+                break;
+            }
+            if matches!(tok, Token::Unknown('#')) {
+                saw_unknown_hash = true;
+            }
+        }
+        assert!(
+            saw_unknown_hash,
+            "expected Token::Unknown('#') somewhere in the stream"
+        );
+    }
+
+    #[test]
+    fn lexer_empty_shebang_line() {
+        // `#!\n` (no path) followed by code: still consumed. Real
+        // token lands on line 2.
+        let src = "#!\nprintln(\"ok\");";
+        let mut lex = Lexer::new(src.to_string());
+        let (tok, span) = lex.next_token_with_span();
+        match tok {
+            Token::Identifier(ref n) => assert_eq!(n, "println"),
+            other => panic!("expected Identifier(println), got {:?}", other),
+        }
+        assert_eq!(span.start.line, 2);
+        assert_eq!(span.start.column, 1);
+    }
+
+    #[test]
+    fn lexer_shebang_only_no_trailing_newline() {
+        // File is just `#!/usr/bin/env resilient` (no trailing
+        // newline, no code). Shebang consumed, next token is Eof.
+        let src = "#!/usr/bin/env resilient";
+        let mut lex = Lexer::new(src.to_string());
+        let tok = lex.next_token();
+        assert!(matches!(tok, Token::Eof), "got {:?}", tok);
     }
 }

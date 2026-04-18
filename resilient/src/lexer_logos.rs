@@ -204,6 +204,20 @@ fn block_comment(lex: &mut logos::Lexer<Tok>) -> logos::Skip {
 /// that's O(N²) (RES-109's benchmark was crushed by this;
 /// `fast_pos` below fixes it).
 pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
+    // RES-113: honour a leading shebang line. Logos doesn't have a
+    // "start of input" anchor, so we just skip the `#!..\n` prefix
+    // manually and feed logos the suffix. Line/col/offset tables
+    // are still built from the FULL source so the first real
+    // token's span reports its true byte offset.
+    let shebang_bytes: usize = if src.starts_with("#!") {
+        match src.find('\n') {
+            Some(nl) => nl + 1,
+            None => src.len(),
+        }
+    } else {
+        0
+    };
+
     let table = crate::Lexer::build_line_table(src);
 
     // Char count at the start of each line: entry `i` = total chars
@@ -245,11 +259,14 @@ pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
     };
 
     let mut out: Vec<(Token, Span)> = Vec::new();
-    let mut lex = Tok::lexer(src);
+    // Feed only the post-shebang slice to logos, and offset every
+    // reported byte range by `shebang_bytes` when converting to a
+    // `Pos` against the full-source table.
+    let mut lex = Tok::lexer(&src[shebang_bytes..]);
     while let Some(result) = lex.next() {
         let range = lex.span();
-        let start = fast_pos(range.start);
-        let end = fast_pos(range.end);
+        let start = fast_pos(range.start + shebang_bytes);
+        let end = fast_pos(range.end + shebang_bytes);
         let span = Span::new(start, end);
         let tok = match result {
             Ok(t) => convert(t),
