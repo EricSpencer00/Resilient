@@ -806,6 +806,15 @@ impl TypeChecker {
                 // Live blocks preserve the type of their body
                 self.check_node(body)
             },
+
+            // RES-142: duration literals are a parser-internal node
+            // that only appear inside a `live ... within <duration>`
+            // clause; the parser stores them on `LiveBlock::timeout`
+            // rather than emitting them as general expressions. If
+            // one reaches the typechecker, treat it as `Int`
+            // (nanosecond count) — defensive; should never fire in
+            // well-formed programs.
+            Node::DurationLiteral { .. } => Ok(Type::Int),
             
             Node::Assert { condition, message, .. } => {
                 // Condition must be a boolean expression

@@ -793,7 +793,28 @@ enum Node {
         /// prefix. `None` → zero-sleep retries (the original
         /// behaviour; existing `live { ... }` stays unchanged).
         backoff: Option<BackoffConfig>,
+        /// RES-142: optional wall-clock budget via the
+        /// `live within <duration> { ... }` clause. `Some(dl)` carries
+        /// a `Node::DurationLiteral` with the parsed nanoseconds;
+        /// `None` means no cap (classic retry-forever-up-to-MAX
+        /// semantics). Backoff and timeout coexist: backoff sleeps
+        /// count against the budget.
+        timeout: Option<Box<Node>>,
         /// RES-088: span of the `live` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-142: `<integer><unit>` duration literal, where unit ∈
+    /// {`ns`, `us`, `ms`, `s`}. Deliberately narrow: the parser only
+    /// emits this inside a `live ... within <duration> { ... }`
+    /// clause — it's not a general-purpose expression. See the
+    /// ticket's `## Notes`: "Duration literals are not a full time
+    /// library — they only exist inside live clauses for now."
+    DurationLiteral {
+        /// Total nanoseconds the literal represents. `10ms` →
+        /// `10_000_000`. Stored as `u64` to stay legal in a no_std
+        /// embedded target; `Duration::from_nanos` accepts `u64`.
+        nanos: u64,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -1919,14 +1940,42 @@ impl Parser {
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
 
-        // RES-139: optional `backoff(base_ms=N, factor=K, max_ms=M)`
-        // prefix. Context-sensitive: `backoff` is only a keyword
-        // in this position, so we match on the Identifier token
-        // rather than burning a reserved word for it.
-        let backoff = match &self.current_token {
-            Token::Identifier(n) if n == "backoff" => Some(self.parse_backoff_kwargs()),
-            _ => None,
-        };
+        // RES-139 + RES-142: optional `backoff(...)` and `within
+        // <duration>` clauses. Both are context-sensitive identifiers
+        // (no reserved words burned); either order is accepted, but
+        // neither may appear twice. Loop until we hit `invariant` or
+        // `{`.
+        let mut backoff: Option<BackoffConfig> = None;
+        let mut timeout: Option<Box<Node>> = None;
+        loop {
+            match &self.current_token {
+                Token::Identifier(n) if n == "backoff" => {
+                    if backoff.is_some() {
+                        self.record_error(
+                            "duplicate `backoff(...)` clause in live block"
+                                .to_string(),
+                        );
+                    }
+                    let cfg = self.parse_backoff_kwargs();
+                    if backoff.is_none() {
+                        backoff = Some(cfg);
+                    }
+                }
+                Token::Identifier(n) if n == "within" => {
+                    if timeout.is_some() {
+                        self.record_error(
+                            "duplicate `within <duration>` clause in live block"
+                                .to_string(),
+                        );
+                    }
+                    let dl = self.parse_within_clause();
+                    if timeout.is_none() {
+                        timeout = dl.map(Box::new);
+                    }
+                }
+                _ => break,
+            }
+        }
 
         // RES-036: zero or more `invariant EXPR` clauses between `live`
         // and `{`.
@@ -1945,6 +1994,7 @@ impl Parser {
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 invariants,
                 backoff,
+                timeout,
                 span: self.span_at_current(),
             };
         }
@@ -1955,8 +2005,67 @@ impl Parser {
             body: Box::new(body),
             invariants,
             backoff,
+            timeout,
             span: self.span_at_current()
         }
+    }
+
+    /// RES-142: parse `within <integer><unit>` into a
+    /// `Node::DurationLiteral`. On entry, `current_token` is the
+    /// `within` identifier. On exit, `current_token` sits on whatever
+    /// follows the unit token. Unit ∈ {`ns`, `us`, `ms`, `s`}.
+    ///
+    /// Returns `None` on parse error (integer missing, unit missing or
+    /// unknown, negative literal). Errors are recorded via
+    /// `record_error` so downstream parsing stays productive.
+    fn parse_within_clause(&mut self) -> Option<Node> {
+        let start_span = self.span_at_current();
+        self.next_token(); // skip `within`
+
+        let raw = match &self.current_token {
+            Token::IntLiteral(n) if *n >= 0 => *n as u64,
+            other => {
+                self.record_error(format!(
+                    "Expected non-negative integer literal after `within`, found {}",
+                    other
+                ));
+                return None;
+            }
+        };
+        self.next_token(); // skip integer literal
+
+        let unit = match &self.current_token {
+            Token::Identifier(u) => u.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected duration unit (`ns`, `us`, `ms`, `s`) after `within {}`, found {}",
+                    raw, other
+                ));
+                return None;
+            }
+        };
+        let per_unit_ns: u64 = match unit.as_str() {
+            "ns" => 1,
+            "us" => 1_000,
+            "ms" => 1_000_000,
+            "s"  => 1_000_000_000,
+            other => {
+                self.record_error(format!(
+                    "Unknown duration unit `{}` — expected one of `ns`, `us`, `ms`, `s`",
+                    other
+                ));
+                return None;
+            }
+        };
+        self.next_token(); // skip unit
+
+        // `saturating_mul` guards against overflow on absurd values
+        // like `within 999999999999999999s` — we cap at u64::MAX,
+        // effectively "no budget" (the runtime check will never
+        // trip).
+        let nanos = raw.saturating_mul(per_unit_ns);
+
+        Some(Node::DurationLiteral { nanos, span: start_span })
     }
 
     /// RES-139: parse `backoff(base_ms=N, factor=K, max_ms=M)` —
@@ -4104,9 +4213,26 @@ impl Interpreter {
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
             },
-            Node::LiveBlock { body, invariants, backoff, .. } => {
-                self.eval_live_block(body, invariants, backoff.as_ref())
+            Node::LiveBlock { body, invariants, backoff, timeout, .. } => {
+                // RES-142: unpack the `within <duration>` clause
+                // (if any) into a flat `u64 ns` so the runtime loop
+                // doesn't re-match the boxed node every retry.
+                let timeout_ns = timeout.as_ref().and_then(|n| match n.as_ref() {
+                    Node::DurationLiteral { nanos, .. } => Some(*nanos),
+                    _ => None,
+                });
+                self.eval_live_block(body, invariants, backoff.as_ref(), timeout_ns)
             }
+            // RES-142: duration literals are only legal inside a
+            // `live ... within <duration> { ... }` clause — the
+            // parser never emits them in general expression
+            // position. If one reaches eval, it's an internal bug
+            // (or a test building an AST by hand). Fail loudly
+            // rather than silently evaluating to an Int.
+            Node::DurationLiteral { .. } => Err(
+                "duration literals are only valid inside `live within ...` clauses (RES-142)"
+                    .to_string(),
+            ),
             Node::Assert { condition, message, .. } => self.eval_assert(condition, message),
             Node::Block { stmts: statements, .. } => self.eval_block_statement(statements),
             Node::LetStatement { name, value, .. } => {
@@ -4552,6 +4678,7 @@ impl Interpreter {
         body: &Node,
         invariants: &[Node],
         backoff: Option<&BackoffConfig>,
+        timeout_ns: Option<u64>,
     ) -> RResult<Value> {
         const MAX_RETRIES: usize = 3;
         let mut retry_count = 0;
@@ -4572,6 +4699,12 @@ impl Interpreter {
         // from leaking across `live` blocks — including nested
         // ones, where the builtin reads the innermost block's top.
         let _guard = LiveRetryGuard::enter();
+
+        // RES-142: wall-clock start for the `within <duration>`
+        // budget. Sampled once at block entry so retries and backoff
+        // sleeps both count against the same budget. `None` means
+        // "no timeout" and the clock is never queried.
+        let live_start = timeout_ns.map(|_| std::time::Instant::now());
 
         // Try to evaluate the body with multiple retries
         loop {
@@ -4620,14 +4753,37 @@ impl Interpreter {
                         retry_count, MAX_RETRIES, error
                     );
 
-                    if retry_count >= MAX_RETRIES {
+                    // RES-142: budget check. If the wall-clock
+                    // elapsed since block entry exceeds the
+                    // `within <duration>` cap, escalate the same
+                    // way exhaustion does (RES-140 footer + the
+                    // `LIVE_TOTAL_EXHAUSTIONS` bump per RES-141) —
+                    // "timed out" is just another flavour of
+                    // giving up. Checked BEFORE the retry-cap and
+                    // backoff sleep so an over-budget run bails
+                    // immediately without an extra sleep.
+                    let timed_out = match (live_start, timeout_ns) {
+                        (Some(t0), Some(budget)) => {
+                            let elapsed = t0.elapsed().as_nanos();
+                            elapsed >= u128::from(budget)
+                        }
+                        _ => false,
+                    };
+
+                    if retry_count >= MAX_RETRIES || timed_out {
+                        let reason = if timed_out {
+                            "timed out"
+                        } else {
+                            "Maximum retry attempts reached"
+                        };
                         eprintln!(
-                            "\x1B[31m[LIVE BLOCK] Maximum retry attempts reached, propagating error\x1B[0m"
+                            "\x1B[31m[LIVE BLOCK] {}, propagating error\x1B[0m",
+                            reason
                         );
                         // RES-141: bump the exhaustion counter
                         // before returning — tracks how many
                         // times any live block gave up across the
-                        // whole run.
+                        // whole run. Timeout counts as exhaustion.
                         LIVE_TOTAL_EXHAUSTIONS
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // RES-140: footer note recording the
@@ -4641,6 +4797,16 @@ impl Interpreter {
                         // wrappers serialize the retry-depth
                         // history at every nesting level.
                         let depth = LIVE_RETRY_STACK.with(|s| s.borrow().len());
+                        // RES-142: timeout uses a distinct prefix
+                        // so diagnostics can tell "gave up by
+                        // retry cap" apart from "gave up by wall-
+                        // clock budget".
+                        if timed_out {
+                            return Err(format!(
+                                "Live block timed out after {} attempt(s) (retry depth: {}): {}",
+                                retry_count, depth, error
+                            ));
+                        }
                         return Err(format!(
                             "Live block failed after {} attempts (retry depth: {}): {}",
                             MAX_RETRIES, depth, error
@@ -9420,6 +9586,208 @@ mod tests {
             }
         }
         walk(program)
+    }
+
+    // --- RES-142: live within <duration> wall-clock timeout ---
+
+    /// Mirror of `find_first_live_backoff` for the RES-142 timeout
+    /// field — returns the parsed `nanos` of the first LiveBlock's
+    /// `within <duration>` clause, or `None` if absent.
+    fn find_first_live_timeout_ns(program: &Node) -> Option<u64> {
+        fn walk(n: &Node) -> Option<u64> {
+            match n {
+                Node::LiveBlock { timeout, .. } => timeout.as_ref().and_then(|t| match t.as_ref() {
+                    Node::DurationLiteral { nanos, .. } => Some(*nanos),
+                    _ => None,
+                }),
+                Node::Program(stmts) => stmts.iter().find_map(|s| walk(&s.node)),
+                Node::Function { body, .. } => walk(body),
+                Node::Block { stmts, .. } => stmts.iter().find_map(walk),
+                Node::IfStatement { consequence, alternative, .. } => walk(consequence).or_else(|| {
+                    alternative.as_ref().and_then(|a| walk(a))
+                }),
+                _ => None,
+            }
+        }
+        walk(program)
+    }
+
+    #[test]
+    fn parse_live_within_ms_populates_timeout() {
+        let src = "fn main(int _d) { live within 10ms { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert_eq!(find_first_live_timeout_ns(&program), Some(10_000_000));
+    }
+
+    #[test]
+    fn parse_live_within_each_unit() {
+        // ns / us / ms / s — assert the unit table matches the
+        // ticket's fixed set.
+        for (src_unit, expected_ns) in [
+            ("3ns", 3_u64),
+            ("4us", 4_000_u64),
+            ("5ms", 5_000_000_u64),
+            ("2s", 2_000_000_000_u64),
+        ] {
+            let src = format!(
+                "fn main(int _d) {{ live within {} {{ let x = 1; }} }} main(0);",
+                src_unit
+            );
+            let (program, errs) = parse(&src);
+            assert!(errs.is_empty(), "parse errors for `{}`: {:?}", src_unit, errs);
+            assert_eq!(
+                find_first_live_timeout_ns(&program),
+                Some(expected_ns),
+                "mismatch for unit `{}`",
+                src_unit
+            );
+        }
+    }
+
+    #[test]
+    fn parse_live_unknown_duration_unit_errors() {
+        let src = "fn main(int _d) { live within 10min { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("Unknown duration unit `min`")),
+            "expected unknown-unit diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_duration_requires_nonneg_int() {
+        let src = "fn main(int _d) { live within -5ms { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("non-negative integer literal after `within`")),
+            "expected integer-literal diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_within_both_orders_accepted() {
+        // Ticket's Notes: `live backoff(...) within 50ms { }` and
+        // `live within 50ms backoff(...) { }` both parse.
+        for src in [
+            "fn main(int _d) { live backoff(base_ms=5) within 50ms { let x = 1; } } main(0);",
+            "fn main(int _d) { live within 50ms backoff(base_ms=5) { let x = 1; } } main(0);",
+        ] {
+            let (program, errs) = parse(src);
+            assert!(errs.is_empty(), "parse errors in `{}`: {:?}", src, errs);
+            assert_eq!(find_first_live_timeout_ns(&program), Some(50_000_000));
+            assert_eq!(
+                find_first_live_backoff(&program).map(|c| c.base_ms),
+                Some(5),
+                "backoff lost in `{}`",
+                src
+            );
+        }
+    }
+
+    #[test]
+    fn parse_live_duplicate_within_errors() {
+        let src = "fn main(int _d) { live within 10ms within 20ms { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("duplicate `within")),
+            "expected duplicate-within diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_without_within_keeps_none() {
+        let src = "fn main(int _d) { live { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert!(
+            find_first_live_timeout_ns(&program).is_none(),
+            "plain `live` must not carry a timeout",
+        );
+    }
+
+    #[test]
+    fn live_within_tight_budget_exhausts_with_timeout_prefix() {
+        // A permanently-failing body under a 1ms wall-clock cap:
+        // the retry loop must stop on the timeout rather than at
+        // MAX_RETRIES. We distinguish the two by the error prefix
+        // — "timed out" vs "failed after 3 attempts".
+        //
+        // Forcing a detectable timeout requires at least one
+        // measurable delay between attempts. A 2ms backoff per
+        // retry puts elapsed >= 2ms on the first retry, well past
+        // the 1ms cap.
+        let src = "\
+            fn always_fail() {\n\
+                assert(false, \"forced\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live backoff(base_ms=2, factor=1, max_ms=2) within 1ms {\n\
+                    let r = always_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("Live block timed out"),
+            "expected `timed out` prefix, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn live_within_slack_budget_succeeds() {
+        // Same body shape but wider budget (1s) — the retry path
+        // succeeds on the third try well inside the cap, so the
+        // block returns normally.
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced\");\n\
+                }\n\
+                return 42;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live within 1s {\n\
+                    let r = maybe_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // If this errored we'd have "timed out" or "failed after".
+        // A clean Ok means the slack budget was enough.
+        interp.eval(&program).expect("slack budget should succeed");
+    }
+
+    #[test]
+    fn duration_literal_in_expression_position_is_rejected() {
+        // Defensive: `Node::DurationLiteral` never appears outside
+        // a live-within clause in well-formed source, but if one
+        // does reach eval (e.g. a hand-rolled AST in a future
+        // test), fail with the dedicated diagnostic rather than
+        // silently coercing.
+        use span::Span;
+        let dl = Node::DurationLiteral { nanos: 1_000_000, span: Span::default() };
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&dl).unwrap_err();
+        assert!(
+            err.contains("duration literals are only valid inside `live within"),
+            "expected duration-literal-guard diagnostic, got: {}",
+            err
+        );
     }
 
     // --- RES-138: live_retries() builtin ---

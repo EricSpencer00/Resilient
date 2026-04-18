@@ -520,6 +520,12 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::TypeAlias { span, .. }
         | Node::FunctionLiteral { span, .. } => span.start.line as u32,
 
+        // RES-142: duration literal carries the span of its integer
+        // part; only emitted inside live-clause position so it
+        // shouldn't round-trip through the compiler, but match it
+        // anyway to keep the pattern exhaustive.
+        Node::DurationLiteral { span, .. } => span.start.line as u32,
+
         // Program is wrapped in Spanned<Node> at the call site, not
         // inside the Node enum itself.
         Node::Program(_) => 0,

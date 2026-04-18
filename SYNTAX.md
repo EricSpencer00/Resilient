@@ -181,6 +181,48 @@ Each `(retry depth: N)` note corresponds to one nesting level
 — `depth: 1` is the outermost block, `depth: 2` is its child,
 and so on. Inner invocations total `3 × 3 = 9`.
 
+### Wall-clock timeout (RES-142)
+
+A `live` block may cap its total retry time with a `within
+<duration>` clause. Duration literals are `<integer><unit>`
+where `unit ∈ {ns, us, ms, s}` — they exist only inside this
+clause; they are not a general time library.
+
+```rust
+live within 10ms {
+    let sample = poll_sensor();
+    assert(is_fresh(sample), "stale");
+}
+```
+
+Backoff sleeps count against the budget:
+
+```rust
+live backoff(base_ms=2, factor=2, max_ms=20) within 50ms {
+    let r = flaky_io();
+}
+```
+
+Either order is accepted by the parser — `backoff(...)` then
+`within`, or `within` then `backoff(...)`. Neither clause may
+appear twice.
+
+When the budget is exceeded, the block escalates exactly like
+exhaustion (RES-140) — counter bumps via
+`live_total_exhaustions()` (RES-141) and the error's footer
+note. Timeout uses a distinct prefix so diagnostics can tell
+"hit retry cap" apart from "hit wall-clock":
+
+```
+Runtime error: Live block timed out after 1 attempt(s) (retry depth: 1):
+    ASSERTION ERROR: forced
+```
+
+Note: the `no_std` embedded runtime shares RES-139's clock
+placeholder — the wall-clock check is currently std-only;
+embedded targets ignore the clause until a real monotonic
+clock is wired in.
+
 ## Assertions
 
 Assertions halt with a diagnostic. For comparison conditions both
