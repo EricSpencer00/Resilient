@@ -1,7 +1,7 @@
 ---
 id: RES-200
 title: Snapshot tests for diagnostic rendering (insta-style)
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: testing
 created: 2026-04-17
@@ -37,3 +37,4 @@ rendering, and unintended changes surface as diffs.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
