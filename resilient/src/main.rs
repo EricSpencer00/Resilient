@@ -8028,6 +8028,146 @@ mod tests {
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
     }
 
+    // --- RES-162: string-literal match patterns ---
+
+    #[test]
+    fn string_literal_pattern_matches_exact_string() {
+        // `"start"` as a pattern matches only a scrutinee equal
+        // to "start". First-match-wins — falls through to `_` on
+        // miss.
+        let src = "\
+            fn dispatch(string cmd) -> string {\n\
+                return match cmd {\n\
+                    \"start\" => \"starting\",\n\
+                    \"stop\"  => \"stopping\",\n\
+                    _         => \"unknown\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) {\n\
+                let a = dispatch(\"start\");\n\
+                let b = dispatch(\"stop\");\n\
+                let c = dispatch(\"foo\");\n\
+                return len(a) + len(b) + len(c);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // "starting"(8) + "stopping"(8) + "unknown"(7) = 23
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 23),
+            other => panic!("expected Int(23), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_literal_pattern_falls_through_to_wildcard() {
+        let src = "\
+            fn main(int _d) {\n\
+                let s = \"nope\";\n\
+                return match s {\n\
+                    \"yes\" => 1,\n\
+                    \"no\"  => 0,\n\
+                    _       => 2,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2),
+            other => panic!("expected Int(2), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_literal_pattern_decodes_escapes() {
+        // `"a\n"` in a pattern decodes through the same lexer
+        // path as string expressions — the pattern matches a
+        // runtime string that contains `a` followed by LF, not
+        // the literal four characters `a`, `\`, `n`.
+        let src = "\
+            fn main(int _d) {\n\
+                let s = \"a\\n\";\n\
+                let t = match s {\n\
+                    \"a\\n\" => 1,\n\
+                    \"a\\t\" => 2,\n\
+                    _        => 0,\n\
+                };\n\
+                // And a tab input falls into its own arm.\n\
+                let u = match \"a\\t\" {\n\
+                    \"a\\n\" => 1,\n\
+                    \"a\\t\" => 2,\n\
+                    _        => 0,\n\
+                };\n\
+                return t * 10 + u;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 12), // 1*10 + 2
+            other => panic!("expected Int(12), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_match_without_wildcard_is_non_exhaustive() {
+        // Ticket AC: over the implicit infinite space of String,
+        // literal-only arms never cover — same posture as Int.
+        let src = "\
+            fn f(string s) -> int {\n\
+                return match s {\n\
+                    \"a\" => 1,\n\
+                    \"b\" => 2,\n\
+                };\n\
+            }\n\
+            fn main(int _d) { return f(\"c\"); }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("Non-exhaustive match on string"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn string_literal_pattern_empty_string_matches() {
+        // Regression: the empty string `""` is a valid pattern
+        // and matches only an empty scrutinee. Hand-rolled and
+        // logos lexers both produce `Token::StringLiteral("")`.
+        let src = "\
+            fn describe(string s) -> string {\n\
+                return match s {\n\
+                    \"\" => \"empty\",\n\
+                    _  => \"non-empty\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) {\n\
+                return len(describe(\"\")) + len(describe(\"x\"));\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // "empty"(5) + "non-empty"(9) = 14
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 14),
+            other => panic!("expected Int(14), got {:?}", other),
+        }
+    }
+
     // --- RES-160: or-patterns in match arms ---
 
     #[test]
