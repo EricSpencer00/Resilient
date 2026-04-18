@@ -1,7 +1,7 @@
 ---
 id: RES-189
 title: LSP: inlay hints for inferred `let` types
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G17
 created: 2026-04-17
@@ -35,3 +35,4 @@ inferred type inline as editor chrome — `let x = 3 + 2  :: Int`.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
