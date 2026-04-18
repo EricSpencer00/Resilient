@@ -1,7 +1,7 @@
 ---
 id: RES-192
 title: IO-effect inference: flag functions that reach `println` or file_*
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G18
 created: 2026-04-17
@@ -36,3 +36,4 @@ LSP inlay hint and `--audit` column.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
