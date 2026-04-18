@@ -14,18 +14,31 @@
 //! when the feature is on — no per-file `#![cfg]` needed.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, InitializeParams,
-    InitializeResult, InitializedParams, MessageType, OneOf, Position, Range,
-    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position, Range,
+    ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentSyncCapability,
+    TextDocumentSyncKind, Url, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use crate::{parse, typechecker, Node};
+
+/// RES-186: one workspace-level symbol entry. A flat vec of these
+/// is the backend's search index — substring filter at query time,
+/// rebuilt per `did_save`.
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceSymbolEntry {
+    pub(crate) name: String,
+    pub(crate) kind: SymbolKind,
+    pub(crate) uri: Url,
+    pub(crate) range: Range,
+}
 
 /// The LSP backend. Holds a `Client` handle for publishing diagnostics.
 ///
@@ -33,12 +46,34 @@ use crate::{parse, typechecker, Node};
 /// parsed AST, keyed by `Url`. Document-symbol (and future
 /// cursor-aware) handlers consume from here instead of re-parsing
 /// on every request.
+///
+/// RES-186: the `workspace_index` is a pre-computed list of every
+/// `*.rs` file's top-level symbols in the workspace root. Built
+/// lazily on first `workspace/symbol` request (cheaper than
+/// walking at `initialize` time when the workspace might be huge),
+/// cached, and refreshed per-file on `did_save`.
 pub struct Backend {
     client: Client,
     /// URI → latest parsed Program AST. Mutex-guarded because
     /// LSP handlers run on the tokio runtime's worker threads,
     /// and we never hold the lock across an `.await`.
     documents: Mutex<HashMap<Url, Node>>,
+    /// RES-186: per-file symbol index. Keyed by `Url` so a
+    /// `did_save` can replace just that file's entries instead of
+    /// rebuilding the whole thing. The vec-of-entries form inside
+    /// each value keeps the filter loop flat at query time.
+    workspace_index: Mutex<HashMap<Url, Vec<WorkspaceSymbolEntry>>>,
+    /// RES-186: workspace root path captured from `initialize` —
+    /// either `workspace_folders[0].uri` or the deprecated
+    /// `root_uri`. `None` when the client opened a single file
+    /// with no workspace attached. Used to decide whether to
+    /// walk at index-build time.
+    workspace_root: Mutex<Option<PathBuf>>,
+    /// RES-186: once the workspace index has been built, set this
+    /// to skip rebuilding on every `workspace/symbol` call. Reset
+    /// to false on `did_save` to trigger a lazy refresh on the
+    /// next query.
+    workspace_index_built: Mutex<bool>,
 }
 
 impl Backend {
@@ -46,6 +81,9 @@ impl Backend {
         Self {
             client,
             documents: Mutex::new(HashMap::new()),
+            workspace_index: Mutex::new(HashMap::new()),
+            workspace_root: Mutex::new(None),
+            workspace_index_built: Mutex::new(false),
         }
     }
 
@@ -218,6 +256,112 @@ pub(crate) fn document_symbols_for_program(program: &Node) -> Vec<DocumentSymbol
     out
 }
 
+/// RES-186: rebuild helpers. The workspace index is a flat
+/// HashMap<Url, Vec<entries>>; `rebuild_workspace_index` walks
+/// the root, `index_file` handles one `*.rs` at a time,
+/// `filter_workspace_symbols` applies the query + cap.
+impl Backend {
+    fn rebuild_workspace_index(&self) {
+        let root = match self.workspace_root.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => None,
+        };
+        let Some(root) = root else { return };
+        let files = walk_resilient_files(&root);
+        let mut new_index: HashMap<Url, Vec<WorkspaceSymbolEntry>> =
+            HashMap::new();
+        for path in files {
+            if let Some(entries) = index_file(&path) {
+                let Ok(uri) = Url::from_file_path(&path) else {
+                    continue;
+                };
+                new_index.insert(uri, entries);
+            }
+        }
+        if let Ok(mut idx) = self.workspace_index.lock() {
+            *idx = new_index;
+        }
+    }
+}
+
+/// RES-186: recursive `*.rs` walker. Skips `target/` and any
+/// dot-prefixed directory (`.git/`, `.board/`, etc.) so we don't
+/// index build artifacts or management metadata.
+fn walk_resilient_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else { return out };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // Skip hidden + build dirs. This is the ticket's "don't
+        // respect .gitignore, just skip the obvious" policy.
+        if name.starts_with('.') || name == "target" {
+            continue;
+        }
+        if path.is_dir() {
+            out.extend(walk_resilient_files(&path));
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// RES-186: read, parse, and extract workspace-symbol entries for
+/// one file. Parse errors are tolerated — a file that doesn't
+/// parse returns an empty vec (not `None`) so partial-edit
+/// states don't unindex the file; in practice the entries just
+/// disappear until the file parses again.
+#[allow(dead_code)] // `lsp` feature + test
+pub(crate) fn index_file(path: &Path) -> Option<Vec<WorkspaceSymbolEntry>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let (program, _errs) = parse(&text);
+    let uri = Url::from_file_path(path).ok()?;
+    let entries = document_symbols_for_program(&program)
+        .into_iter()
+        .map(|d| WorkspaceSymbolEntry {
+            name: d.name,
+            kind: d.kind,
+            uri: uri.clone(),
+            range: d.range,
+        })
+        .collect();
+    Some(entries)
+}
+
+/// RES-186: substring filter across the whole workspace index,
+/// case-insensitive, capped at `limit` entries. Sorted by name
+/// for reproducible output (editors' quick-open panels usually
+/// re-sort, but we want the API stable for tests).
+#[allow(deprecated)] // `SymbolInformation::deprecated` is a deprecated LSP field
+fn filter_workspace_symbols(
+    index: &HashMap<Url, Vec<WorkspaceSymbolEntry>>,
+    query_lower: &str,
+    limit: usize,
+) -> Vec<SymbolInformation> {
+    let mut matches: Vec<&WorkspaceSymbolEntry> = index
+        .values()
+        .flatten()
+        .filter(|e| e.name.to_lowercase().contains(query_lower))
+        .collect();
+    // Stable sort by name then uri for determinism.
+    matches.sort_by(|a, b| a.name.cmp(&b.name).then(a.uri.as_str().cmp(b.uri.as_str())));
+    matches
+        .into_iter()
+        .take(limit)
+        .map(|e| SymbolInformation {
+            name: e.name.clone(),
+            kind: e.kind,
+            tags: None,
+            deprecated: None,
+            location: Location::new(e.uri.clone(), e.range),
+            container_name: None,
+        })
+        .collect()
+}
+
 #[allow(deprecated)] // `DocumentSymbol::deprecated` is deprecated in the LSP type
 fn make_symbol(name: &str, kind: SymbolKind, span: crate::span::Span) -> DocumentSymbol {
     let range = span_to_range(span);
@@ -240,7 +384,23 @@ fn make_symbol(name: &str, kind: SymbolKind, span: crate::span::Span) -> Documen
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _params: InitializeParams) -> JsonResult<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> JsonResult<InitializeResult> {
+        // RES-186: capture the workspace root for the symbol index.
+        // Prefer modern `workspace_folders`; fall back to the
+        // deprecated `root_uri` for older clients.
+        let root_path: Option<PathBuf> = params
+            .workspace_folders
+            .as_ref()
+            .and_then(|folders| folders.first())
+            .map(|f| f.uri.clone())
+            .or(params.root_uri.clone())
+            .and_then(|u| u.to_file_path().ok());
+        if let (Ok(mut slot), Some(p)) =
+            (self.workspace_root.lock(), root_path)
+        {
+            *slot = Some(p);
+        }
+
         Ok(InitializeResult {
             server_info: None,
             capabilities: ServerCapabilities {
@@ -253,6 +413,9 @@ impl LanguageServer for Backend {
                 // would let us opt into work-done progress reporting,
                 // which we don't need for files this small.
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // RES-186: workspace-symbol search across all .rs
+                // files in the workspace root.
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
         })
@@ -298,6 +461,62 @@ impl LanguageServer for Backend {
         if let Ok(mut map) = self.documents.lock() {
             map.remove(&params.text_document.uri);
         }
+    }
+
+    /// RES-186: refresh the workspace symbol index entry for the
+    /// saved file. Idempotent — just replaces the per-file vec
+    /// in the index map, keeping every other file's entries
+    /// untouched. If the save happened before the index was
+    /// built, this is still safe: the lazy-build on next
+    /// `workspace/symbol` call will include the saved state.
+    async fn did_save(
+        &self,
+        params: tower_lsp::lsp_types::DidSaveTextDocumentParams,
+    ) {
+        let uri = params.text_document.uri;
+        // Re-read the file from disk. `did_save` notifications
+        // carry the text only when the client opts into the
+        // `TextDocumentSyncSaveOptions { include_text: true }`
+        // — we registered TextDocumentSyncKind::FULL without
+        // that, so walk to disk instead.
+        let Some(path) = uri.to_file_path().ok() else { return };
+        let entries = match index_file(&path) {
+            Some(e) => e,
+            None => return,
+        };
+        if let Ok(mut map) = self.workspace_index.lock() {
+            map.insert(uri, entries);
+        }
+    }
+
+    /// RES-186: workspace-symbol search. Lazy-builds the per-file
+    /// index on first call (walks the workspace root for `*.rs`
+    /// files, skipping `target/` and dotfiles), then filters by
+    /// substring match (case-insensitive) and caps at 50 entries
+    /// per the ticket's budget.
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> JsonResult<Option<Vec<SymbolInformation>>> {
+        // Lazy-build the index if this is the first query.
+        let needs_build = match self.workspace_index_built.lock() {
+            Ok(g) => !*g,
+            Err(_) => false,
+        };
+        if needs_build {
+            self.rebuild_workspace_index();
+            if let Ok(mut g) = self.workspace_index_built.lock() {
+                *g = true;
+            }
+        }
+
+        let query = params.query.to_lowercase();
+        let index = match self.workspace_index.lock() {
+            Ok(g) => g,
+            Err(_) => return Ok(Some(Vec::new())),
+        };
+        let matches = filter_workspace_symbols(&index, &query, 50);
+        Ok(Some(matches))
     }
 
     /// RES-185: respond to `textDocument/documentSymbol` — return
@@ -485,5 +704,177 @@ mod tests {
         assert_eq!(r.start.character, 0);
         assert_eq!(r.end.line, 0);
         assert_eq!(r.end.character, 4);
+    }
+
+    // ---------- RES-186: workspace symbol search ----------
+
+    /// Unique per-test scratch directory inside the OS temp dir.
+    fn tmp_workspace(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "res_186_{}_{}_{}",
+            tag,
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&path).expect("create scratch dir");
+        path
+    }
+
+    fn write_file(dir: &std::path::Path, name: &str, contents: &str) {
+        std::fs::write(dir.join(name), contents).expect("write test file");
+    }
+
+    #[test]
+    fn walk_resilient_files_finds_rs_files_recursively() {
+        let root = tmp_workspace("walk");
+        write_file(&root, "a.rs", "fn a() { return 0; }\n");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        write_file(&root.join("sub"), "b.rs", "fn b() { return 0; }\n");
+        // Hidden + build dirs should be skipped.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        write_file(
+            &root.join("target").join("debug"),
+            "c.rs",
+            "fn c() { return 0; }\n",
+        );
+        std::fs::create_dir_all(root.join(".cache")).unwrap();
+        write_file(
+            &root.join(".cache"),
+            "d.rs",
+            "fn d() { return 0; }\n",
+        );
+        let found = walk_resilient_files(&root);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"a.rs".to_string()));
+        assert!(names.contains(&"b.rs".to_string()));
+        assert!(!names.contains(&"c.rs".to_string()), "target/ must be skipped");
+        assert!(!names.contains(&"d.rs".to_string()), "dot-dirs must be skipped");
+        // Clean up.
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn index_file_parses_and_extracts_top_level_symbols() {
+        let root = tmp_workspace("index");
+        let path = root.join("prog.rs");
+        std::fs::write(
+            &path,
+            "fn one() { return 0; }\nstruct S { int x }\nfn two() { return 1; }\n",
+        )
+        .unwrap();
+        let entries = index_file(&path).expect("should index ok");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["one", "S", "two"]);
+        // Each entry's URI points at the file we indexed.
+        for e in &entries {
+            assert!(e.uri.as_str().ends_with("/prog.rs"));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_workspace_symbols_case_insensitive_substring() {
+        use std::collections::HashMap;
+        let uri = Url::parse("file:///tmp/a.rs").unwrap();
+        let entries = vec![
+            WorkspaceSymbolEntry {
+                name: "alpha".into(),
+                kind: SymbolKind::FUNCTION,
+                uri: uri.clone(),
+                range: Range::new(
+                    Position::new(0, 0),
+                    Position::new(0, 0),
+                ),
+            },
+            WorkspaceSymbolEntry {
+                name: "AlphaBeta".into(),
+                kind: SymbolKind::FUNCTION,
+                uri: uri.clone(),
+                range: Range::new(
+                    Position::new(1, 0),
+                    Position::new(1, 0),
+                ),
+            },
+            WorkspaceSymbolEntry {
+                name: "gamma".into(),
+                kind: SymbolKind::FUNCTION,
+                uri: uri.clone(),
+                range: Range::new(
+                    Position::new(2, 0),
+                    Position::new(2, 0),
+                ),
+            },
+        ];
+        let mut index: HashMap<Url, Vec<WorkspaceSymbolEntry>> = HashMap::new();
+        index.insert(uri, entries);
+
+        // Exact prefix, case-folded.
+        let r = filter_workspace_symbols(&index, "alpha", 50);
+        let names: Vec<&str> = r.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["AlphaBeta", "alpha"]); // sorted by name
+
+        // Substring mid-word. Caller (Backend::symbol) is the one
+        // that lowercases the user query — this helper takes
+        // `query_lower` ALREADY folded, so `"bet"` matches
+        // `AlphaBeta` (via lowercased "alphabeta").
+        let r = filter_workspace_symbols(&index, "bet", 50);
+        let names: Vec<&str> = r.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["AlphaBeta"]);
+
+        // Empty query matches everything.
+        let r = filter_workspace_symbols(&index, "", 50);
+        assert_eq!(r.len(), 3);
+
+        // Limit cap.
+        let r = filter_workspace_symbols(&index, "", 2);
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn workspace_index_spans_multiple_files() {
+        // Ticket AC: pre-seed two files, invoke the query (via the
+        // helper path), assert both files' symbols are returned.
+        let root = tmp_workspace("multifile");
+        write_file(&root, "mod_a.rs", "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n");
+        write_file(&root, "mod_b.rs", "fn b_fn() { return 0; }\n");
+
+        // Walk + index the whole scratch dir, reproducing what
+        // `rebuild_workspace_index` does when the Backend is
+        // invoked via the LSP.
+        let files = walk_resilient_files(&root);
+        assert_eq!(files.len(), 2);
+        let mut index: std::collections::HashMap<Url, Vec<WorkspaceSymbolEntry>> =
+            std::collections::HashMap::new();
+        for p in files {
+            let Ok(uri) = Url::from_file_path(&p) else { continue };
+            if let Some(entries) = index_file(&p) {
+                index.insert(uri, entries);
+            }
+        }
+
+        // All-match query: three names across two files.
+        let r = filter_workspace_symbols(&index, "", 50);
+        let names: std::collections::HashSet<&str> =
+            r.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains("a_fn"));
+        assert!(names.contains("A_Struct"));
+        assert!(names.contains("b_fn"));
+        // And the Locations point at the right files.
+        for sym in &r {
+            let path_str = sym.location.uri.as_str();
+            assert!(
+                path_str.ends_with("/mod_a.rs") || path_str.ends_with("/mod_b.rs"),
+                "unexpected URI: {}",
+                path_str
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

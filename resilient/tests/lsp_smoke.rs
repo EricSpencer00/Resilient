@@ -377,6 +377,132 @@ fn lsp_document_symbol_lists_outline() {
 }
 
 #[test]
+fn lsp_workspace_symbol_searches_multiple_files() {
+    // RES-186: pre-seed two .rs files in a temp workspace,
+    // initialize with the workspace folder, issue a
+    // `workspace/symbol` request, and assert BOTH files' symbols
+    // come back.
+
+    // Scratch workspace with two files.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir()
+        .join(format!("res_186_smoke_{}_{}", std::process::id(), n));
+    std::fs::create_dir_all(&root).expect("mkdir scratch");
+    std::fs::write(root.join("mod_a.rs"), "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n")
+        .unwrap();
+    std::fs::write(root.join("mod_b.rs"), "fn b_fn() { return 0; }\n").unwrap();
+    // URI of the scratch dir as a file:// URL.
+    let root_uri = format!(
+        "file://{}",
+        root.to_string_lossy().replace("\\", "/")
+    );
+
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // initialize with workspace_folders pointing at the scratch dir.
+    let init = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"capabilities":{{}},"workspaceFolders":[{{"uri":"{root_uri}","name":"test"}}]}}}}"#
+    );
+    stdin.write_all(frame(&init).as_bytes()).unwrap();
+    stdin.flush().ok();
+    let init_deadline = Instant::now() + Duration::from_secs(5);
+    let init_resp = read_one_message(&mut stdout, init_deadline)
+        .expect("read initialize response");
+    assert!(
+        init_resp.contains(r#""workspaceSymbolProvider":true"#),
+        "expected workspaceSymbolProvider:true in capabilities, got:\n{}",
+        init_resp
+    );
+
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // workspace/symbol with empty query — returns everything.
+    let req = r#"{"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":""}}"#;
+    stdin.write_all(frame(req).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    let response = read_until(
+        &mut stdout,
+        |body| body.contains(r#""id":2"#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read workspace/symbol response");
+
+    // All three symbol names should appear.
+    for name in ["a_fn", "A_Struct", "b_fn"] {
+        let needle = format!(r#""name":"{name}""#);
+        assert!(
+            response.contains(&needle),
+            "expected `{needle}` in workspace/symbol response:\n{response}"
+        );
+    }
+    // And each file's URI should appear.
+    assert!(
+        response.contains("mod_a.rs"),
+        "expected mod_a.rs in response:\n{response}"
+    );
+    assert!(
+        response.contains("mod_b.rs"),
+        "expected mod_b.rs in response:\n{response}"
+    );
+
+    // Now a filtered query — "struct" should match only A_Struct.
+    let req2 = r#"{"jsonrpc":"2.0","id":3,"method":"workspace/symbol","params":{"query":"struct"}}"#;
+    stdin.write_all(frame(req2).as_bytes()).unwrap();
+    stdin.flush().ok();
+    let filtered = read_until(
+        &mut stdout,
+        |body| body.contains(r#""id":3"#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read filtered response");
+    assert!(
+        filtered.contains(r#""name":"A_Struct""#),
+        "filtered response should contain A_Struct:\n{filtered}"
+    );
+    assert!(
+        !filtered.contains(r#""name":"a_fn""#) && !filtered.contains(r#""name":"b_fn""#),
+        "filtered response should NOT contain *_fn names:\n{filtered}"
+    );
+
+    // Cleanup child process.
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    let _ = stdin.write_all(frame(exit).as_bytes());
+    drop(stdin);
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > exit_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("LSP server did not exit within 3s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+    }
+
+    // Cleanup scratch dir.
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn lsp_did_change_republishes_diagnostics() {
     // RES-094: simulate the editor flow — clean program → buggy
     // edit → fixed edit. Each transition triggers a fresh
