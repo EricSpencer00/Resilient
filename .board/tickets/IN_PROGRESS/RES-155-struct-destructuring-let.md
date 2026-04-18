@@ -1,7 +1,7 @@
 ---
 id: RES-155
 title: Struct destructuring `let Point { x, y } = p`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G12
 created: 2026-04-17
@@ -33,3 +33,4 @@ on both sides.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
