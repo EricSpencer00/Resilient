@@ -1,7 +1,7 @@
 ---
 id: RES-144
 title: `input(prompt) -> String` builtin reads a line from stdin
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -37,3 +37,4 @@ minimal version.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
