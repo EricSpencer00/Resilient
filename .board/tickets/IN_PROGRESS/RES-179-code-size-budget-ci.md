@@ -1,7 +1,7 @@
 ---
 id: RES-179
 title: Code-size budget CI gate via `cargo bloat` on the cortex-m demo
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -35,3 +35,4 @@ demo's minimal surface) stops surprise regressions from landing.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
