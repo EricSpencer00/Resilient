@@ -163,6 +163,55 @@ helper is provided inside the `cert_sign` module; external tools
 that want to generate a compatible keypair can use any Ed25519
 library and format the output identically.
 
+#### Certificate manifest (RES-195)
+
+Every `--emit-certificate <dir>` run also writes a
+`manifest.json` index:
+
+```json
+{
+  "program": "fib.rs",
+  "obligations": [
+    {
+      "fn": "fib",
+      "kind": "ensures",
+      "idx": 0,
+      "cert": "fib__ensures__0.smt2",
+      "sha256": "<64 hex>",
+      "sig": "<128 hex>"
+    }
+  ]
+}
+```
+
+- `sha256` is always present and always over the `.smt2` file's
+  bytes — consumers can detect tampering without holding any
+  cryptographic key.
+- `sig` is present only when `--sign-cert` was passed; it's an
+  Ed25519 signature over THIS cert's bytes (not the batch). The
+  top-level `cert.sig` from RES-194 still covers the whole
+  payload — both are written on signed runs so either can be
+  used for verification.
+
+The `verify-all` subcommand re-checks every obligation:
+
+```bash
+# Fast cryptographic-only pass:
+resilient verify-all ./certs
+
+# With a custom public key (for rotated / test keys):
+resilient verify-all ./certs --pubkey ./trusted-pub.pem
+
+# Extra: re-run Z3 on each cert (if the `z3` binary is on PATH):
+resilient verify-all ./certs --z3
+```
+
+Output is a one-row-per-obligation table with `sha256`/`sig`/`z3`
+columns (`ok`, `FAIL`, `-` = skipped). Exit 0 iff every checked
+cell passes; exit 1 on any failure or missing file; exit 2 on
+usage errors. Without `--z3`, the column is skipped — the
+cryptographic checks alone are a strong regression signal.
+
 ### Embedded runtime (RES-075 + RES-097 + RES-098)
 
 The sibling `resilient-runtime/` crate carves out the value layer

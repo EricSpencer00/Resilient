@@ -1268,6 +1268,7 @@ dependencies = [
  "resilient-span",
  "rustyline",
  "serde_json",
+ "sha2",
  "tokio",
  "tower-lsp",
  "z3",

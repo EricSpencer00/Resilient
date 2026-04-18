@@ -70,6 +70,13 @@ cranelift-module = { version = "0.108", optional = true }
 # in the test helpers (see `resilient/src/cert_sign.rs`).
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+# RES-195: SHA-256 for the cert manifest's per-obligation hash,
+# and serde_json for parsing/emitting the manifest itself. `sha2`
+# is already transitive via ed25519-dalek; we promote it to a
+# direct dep edge so the build doesn't depend on the transitive
+# tree for correctness.
+sha2 = "0.10"
+serde_json = "1"
 
 [dev-dependencies]
 # RES-200: snapshot tests for diagnostic rendering. Test-only dep —
@@ -78,8 +85,5 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # audit pending diffs when a snapshot drifts; commit the reviewed
 # `.snap` files under `resilient/tests/snapshots/`.
 insta = { version = "1", features = ["filters"] }
-# RES-189: LSP inlay-hint tests construct `initializationOptions`
-# JSON via `serde_json::json!`. tower-lsp pulls serde_json in
-# transitively but the macro needs a direct dep edge so the test
-# module can see it.
-serde_json = "1"
+# RES-189 tests use `serde_json::json!` — serde_json is now a
+# regular dep (RES-195) so nothing to add here.

@@ -7509,35 +7509,83 @@ pub(crate) fn encode_semantic_tokens(tokens: &[AbsSemToken]) -> Vec<u32> {
 /// in the same directory — an Ed25519 signature over the
 /// concatenated `.smt2` payload (see `cert_sign::compute_cert_payload`
 /// for the byte-exact recipe).
+///
+/// RES-195: always writes `manifest.json` — a per-obligation
+/// index with the cert filename, sha256, and (when signing) a
+/// per-obligation Ed25519 signature. Consumed by the
+/// `verify-all` subcommand.
 fn emit_certificates(
     certificates: &[typechecker::CapturedCertificate],
     dir: &Path,
+    source_filename: &str,
     sign_key_path: Option<&Path>,
 ) -> RResult<usize> {
     fs::create_dir_all(dir).map_err(|e| {
         format!("could not create certificate directory {}: {}", dir.display(), e)
     })?;
+
+    // RES-195: optionally load the signing key once so the write
+    // loop can compute per-obligation sigs as it goes.
+    let priv_b: Option<[u8; 32]> = if let Some(key_path) = sign_key_path {
+        let pem = fs::read_to_string(key_path).map_err(|e| {
+            format!("could not read signing key {}: {}", key_path.display(), e)
+        })?;
+        Some(cert_sign::parse_private_key_pem(&pem).map_err(|e| {
+            format!("could not parse signing key {}: {}", key_path.display(), e)
+        })?)
+    } else {
+        None
+    };
+
+    // Walk the certificates, write each one, and build the
+    // manifest as we go.
+    let mut obligations: Vec<cert_sign::ManifestObligation> =
+        Vec::with_capacity(certificates.len());
     for cert in certificates {
         // Sanitize fn_name: only [A-Za-z0-9_] survives, others become '_'.
         let safe: String = cert.fn_name
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
             .collect();
-        let path = dir.join(format!("{}__{}__{}.smt2", safe, cert.kind, cert.idx));
+        let filename = format!("{}__{}__{}.smt2", safe, cert.kind, cert.idx);
+        let path = dir.join(&filename);
         fs::write(&path, &cert.smt2)
             .map_err(|e| format!("could not write {}: {}", path.display(), e))?;
+
+        // RES-195: per-obligation sha256 + optional sig.
+        let sha256 = cert_sign::sha256_hex(cert.smt2.as_bytes());
+        let sig = priv_b.map(|pk| {
+            let s = cert_sign::sign_payload(&pk, cert.smt2.as_bytes());
+            cert_sign::format_signature_hex(&s)
+        });
+        obligations.push(cert_sign::ManifestObligation {
+            fn_name: cert.fn_name.clone(),
+            kind: cert.kind.to_string(),
+            idx: cert.idx,
+            cert: filename,
+            sha256,
+            sig,
+        });
     }
 
-    // RES-194: sign if the caller provided a private key.
-    if let Some(key_path) = sign_key_path {
-        let pem = fs::read_to_string(key_path).map_err(|e| {
-            format!("could not read signing key {}: {}", key_path.display(), e)
-        })?;
-        let priv_b = cert_sign::parse_private_key_pem(&pem).map_err(|e| {
-            format!("could not parse signing key {}: {}", key_path.display(), e)
-        })?;
+    // RES-195: write the manifest. Even an unsigned, zero-
+    // obligation run writes a file with an empty `obligations`
+    // array so consumers can always expect `manifest.json` in a
+    // cert dir.
+    let manifest = cert_sign::Manifest {
+        program: source_filename.to_string(),
+        obligations,
+    };
+    let manifest_path = dir.join("manifest.json");
+    fs::write(&manifest_path, cert_sign::format_manifest_json(&manifest))
+        .map_err(|e| format!("could not write {}: {}", manifest_path.display(), e))?;
+
+    // RES-194: sign the batch (for RES-194's verify-cert path).
+    // The per-obligation sigs written into the manifest above
+    // handle the RES-195 finer-grained check — both are kept.
+    if let Some(pk) = priv_b {
         let payload = cert_sign::compute_cert_payload(dir)?;
-        let sig = cert_sign::sign_payload(&priv_b, &payload);
+        let sig = cert_sign::sign_payload(&pk, &payload);
         let sig_path = dir.join("cert.sig");
         fs::write(&sig_path, cert_sign::format_signature_hex(&sig))
             .map_err(|e| format!("could not write {}: {}", sig_path.display(), e))?;
@@ -7631,7 +7679,7 @@ fn execute_file(
         // obligation so a downstream consumer can re-verify with
         // stock Z3 and confirm the proof without trusting our binary.
         if let Some(dir) = emit_cert_dir {
-            let n = emit_certificates(&tc.certificates, dir, sign_cert_key)?;
+            let n = emit_certificates(&tc.certificates, dir, filename, sign_cert_key)?;
             println!(
                 "\x1B[36mWrote {} verification certificate(s) to {}\x1B[0m",
                 n,
@@ -7985,6 +8033,220 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+/// RES-195: `resilient verify-all <dir> [--pubkey <path>]
+/// [--z3]`.
+///
+/// Reads `<dir>/manifest.json`, walks each obligation, and for
+/// each one:
+/// 1. Reads the cert file and computes its sha256; compares to
+///    the manifest entry. Mismatch → fail.
+/// 2. If the manifest entry has a `sig`, verifies it against the
+///    cert's bytes with the embedded public key (or `--pubkey`
+///    override). Mismatch → fail.
+/// 3. If `--z3` is set AND the `z3` binary is on PATH, runs
+///    `z3 -smt2 <cert>` and expects `unsat` on stdout. Absent
+///    `--z3`, skips (the cryptographic checks alone are already
+///    a strong regression signal).
+///
+/// Prints a table of the per-obligation results. Exit 0 iff
+/// every obligation passed every applicable check.
+fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("verify-all") {
+        return None;
+    }
+
+    let mut dir_path: Option<PathBuf> = None;
+    let mut pubkey_path: Option<PathBuf> = None;
+    let mut run_z3 = false;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--pubkey" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --pubkey requires a path argument");
+                return Some(2);
+            }
+            pubkey_path = Some(PathBuf::from(&args[i]));
+        } else if let Some(p) = a.strip_prefix("--pubkey=") {
+            pubkey_path = Some(PathBuf::from(p));
+        } else if a == "--z3" {
+            run_z3 = true;
+        } else if dir_path.is_none() {
+            dir_path = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to verify-all", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(dir) = dir_path else {
+        eprintln!(
+            "Error: `resilient verify-all <dir> [--pubkey <path>] [--z3]` requires a directory"
+        );
+        return Some(2);
+    };
+
+    // Load the manifest.
+    let manifest_path = dir.join("manifest.json");
+    let manifest_text = match fs::read_to_string(&manifest_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", manifest_path.display(), e);
+            return Some(2);
+        }
+    };
+    let manifest = match cert_sign::parse_manifest_json(&manifest_text) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Error: {}: {}", manifest_path.display(), e);
+            return Some(1);
+        }
+    };
+
+    // Load the public key (supplied or embedded) only if any
+    // obligation actually has a sig — avoids wasting work when
+    // the manifest is entirely unsigned.
+    let any_signed = manifest.obligations.iter().any(|o| o.sig.is_some());
+    let pub_b: Option<[u8; 32]> = if any_signed {
+        let pem_text = match pubkey_path {
+            Some(p) => match fs::read_to_string(&p) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error: could not read --pubkey {}: {}", p.display(), e);
+                    return Some(2);
+                }
+            },
+            None => cert_sign::EMBEDDED_PUBLIC_KEY_PEM.to_string(),
+        };
+        match cert_sign::parse_public_key_pem(&pem_text) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("Error: invalid public key: {}", e);
+                return Some(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    // Detect z3 availability once.
+    let z3_ok = run_z3 && which_z3();
+    if run_z3 && !z3_ok {
+        eprintln!(
+            "Warning: --z3 requested but the `z3` binary isn't on PATH; skipping Z3 re-verification."
+        );
+    }
+
+    println!(
+        "\x1B[36mVerifying {} obligation(s) from {}\x1B[0m",
+        manifest.obligations.len(),
+        manifest.program,
+    );
+    println!(
+        "  {:<32} {:<10} {:<8} {:<8} {:<8}",
+        "fn", "kind", "sha256", "sig", "z3"
+    );
+
+    let mut all_ok = true;
+    for o in &manifest.obligations {
+        let cert_path = dir.join(&o.cert);
+        let cert_bytes = match fs::read(&cert_path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "  {:<32} MISSING  ({}: {})",
+                    short_label(&o.fn_name, &o.kind, o.idx),
+                    cert_path.display(),
+                    e
+                );
+                all_ok = false;
+                continue;
+            }
+        };
+
+        // Step 1: sha256.
+        let actual_sha = cert_sign::sha256_hex(&cert_bytes);
+        let sha_ok = actual_sha == o.sha256;
+
+        // Step 2: signature (if present).
+        let sig_ok = match (&o.sig, pub_b) {
+            (Some(sig_hex), Some(pk)) => match cert_sign::parse_signature_hex(sig_hex) {
+                Ok(sig) => cert_sign::verify_payload(&pk, &cert_bytes, &sig)
+                    .unwrap_or(false),
+                Err(_) => false,
+            },
+            (Some(_), None) => false, // signed manifest but no key we could load
+            (None, _) => true,        // no sig → vacuously passes
+        };
+        let sig_label = if o.sig.is_none() { "-" } else if sig_ok { "ok" } else { "FAIL" };
+
+        // Step 3: Z3.
+        let z3_label = if !z3_ok {
+            "-"
+        } else {
+            match run_z3_on(&cert_path) {
+                Ok(true) => "unsat",
+                Ok(false) => "FAIL",
+                Err(_) => "ERR",
+            }
+        };
+
+        let sha_label = if sha_ok { "ok" } else { "FAIL" };
+        if !sha_ok || !sig_ok || matches!(z3_label, "FAIL" | "ERR") {
+            all_ok = false;
+        }
+
+        println!(
+            "  {:<32} {:<10} {:<8} {:<8} {:<8}",
+            short_label(&o.fn_name, &o.kind, o.idx),
+            o.kind,
+            sha_label,
+            sig_label,
+            z3_label,
+        );
+    }
+
+    if all_ok {
+        println!("\n\x1B[32mverify-all: all checks passed\x1B[0m");
+        Some(0)
+    } else {
+        eprintln!("\n\x1B[31mverify-all: one or more checks FAILED\x1B[0m");
+        Some(1)
+    }
+}
+
+fn short_label(fn_name: &str, kind: &str, idx: usize) -> String {
+    format!("{}::{}[{}]", fn_name, kind, idx)
+}
+
+/// Check whether `z3` is on PATH without shelling out at this
+/// point. Uses `which`-equivalent by walking `PATH`.
+fn which_z3() -> bool {
+    let Some(path_env) = env::var_os("PATH") else { return false };
+    for p in env::split_paths(&path_env) {
+        let candidate = p.join("z3");
+        if candidate.is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Run `z3 -smt2 <path>` and return `Ok(true)` iff the first line
+/// of stdout is `unsat`. Used by `--z3` under `verify-all`.
+fn run_z3_on(cert_path: &Path) -> RResult<bool> {
+    let out = std::process::Command::new("z3")
+        .arg("-smt2")
+        .arg(cert_path)
+        .output()
+        .map_err(|e| format!("could not spawn z3: {}", e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let first_line = stdout.lines().next().unwrap_or("").trim();
+    Ok(first_line == "unsat")
+}
+
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
@@ -8000,6 +8262,13 @@ fn main() {
     // of a RES-071 certificate directory against the binary's
     // embedded public key.
     if let Some(code) = dispatch_verify_cert_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-195: `verify-all <dir>` — walk `manifest.json` and
+    // re-check every obligation's hash + signature (+ Z3 if
+    // `--z3` is passed).
+    if let Some(code) = dispatch_verify_all_subcommand(&args) {
         std::process::exit(code);
     }
 
