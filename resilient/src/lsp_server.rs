@@ -21,9 +21,10 @@ use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position, Range,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    InitializeResult, InitializedParams, InlayHint, InlayHintKind, InlayHintLabel,
+    InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location, MessageType,
+    OneOf, Position, Range, SemanticToken, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
     SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
     ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentSyncCapability,
     TextDocumentSyncKind, Url, WorkDoneProgressOptions, WorkspaceSymbolParams,
@@ -85,6 +86,13 @@ pub struct Backend {
     /// to false on `did_save` to trigger a lazy refresh on the
     /// next query.
     workspace_index_built: Mutex<bool>,
+    /// RES-189: user preference for inlay hints at call sites
+    /// (`add(a: 1, b: 2)`-style parameter labels). Off by default
+    /// per the ticket; the client flips it on via `initializationOptions`
+    /// (`resilient.inlayHints.parameters: true`).
+    /// Type hints for unannotated `let` bindings always fire —
+    /// only parameter hints are gated here.
+    inlay_hint_parameters: Mutex<bool>,
 }
 
 impl Backend {
@@ -96,6 +104,7 @@ impl Backend {
             workspace_index: Mutex::new(HashMap::new()),
             workspace_root: Mutex::new(None),
             workspace_index_built: Mutex::new(false),
+            inlay_hint_parameters: Mutex::new(false),
         }
     }
 
@@ -434,6 +443,226 @@ fn semantic_tokens_from_wire(wire: Vec<u32>) -> Vec<SemanticToken> {
         .collect()
 }
 
+/// RES-189: build one inlay hint for a typechecked unannotated
+/// `let` binding. Position lands at the end-of-pattern column
+/// (just after the identifier) so clients render `let x<here>`
+/// → `let x :: Int` — the `:: ` prefix keeps the hint visually
+/// separate from the code.
+///
+/// Per the LSP spec `position.line` / `character` are 0-indexed;
+/// the typechecker's `span` is 1-indexed per RES-077, so we
+/// subtract.
+#[allow(dead_code)] // used behind `lsp` + test
+fn inlay_hint_from_let(entry: &typechecker::LetTypeHint) -> InlayHint {
+    // `let ` is 4 chars. Skip past it + the name to land at
+    // end-of-pattern. If someone later adds a `let mut` form,
+    // this computation needs to move.
+    let line0 = entry.span.start.line.saturating_sub(1) as u32;
+    let col0 = entry.span.start.column.saturating_sub(1) as u32;
+    let end_of_pattern = col0 + 4 + entry.name_len_chars as u32;
+    InlayHint {
+        position: Position::new(line0, end_of_pattern),
+        label: InlayHintLabel::String(format!(": {}", entry.ty)),
+        kind: Some(InlayHintKind::TYPE),
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: None,
+        data: None,
+    }
+}
+
+/// RES-189: collect per-call-site parameter hints for a program.
+///
+/// For each `Node::CallExpression` whose callee resolves to a
+/// top-level `Node::Function` declared in the same program, emit
+/// one hint per positional argument carrying the corresponding
+/// parameter name (`add(a: 1, b: 2)` editor chrome). Hints land
+/// at the argument expression's start position.
+///
+/// Intentionally simple: we only resolve names against
+/// top-level fns declared in THIS program. Imported fns, methods
+/// on structs, and arguments at non-call call sites are all
+/// skipped (each can be layered on as a follow-up once name
+/// resolution is unified — RES-182 territory).
+#[allow(dead_code)] // used behind `lsp` + test
+pub(crate) fn collect_param_hints(program: &Node) -> Vec<InlayHint> {
+    let mut out = Vec::new();
+    let fns = collect_top_level_fns(program);
+    walk_call_hints(program, &fns, &mut out);
+    out
+}
+
+/// Map fn name → parameter names. Populated from top-level
+/// `Node::Function` decls so parameter hints can look up a callee
+/// in O(1).
+fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
+    let mut out = HashMap::new();
+    if let Node::Program(stmts) = program {
+        for spanned in stmts {
+            if let Node::Function { name, parameters, .. } = &spanned.node {
+                // parameters are (type, name) — only names needed.
+                let names: Vec<String> =
+                    parameters.iter().map(|(_, n)| n.clone()).collect();
+                out.insert(name.clone(), names);
+            }
+        }
+    }
+    out
+}
+
+/// Recursive walker: visits every `CallExpression` reachable from
+/// `node`. For each one, if the callee is a bare identifier
+/// that's in `fns` AND the arg count matches, emit one hint per
+/// positional argument.
+fn walk_call_hints(
+    node: &Node,
+    fns: &HashMap<String, Vec<String>>,
+    out: &mut Vec<InlayHint>,
+) {
+    match node {
+        Node::Program(stmts) => {
+            for s in stmts {
+                walk_call_hints(&s.node, fns, out);
+            }
+        }
+        Node::Function { body, requires, ensures, .. } => {
+            walk_call_hints(body, fns, out);
+            for r in requires {
+                walk_call_hints(r, fns, out);
+            }
+            for e in ensures {
+                walk_call_hints(e, fns, out);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            // `Block.stmts` is `Vec<Node>` (not Spanned) so walk directly.
+            for s in stmts {
+                walk_call_hints(s, fns, out);
+            }
+        }
+        Node::CallExpression { function, arguments, .. } => {
+            // First recurse into the arguments so nested calls get
+            // hints too.
+            for a in arguments {
+                walk_call_hints(a, fns, out);
+            }
+            walk_call_hints(function, fns, out);
+
+            // Now check if this call itself gets a hint: callee
+            // must be an Identifier naming a known top-level fn,
+            // and arg count must match.
+            if let Node::Identifier { name, .. } = function.as_ref()
+                && let Some(param_names) = fns.get(name)
+                && param_names.len() == arguments.len()
+            {
+                for (arg, pname) in arguments.iter().zip(param_names.iter()) {
+                    let arg_span = expression_span(arg);
+                    let Some(sp) = arg_span else { continue };
+                    let pos = Position::new(
+                        sp.start.line.saturating_sub(1) as u32,
+                        sp.start.column.saturating_sub(1) as u32,
+                    );
+                    out.push(InlayHint {
+                        position: pos,
+                        label: InlayHintLabel::String(format!("{}: ", pname)),
+                        kind: Some(InlayHintKind::PARAMETER),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: None,
+                        padding_right: Some(true),
+                        data: None,
+                    });
+                }
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::ReturnStatement { value: Some(value), .. } => {
+            walk_call_hints(value, fns, out);
+        }
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            walk_call_hints(condition, fns, out);
+            walk_call_hints(consequence, fns, out);
+            if let Some(a) = alternative {
+                walk_call_hints(a, fns, out);
+            }
+        }
+        Node::InfixExpression { left, right, .. } => {
+            walk_call_hints(left, fns, out);
+            walk_call_hints(right, fns, out);
+        }
+        Node::PrefixExpression { right, .. } => {
+            walk_call_hints(right, fns, out);
+        }
+        // Stop recursion at simple leaves and forms we don't
+        // currently inspect. Expand cases as new AST shapes need
+        // hint coverage.
+        _ => {}
+    }
+}
+
+/// RES-189: tri-state position-in-range test. The LSP spec says
+/// an inlay hint request's `range` is the viewport the editor
+/// wants hints for; we filter server-side so the client doesn't
+/// render hints outside that range. Returns true when `p` falls
+/// inside `[range.start, range.end)` lexicographically.
+fn position_in_range(p: Position, range: Range) -> bool {
+    let before_start = (p.line, p.character) < (range.start.line, range.start.character);
+    let after_end = (p.line, p.character) > (range.end.line, range.end.character);
+    !before_start && !after_end
+}
+
+/// RES-189: extract the `resilient.inlayHints.parameters` flag
+/// from the `initializationOptions` JSON blob. Tolerates two
+/// client-side representations:
+/// - flat:   `{"resilient.inlayHints.parameters": true}`
+/// - nested: `{"resilient": {"inlayHints": {"parameters": true}}}`
+///
+/// Returns `false` when the blob is absent, malformed, or the
+/// value isn't a boolean `true`. Exported pub(crate) so unit
+/// tests can exercise the parser without an LSP round-trip.
+#[allow(dead_code)]
+pub(crate) fn read_init_param_hints_flag(
+    opts: Option<&tower_lsp::lsp_types::LSPAny>,
+) -> bool {
+    let Some(opts) = opts else { return false };
+    // Flat form.
+    if let Some(v) = opts.get("resilient.inlayHints.parameters")
+        && v.as_bool() == Some(true)
+    {
+        return true;
+    }
+    // Nested form.
+    let nested = opts
+        .get("resilient")
+        .and_then(|v| v.get("inlayHints"))
+        .and_then(|v| v.get("parameters"))
+        .and_then(|v| v.as_bool());
+    matches!(nested, Some(true))
+}
+
+/// Best-effort span lookup for an expression node. Used to place
+/// parameter hints at the arg's start. Returns None when we don't
+/// have a span for a given shape — the hint is then skipped.
+fn expression_span(node: &Node) -> Option<crate::span::Span> {
+    match node {
+        Node::IntegerLiteral { span, .. }
+        | Node::FloatLiteral { span, .. }
+        | Node::StringLiteral { span, .. }
+        | Node::BooleanLiteral { span, .. }
+        | Node::Identifier { span, .. }
+        | Node::InfixExpression { span, .. }
+        | Node::CallExpression { span, .. }
+        | Node::PrefixExpression { span, .. }
+        | Node::ArrayLiteral { span, .. }
+        | Node::IndexExpression { span, .. }
+        | Node::FieldAccess { span, .. }
+        | Node::StructLiteral { span, .. } => Some(*span),
+        _ => None,
+    }
+}
+
 #[allow(deprecated)] // `DocumentSymbol::deprecated` is deprecated in the LSP type
 fn make_symbol(name: &str, kind: SymbolKind, span: crate::span::Span) -> DocumentSymbol {
     let range = span_to_range(span);
@@ -473,6 +702,19 @@ impl LanguageServer for Backend {
             *slot = Some(p);
         }
 
+        // RES-189: read the parameter-hints opt-in from
+        // `initializationOptions`. We probe two common shapes:
+        // `{"resilient.inlayHints.parameters": true}` (flat) and
+        // `{"resilient": {"inlayHints": {"parameters": true}}}`
+        // (nested). Either is fine; clients vary. Absent / false →
+        // parameter hints stay off.
+        let params_enabled = read_init_param_hints_flag(
+            params.initialization_options.as_ref(),
+        );
+        if let Ok(mut slot) = self.inlay_hint_parameters.lock() {
+            *slot = params_enabled;
+        }
+
         Ok(InitializeResult {
             server_info: None,
             capabilities: ServerCapabilities {
@@ -491,6 +733,16 @@ impl LanguageServer for Backend {
                 // RES-187: full-file semantic tokens. Delta is a
                 // follow-up; many clients use `full` anyway.
                 semantic_tokens_provider: Some(semantic_tokens_capability()),
+                // RES-189: inlay hints. `Options` (not registration-
+                // options) — the server supports the feature for any
+                // document that already has a `TextDocumentSyncKind`
+                // registered above.
+                inlay_hint_provider: Some(OneOf::Right(
+                    InlayHintServerCapabilities::Options(InlayHintOptions {
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                        resolve_provider: Some(false),
+                    }),
+                )),
                 ..Default::default()
             },
         })
@@ -645,6 +897,60 @@ impl LanguageServer for Backend {
             result_id: None,
             data,
         })))
+    }
+
+    /// RES-189: `textDocument/inlayHint` — emit type-hint labels
+    /// for unannotated `let` bindings (always on) and parameter-
+    /// name labels at call sites (gated behind the
+    /// `resilient.inlayHints.parameters` init option).
+    ///
+    /// Strategy: run the typechecker on the cached AST so the
+    /// `let_type_hints` side-channel fills up, then walk the AST
+    /// separately for call-site parameter hints. Both passes are
+    /// cheap; no caching needed for files the editor could open.
+    /// Filters the output by the request's `range` so clients
+    /// that ask for a viewport don't pay to render the whole
+    /// file's worth.
+    async fn inlay_hint(
+        &self,
+        params: InlayHintParams,
+    ) -> JsonResult<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+
+        // Run the typechecker purely for its hint side-channel.
+        // Ignore the return value — errors don't invalidate hints
+        // collected up to the error point.
+        let mut tc = typechecker::TypeChecker::new();
+        let _ = tc.check_program_with_source(&program, uri.as_str());
+        let let_hints: Vec<InlayHint> =
+            tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
+
+        let mut out: Vec<InlayHint> = let_hints
+            .into_iter()
+            .filter(|h| position_in_range(h.position, range))
+            .collect();
+
+        let want_param_hints = match self.inlay_hint_parameters.lock() {
+            Ok(g) => *g,
+            Err(_) => false,
+        };
+        if want_param_hints {
+            for h in collect_param_hints(&program) {
+                if position_in_range(h.position, range) {
+                    out.push(h);
+                }
+            }
+        }
+        Ok(Some(out))
     }
 }
 
@@ -1001,6 +1307,175 @@ mod tests {
         let wire = vec![0, 0, 3, 0, 0, 0, 4]; // 7 elements — last 2 dropped
         let toks = semantic_tokens_from_wire(wire);
         assert_eq!(toks.len(), 1);
+    }
+
+    // ---------- RES-189: inlay hints ----------
+
+    #[test]
+    fn typechecker_collects_hints_for_unannotated_lets() {
+        // Ticket AC: 5 lets, 3 should produce type hints (the
+        // non-annotated ones). Annotated lets stay quiet.
+        let src = "\
+            fn main(int _d) {\n\
+                let a = 1;\n\
+                let b: int = 2;\n\
+                let c = true;\n\
+                let d: bool = false;\n\
+                let e = \"hi\";\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = typechecker::TypeChecker::new();
+        let _ = tc.check_program_with_source(&program, "file:///tmp/test.rs");
+        let hints = &tc.let_type_hints;
+        assert_eq!(
+            hints.len(),
+            3,
+            "expected 3 hints (a, c, e), got {:?}",
+            hints.iter().map(|h| (h.name_len_chars, &h.ty)).collect::<Vec<_>>(),
+        );
+        let types: Vec<String> =
+            hints.iter().map(|h| format!("{}", h.ty)).collect();
+        assert_eq!(types, vec!["int", "bool", "string"]);
+    }
+
+    #[test]
+    fn typechecker_skips_any_typed_let_hints() {
+        // `Type::Any` bindings shouldn't produce hints — no useful
+        // information and clutters the editor.
+        let src = "fn main(int _d) { let x = println(\"hi\"); return 0; }\n";
+        let (program, _) = parse(src);
+        let mut tc = typechecker::TypeChecker::new();
+        let _ = tc.check_program_with_source(&program, "<t>");
+        // `println` returns Void, so `x` is Void → skipped.
+        assert_eq!(tc.let_type_hints.len(), 0);
+    }
+
+    #[test]
+    fn inlay_hint_from_let_positions_after_identifier() {
+        use crate::span::{Pos, Span};
+        // `let abc = 3;` starting at 1:1 → pattern ends at col 8
+        // (1 + "let ".len() + "abc".len() = 1 + 4 + 3 = 8, 0-indexed
+        // = 7).
+        let entry = typechecker::LetTypeHint {
+            span: Span::new(Pos::new(1, 1, 0), Pos::new(1, 1, 0)),
+            name_len_chars: 3,
+            ty: typechecker::Type::Int,
+        };
+        let hint = inlay_hint_from_let(&entry);
+        assert_eq!(hint.position.line, 0);
+        assert_eq!(hint.position.character, 7);
+        // The label starts with `: ` per the convention; clients
+        // render the padding.
+        match hint.label {
+            InlayHintLabel::String(ref s) => assert_eq!(s, ": int"),
+            other => panic!("expected string label, got {:?}", other),
+        }
+        assert_eq!(hint.kind, Some(InlayHintKind::TYPE));
+        assert_eq!(hint.padding_left, Some(true));
+    }
+
+    #[test]
+    fn param_hints_tag_each_arg_with_param_name() {
+        // Ticket AC: `add(a: 1, b: 2)`-style chrome.
+        let src = "\
+            fn add(int a, int b) { return a + b; }\n\
+            fn main(int _d) { return add(1, 2); }\n\
+            main(0);\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let hints = collect_param_hints(&program);
+        assert!(hints.len() >= 2, "expected >=2 hints, got: {hints:?}");
+        // Every produced hint should be a PARAMETER kind.
+        for h in &hints {
+            assert_eq!(h.kind, Some(InlayHintKind::PARAMETER));
+            match &h.label {
+                InlayHintLabel::String(s) => {
+                    assert!(
+                        s.ends_with(": "),
+                        "param hint label should end with `: `, got {s:?}"
+                    );
+                }
+                _ => panic!("expected string label"),
+            }
+        }
+        // Exactly two hints for the `add(1, 2)` call.
+        let add_hints: Vec<&str> = hints
+            .iter()
+            .filter_map(|h| match &h.label {
+                InlayHintLabel::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(add_hints.contains(&"a: "));
+        assert!(add_hints.contains(&"b: "));
+    }
+
+    #[test]
+    fn param_hints_skip_arity_mismatches() {
+        // If the call passes the wrong number of args, don't emit
+        // hints — any pairing would be misleading.
+        let src = "\
+            fn add(int a, int b) { return a + b; }\n\
+            fn main(int _d) { return add(1); }\n\
+            main(0);\n";
+        let (program, _errs) = parse(src);
+        let hints = collect_param_hints(&program);
+        let add_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(h.kind, Some(InlayHintKind::PARAMETER)))
+            .collect();
+        assert!(
+            add_hints.is_empty(),
+            "arity-mismatch call should not emit param hints, got {add_hints:?}"
+        );
+    }
+
+    #[test]
+    fn param_hints_skip_unknown_callees() {
+        // println isn't declared in this program, so no hints.
+        let src = "fn main(int _d) { println(\"hi\"); return 0; }\n";
+        let (program, _) = parse(src);
+        let hints = collect_param_hints(&program);
+        assert!(hints.is_empty(), "println isn't a user fn; got: {hints:?}");
+    }
+
+    #[test]
+    fn read_init_param_hints_flag_flat_form() {
+        let v: tower_lsp::lsp_types::LSPAny = serde_json::json!({
+            "resilient.inlayHints.parameters": true
+        });
+        assert!(read_init_param_hints_flag(Some(&v)));
+    }
+
+    #[test]
+    fn read_init_param_hints_flag_nested_form() {
+        let v: tower_lsp::lsp_types::LSPAny = serde_json::json!({
+            "resilient": { "inlayHints": { "parameters": true } }
+        });
+        assert!(read_init_param_hints_flag(Some(&v)));
+    }
+
+    #[test]
+    fn read_init_param_hints_flag_defaults_false() {
+        assert!(!read_init_param_hints_flag(None));
+        let v: tower_lsp::lsp_types::LSPAny = serde_json::json!({});
+        assert!(!read_init_param_hints_flag(Some(&v)));
+        let v: tower_lsp::lsp_types::LSPAny = serde_json::json!({
+            "resilient": { "inlayHints": { "parameters": false } }
+        });
+        assert!(!read_init_param_hints_flag(Some(&v)));
+    }
+
+    #[test]
+    fn position_in_range_inclusive_endpoints() {
+        let r = Range::new(Position::new(0, 0), Position::new(10, 0));
+        assert!(position_in_range(Position::new(0, 0), r));
+        assert!(position_in_range(Position::new(5, 0), r));
+        assert!(position_in_range(Position::new(10, 0), r));
+        assert!(!position_in_range(Position::new(10, 1), r));
+        assert!(!position_in_range(Position::new(11, 0), r));
     }
 
     #[test]

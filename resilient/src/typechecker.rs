@@ -1,6 +1,24 @@
 // Type checker module for Resilient language
 use std::collections::HashMap;
 use crate::{Node, Pattern};
+use crate::span::Span;
+
+/// RES-189: one entry in the typechecker's post-walk inlay-hint
+/// cache. Produced for every unannotated `let` binding (i.e.
+/// `let x = ...;` without an explicit `: T`). The LSP backend
+/// converts these into `InlayHint`s.
+///
+/// `span` is the `let` keyword's span (1-indexed line/col, per
+/// RES-077). `name_len_chars` is the length of the binding's
+/// identifier in chars — together those let the LSP compute
+/// "end of pattern" as `col + "let ".len() + name_len_chars`.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields read behind `lsp` feature only
+pub struct LetTypeHint {
+    pub span: Span,
+    pub name_len_chars: usize,
+    pub ty: Type,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
@@ -458,6 +476,13 @@ pub struct TypeChecker {
     /// Unknown — treated as "not proven" rather than an error, so
     /// compilation continues with the runtime check retained.
     verifier_timeout_ms: u32,
+    /// RES-189: inferred types for unannotated `let` bindings,
+    /// accumulated during the walk. The LSP backend reads this
+    /// after `check_program_with_source` to produce inlay hints.
+    /// Empty when check fails before reaching any unannotated
+    /// let — that's an acceptable partial behaviour (errors take
+    /// precedence over hints for broken files).
+    pub let_type_hints: Vec<LetTypeHint>,
 }
 
 impl TypeChecker {
@@ -737,6 +762,8 @@ impl TypeChecker {
             type_aliases: HashMap::new(),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
+            // RES-189: populated during LetStatement handling.
+            let_type_hints: Vec::new(),
         }
     }
 
@@ -1020,7 +1047,7 @@ impl TypeChecker {
                 Ok(result_type)
             },
             
-            Node::LetStatement { name, value, type_annot, .. } => {
+            Node::LetStatement { name, value, type_annot, span } => {
                 let value_type = self.check_node(value)?;
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
@@ -1034,6 +1061,23 @@ impl TypeChecker {
                     }
                     declared
                 } else {
+                    // RES-189: unannotated — stash the inferred
+                    // type so the LSP can emit an inlay hint.
+                    // Skip when the inferred type is `Any` (no
+                    // useful information to surface), `Void`
+                    // (shouldn't happen for a let, but guard
+                    // against it) or `Var` (inference artifact
+                    // that shouldn't leak to users).
+                    if !matches!(
+                        value_type,
+                        Type::Any | Type::Void | Type::Var(_)
+                    ) {
+                        self.let_type_hints.push(LetTypeHint {
+                            span: *span,
+                            name_len_chars: name.chars().count(),
+                            ty: value_type.clone(),
+                        });
+                    }
                     value_type
                 };
                 self.env.set(name.clone(), bind_type);

@@ -1107,6 +1107,7 @@ dependencies = [
  "logos",
  "resilient-span",
  "rustyline",
+ "serde_json",
  "tokio",
  "tower-lsp",
  "z3",

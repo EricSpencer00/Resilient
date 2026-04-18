@@ -73,3 +73,8 @@ cranelift-module = { version = "0.108", optional = true }
 # audit pending diffs when a snapshot drifts; commit the reviewed
 # `.snap` files under `resilient/tests/snapshots/`.
 insta = { version = "1", features = ["filters"] }
+# RES-189: LSP inlay-hint tests construct `initializationOptions`
+# JSON via `serde_json::json!`. tower-lsp pulls serde_json in
+# transitively but the macro needs a direct dep edge so the test
+# module can see it.
+serde_json = "1"

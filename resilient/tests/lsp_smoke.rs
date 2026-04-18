@@ -630,6 +630,212 @@ fn lsp_semantic_tokens_full() {
 }
 
 #[test]
+fn lsp_inlay_hint_types_for_unannotated_lets() {
+    // RES-189 AC: 5-let snippet, 3 hints expected (the unannotated
+    // ones). Round-trips through the real LSP server: initialize →
+    // didOpen a program → textDocument/inlayHint over the whole
+    // document → count `"kind":1` entries (TYPE kind = 1 per the
+    // LSP spec).
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // initialize (no special init options; parameter hints stay off).
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    stdin.write_all(frame(init).as_bytes()).unwrap();
+    stdin.flush().ok();
+    let init_deadline = Instant::now() + Duration::from_secs(5);
+    let init_resp = read_one_message(&mut stdout, init_deadline)
+        .expect("read initialize response");
+    assert!(
+        init_resp.contains(r#""inlayHintProvider""#),
+        "expected inlayHintProvider in capabilities, got:\n{}",
+        init_resp
+    );
+
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // 5 lets; 3 without annotation → 3 TYPE hints expected.
+    let uri = "file:///tmp/lsp_inlay_test.rs";
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"fn main(int _d) {{ let a = 1; let b: int = 2; let c = true; let d: bool = false; let e = \"hi\"; return 0; }}\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // Drain publishDiagnostics so it doesn't land as the next read.
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read publishDiagnostics");
+
+    // Whole-file range.
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/inlayHint","params":{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":100,"character":0}}}}}}}}"#
+    );
+    stdin.write_all(frame(&req).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    let response = read_until(
+        &mut stdout,
+        |body| body.contains(r#""id":2"#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read inlayHint response");
+
+    // Count kind:1 entries (TYPE). 3 unannotated lets → 3 hints.
+    // No parameter hints because the init didn't opt in.
+    let type_hint_count = response.matches(r#""kind":1"#).count();
+    assert_eq!(
+        type_hint_count, 3,
+        "expected 3 TYPE inlay hints, got {type_hint_count} in:\n{response}"
+    );
+
+    // Labels contain the inferred type names.
+    assert!(
+        response.contains(r#""label":": int""#),
+        "expected `int` type-hint label in:\n{response}"
+    );
+    assert!(
+        response.contains(r#""label":": bool""#),
+        "expected `bool` type-hint label in:\n{response}"
+    );
+    assert!(
+        response.contains(r#""label":": string""#),
+        "expected `string` type-hint label in:\n{response}"
+    );
+
+    // No PARAMETER (kind 2) hints since the flag was not set.
+    assert!(
+        !response.contains(r#""kind":2"#),
+        "expected NO parameter hints without opt-in, got:\n{response}"
+    );
+
+    // exit + clean shutdown
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    let _ = stdin.write_all(frame(exit).as_bytes());
+    drop(stdin);
+
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > exit_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("LSP server did not exit within 3s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+    }
+}
+
+#[test]
+fn lsp_inlay_hint_parameter_hints_opt_in() {
+    // When initialization_options sets
+    // `resilient.inlayHints.parameters: true`, parameter hints
+    // appear at user-fn call sites.
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // Opt in to parameter hints via the flat initialization option
+    // form (clients typically send either flat or nested; we
+    // accept both).
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"initializationOptions":{"resilient.inlayHints.parameters":true}}}"#;
+    stdin.write_all(frame(init).as_bytes()).unwrap();
+    stdin.flush().ok();
+    let _ = read_one_message(&mut stdout, Instant::now() + Duration::from_secs(5))
+        .expect("read init response");
+
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    let uri = "file:///tmp/lsp_inlay_param.rs";
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"fn add(int a, int b) {{ return a + b; }}\nfn main(int _d) {{ return add(1, 2); }}\nmain(0);\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read publishDiagnostics");
+
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/inlayHint","params":{{"textDocument":{{"uri":"{uri}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":100,"character":0}}}}}}}}"#
+    );
+    stdin.write_all(frame(&req).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    let response = read_until(
+        &mut stdout,
+        |body| body.contains(r#""id":2"#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read inlayHint response");
+
+    // Should see PARAMETER kind hints (kind = 2) now that we've
+    // opted in.
+    assert!(
+        response.contains(r#""kind":2"#),
+        "expected parameter hints under opt-in, got:\n{response}"
+    );
+    assert!(
+        response.contains(r#""label":"a: ""#),
+        "expected `a: ` param label in:\n{response}"
+    );
+    assert!(
+        response.contains(r#""label":"b: ""#),
+        "expected `b: ` param label in:\n{response}"
+    );
+
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    let _ = stdin.write_all(frame(exit).as_bytes());
+    drop(stdin);
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > exit_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("LSP server did not exit within 3s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+    }
+}
+
+#[test]
 fn lsp_did_change_republishes_diagnostics() {
     // RES-094: simulate the editor flow — clean program → buggy
     // edit → fixed edit. Each transition triggers a fresh
