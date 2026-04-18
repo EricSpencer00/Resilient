@@ -1,7 +1,7 @@
 ---
 id: RES-202
 title: Performance CI gate: fib(25) regression blocker
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: perf
 created: 2026-04-17
@@ -37,3 +37,4 @@ configurable threshold.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
