@@ -196,6 +196,39 @@ for a buildable example that links the runtime with an
 cross-compile; the demo is a build check, not a runtime
 demonstration.
 
+#### `--features static-only` (RES-178)
+
+For safety-critical projects that forbid dynamic allocation
+entirely, the runtime crate exposes a mutually-exclusive
+`static-only` feature. Under it, the reduced `Value` surface is:
+
+| feature flags             | Value::Int | Value::Bool | Value::Float | Value::String |
+| ------------------------- | :--------: | :---------: | :----------: | :-----------: |
+| (default)                 | ✅         | ✅          | ✅           | ✕             |
+| `--features alloc`        | ✅         | ✅          | ✅           | ✅            |
+| `--features static-only`  | ✅         | ✅          | ✅           | ✕             |
+| `alloc + static-only`     | *build fails: `compile_error!`* |
+
+`static-only` is an assertion, not an enabler: setting it makes
+any attempt to add a heap-bearing Value variant without
+feature-gating it fail the build. The existing
+`#[cfg(feature = "alloc")]` gates around `Value::String` (and
+their future cousins for Array/Map when those land here) already
+provide structural enforcement; `static-only` adds the intent
+contract + the explicit mutex.
+
+```bash
+cd resilient-runtime
+# Alloc-free build (same as default — feature is assertive).
+cargo build --features static-only
+cargo test  --features static-only     # 13 tests
+# Prove the mutex:
+cargo build --features "alloc static-only"   # compile_error!
+```
+
+The `resilient/` CLI crate is NOT built with `static-only` — the
+compiler itself needs alloc. The feature is runtime-only.
+
 #### Cortex-M0 / M0+ / M1 thumbv6m (RES-177)
 
 The Armv6-M lower-end (Cortex-M0 class, e.g. RP2040's dual-M0+

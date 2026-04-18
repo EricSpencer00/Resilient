@@ -23,6 +23,17 @@
 // the trait shape. Document that the names ARE intentional.
 #![allow(clippy::should_implement_trait)]
 
+// RES-178: `static-only` and `alloc` describe incompatible
+// runtime postures — the former forbids heap allocation, the
+// latter enables it. Fail the build loudly rather than silently
+// letting one feature win. Users hitting this should pick one.
+#[cfg(all(feature = "alloc", feature = "static-only"))]
+compile_error!(
+    "`alloc` and `static-only` are mutually exclusive — pick ONE: \
+     `alloc` enables heap-bearing Value variants (Value::String today); \
+     `static-only` asserts no-heap posture. Both set = ambiguous build intent."
+);
+
 // RES-098: pull in the `alloc` crate when the `alloc` feature
 // is on. Needed in both test and production builds — even when
 // std is available, `alloc::string::String` requires the crate
@@ -268,5 +279,61 @@ mod tests {
     fn string_does_not_subtract() {
         let err = Value::String(String::from("a")).sub(Value::String(String::from("b"))).unwrap_err();
         assert_eq!(err, RuntimeError::TypeMismatch("sub"));
+    }
+
+    // ---------- RES-178: static-only posture ----------
+    //
+    // These tests exist to prove the reduced-surface Value still
+    // works end-to-end when `alloc` is off — the same assertions
+    // the non-feature-gated tests above make, repeated here
+    // specifically under `cfg(not(feature = "alloc"))` so
+    // `cargo test --features static-only` has coverage that
+    // distinguishes "no-alloc runs" from "no-alloc compiles
+    // but nothing exercises it". Builders running `cargo test
+    // --features static-only` should see these pass.
+    //
+    // The `#[cfg(all(...))]` pattern is a belt-and-suspenders:
+    // `static-only` implies `not alloc` because of the
+    // compile_error! at the top of the file, but being explicit
+    // about both conditions makes the intent plain.
+
+    #[cfg(all(feature = "static-only", not(feature = "alloc")))]
+    #[test]
+    fn static_only_int_bool_float_still_work() {
+        // Int arithmetic.
+        assert_eq!(Value::Int(2).add(Value::Int(3)).unwrap(), Value::Int(5));
+        // Bool equality.
+        assert_eq!(
+            Value::Bool(true).eq(Value::Bool(false)).unwrap(),
+            Value::Bool(false)
+        );
+        // Float arithmetic (f64 lives on the stack — no
+        // allocator required).
+        assert_eq!(
+            Value::Float(1.5).add(Value::Float(2.5)).unwrap(),
+            Value::Float(4.0)
+        );
+    }
+
+    #[cfg(all(feature = "static-only", not(feature = "alloc")))]
+    #[test]
+    fn static_only_value_enum_omits_string_variant() {
+        // Negative assertion by exhaustiveness: a `match` that
+        // covers every variant of `Value` compiles under
+        // `static-only` with ONLY Int / Bool / Float arms. If
+        // the String variant sneaked in (e.g. someone removed
+        // its `#[cfg(feature = "alloc")]` gate), this match
+        // would fail to compile with a missing-arm error —
+        // exactly the regression the ticket wants the build to
+        // catch.
+        fn is_numeric(v: &Value) -> bool {
+            match v {
+                Value::Int(_) | Value::Float(_) => true,
+                Value::Bool(_) => false,
+            }
+        }
+        assert!(is_numeric(&Value::Int(1)));
+        assert!(!is_numeric(&Value::Bool(true)));
+        assert!(is_numeric(&Value::Float(1.0)));
     }
 }

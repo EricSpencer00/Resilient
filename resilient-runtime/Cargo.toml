@@ -12,6 +12,16 @@ default = []
 # an actual `alloc::string::String`. Without this feature the lib
 # is allocation-free.
 alloc = ["dep:embedded-alloc"]
+# RES-178: assertive alloc-ban for safety-critical builds that
+# forbid dynamic allocation entirely. Mutually exclusive with
+# `alloc` — a compile_error! in `lib.rs` fires if both are set.
+# Under this feature, every heap-bearing Value variant (today:
+# `String`, plus any future Array / Map when they land here) is
+# structurally absent, and no `extern crate alloc` line is
+# compiled. The feature itself is empty — the ban is enforced by
+# existing `#[cfg(feature = "alloc")]` gates and the new
+# mutual-exclusion check.
+static-only = []
 
 [dependencies]
 embedded-alloc = { version = "0.5", optional = true }
