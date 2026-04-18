@@ -14,10 +14,12 @@
 //! RES-101 + RES-102 (the embedded example) prove what the
 //! embedded surface actually needs.
 
-// `cfg_attr(not(test), no_std)` lets the unit-test harness use
-// `std` (the libtest runner needs it), while the production lib
-// build stays alloc-free for embedded targets.
-#![cfg_attr(not(test), no_std)]
+// `cfg_attr(not(any(test, feature = "std-sink")), no_std)` lets
+// the unit-test harness use `std` (the libtest runner needs it),
+// and lets the `std-sink` feature pull in `std` for its
+// `StdoutSink` impl, while the production lib build stays
+// alloc-free for embedded targets when neither applies.
+#![cfg_attr(not(any(test, feature = "std-sink")), no_std)]
 // The `add`/`sub`/`mul` method names look like std::ops::Add etc.
 // to clippy, but our signatures return Result and so can't fit
 // the trait shape. Document that the names ARE intentional.
@@ -40,6 +42,10 @@ compile_error!(
 // to be linked.
 #[cfg(feature = "alloc")]
 extern crate alloc;
+
+// RES-180: `Sink` abstraction + global `print` / `println`
+// helpers that route through a user-installed sink.
+pub mod sink;
 
 #[cfg(feature = "alloc")]
 use alloc::string::String;

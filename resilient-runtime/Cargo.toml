@@ -22,6 +22,13 @@ alloc = ["dep:embedded-alloc"]
 # existing `#[cfg(feature = "alloc")]` gates and the new
 # mutual-exclusion check.
 static-only = []
+# RES-180: expose a `StdoutSink` that forwards `sink::print` /
+# `sink::println` through `std::io::stdout()`. Requires std —
+# unavailable in no_std deployments. The core Sink trait +
+# global `print` / `println` helpers are always available
+# without this feature; this just adds a convenience
+# implementation for users who WANT to route to stdout.
+std-sink = []
 
 [dependencies]
 embedded-alloc = { version = "0.5", optional = true }

@@ -196,6 +196,43 @@ for a buildable example that links the runtime with an
 cross-compile; the demo is a build check, not a runtime
 demonstration.
 
+#### Sink abstraction for `println` (RES-180)
+
+The runtime exposes a tiny `sink::Sink` trait — one method,
+`write_str(&mut self, s: &str) -> Result<(), SinkErr>` — plus
+a global `sink::println` / `sink::print` routed through the
+currently-installed sink. Users wire a sink once at program
+start with `sink::set_sink(&mut their_sink)`; subsequent
+`println` calls thread text through it. On embedded this is
+typically a UART / semihosting / ring-buffer writer; for tests
+a memory-backed `BufSink` captures output for assertions.
+
+Optional `std-sink` feature exports a `StdoutSink` convenience
+type that forwards to `std::io::stdout()` for users who want
+the old std-host behavior without rolling their own:
+
+```rust
+use resilient_runtime::sink::{set_sink, StdoutSink};
+static mut STDOUT_SINK: StdoutSink = StdoutSink;
+fn main() {
+    unsafe { set_sink(&mut STDOUT_SINK); }
+    resilient_runtime::sink::println("hello from the runtime").unwrap();
+}
+```
+
+The core Sink / print / println surface is always available
+— no feature flag needed. `StdoutSink` sits behind `std-sink`
+because it pulls in `std`, which is incompatible with
+`no_std` embedded deployments.
+
+Thread-safety: the global sink pointer is held in an
+`UnsafeCell` wrapped in a `Sync` newtype. Sound for embedded
+bare-metal (single-core / single-thread). Tests serialize
+via a shared `SINK_TEST_LOCK` (same pattern as RES-150's RNG
+lock). Multi-threaded embedded use would need a
+`critical-section` crate or a `spin::Mutex` — left for a
+follow-up when the use case appears.
+
 #### Code-size budget (RES-179)
 
 CI runs `cargo bloat` against the release Cortex-M4F demo on
