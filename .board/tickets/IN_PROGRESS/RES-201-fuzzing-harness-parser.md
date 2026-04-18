@@ -1,7 +1,7 @@
 ---
 id: RES-201
 title: cargo-fuzz harness for the parser (no panics on any input)
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: testing
 created: 2026-04-17
@@ -32,3 +32,4 @@ panics, a fuzzer proves the rest.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
