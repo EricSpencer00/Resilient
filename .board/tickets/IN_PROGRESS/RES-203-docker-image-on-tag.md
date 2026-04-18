@@ -1,7 +1,7 @@
 ---
 id: RES-203
 title: Publish Docker image on git tag push
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: infra
 created: 2026-04-17
@@ -33,3 +33,4 @@ that publishes on tag.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
