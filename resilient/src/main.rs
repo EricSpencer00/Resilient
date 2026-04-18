@@ -64,6 +64,8 @@ enum Token {
     Question,
     /// RES-073: `use "path/to/file.res";` — module import.
     Use,
+    /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
+    Impl,
     
     // Literals
     Identifier(String),
@@ -382,6 +384,7 @@ impl Lexer {
                         "new" => Token::New,
                         "match" => Token::Match,
                         "use" => Token::Use,
+                        "impl" => Token::Impl,
                         "_" => Token::Underscore,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
@@ -907,6 +910,18 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-158: `impl <StructName> { fn method(self, ...) { ... } ... }`.
+    /// Methods are parsed as `Node::Function` values with pre-mangled
+    /// names (`<StructName>$<method>`) and `self` injected as the first
+    /// parameter typed as the enclosing struct. The interpreter and
+    /// typechecker handle this variant by iterating `methods` and
+    /// dispatching to each method as a regular top-level fn.
+    ImplBlock {
+        struct_name: String,
+        methods: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 // Parser for creating AST from tokens
@@ -997,6 +1012,7 @@ impl Parser {
         match self.current_token {
             Token::Function => Some(self.parse_function()),
             Token::Struct => Some(self.parse_struct_decl()),
+            Token::Impl => Some(self.parse_impl_block()),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
@@ -1192,6 +1208,149 @@ impl Parser {
             ensures,
             return_type,
             span: fn_span
+        }
+    }
+
+    /// RES-158: parse `impl <StructName> { <method_fn>* }`. Each
+    /// inner method becomes a top-level `Node::Function` with the
+    /// name mangled as `<StructName>$<method>` and `self` (if
+    /// present as the first parameter) typed as the enclosing
+    /// struct. The `ImplBlock` node the parser emits is deconstructed
+    /// by the interpreter and typechecker back into its individual
+    /// methods, so downstream stages see them as plain functions.
+    fn parse_impl_block(&mut self) -> Node {
+        let impl_span = self.span_at_current();
+        self.next_token(); // skip 'impl'
+
+        let struct_name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected struct name after 'impl', found {:?}",
+                    other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' after 'impl {}', found {:?}",
+                struct_name, tok
+            ));
+        } else {
+            self.next_token(); // skip '{'
+        }
+
+        let mut methods: Vec<Node> = Vec::new();
+        while self.current_token != Token::RightBrace
+            && self.current_token != Token::Eof
+        {
+            if self.current_token != Token::Function {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected 'fn' inside impl block, found {:?}",
+                    tok
+                ));
+                // Best-effort recovery: skip ahead to the closing brace
+                // so the whole parse doesn't cascade.
+                while self.current_token != Token::RightBrace
+                    && self.current_token != Token::Eof
+                {
+                    self.next_token();
+                }
+                break;
+            }
+            methods.push(self.parse_method(&struct_name));
+            // `parse_block_statement` (called inside `parse_method` for
+            // the body) leaves the cursor ON the method body's closing
+            // `}`. Advance past it so the next iteration sees either
+            // another `fn` or the impl block's own `}` — matching the
+            // convention `parse_program` expects for its callers.
+            if self.current_token == Token::RightBrace {
+                self.next_token();
+            }
+        }
+        // Leave the cursor ON the impl block's closing `}` — the outer
+        // `parse_program` loop advances past each statement's final
+        // token, same as with `fn` / `struct` decls.
+
+        Node::ImplBlock { struct_name, methods, span: impl_span }
+    }
+
+    /// RES-158: parse a single method inside an `impl` block. Returns
+    /// a `Node::Function` with the method name mangled
+    /// (`<StructName>$<method>`) and `self` — if present as the
+    /// first param — injected as `(<StructName>, "self")`.
+    fn parse_method(&mut self, struct_name: &str) -> Node {
+        let fn_span = self.span_at_current();
+        self.next_token(); // skip 'fn'
+
+        let method_name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected method name after 'fn' in impl block, found {:?}",
+                    other
+                ));
+                String::new()
+            }
+        };
+        let mangled = format!("{}${}", struct_name, method_name);
+        self.next_token(); // skip name
+
+        if self.current_token != Token::LeftParen {
+            self.record_error(format!(
+                "Expected '(' after method name '{}'",
+                method_name
+            ));
+        } else {
+            self.next_token(); // skip '('
+        }
+
+        let mut parameters: Vec<(String, String)> = Vec::new();
+        // Special-case the `self` first parameter: accept it bare
+        // (no explicit type) and synthesize `(StructName, "self")`.
+        if let Token::Identifier(name) = &self.current_token
+            && name == "self"
+        {
+            parameters.push((struct_name.to_string(), "self".to_string()));
+            self.next_token(); // skip 'self'
+            if self.current_token == Token::Comma {
+                self.next_token(); // skip ','
+            }
+        }
+
+        // Parse any remaining TYPE NAME params until the `)`.
+        if self.current_token != Token::RightParen {
+            let rest = self.parse_function_parameters();
+            parameters.extend(rest);
+        } else {
+            self.next_token(); // skip ')'
+        }
+
+        let return_type = self.parse_optional_return_type();
+        let (requires, ensures) = self.parse_function_contracts();
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' after method signature for '{}', found {:?}",
+                method_name, tok
+            ));
+        }
+        let body = self.parse_block_statement();
+
+        Node::Function {
+            name: mangled,
+            parameters,
+            body: Box::new(body),
+            requires,
+            ensures,
+            return_type,
+            span: fn_span,
         }
     }
 
@@ -3567,6 +3726,29 @@ impl Interpreter {
                 self.eval_infix_expression(operator, left_val, right_val)
             },
             Node::CallExpression { function, arguments, .. } => {
+                // RES-158: method call desugar.
+                //
+                // If the callee is `TARGET.NAME`, evaluate `TARGET`
+                // first; if the result is a struct value, look up
+                // `<Struct>$<NAME>` in the environment and treat the
+                // call as `<Struct>$<NAME>(TARGET, ...args)`. This is
+                // the pure sugar layer — once dispatched, the method
+                // is an ordinary function invocation.
+                if let Node::FieldAccess { target, field, .. } = function.as_ref() {
+                    let target_val = self.eval(target)?;
+                    if let Value::Struct { name: sname, .. } = &target_val {
+                        let mangled = format!("{}${}", sname, field);
+                        if let Some(method_val) = self.env.get(&mangled) {
+                            // Prepend the target as the implicit `self`.
+                            let mut args = vec![target_val];
+                            args.extend(self.eval_expressions(arguments)?);
+                            return self.apply_function(method_val, args);
+                        }
+                        // No matching method on this struct — fall
+                        // through to the regular `FieldAccess` eval
+                        // (which will itself raise a clean error).
+                    }
+                }
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(func, args)
@@ -3649,6 +3831,28 @@ impl Interpreter {
                 // The typechecker (G7) will register them in a struct
                 // table; for now they're a runtime no-op, and Value
                 // construction trusts the literal.
+                Ok(Value::Void)
+            },
+            // RES-158: `impl <Struct> { ... }` evaluates each method
+            // as if it were a top-level `fn` decl. Methods are already
+            // mangled to `<Struct>$<method>` by the parser.
+            Node::ImplBlock { methods, struct_name, .. } => {
+                for method in methods {
+                    // Detect duplicate-method-across-blocks: if the
+                    // mangled name already resolves to a user Function
+                    // in the current env, error — the ticket calls this
+                    // out as a duplicate-def diagnostic.
+                    if let Node::Function { name: mangled, .. } = method
+                        && matches!(self.env.get(mangled), Some(Value::Function { .. }))
+                    {
+                        return Err(format!(
+                            "duplicate method: `{}::{}` defined more than once across impl blocks",
+                            struct_name,
+                            mangled.strip_prefix(&format!("{}$", struct_name)).unwrap_or(mangled),
+                        ));
+                    }
+                    self.eval(method)?;
+                }
                 Ok(Value::Void)
             },
             Node::StructLiteral { name, fields, .. } => {
@@ -3788,15 +3992,26 @@ impl Interpreter {
         // are Rc<RefCell> so the post-hoist mutation of the env is
         // visible to every previously-captured handle.
         // RES-077: statements are now Spanned<Node>; deref via .node.
+        // RES-158: impl blocks hoist too — their contained methods
+        // are plain Function decls under the hood, so `main()` can
+        // freely call `p.method()` even if the impl block textually
+        // follows `main`.
         for statement in statements {
-            if matches!(statement.node, Node::Function { .. }) {
-                self.eval(&statement.node).map_err(|e| decorate_runtime_error(e, &statement.span))?;
+            match &statement.node {
+                Node::Function { .. } | Node::ImplBlock { .. } => {
+                    self.eval(&statement.node)
+                        .map_err(|e| decorate_runtime_error(e, &statement.span))?;
+                }
+                _ => {}
             }
         }
 
         let mut result = Value::Void;
         for statement in statements {
-            if matches!(statement.node, Node::Function { .. }) {
+            if matches!(
+                statement.node,
+                Node::Function { .. } | Node::ImplBlock { .. }
+            ) {
                 continue;
             }
             // RES-116: decorate runtime errors with the statement's
@@ -5406,6 +5621,78 @@ mod tests {
         };
         let bx = b_fields.iter().find(|(n, _)| n == "x").map(|(_, v)| v);
         assert!(matches!(bx, Some(Value::Int(3))), "b.x should be unchanged, got {:?}", bx);
+    }
+
+    // --- RES-158: impl blocks + method calls ---
+
+    #[test]
+    fn impl_block_method_call_dispatches_to_mangled_fn() {
+        let src = "\
+            struct Point { int x, int y, }\n\
+            impl Point {\n\
+                fn mag_sq(self) -> int {\n\
+                    return self.x * self.x + self.y * self.y;\n\
+                }\n\
+            }\n\
+            let p = new Point { x: 3, y: 4 };\n\
+            let m = p.mag_sq();\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let m = interp.env.get("m").expect("binding `m`");
+        assert!(matches!(m, Value::Int(25)), "got m = {:?}", m);
+        // Mangled fn is also directly callable via its mangled name.
+        assert!(matches!(
+            interp.env.get("Point$mag_sq"),
+            Some(Value::Function { .. })
+        ));
+    }
+
+    #[test]
+    fn impl_block_method_can_call_another_method_on_same_struct() {
+        let src = "\
+            struct Counter { int n, }\n\
+            impl Counter {\n\
+                fn one(self) -> int { return self.n; }\n\
+                fn two(self) -> int { return self.one() + self.one(); }\n\
+            }\n\
+            let c = new Counter { n: 7 };\n\
+            let r = c.two();\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let r = interp.env.get("r").expect("binding `r`");
+        assert!(matches!(r, Value::Int(14)), "got r = {:?}", r);
+    }
+
+    #[test]
+    fn impl_block_duplicate_method_is_error() {
+        // Two `impl Point { fn m(...) }` blocks with the same method
+        // name must surface the duplicate-def diagnostic the ticket
+        // calls out.
+        let src = "\
+            struct Point { int x, }\n\
+            impl Point { fn m(self) -> int { return self.x; } }\n\
+            impl Point { fn m(self) -> int { return 0; } }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("duplicate method"),
+            "expected duplicate-method diagnostic, got: {}",
+            err
+        );
+        assert!(
+            err.contains("Point::m"),
+            "expected `Point::m` in diagnostic, got: {}",
+            err
+        );
     }
 
     #[test]

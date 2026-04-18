@@ -863,6 +863,17 @@ impl TypeChecker {
                 Ok(Type::Any)
             },
 
+            // RES-158: walk each method as if it were a top-level fn.
+            // The parser has already mangled the name and injected
+            // `self` as the first parameter, so no special handling is
+            // required here beyond delegation.
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    let _ = self.check_node(method)?;
+                }
+                Ok(Type::Void)
+            }
+
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check
             // field existence and surface typed-field errors

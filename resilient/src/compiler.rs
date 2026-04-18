@@ -516,6 +516,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::Match { span, .. }
         | Node::StructDecl { span, .. }
         | Node::StructLiteral { span, .. }
+        | Node::ImplBlock { span, .. }
         | Node::FunctionLiteral { span, .. } => span.start.line as u32,
 
         // Program is wrapped in Spanned<Node> at the call site, not
