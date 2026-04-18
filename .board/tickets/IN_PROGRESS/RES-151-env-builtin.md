@@ -1,7 +1,7 @@
 ---
 id: RES-151
 title: `env(key) -> Result<String, Err>` reads environment variables
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -32,3 +32,4 @@ outcome, not a runtime error.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
