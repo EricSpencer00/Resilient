@@ -108,6 +108,11 @@ enum Token {
     RightBrace,
     LeftBracket,
     RightBracket,
+    /// RES-149: opener for a set literal `#{...}`. Emitted as a
+    /// single token so the parser can disambiguate from the bare
+    /// `{` (map / block) without look-ahead. The closing `}` is
+    /// an ordinary `RightBrace`.
+    HashLeftBrace,
     Comma,
     Semicolon,
     Colon,
@@ -195,6 +200,7 @@ impl Token {
             Token::RightBrace => "`}`".to_string(),
             Token::LeftBracket => "`[`".to_string(),
             Token::RightBracket => "`]`".to_string(),
+            Token::HashLeftBrace => "`#{`".to_string(),
             Token::Comma => "`,`".to_string(),
             Token::Semicolon => "`;`".to_string(),
             Token::Colon => "`:`".to_string(),
@@ -477,6 +483,16 @@ impl Lexer {
             '}' => Token::RightBrace,
             '[' => Token::LeftBracket,
             ']' => Token::RightBracket,
+            // RES-149: set literal opener `#{...}`. A lone `#` (or
+            // `#` followed by anything other than `{`) still falls
+            // through to `Token::Unknown('#')` below — shebangs are
+            // consumed at file head before we ever reach here.
+            '#' if self.peek_char() == '{' => {
+                self.read_char(); // consume `{` so the outer
+                // `self.read_char()` at the end of `next_token`
+                // advances past it naturally.
+                Token::HashLeftBrace
+            },
             // RES-038: `.` is now a real token (field access). Numeric
             // literals are still fine because read_number consumes `.`
             // before the tokenizer can dispatch here — digit check
@@ -1057,6 +1073,17 @@ enum Node {
     MapLiteral {
         entries: Vec<(Node, Node)>,
         /// Span of the opening `{`.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-149: set literal — `#{1, 2, 3}`. Items evaluate at runtime
+    /// and must produce one of the three hashable primitives
+    /// (`Int`, `String`, `Bool`) — same restriction as `MapLiteral`,
+    /// enforced by `MapKey::from_value` (reused so the policy stays
+    /// in one place).
+    SetLiteral {
+        items: Vec<Node>,
+        /// Span of the opening `#{`.
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2354,6 +2381,10 @@ impl Parser {
             // parsed by the statement-level machinery, which never
             // calls `parse_expression` at a `{` token.
             Token::LeftBrace => Some(self.parse_map_literal()),
+            // RES-149: `#{1, 2, ...}` set literal. The dedicated
+            // opener token sidesteps any ambiguity with `{` (map /
+            // block) without needing the parser to peek ahead.
+            Token::HashLeftBrace => Some(self.parse_set_literal()),
             Token::New => Some(self.parse_struct_literal()),
             Token::Match => Some(self.parse_match_expression()),
             Token::Function => Some(self.parse_function_literal()),
@@ -2862,6 +2893,45 @@ impl Parser {
         Node::MapLiteral { entries, span: brace_span }
     }
 
+    /// RES-149: parse a set literal — `#{1, 2, 3}`. `current_token`
+    /// is `#{` on entry; on exit it is the closing `}`. Mirrors the
+    /// map parser's shape (comma-separated, trailing comma allowed,
+    /// empty via `#{}`).
+    fn parse_set_literal(&mut self) -> Node {
+        let brace_span = self.span_at_current();
+        let mut items: Vec<Node> = Vec::new();
+        // Empty: `#{}`.
+        if self.peek_token == Token::RightBrace {
+            self.next_token(); // to `}`
+            return Node::SetLiteral { items, span: brace_span };
+        }
+        self.next_token(); // step past `#{`
+        // First item.
+        if let Some(n) = self.parse_expression(0) {
+            items.push(n);
+        }
+        while self.peek_token == Token::Comma {
+            self.next_token(); // to `,`
+            if self.peek_token == Token::RightBrace {
+                break; // trailing comma before `}`
+            }
+            self.next_token(); // step past `,`
+            if let Some(n) = self.parse_expression(0) {
+                items.push(n);
+            }
+        }
+        if self.peek_token != Token::RightBrace {
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected '}}' to close set literal, found {}",
+                tok
+            ));
+        } else {
+            self.next_token(); // to `}`
+        }
+        Node::SetLiteral { items, span: brace_span }
+    }
+
     /// RES-148: parse a single `key -> value` pair. `current_token`
     /// is the first token of the key expression on entry; on exit
     /// it is the last token of the value expression.
@@ -3007,6 +3077,13 @@ enum Value {
     /// few paths that need it; `Value` itself does not derive
     /// `PartialEq`.)
     Map(std::collections::HashMap<MapKey, Value>),
+    /// RES-149: unordered set of hashable primitives. Element type
+    /// is the same `MapKey` that powers `Value::Map` keys — one
+    /// policy, one enforcement site. Iteration order is unspecified
+    /// on `std` (hash-based); the sibling no_std runtime would back
+    /// with `BTreeSet` for sorted iteration (tracked as a follow-up
+    /// when the runtime grows a set value type).
+    Set(std::collections::HashSet<MapKey>),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -3077,6 +3154,7 @@ impl std::fmt::Debug for Value {
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
+            Value::Set(s) => write!(f, "Set({} items)", s.len()),
         }
     }
 }
@@ -3136,6 +3214,29 @@ impl std::fmt::Display for Value {
                         write!(f, ", ")?;
                     }
                     write!(f, "{} -> {}", k, m.get(k).expect("key is from map"))?;
+                }
+                write!(f, "}}")
+            }
+            Value::Set(s) => {
+                // RES-149: mirror Map's Display — sort keys for
+                // deterministic output despite the underlying
+                // HashSet having arbitrary iteration order.
+                write!(f, "#{{")?;
+                let mut items: Vec<&MapKey> = s.iter().collect();
+                items.sort_by(|a, b| match (a, b) {
+                    (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                    (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                    (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                    (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                    (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                    (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                    (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+                });
+                for (i, k) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", k)?;
                 }
                 write!(f, "}}")
             }
@@ -3430,6 +3531,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("map_remove", builtin_map_remove),
     ("map_keys", builtin_map_keys),
     ("map_len", builtin_map_len),
+    // RES-149: Set builtins.
+    ("set_new", builtin_set_new),
+    ("set_insert", builtin_set_insert),
+    ("set_remove", builtin_set_remove),
+    ("set_has", builtin_set_has),
+    ("set_len", builtin_set_len),
+    ("set_items", builtin_set_items),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -4426,6 +4534,136 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
     }
 }
 
+// --- RES-149: Set builtins ---
+//
+// Value restrictions mirror Map: Int / String / Bool only. Immutable
+// at the Value layer — `set_insert` / `set_remove` return new sets,
+// matching `push` / `map_insert` conventions.
+
+/// `set_new()` — produce an empty set.
+fn builtin_set_new(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "set_new: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    Ok(Value::Set(std::collections::HashSet::new()))
+}
+
+/// `set_insert(s, x) -> Set` — return the set with `x` added (no-op
+/// if already present). Input set is cloned so the caller's binding
+/// is unaffected.
+fn builtin_set_insert(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(s), x] => {
+            let k = MapKey::from_value(x).map_err(|e| {
+                e.replace("Map key", "Set element")
+            })?;
+            let mut out = s.clone();
+            out.insert(k);
+            Ok(Value::Set(out))
+        }
+        [a, _] => Err(format!(
+            "set_insert: first argument must be a Set, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "set_insert: expected 2 arguments (set, element), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `set_remove(s, x) -> Set` — return the set without `x`. Absent
+/// elements are silently ignored.
+fn builtin_set_remove(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(s), x] => {
+            let k = MapKey::from_value(x).map_err(|e| {
+                e.replace("Map key", "Set element")
+            })?;
+            let mut out = s.clone();
+            out.remove(&k);
+            Ok(Value::Set(out))
+        }
+        [a, _] => Err(format!(
+            "set_remove: first argument must be a Set, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "set_remove: expected 2 arguments (set, element), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `set_has(s, x) -> Bool` — membership test.
+fn builtin_set_has(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(s), x] => {
+            let k = MapKey::from_value(x).map_err(|e| {
+                e.replace("Map key", "Set element")
+            })?;
+            Ok(Value::Bool(s.contains(&k)))
+        }
+        [a, _] => Err(format!(
+            "set_has: first argument must be a Set, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "set_has: expected 2 arguments (set, element), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `set_len(s) -> Int` — cardinality.
+fn builtin_set_len(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(s)] => Ok(Value::Int(s.len() as i64)),
+        [a] => Err(format!(
+            "set_len: expected a Set, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "set_len: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `set_items(s) -> Array<T>` — lift elements out into an array so
+/// array-consumers (`for ... in`, comprehensions via RES-156) work
+/// on sets without extra syntax. Order is deterministic (sorted),
+/// same rationale as `map_keys`.
+fn builtin_set_items(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(s)] => {
+            let mut items: Vec<&MapKey> = s.iter().collect();
+            items.sort_by(|a, b| match (a, b) {
+                (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+            });
+            let out: Vec<Value> = items.iter().map(|k| k.to_value()).collect();
+            Ok(Value::Array(out))
+        }
+        [a] => Err(format!(
+            "set_items: expected a Set, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "set_items: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 // --- RES-138: live-block retry-counter thread-local ---
 //
 // `live_retries()` inside a `live { ... }` body needs to read
@@ -4779,6 +5017,25 @@ impl Interpreter {
                     m.insert(k, v_val);
                 }
                 Ok(Value::Map(m))
+            }
+            Node::SetLiteral { items, .. } => {
+                // RES-149: build a HashSet<MapKey> by evaluating
+                // each item and coercing via the same MapKey
+                // restriction as map keys — Int / String / Bool.
+                // Duplicates are collapsed by `HashSet::insert`.
+                let mut set: std::collections::HashSet<MapKey> =
+                    std::collections::HashSet::with_capacity(items.len());
+                for item in items {
+                    let v = self.eval(item)?;
+                    let k = MapKey::from_value(&v).map_err(|e| {
+                        // Surface "Set element" in the diagnostic
+                        // rather than "Map key" — same restriction,
+                        // different context.
+                        e.replace("Map key", "Set element")
+                    })?;
+                    set.insert(k);
+                }
+                Ok(Value::Set(set))
             }
             Node::FunctionLiteral { parameters, body, requires, ensures, .. } => {
                 Ok(Value::Function {
@@ -6795,6 +7052,190 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-149: Set<T> native value type ---
+
+    /// Count elements in a `Value::Set` or panic with context —
+    /// keeps the RES-149 tests compact without giving `Value` a
+    /// `PartialEq` derive it doesn't otherwise need.
+    fn as_set_len(v: Value) -> usize {
+        match v {
+            Value::Set(s) => s.len(),
+            other => panic!("expected Value::Set, got {:?}", other),
+        }
+    }
+
+    /// Extract a `Value::Bool` or panic.
+    fn as_bool(v: Value) -> bool {
+        match v {
+            Value::Bool(b) => b,
+            other => panic!("expected Value::Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_new_is_empty() {
+        let s = builtin_set_new(&[]).unwrap();
+        assert_eq!(as_set_len(s), 0);
+    }
+
+    #[test]
+    fn set_new_rejects_arguments() {
+        let err = builtin_set_new(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected 0 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_insert_adds_and_dedups() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        // Duplicate insert is a no-op — set semantics.
+        assert_eq!(as_set_len(s), 2);
+    }
+
+    #[test]
+    fn set_insert_rejects_non_hashable_element() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_insert(&[s, Value::Float(1.5)]).unwrap_err();
+        assert!(
+            err.contains("Set element must be"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_insert_rejects_non_set_first_arg() {
+        let err = builtin_set_insert(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_has_reports_membership() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::String("x".into())]).unwrap();
+        assert!(as_bool(
+            builtin_set_has(&[s.clone(), Value::String("x".into())]).unwrap()
+        ));
+        assert!(!as_bool(
+            builtin_set_has(&[s, Value::String("y".into())]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn set_has_rejects_non_set_first_arg() {
+        let err = builtin_set_has(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("first argument must be a Set"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_remove_drops_element_and_ignores_missing() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let s = builtin_set_remove(&[s, Value::Int(1)]).unwrap();
+        assert_eq!(as_set_len(s.clone()), 1);
+        // Removing an absent element is a silent no-op.
+        let s = builtin_set_remove(&[s, Value::Int(99)]).unwrap();
+        assert_eq!(as_set_len(s), 1);
+    }
+
+    #[test]
+    fn set_remove_rejects_wrong_arity() {
+        let err = builtin_set_remove(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_len_counts_entries() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(3)]).unwrap();
+        match builtin_set_len(&[s]).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_items_returns_sorted_array() {
+        // set_items sorts for determinism — documenting the
+        // contract at the builtin level so a future HashSet→BTreeSet
+        // swap on no_std doesn't change observable ordering.
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(3)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        match builtin_set_items(&[s]).unwrap() {
+            Value::Array(items) => {
+                let ints: Vec<i64> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        _ => panic!("expected Int items"),
+                    })
+                    .collect();
+                assert_eq!(ints, vec![1, 2, 3]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_literal_parses_and_evaluates() {
+        // End-to-end through parser + interpreter — the set literal
+        // opener `#{` should build a Value::Set with duplicates
+        // collapsed.
+        let src = "\
+            fn main(int _d) {\n\
+                let s = #{1, 2, 3, 2, 1};\n\
+                return set_len(s);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_set_literal_parses() {
+        let src = "fn main(int _d) { return set_len(#{}); } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 0),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_literal_rejects_float_element_at_runtime() {
+        // The parser accepts arbitrary expressions; MapKey::from_value
+        // surfaces the Int/String/Bool restriction at eval.
+        let src = "fn main(int _d) { let s = #{1.5}; return 0; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("Set element must be"),
+            "err was: {}",
+            err
+        );
     }
 
     // --- RES-147: clock_ms() monotonic builtin ---

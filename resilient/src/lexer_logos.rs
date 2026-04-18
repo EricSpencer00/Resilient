@@ -51,6 +51,9 @@ enum Tok {
     #[token(">>")] ShrShr,
     #[token("=>")] FatArrow,
     #[token("->")] Arrow,
+    // RES-149: set-literal opener `#{`. Must precede any lone-`#`
+    // handling so logos prefers the longer match.
+    #[token("#{")] HashLBrace,
 
     // --- single-char operators & punctuation ---
     #[token("+")] Plus,
@@ -350,6 +353,7 @@ fn convert(t: Tok) -> Token {
         Tok::RBrace => Token::RightBrace,
         Tok::LBracket => Token::LeftBracket,
         Tok::RBracket => Token::RightBracket,
+        Tok::HashLBrace => Token::HashLeftBrace,
         Tok::Comma => Token::Comma,
         Tok::Semi => Token::Semicolon,
         Tok::Colon => Token::Colon,

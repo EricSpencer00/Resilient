@@ -590,6 +590,33 @@ impl TypeChecker {
             return_type: Box::new(Type::Int),
         });
 
+        // RES-149: Set builtins. Same permissive-Any convention as
+        // Map — no dedicated `Type::Set<T>` until inference lands.
+        env.set("set_new".to_string(), Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Any),
+        });
+        env.set("set_insert".to_string(), Type::Function {
+            params: vec![Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        });
+        env.set("set_remove".to_string(), Type::Function {
+            params: vec![Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        });
+        env.set("set_has".to_string(), Type::Function {
+            params: vec![Type::Any, Type::Any],
+            return_type: Box::new(Type::Bool),
+        });
+        env.set("set_len".to_string(), Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int),
+        });
+        env.set("set_items".to_string(), Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Array),
+        });
+
         // Result builtins
         env.set("Ok".to_string(), fn_any_to_result());
         env.set("Err".to_string(), fn_any_to_result());
@@ -938,6 +965,16 @@ impl TypeChecker {
                 for (k, v) in entries {
                     let _ = self.check_node(k)?;
                     let _ = self.check_node(v)?;
+                }
+                Ok(Type::Any)
+            },
+
+            // RES-149: set literal. Walk each item to catch nested
+            // type errors; return `Type::Any` for now — same posture
+            // as `MapLiteral` until `Type::Set<T>` shows up.
+            Node::SetLiteral { items, .. } => {
+                for item in items {
+                    let _ = self.check_node(item)?;
                 }
                 Ok(Type::Any)
             },
