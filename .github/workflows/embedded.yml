@@ -70,3 +70,28 @@ jobs:
 
       - name: build_riscv32.sh
         run: scripts/build_riscv32.sh
+
+  cortex_m0:
+    name: resilient-runtime (thumbv6m-none-eabi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+          targets: thumbv6m-none-eabi
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            resilient-runtime/target
+          key: cortex-m0-${{ hashFiles('resilient-runtime/Cargo.lock') }}
+
+      - name: build_cortex_m0.sh
+        run: scripts/build_cortex_m0.sh

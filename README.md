@@ -196,6 +196,33 @@ for a buildable example that links the runtime with an
 cross-compile; the demo is a build check, not a runtime
 demonstration.
 
+#### Cortex-M0 / M0+ / M1 thumbv6m (RES-177)
+
+The Armv6-M lower-end (Cortex-M0 class, e.g. RP2040's dual-M0+
+cores or STM32F0) is the watch target for "did anything pull
+in a dep that assumes M4F-only features?" — no FPU, no 32-bit
+atomics, no DSP extensions. The runtime today uses **no
+atomics** anywhere (RES-141's telemetry counters live in the
+`resilient` CLI binary, not in `resilient-runtime`), so the
+ticket's `#[cfg(target_has_atomic = "32")]` gating isn't
+triggered today; the CI gate will catch any future regression
+the moment a dep tries to pull in `AtomicU32`.
+
+```bash
+rustup target add thumbv6m-none-eabi
+cd resilient-runtime
+cargo build --target thumbv6m-none-eabi
+cargo build --target thumbv6m-none-eabi --features alloc
+cargo clippy --target thumbv6m-none-eabi -- -D warnings
+```
+
+`scripts/build_cortex_m0.sh` is the one-shot equivalent. The
+`alloc` feature builds clean (embedded-alloc + linked_list_allocator
++ critical-section's M0 single-core backend all link). `Value::Float(f64)`
+also compiles (soft-float via libgcc), but floats are slow on M0
+— the ISA has no FPU, so every float op is a runtime library call.
+Avoid floats on M0 when you can; stick to `Value::Int(i64)`.
+
 #### RISC-V rv32imac (RES-176)
 
 The runtime also cross-compiles to
