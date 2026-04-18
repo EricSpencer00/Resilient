@@ -3391,6 +3391,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("pow", builtin_pow),
     ("floor", builtin_floor),
     ("ceil", builtin_ceil),
+    // RES-146: transcendentals. std-only; float-in/float-out per
+    // RES-130's no-implicit-coercion policy.
+    ("sin", builtin_sin),
+    ("cos", builtin_cos),
+    ("tan", builtin_tan),
+    ("ln", builtin_ln),
+    ("log", builtin_log),
+    ("exp", builtin_exp),
     ("len", builtin_len),
     ("push", builtin_push),
     ("pop", builtin_pop),
@@ -3600,6 +3608,130 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
         [other] => Err(format!("ceil: expected numeric, got {}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
+    }
+}
+
+// RES-146: transcendental math builtins. Float-only per RES-130
+// (no implicit int↔float coercion — users who want `sin(5)` write
+// `sin(to_float(5))`). NaN / ±∞ propagate via the underlying `f64`
+// methods; we deliberately don't special-case them. std-only for
+// now — the no_std runtime will use `libm` in a follow-up ticket.
+
+/// RES-146: `sin(x: Float) -> Float`. Argument is in radians.
+fn builtin_sin(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.sin())),
+        [other] => Err(format!(
+            "sin: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("sin: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-146: `cos(x: Float) -> Float`. Radians.
+fn builtin_cos(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.cos())),
+        [other] => Err(format!(
+            "cos: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("cos: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-146: `tan(x: Float) -> Float`. Radians. Near ±π/2 the result
+/// tends to ±∞; `f64::tan` returns a very large float, not NaN.
+fn builtin_tan(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.tan())),
+        [other] => Err(format!(
+            "tan: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("tan: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-146: `ln(x: Float) -> Float` — natural logarithm (base e).
+/// `ln(x)` where `x <= 0` is a runtime error. `ln(0)` in f64
+/// would return `-inf`; the ticket doesn't specifically require
+/// rejecting it, but "Runtime error on non-positive args" is the
+/// parallel pattern from `log(base, x)` and treating both
+/// consistently is the saner API.
+fn builtin_ln(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => {
+            if *f <= 0.0 {
+                return Err(format!(
+                    "ln: argument must be > 0, got {}",
+                    f
+                ));
+            }
+            Ok(Value::Float(f.ln()))
+        }
+        [other] => Err(format!(
+            "ln: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("ln: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-146: `log(base: Float, x: Float) -> Float` — logarithm of
+/// `x` in base `base`. Argument order is base-first to match the
+/// English phrasing "log base 2 of 8 is 3"; note Rust's
+/// `f64::log(base)` puts base second — the ticket's Notes flag
+/// this on purpose.
+///
+/// Runtime error on `base <= 0`, `base == 1`, or `x <= 0` (per the
+/// ticket's "Runtime error on non-positive args or base == 1").
+fn builtin_log(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(base), Value::Float(x)] => {
+            if *base <= 0.0 {
+                return Err(format!(
+                    "log: base must be > 0, got {}",
+                    base
+                ));
+            }
+            if (*base - 1.0).abs() < f64::EPSILON {
+                return Err(
+                    "log: base must not be 1 (log_1(x) is undefined)"
+                        .to_string(),
+                );
+            }
+            if *x <= 0.0 {
+                return Err(format!(
+                    "log: value must be > 0, got {}",
+                    x
+                ));
+            }
+            Ok(Value::Float(x.log(*base)))
+        }
+        [a, b] => Err(format!(
+            "log: expected (Float, Float), got ({:?}, {:?}) — argument order is (base, value); widen Ints via `to_float`",
+            a, b
+        )),
+        _ => Err(format!(
+            "log: expected 2 arguments (base, value), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-146: `exp(x: Float) -> Float` — e^x. Overflow at large x
+/// produces `+inf` per `f64::exp` — we let it propagate (the
+/// ticket says "No special-casing NaN / inf; they propagate").
+fn builtin_exp(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.exp())),
+        [other] => Err(format!(
+            "exp: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("exp: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6622,6 +6754,148 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-146: trig / log / exp builtins ---
+
+    /// Extract a `Value::Float` or panic with context. Parallels
+    /// `as_string` defined alongside the RES-144 tests.
+    fn as_float(v: Value) -> f64 {
+        match v {
+            Value::Float(f) => f,
+            other => panic!("expected Value::Float, got {:?}", other),
+        }
+    }
+
+    /// Assert `|got - expected| < 1e-9` — the precision the ticket
+    /// asks for ("Unit tests assert values to 1e-9 precision against
+    /// known references"). A tighter tolerance would flake on f64
+    /// epsilon drift across architectures.
+    fn close(got: f64, expected: f64, tag: &str) {
+        let diff = (got - expected).abs();
+        assert!(
+            diff < 1e-9,
+            "{}: expected {}, got {}, diff {}",
+            tag,
+            expected,
+            got,
+            diff
+        );
+    }
+
+    #[test]
+    fn sin_cos_tan_zero() {
+        close(as_float(builtin_sin(&[Value::Float(0.0)]).unwrap()), 0.0, "sin(0)");
+        close(as_float(builtin_cos(&[Value::Float(0.0)]).unwrap()), 1.0, "cos(0)");
+        close(as_float(builtin_tan(&[Value::Float(0.0)]).unwrap()), 0.0, "tan(0)");
+    }
+
+    #[test]
+    fn sin_cos_at_half_pi() {
+        // sin(π/2) = 1, cos(π/2) ≈ 0 (the f64 rep of π/2 has a
+        // tiny residual so cos is ~6e-17; well within 1e-9).
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        close(as_float(builtin_sin(&[Value::Float(pi_2)]).unwrap()), 1.0, "sin(π/2)");
+        close(as_float(builtin_cos(&[Value::Float(pi_2)]).unwrap()), 0.0, "cos(π/2)");
+    }
+
+    #[test]
+    fn tan_pi_over_4() {
+        // tan(π/4) = 1.
+        let pi_4 = std::f64::consts::FRAC_PI_4;
+        close(as_float(builtin_tan(&[Value::Float(pi_4)]).unwrap()), 1.0, "tan(π/4)");
+    }
+
+    #[test]
+    fn ln_of_e_and_one() {
+        let e = std::f64::consts::E;
+        close(as_float(builtin_ln(&[Value::Float(e)]).unwrap()), 1.0, "ln(e)");
+        close(as_float(builtin_ln(&[Value::Float(1.0)]).unwrap()), 0.0, "ln(1)");
+    }
+
+    #[test]
+    fn ln_rejects_non_positive() {
+        let err = builtin_ln(&[Value::Float(0.0)]).unwrap_err();
+        assert!(err.contains("argument must be > 0"), "err was: {}", err);
+        let err = builtin_ln(&[Value::Float(-3.0)]).unwrap_err();
+        assert!(err.contains("argument must be > 0"), "err was: {}", err);
+    }
+
+    #[test]
+    fn ln_rejects_int_per_res130() {
+        let err = builtin_ln(&[Value::Int(10)]).unwrap_err();
+        assert!(
+            err.contains("expected Float"),
+            "err was: {}",
+            err
+        );
+        assert!(
+            err.contains("to_float"),
+            "diagnostic must hint at `to_float` bridge: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn log_base_2_of_8() {
+        // Base-first argument order per the ticket's Notes —
+        // "log base 2 of 8" is `log(2.0, 8.0)`, not `log(8.0, 2.0)`.
+        close(
+            as_float(builtin_log(&[Value::Float(2.0), Value::Float(8.0)]).unwrap()),
+            3.0,
+            "log_2(8)",
+        );
+    }
+
+    #[test]
+    fn log_rejects_base_one() {
+        let err =
+            builtin_log(&[Value::Float(1.0), Value::Float(10.0)]).unwrap_err();
+        assert!(err.contains("base must not be 1"), "err was: {}", err);
+    }
+
+    #[test]
+    fn log_rejects_non_positive_base_and_value() {
+        let err =
+            builtin_log(&[Value::Float(-2.0), Value::Float(8.0)]).unwrap_err();
+        assert!(err.contains("base must be > 0"), "err was: {}", err);
+        let err =
+            builtin_log(&[Value::Float(2.0), Value::Float(0.0)]).unwrap_err();
+        assert!(err.contains("value must be > 0"), "err was: {}", err);
+    }
+
+    #[test]
+    fn exp_zero_one_and_ln_roundtrip() {
+        close(as_float(builtin_exp(&[Value::Float(0.0)]).unwrap()), 1.0, "exp(0)");
+        let e = std::f64::consts::E;
+        close(as_float(builtin_exp(&[Value::Float(1.0)]).unwrap()), e, "exp(1)");
+        // ln(exp(x)) ≈ x for a mid-range value
+        let x = 2.5;
+        let round = builtin_ln(&[builtin_exp(&[Value::Float(x)]).unwrap()]).unwrap();
+        close(as_float(round), x, "ln(exp(2.5))");
+    }
+
+    #[test]
+    fn exp_rejects_non_float() {
+        let err = builtin_exp(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn sin_rejects_non_float() {
+        let err = builtin_sin(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn trig_log_exp_arity_errors() {
+        assert!(builtin_sin(&[]).unwrap_err().contains("expected 1"));
+        assert!(builtin_cos(&[Value::Float(0.0), Value::Float(0.0)])
+            .unwrap_err()
+            .contains("expected 1"));
+        assert!(builtin_log(&[Value::Float(2.0)])
+            .unwrap_err()
+            .contains("expected 2"));
     }
 
     // --- RES-145: string builtins — replace / to_upper / to_lower / format ---

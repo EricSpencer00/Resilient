@@ -435,6 +435,22 @@ impl TypeChecker {
         env.set("max".to_string(), fn_any_any_to_any());
         env.set("pow".to_string(), fn_any_any_to_any());
 
+        // RES-146: transcendentals. Float-in / Float-out per
+        // RES-130 (no implicit int↔float coercion).
+        let fn_float_to_float = || Type::Function {
+            params: vec![Type::Float],
+            return_type: Box::new(Type::Float),
+        };
+        env.set("sin".to_string(), fn_float_to_float());
+        env.set("cos".to_string(), fn_float_to_float());
+        env.set("tan".to_string(), fn_float_to_float());
+        env.set("ln".to_string(), fn_float_to_float());
+        env.set("exp".to_string(), fn_float_to_float());
+        env.set("log".to_string(), Type::Function {
+            params: vec![Type::Float, Type::Float],
+            return_type: Box::new(Type::Float),
+        });
+
         // len: any -> int
         env.set(
             "len".to_string(),
