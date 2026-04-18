@@ -42,3 +42,42 @@ of our example programs can run end-to-end through the JIT.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed and bailed by executor (oversized; first JIT FFI)
+
+## Attempt 1 failed
+
+Oversized: this ticket introduces the JIT's first runtime FFI.
+
+- Three `extern "C"` shim fns (`res_array_new`, `res_array_get`,
+  `res_array_set`) with a concrete `*mut Array` repr.
+- Symbol registration in `make_module`
+  (`JITBuilder::symbol(...)`) — the existing backend has **no**
+  FFI symbol wiring today (`grep -n "\.symbol(" src/jit_backend.rs`
+  → 0 hits).
+- Cranelift declarations + `call_indirect` through the imported
+  addresses.
+- Lowering arms for `Node::IndexExpression` and
+  `Node::IndexAssignment`; both absent from the JIT today (`grep
+  -n "IndexExpression\|ArrayLiteral" src/jit_backend.rs` → 0 hits).
+- A bench in `benchmarks/jit/` + a smoke test for OOB.
+
+Each slice is iteration-sized on its own on top of an unfamiliar
+Cranelift backend.
+
+## Clarification needed
+
+Manager, please split:
+
+- RES-166a: add `mod runtime_shims` inside `src/jit_backend.rs` with
+  the three `res_array_*` fns, wire `JITBuilder::symbol(...)` in
+  `make_module`. Test by calling the shims from a synthetic
+  Cranelift IR fn.
+- RES-166b: JIT lowering for `Node::ArrayLiteral` + the read path
+  (`Node::IndexExpression`) built on 166a.
+- RES-166c: JIT lowering for the write path
+  (`Node::IndexAssignment`).
+- RES-166d: the benchmark + smoke test asserting JIT-vs-tree-walker
+  parity on an array-sum loop.
+
+No code changes landed — only the ticket state toggle and this
+clarification note.
