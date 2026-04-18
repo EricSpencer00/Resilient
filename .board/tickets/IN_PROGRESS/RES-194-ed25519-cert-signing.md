@@ -1,7 +1,7 @@
 ---
 id: RES-194
 title: Ed25519 signature on emitted verification certificates (RES-071 follow-up)
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G19
 created: 2026-04-17
@@ -37,3 +37,4 @@ each certificate so downstream consumers can trust the provenance.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
