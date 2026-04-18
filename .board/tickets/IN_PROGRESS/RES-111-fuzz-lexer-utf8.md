@@ -1,7 +1,7 @@
 ---
 id: RES-111
 title: Fuzz the lexer with arbitrary UTF-8 input (no panics, ever)
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G5
 created: 2026-04-17
@@ -41,6 +41,8 @@ and return an empty stream — never panic, never loop.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (bin→lib refactor +
   nightly + new CI workflow = 4 iteration-sized pieces)
+- 2026-04-17 re-claimed by executor (RES-201 landed 2 of 4
+  prereqs — fuzz crate + workflow now exist)
 
 ## Attempt 1 failed
 
