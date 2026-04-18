@@ -1,7 +1,7 @@
 ---
 id: RES-173
 title: `--dump-chunks` driver flag emits a human-readable VM disassembly
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G15
 created: 2026-04-17
@@ -36,3 +36,4 @@ triagable without stepping through rustc-gdb.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
