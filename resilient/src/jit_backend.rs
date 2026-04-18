@@ -378,12 +378,115 @@ fn compile_node_list(
                 bcx.def_var(var, v);
                 continue;
             }
+            // RES-107: `NAME = EXPR;` reassignment — look up the
+            // Variable from a prior `let`, lower the RHS, and
+            // `def_var` it. Cranelift's SSA construction handles
+            // the rest (phi insertion at merge points is automatic
+            // — we don't emit phis manually).
+            Node::Assignment { name, value, .. } => {
+                let Some(var) = ctx.lookup(name) else {
+                    return Err(JitError::Unsupported(
+                        "reassignment of undeclared identifier",
+                    ));
+                };
+                let v = lower_expr(value, bcx, ctx, module)?;
+                bcx.def_var(var, v);
+                continue;
+            }
+            // RES-107: `while (cond) { body }` — classic three-
+            // block structured loop.
+            //
+            // Block layout:
+            //   header_block  — lowers `cond`, `brif(cond, body, exit)`
+            //   body_block    — lowers `body`; falls through back to
+            //                   header (emitting the back-edge), or
+            //                   terminates early (no back-edge).
+            //   exit_block    — where statements after the while land.
+            //
+            // Sealing order is the subtle part: `header_block` has
+            // TWO predecessors (the entry jump AND the back-edge
+            // from the body), so we seal it AFTER the back-edge is
+            // emitted. `body_block` and `exit_block` each have one
+            // predecessor and can be sealed immediately after
+            // `switch_to_block`.
+            Node::WhileStatement { condition, body, .. } => {
+                let while_terminated = lower_while_statement(
+                    condition, body, bcx, ctx, module,
+                )?;
+                if while_terminated {
+                    return Ok(true);
+                }
+                continue;
+            }
             // Skip statements with no JIT-relevant effect for now;
             // a future phase will lower expression statements,
             // reassignment, while loops, etc.
             _ => continue,
         }
     }
+    Ok(false)
+}
+
+/// RES-107: lower a `while` loop to Cranelift IR.
+///
+/// Returns `Ok(true)` when the loop body unconditionally emits a
+/// terminator (e.g. `return` inside the body) AND the loop has no
+/// natural exit path — today that can't happen because we always
+/// emit a header-block branch that falls to `exit_block` when the
+/// condition is false, so we return `Ok(false)` and leave the
+/// builder positioned at `exit_block` for trailing statements.
+///
+/// Sealing contract (matches Cranelift's SSA construction docs):
+/// - `body_block` is sealed as soon as we switch to it — its only
+///   predecessor is the header's `brif`.
+/// - `exit_block` is sealed as soon as we switch to it — its only
+///   predecessor is the same `brif`.
+/// - `header_block` is sealed AFTER the body's back-edge jump is
+///   emitted, since it has two predecessors.
+fn lower_while_statement(
+    condition: &Node,
+    body: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Result<bool, JitError> {
+    let header_block = bcx.create_block();
+    let body_block = bcx.create_block();
+    let exit_block = bcx.create_block();
+
+    // Entry predecessor of header: jump in from current block.
+    bcx.ins().jump(header_block, &[]);
+
+    // Header: lower condition, branch to body or exit. Not sealed
+    // yet — body's back-edge is the second predecessor.
+    bcx.switch_to_block(header_block);
+    let cond_val = lower_expr(condition, bcx, ctx, module)?;
+    bcx.ins().brif(cond_val, body_block, &[], exit_block, &[]);
+
+    // Body: sealable immediately (single predecessor = header's
+    // brif). If it falls through we emit the back-edge; if it
+    // terminates (early return inside the body), we don't — the
+    // function exited and header won't loop via that path.
+    bcx.switch_to_block(body_block);
+    bcx.seal_block(body_block);
+    let body_terminated = lower_block_or_stmt(body, bcx, ctx, module)?;
+    if !body_terminated {
+        bcx.ins().jump(header_block, &[]);
+    }
+
+    // Now that the back-edge (if any) is emitted, header's
+    // predecessor set is frozen and we can seal it.
+    bcx.seal_block(header_block);
+
+    // Exit: single predecessor = header's brif. Switch, seal, and
+    // let the caller's compile_node_list continue into it.
+    bcx.switch_to_block(exit_block);
+    bcx.seal_block(exit_block);
+
+    // A while loop never unconditionally terminates the enclosing
+    // function — even an infinitely-looping `while true { ... }`
+    // is only detected at runtime, and our compile-time view has
+    // to assume the exit path is reachable.
     Ok(false)
 }
 
@@ -1133,5 +1236,59 @@ mod tests {
             JitError::IsaInit("foo".into()).to_string(),
             "jit: ISA init failed: foo"
         );
+    }
+
+    // --- RES-107: reassignment + while loops (Phase J) ---
+
+    #[test]
+    fn jit_simple_reassignment() {
+        let p = parse_program("let x = 1; x = 2; return x;");
+        assert_eq!(run(&p).unwrap(), 2);
+    }
+
+    #[test]
+    fn jit_reassignment_in_arith() {
+        let p = parse_program("let x = 5; x = x + 10; return x;");
+        assert_eq!(run(&p).unwrap(), 15);
+    }
+
+    #[test]
+    fn jit_while_counts_to_ten() {
+        let p = parse_program(
+            "let i = 0; while (i < 10) { i = i + 1; } return i;",
+        );
+        assert_eq!(run(&p).unwrap(), 10);
+    }
+
+    #[test]
+    fn jit_while_sum_loop() {
+        let p = parse_program(
+            "let i = 0; let sum = 0; while (i < 5) { sum = sum + i; i = i + 1; } return sum;",
+        );
+        // 0 + 1 + 2 + 3 + 4 = 10.
+        assert_eq!(run(&p).unwrap(), 10);
+    }
+
+    #[test]
+    fn jit_while_zero_iterations() {
+        // Header→exit on the first check: i stays 5.
+        let p = parse_program("let i = 5; while (i < 0) { i = i + 1; } return i;");
+        assert_eq!(run(&p).unwrap(), 5);
+    }
+
+    #[test]
+    fn jit_reassign_undeclared_unsupported() {
+        // No `let x = ...;` before the reassignment — must surface
+        // the "undeclared identifier" descriptor cleanly.
+        let p = parse_program("x = 1; return x;");
+        let err = run(&p).unwrap_err();
+        match err {
+            JitError::Unsupported(msg) => assert!(
+                msg.contains("undeclared identifier"),
+                "expected undeclared-identifier descriptor, got: {}",
+                msg
+            ),
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
     }
 }

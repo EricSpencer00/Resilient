@@ -1,7 +1,7 @@
 ---
 id: RES-107
 title: JIT lowers reassignment + while loops (RES-072 Phase J)
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G15
 created: 2026-04-17
@@ -96,3 +96,66 @@ infrastructure.
 
 ## Log
 - 2026-04-17 created by manager (Phase J scope, optional follow-up to RES-104)
+- 2026-04-17 claimed by executor
+- 2026-04-17 done by executor
+
+## Resolution
+
+Files changed:
+- `resilient/src/jit_backend.rs`
+  - `compile_node_list` gains two new arms:
+    - `Node::Assignment { name, value, .. }` — looks up the
+      Variable from the enclosing scope, lowers the RHS via
+      `lower_expr`, and `def_var`s. Missing binding → `Unsupported(
+      "reassignment of undeclared identifier")`. Note the static-str
+      constraint on `JitError::Unsupported` means the identifier
+      name isn't embedded in the diagnostic — the descriptor is
+      still distinguishable by the test matcher.
+    - `Node::WhileStatement { condition, body, .. }` — delegates
+      to the new `lower_while_statement` helper.
+  - New `lower_while_statement` — header / body / exit three-block
+    dance with an inline doc-comment covering Cranelift's sealing
+    contract (body + exit sealed on switch, header sealed after
+    the back-edge is emitted because it has two predecessors).
+    Returns `Ok(false)` unconditionally because the header's
+    `brif` always has an exit path at compile-time — even
+    `while true` is only detected at runtime.
+  - Six new unit tests in `jit_backend::tests` covering each
+    ticket scenario: simple reassign, reassign-in-arith,
+    count-to-ten loop, sum loop, zero-iteration loop (header-to-
+    exit on first check), and the undeclared-reassign error path.
+- `resilient/tests/examples_smoke.rs`
+  - New smoke test `bytecode_jit_runs_while_loop` driving the
+    sum-loop through the `--jit` CLI path; asserts the binary
+    exits 0 and emits `10`.
+
+Acceptance criteria walk:
+- Reassignment arm with undeclared-name diagnostic — yes.
+- While arm with header / body / exit + brif + sealing order —
+  yes, documented inline.
+- Six unit tests (`jit_simple_reassignment`,
+  `jit_reassignment_in_arith`, `jit_while_counts_to_ten`,
+  `jit_while_sum_loop`, `jit_while_zero_iterations`,
+  `jit_reassign_undeclared_unsupported`) — all pass.
+- Smoke test `bytecode_jit_runs_while_loop` — passes.
+- Four feature configs pass tests + clippy — verified below.
+- Neither `for` loops nor `break` / `continue` attempted (ticket's
+  "out of scope" notes).
+
+Deviation: `JitError::Unsupported` takes `&'static str`, so the
+ticket's example `"reassignment of undeclared identifier: x"`
+(with variable name interpolated) cannot be produced as-is —
+we use the static descriptor `"reassignment of undeclared
+identifier"` instead. The test `jit_reassign_undeclared_
+unsupported` asserts `msg.contains("undeclared identifier")`,
+which the static form satisfies.
+
+Verification:
+- `cargo build` (default + jit + lsp + z3 + logos-lexer) — clean.
+- `cargo test` — 271 unit + 13 integration + 1 golden pass.
+- `cargo test --features jit` — 324 unit (+53 over default: the
+  jit_backend's test module only compiles with the feature on,
+  adding the big JIT test suite) + 20 integration (+7) pass.
+- `cargo clippy --features jit --tests -- -D warnings` — clean.
+- `cargo clippy --features jit,logos-lexer,z3 --tests -- -D warnings`
+  — clean.

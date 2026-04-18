@@ -612,6 +612,47 @@ fn imports_missing_file_errors_cleanly() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
+fn bytecode_jit_runs_while_loop() {
+    // RES-107: Phase J adds reassignment + while loops. The
+    // sum-loop from the ticket — `let i = 0; let sum = 0;
+    // while (i < 5) { sum = sum + i; i = i + 1; } return sum;` —
+    // must return 10 (0 + 1 + 2 + 3 + 4) through the JIT driver,
+    // confirming the header/body/exit block dance compiles and
+    // runs end-to-end.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_107_smoke_{}.rs",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(
+            f,
+            "let i = 0; let sum = 0; while (i < 5) {{ sum = sum + i; i = i + 1; }} return sum;"
+        )
+        .unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--jit")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --jit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "jit path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("10"),
+        "expected `10` from sum-loop through JIT; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn minimal_rs_runs_end_to_end() {
     // After RES-003 (println) and RES-008 (string+primitive coercion)
     // minimal.rs runs to completion.
