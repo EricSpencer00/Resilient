@@ -31,7 +31,6 @@
 use logos::Logos;
 
 use crate::Token;
-use crate::pos_from_byte;
 use crate::span::{Pos, Span};
 
 /// Token variants the logos derive produces. Converted to the
@@ -120,6 +119,10 @@ enum Tok {
     #[token("new")] New,
     #[token("match")] Match,
     #[token("use")] Use,
+    // RES-158: `impl <Struct> { ... }` keyword. Added alongside the
+    // hand-rolled lexer's `"impl" => Token::Impl` kw arm so feature
+    // parity is preserved.
+    #[token("impl")] Impl,
     #[token("true")] True,
     #[token("false")] False,
     #[token("_")] Underscore,
@@ -193,18 +196,60 @@ fn block_comment(lex: &mut logos::Lexer<Tok>) -> logos::Skip {
 /// receive the same shape they do from the hand-rolled lexer.
 ///
 /// Implementation: build the line-start table once with
-/// `Lexer::build_line_table` (RES-110), then backfill every logos
-/// byte span via `pos_from_byte`. Binary search keeps the conversion
-/// O(log n) per token.
+/// `Lexer::build_line_table` (RES-110), plus a parallel table of
+/// per-line cumulative char counts so converting a byte offset to
+/// a `Pos` is O(log n) for the line search + O(line-length) for
+/// the column / char-offset counting. Without the char-count table
+/// RES-110's `pos_from_byte` is O(byte) per call — over N tokens
+/// that's O(N²) (RES-109's benchmark was crushed by this;
+/// `fast_pos` below fixes it).
 pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
     let table = crate::Lexer::build_line_table(src);
+
+    // Char count at the start of each line: entry `i` = total chars
+    // in the prefix `src[..table[i]]`. Single O(n) pass over bytes;
+    // each byte-start-of-line is advanced as we go. Paired with
+    // `table`, the two vectors answer "char count before this line"
+    // in O(1).
+    let mut char_at_line_start: Vec<usize> = Vec::with_capacity(table.len());
+    char_at_line_start.push(0);
+    let mut cur_line = 1usize; // next table index to fill (table[0] = 0 already accounted)
+    let mut cur_chars = 0usize;
+    for (byte_off, _ch) in src.char_indices() {
+        while cur_line < table.len() && byte_off >= table[cur_line] {
+            char_at_line_start.push(cur_chars);
+            cur_line += 1;
+        }
+        cur_chars += 1;
+    }
+    while char_at_line_start.len() < table.len() {
+        char_at_line_start.push(cur_chars);
+    }
+
+    // O(log n) byte->Pos using both tables. Column and offset
+    // measured in characters.
+    let fast_pos = |byte: usize| -> Pos {
+        let byte = byte.min(src.len());
+        let line_idx = match table.binary_search(&byte) {
+            Ok(i) => i,
+            Err(0) => 0,
+            Err(i) => i - 1,
+        };
+        let line_start = table[line_idx];
+        let line = line_idx + 1;
+        let col_slice = src.get(line_start..byte).unwrap_or("");
+        let col_chars = col_slice.chars().count();
+        let column = col_chars + 1;
+        let offset = char_at_line_start[line_idx] + col_chars;
+        Pos::new(line, column, offset)
+    };
 
     let mut out: Vec<(Token, Span)> = Vec::new();
     let mut lex = Tok::lexer(src);
     while let Some(result) = lex.next() {
         let range = lex.span();
-        let start = pos_from_byte(&table, src, range.start);
-        let end = pos_from_byte(&table, src, range.end);
+        let start = fast_pos(range.start);
+        let end = fast_pos(range.end);
         let span = Span::new(start, end);
         let tok = match result {
             Ok(t) => convert(t),
@@ -226,7 +271,7 @@ pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
     // that single-unit bump on the end position so the parity test
     // matches; downstream consumers only look at the `start` of an
     // EOF span anyway.
-    let eof_pos = pos_from_byte(&table, src, src.len());
+    let eof_pos = fast_pos(src.len());
     let eof_end = Pos::new(eof_pos.line, eof_pos.column + 1, eof_pos.offset + 1);
     out.push((Token::Eof, Span::new(eof_pos, eof_end)));
     out
@@ -252,6 +297,7 @@ fn convert(t: Tok) -> Token {
         Tok::New => Token::New,
         Tok::Match => Token::Match,
         Tok::Use => Token::Use,
+        Tok::Impl => Token::Impl,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,

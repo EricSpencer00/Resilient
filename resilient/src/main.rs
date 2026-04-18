@@ -4988,6 +4988,129 @@ mod tests {
     // `logos-lexer` feature routing in `Lexer::new`. Only used by the
     // parity tests below — downstream code always goes through
     // `Lexer::new`.
+    // RES-109: synthetic ~100 KLoC input for the lexer benchmark,
+    // built by concatenating each `.rs` example with identifiers
+    // suffixed per-copy so the input actually looks like a big
+    // program (and doesn't get optimized away by a cache).
+    #[cfg(feature = "logos-lexer")]
+    fn build_100kloc_input() -> String {
+        use std::fs;
+        let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        let mut base = String::new();
+        for entry in fs::read_dir(&examples_dir).expect("read examples/") {
+            let entry = entry.expect("readable dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            base.push_str(&fs::read_to_string(&path).expect("read example"));
+            base.push('\n');
+        }
+        // Tight loop: 100 KLoC / ~240 lines-per-example-concat ≈
+        // 400 copies. We just keep concatenating copies with a
+        // fresh per-copy identifier suffix until the line count is
+        // comfortably over 100k.
+        let mut out = String::with_capacity(base.len() * 500);
+        let mut line_count = 0usize;
+        let target_lines = 100_000usize;
+        let mut copy = 0u32;
+        while line_count < target_lines {
+            let suffix = format!("__c{}", copy);
+            // Cheap rename: the lexer only cares about token
+            // shapes, so swap every `fn main` to `fn main__cN` to
+            // avoid duplicate-def complaints if anyone ever runs
+            // this through the parser. Good enough for a scanner
+            // benchmark.
+            let renamed = base.replace("main(", &format!("main{}(", suffix));
+            line_count += renamed.lines().count();
+            out.push_str(&renamed);
+            out.push('\n');
+            copy += 1;
+        }
+        out
+    }
+
+    /// RES-109: A/B the logos-based lexer against the hand-rolled
+    /// scanner on a ~100 KLoC synthetic input. `cargo test
+    /// --release --features logos-lexer -- --ignored --nocapture
+    /// tests::lex_bench_100kloc` runs it; `--ignored` keeps it off
+    /// the default test suite (it's slow-ish and only meaningful
+    /// in release mode). Prints p50 / p99 / mean per lexer so
+    /// `benchmarks/lex/run.sh` can capture the output.
+    #[cfg(feature = "logos-lexer")]
+    #[test]
+    #[ignore]
+    fn lex_bench_100kloc() {
+        use std::time::Instant;
+
+        fn time_runs<F: FnMut() -> usize>(mut f: F, warmup: usize, runs: usize) -> (u128, u128, u128, usize) {
+            for _ in 0..warmup {
+                let _ = f();
+            }
+            let mut samples: Vec<u128> = Vec::with_capacity(runs);
+            let mut last_tokens = 0usize;
+            for _ in 0..runs {
+                let t0 = Instant::now();
+                last_tokens = f();
+                samples.push(t0.elapsed().as_micros());
+            }
+            samples.sort();
+            let p50 = samples[samples.len() / 2];
+            let p99 = samples[samples.len() * 99 / 100];
+            let mean = samples.iter().sum::<u128>() / samples.len() as u128;
+            (p50, p99, mean, last_tokens)
+        }
+
+        let input = build_100kloc_input();
+        let line_count = input.lines().count();
+        println!("RES-109: lex-bench input = {} lines, {} bytes", line_count, input.len());
+
+        // Warm up 2, time 10 — the legacy lexer is char-by-char
+        // over a large Vec<char>, on the order of ~10 s per pass
+        // on 100 KLoC. 100 iterations (the ticket's nominal target)
+        // would push the `cargo test --ignored` run past 30 minutes
+        // on typical laptops. Ten samples per path is enough for
+        // the p50 / p99 / ratio numbers this bench reports, and it
+        // keeps the harness runnable inside a single iteration of
+        // the executor loop.
+        let (legacy_p50, legacy_p99, legacy_mean, legacy_n) =
+            time_runs(|| legacy_tokenize_with_spans(&input).len(), 2, 10);
+        let (logos_p50, logos_p99, logos_mean, logos_n) =
+            time_runs(|| crate::lexer_logos::tokenize(&input).len(), 2, 10);
+
+        assert_eq!(
+            legacy_n, logos_n,
+            "token counts diverged between lexers: legacy={} logos={}",
+            legacy_n, logos_n
+        );
+
+        let ratio_p50 = legacy_p50 as f64 / logos_p50.max(1) as f64;
+        let ratio_mean = legacy_mean as f64 / logos_mean.max(1) as f64;
+
+        println!(
+            "| lexer   | p50 (us) | p99 (us) | mean (us) | tokens |"
+        );
+        println!(
+            "|---------|----------|----------|-----------|--------|"
+        );
+        println!(
+            "| legacy  | {:>8} | {:>8} | {:>9} | {:>6} |",
+            legacy_p50, legacy_p99, legacy_mean, legacy_n,
+        );
+        println!(
+            "| logos   | {:>8} | {:>8} | {:>9} | {:>6} |",
+            logos_p50, logos_p99, logos_mean, logos_n,
+        );
+        println!(
+            "ratio p50:  legacy / logos = {:.2}×",
+            ratio_p50
+        );
+        println!(
+            "ratio mean: legacy / logos = {:.2}×",
+            ratio_mean
+        );
+    }
+
     #[cfg(feature = "logos-lexer")]
     fn legacy_tokenize_with_spans(input: &str) -> Vec<(Token, span::Span)> {
         let mut lex = Lexer {
