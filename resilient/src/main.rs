@@ -121,6 +121,117 @@ enum Token {
     Unknown(char),
 }
 
+impl std::fmt::Display for Token {
+    /// RES-118: `{}` on a `Token` produces the user-facing syntax
+    /// form (`;` rather than `Semicolon`, `identifier `name`` rather
+    /// than `Identifier("name")`). Parser error sites that used
+    /// `{:?}` for the "found X" suffix can just switch to `{}` and
+    /// pick up readable messages without touching arguments.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display_syntax())
+    }
+}
+
+impl Token {
+    /// RES-118: user-facing syntax name for this token, used in
+    /// parser diagnostics. Intentionally echoes the source form
+    /// users actually type (`;` not `Semicolon`, `{` not
+    /// `LeftBrace`) so error messages read naturally. Payload-
+    /// carrying variants render the payload inline when it's
+    /// informative (`<ident>`, a string / int / float literal's
+    /// written form) or a `<category>` placeholder when the
+    /// specific value is irrelevant to the diagnostic.
+    pub fn display_syntax(&self) -> String {
+        match self {
+            Token::Function => "`fn`".to_string(),
+            Token::Let => "`let`".to_string(),
+            Token::Live => "`live`".to_string(),
+            Token::Assert => "`assert`".to_string(),
+            Token::If => "`if`".to_string(),
+            Token::Else => "`else`".to_string(),
+            Token::Return => "`return`".to_string(),
+            Token::Static => "`static`".to_string(),
+            Token::While => "`while`".to_string(),
+            Token::For => "`for`".to_string(),
+            Token::In => "`in`".to_string(),
+            Token::Requires => "`requires`".to_string(),
+            Token::Ensures => "`ensures`".to_string(),
+            Token::Invariant => "`invariant`".to_string(),
+            Token::Struct => "`struct`".to_string(),
+            Token::New => "`new`".to_string(),
+            Token::Match => "`match`".to_string(),
+            Token::Use => "`use`".to_string(),
+            Token::Impl => "`impl`".to_string(),
+            Token::Underscore => "`_`".to_string(),
+            Token::Dot => "`.`".to_string(),
+            Token::FatArrow => "`=>`".to_string(),
+            Token::Arrow => "`->`".to_string(),
+            Token::Question => "`?`".to_string(),
+            Token::Plus => "`+`".to_string(),
+            Token::Minus => "`-`".to_string(),
+            Token::Multiply => "`*`".to_string(),
+            Token::Divide => "`/`".to_string(),
+            Token::Modulo => "`%`".to_string(),
+            Token::Assign => "`=`".to_string(),
+            Token::Equal => "`==`".to_string(),
+            Token::NotEqual => "`!=`".to_string(),
+            Token::And => "`&&`".to_string(),
+            Token::Or => "`||`".to_string(),
+            Token::BitAnd => "`&`".to_string(),
+            Token::BitOr => "`|`".to_string(),
+            Token::BitXor => "`^`".to_string(),
+            Token::ShiftLeft => "`<<`".to_string(),
+            Token::ShiftRight => "`>>`".to_string(),
+            Token::Greater => "`>`".to_string(),
+            Token::Less => "`<`".to_string(),
+            Token::GreaterEqual => "`>=`".to_string(),
+            Token::LessEqual => "`<=`".to_string(),
+            Token::LeftParen => "`(`".to_string(),
+            Token::RightParen => "`)`".to_string(),
+            Token::LeftBrace => "`{`".to_string(),
+            Token::RightBrace => "`}`".to_string(),
+            Token::LeftBracket => "`[`".to_string(),
+            Token::RightBracket => "`]`".to_string(),
+            Token::Comma => "`,`".to_string(),
+            Token::Semicolon => "`;`".to_string(),
+            Token::Colon => "`:`".to_string(),
+            Token::Bang => "`!`".to_string(),
+            Token::Identifier(name) => format!("identifier `{}`", name),
+            Token::IntLiteral(v) => format!("integer literal `{}`", v),
+            Token::FloatLiteral(v) => format!("float literal `{}`", v),
+            Token::StringLiteral(_) => "string literal".to_string(),
+            Token::BoolLiteral(b) => format!("`{}`", b),
+            Token::Eof => "end of input".to_string(),
+            Token::Unknown(c) => format!("unrecognized character `{}`", c),
+        }
+    }
+}
+
+/// RES-118: format an `expected one of <…>, got <token>` diagnostic
+/// for parser error sites. `expected` is a slice of already-
+/// user-facing syntax strings (backtick-quoted punctuation, prose
+/// categories like `identifier`). Single-element slices specialize
+/// to `expected X, got Y` to keep the common case reading
+/// naturally. Slices longer than 5 entries are truncated with a
+/// trailing `…` so deep FIRST-sets don't balloon the diagnostic.
+pub fn format_expected(expected: &[&str], got_syntax: &str) -> String {
+    const DISPLAY_CAP: usize = 5;
+    if expected.is_empty() {
+        return format!("unexpected {}", got_syntax);
+    }
+    if expected.len() == 1 {
+        return format!("expected {}, got {}", expected[0], got_syntax);
+    }
+    let shown = if expected.len() > DISPLAY_CAP {
+        let mut s: Vec<&str> = expected[..DISPLAY_CAP].to_vec();
+        s.push("…");
+        s
+    } else {
+        expected.to_vec()
+    };
+    format!("expected one of {}, got {}", shown.join(", "), got_syntax)
+}
+
 // Lexer for tokenizing Resilient source code
 struct Lexer {
     input: Vec<char>,
@@ -1110,7 +1221,7 @@ impl Parser {
             Token::Identifier(name) => name.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'fn', found {:?}", tok));
+                self.record_error(format!("Expected identifier after 'fn', found {}", tok));
                 // Return a placeholder to allow parsing to continue
                 String::from("error_function")
             },
@@ -1216,7 +1327,7 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             other => {
                 self.record_error(format!(
-                    "Expected struct name after 'impl', found {:?}",
+                    "Expected struct name after 'impl', found {}",
                     other
                 ));
                 String::new()
@@ -1227,7 +1338,7 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected '{{' after 'impl {}', found {:?}",
+                "Expected '{{' after 'impl {}', found {}",
                 struct_name, tok
             ));
         } else {
@@ -1241,7 +1352,7 @@ impl Parser {
             if self.current_token != Token::Function {
                 let tok = self.current_token.clone();
                 self.record_error(format!(
-                    "Expected 'fn' inside impl block, found {:?}",
+                    "Expected 'fn' inside impl block, found {}",
                     tok
                 ));
                 // Best-effort recovery: skip ahead to the closing brace
@@ -1282,7 +1393,7 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             other => {
                 self.record_error(format!(
-                    "Expected method name after 'fn' in impl block, found {:?}",
+                    "Expected method name after 'fn' in impl block, found {}",
                     other
                 ));
                 String::new()
@@ -1327,7 +1438,7 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected '{{' after method signature for '{}', found {:?}",
+                "Expected '{{' after method signature for '{}', found {}",
                 method_name, tok
             ));
         }
@@ -1355,7 +1466,7 @@ impl Parser {
             Token::Identifier(t) => Some(t.clone()),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected type name after '->', found {:?}", tok));
+                self.record_error(format!("Expected type name after '->', found {}", tok));
                 None
             }
         };
@@ -1403,7 +1514,7 @@ impl Parser {
                 Token::Identifier(typ) => typ.clone(),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected parameter type, found {:?}", tok));
+                    self.record_error(format!("Expected parameter type, found {}", tok));
                     // Recover: bail out of the loop; caller will see RightParen
                     // or Eof and stop.
                     break;
@@ -1416,7 +1527,7 @@ impl Parser {
                 Token::Identifier(name) => name.clone(),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected parameter name, found {:?}", tok));
+                    self.record_error(format!("Expected parameter name, found {}", tok));
                     break;
                 }
             };
@@ -1428,10 +1539,11 @@ impl Parser {
             if self.current_token == Token::Comma {
                 self.next_token(); // Skip ','
             } else if self.current_token != Token::RightParen {
-                let tok = self.current_token.clone();
+                // RES-118: multi-alternative form via `format_expected`.
+                let tok_syntax = self.current_token.display_syntax();
                 self.record_error(format!(
-                    "Expected ',' or ')' after parameter, found {:?}",
-                    tok
+                    "after parameter: {}",
+                    format_expected(&["`,`", "`)`"], &tok_syntax)
                 ));
                 break;
             }
@@ -1469,14 +1581,14 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'for', found {:?}", tok));
+                self.record_error(format!("Expected identifier after 'for', found {}", tok));
                 String::new()
             }
         };
         self.next_token(); // skip name
         if self.current_token != Token::In {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected 'in' after 'for {}', found {:?}", name, tok));
+            self.record_error(format!("Expected 'in' after 'for {}', found {}", name, tok));
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() }),
@@ -1490,7 +1602,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after for-iterable, found {:?}", tok));
+            self.record_error(format!("Expected '{{' after for-iterable, found {}", tok));
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(iterable),
@@ -1519,7 +1631,7 @@ impl Parser {
             self.next_token();
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected ')' after while condition, found {:?}", tok));
+                self.record_error(format!("Expected ')' after while condition, found {}", tok));
             } else {
                 self.next_token();
             }
@@ -1532,7 +1644,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after while condition, found {:?}", tok));
+            self.record_error(format!("Expected '{{' after while condition, found {}", tok));
             return Node::WhileStatement {
                 condition: Box::new(condition),
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
@@ -1553,7 +1665,7 @@ impl Parser {
         self.next_token(); // Skip 'static'
         if self.current_token != Token::Let {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected 'let' after 'static', found {:?}", tok));
+            self.record_error(format!("Expected 'let' after 'static', found {}", tok));
             return Node::StaticLet {
                 name: String::new(),
                 value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
@@ -1581,7 +1693,7 @@ impl Parser {
             Token::Identifier(name) => name.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'let', found {:?}", tok));
+                self.record_error(format!("Expected identifier after 'let', found {}", tok));
                 return Node::LetStatement {
                     name: String::new(),
                     value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
@@ -1600,7 +1712,7 @@ impl Parser {
                 Token::Identifier(t) => Some(t.clone()),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected type name after ':', found {:?}", tok));
+                    self.record_error(format!("Expected type name after ':', found {}", tok));
                     None
                 }
             };
@@ -1613,7 +1725,7 @@ impl Parser {
         if self.current_token != Token::Assign {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected '=' after identifier '{}' in let statement, found {:?}",
+                "Expected '=' after identifier '{}' in let statement, found {}",
                 name, tok
             ));
             return Node::LetStatement {
@@ -1706,7 +1818,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after 'live', found {:?}", tok));
+            self.record_error(format!("Expected '{{' after 'live', found {}", tok));
             return Node::LiveBlock {
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 invariants,
@@ -1728,7 +1840,7 @@ impl Parser {
         
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '(' after 'assert', found {:?}", tok));
+            self.record_error(format!("Expected '(' after 'assert', found {}", tok));
             return Node::Assert {
                 condition: Box::new(Node::BooleanLiteral { value: true, span: span::Span::default() }),
                 message: None,
@@ -1753,7 +1865,7 @@ impl Parser {
         if self.current_token != Token::RightParen {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected ')' after assert condition, found {:?}",
+                "Expected ')' after assert condition, found {}",
                 tok
             ));
         }
@@ -1782,7 +1894,7 @@ impl Parser {
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
                 self.record_error(format!(
-                    "Expected ')' after if condition, found {:?}",
+                    "Expected ')' after if condition, found {}",
                     tok
                 ));
             } else {
@@ -1798,7 +1910,7 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected '{{' after if condition, found {:?}",
+                "Expected '{{' after if condition, found {}",
                 tok
             ));
             // Recover by returning a skeleton `if` with an empty body so
@@ -1819,7 +1931,7 @@ impl Parser {
 
             if self.current_token != Token::LeftBrace {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected '{{' after 'else', found {:?}", tok));
+                self.record_error(format!("Expected '{{' after 'else', found {}", tok));
                 None
             } else {
                 Some(Box::new(self.parse_block_statement()))
@@ -1894,7 +2006,7 @@ impl Parser {
                 if self.current_token != Token::RightParen {
                     let tok = self.current_token.clone();
                     self.record_error(format!(
-                        "Expected ')' closing parenthesized expression, found {:?}",
+                        "Expected ')' closing parenthesized expression, found {}",
                         tok
                     ));
                 }
@@ -2037,7 +2149,7 @@ impl Parser {
         if self.peek_token != Token::RightParen {
             let tok = self.peek_token.clone();
             self.record_error(format!(
-                "Expected ')' after call arguments, found {:?}",
+                "Expected ')' after call arguments, found {}",
                 tok
             ));
         } else {
@@ -2055,14 +2167,14 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after 'struct', found {:?}", tok));
+                self.record_error(format!("Expected identifier after 'struct', found {}", tok));
                 String::new()
             }
         };
         self.next_token();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after struct name, found {:?}", tok));
+            self.record_error(format!("Expected '{{' after struct name, found {}", tok));
             return Node::StructDecl { name, fields: Vec::new(),
             span: self.span_at_current() };
         }
@@ -2074,7 +2186,7 @@ impl Parser {
                 Token::Identifier(t) => t.clone(),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected field type, found {:?}", tok));
+                    self.record_error(format!("Expected field type, found {}", tok));
                     break;
                 }
             };
@@ -2083,7 +2195,7 @@ impl Parser {
                 Token::Identifier(n) => n.clone(),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected field name after type '{}', found {:?}", ty, tok));
+                    self.record_error(format!("Expected field name after type '{}', found {}", ty, tok));
                     break;
                 }
             };
@@ -2092,10 +2204,11 @@ impl Parser {
             if self.current_token == Token::Comma {
                 self.next_token();
             } else if self.current_token != Token::RightBrace {
-                let tok = self.current_token.clone();
+                // RES-118: multi-alternative form via `format_expected`.
+                let tok_syntax = self.current_token.display_syntax();
                 self.record_error(format!(
-                    "Expected ',' or '}}' after struct field, found {:?}",
-                    tok
+                    "after struct field: {}",
+                    format_expected(&["`,`", "`}`"], &tok_syntax)
                 ));
                 break;
             }
@@ -2112,14 +2225,14 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected struct name after 'new', found {:?}", tok));
+                self.record_error(format!("Expected struct name after 'new', found {}", tok));
                 String::new()
             }
         };
         self.next_token();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after struct name, found {:?}", tok));
+            self.record_error(format!("Expected '{{' after struct name, found {}", tok));
             return Node::StructLiteral { name, fields: Vec::new(),
             span: self.span_at_current() };
         }
@@ -2139,7 +2252,7 @@ impl Parser {
                 _ => {
                     let tok = self.current_token.clone();
                     self.record_error(format!(
-                        "Expected field name in struct literal, found {:?}",
+                        "Expected field name in struct literal, found {}",
                         tok
                     ));
                     break;
@@ -2149,7 +2262,7 @@ impl Parser {
             if self.current_token != Token::Colon {
                 let tok = self.current_token.clone();
                 self.record_error(format!(
-                    "Expected ':' after field name '{}' in struct literal, found {:?}",
+                    "Expected ':' after field name '{}' in struct literal, found {}",
                     fname, tok
                 ));
                 break;
@@ -2169,10 +2282,11 @@ impl Parser {
             } else if self.current_token == Token::RightBrace {
                 break;
             } else {
-                let tok = self.current_token.clone();
+                // RES-118: multi-alternative form via `format_expected`.
+                let tok_syntax = self.current_token.display_syntax();
                 self.record_error(format!(
-                    "Expected ',' or '}}' in struct literal, found {:?}",
-                    tok
+                    "in struct literal: {}",
+                    format_expected(&["`,`", "`}`"], &tok_syntax)
                 ));
                 break;
             }
@@ -2187,7 +2301,7 @@ impl Parser {
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected '(' after anonymous 'fn', found {:?}",
+                "Expected '(' after anonymous 'fn', found {}",
                 tok
             ));
             return Node::FunctionLiteral {
@@ -2206,7 +2320,7 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!(
-                "Expected '{{' in anonymous fn, found {:?}",
+                "Expected '{{' in anonymous fn, found {}",
                 tok
             ));
             return Node::FunctionLiteral {
@@ -2238,7 +2352,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after match scrutinee, found {:?}", tok));
+            self.record_error(format!("Expected '{{' after match scrutinee, found {}", tok));
             return Node::Match {
                 scrutinee: Box::new(scrutinee),
                 arms: Vec::new(),
@@ -2263,7 +2377,7 @@ impl Parser {
             if self.current_token != Token::FatArrow {
                 let tok = self.current_token.clone();
                 self.record_error(format!(
-                    "Expected '=>' after match pattern, found {:?}",
+                    "Expected '=>' after match pattern, found {}",
                     tok
                 ));
                 break;
@@ -2324,7 +2438,7 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected field name after '.', found {:?}", tok));
+                self.record_error(format!("Expected field name after '.', found {}", tok));
                 return Some(target);
             }
         };
@@ -2363,7 +2477,7 @@ impl Parser {
         if self.peek_token != Token::RightBracket {
             let tok = self.peek_token.clone();
             self.record_error(format!(
-                "Expected ']' to close array literal, found {:?}",
+                "Expected ']' to close array literal, found {}",
                 tok
             ));
         } else {
@@ -2405,7 +2519,7 @@ impl Parser {
         if self.peek_token != Token::RightBrace {
             let tok = self.peek_token.clone();
             self.record_error(format!(
-                "Expected '}}' to close map literal, found {:?}",
+                "Expected '}}' to close map literal, found {}",
                 tok
             ));
         } else {
@@ -2422,7 +2536,7 @@ impl Parser {
         if self.peek_token != Token::Arrow {
             let tok = self.peek_token.clone();
             self.record_error(format!(
-                "Expected '->' between map key and value, found {:?}",
+                "Expected '->' between map key and value, found {}",
                 tok
             ));
             return None;
@@ -2443,7 +2557,7 @@ impl Parser {
         if self.peek_token != Token::RightBracket {
             let tok = self.peek_token.clone();
             self.record_error(format!(
-                "Expected ']' to close index expression, found {:?}",
+                "Expected ']' to close index expression, found {}",
                 tok
             ));
             return Some(Node::IndexExpression {
@@ -2581,7 +2695,7 @@ impl MapKey {
             Value::String(s) => Ok(MapKey::Str(s.clone())),
             Value::Bool(b) => Ok(MapKey::Bool(*b)),
             other => Err(format!(
-                "Map key must be Int, String, or Bool; got {:?}",
+                "Map key must be Int, String, or Bool; got {}",
                 other
             )),
         }
@@ -3012,7 +3126,7 @@ fn builtin_sqrt(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(i)] => Ok(Value::Float((*i as f64).sqrt())),
         [Value::Float(f)] => Ok(Value::Float(f.sqrt())),
-        [other] => Err(format!("sqrt: expected numeric, got {:?}", other)),
+        [other] => Err(format!("sqrt: expected numeric, got {}", other)),
         _ => Err(format!("sqrt: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3059,7 +3173,7 @@ fn builtin_floor(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(i)] => Ok(Value::Int(*i)),
         [Value::Float(f)] => Ok(Value::Float(f.floor())),
-        [other] => Err(format!("floor: expected numeric, got {:?}", other)),
+        [other] => Err(format!("floor: expected numeric, got {}", other)),
         _ => Err(format!("floor: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3072,7 +3186,7 @@ fn builtin_ceil(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(i)] => Ok(Value::Int(*i)),
         [Value::Float(f)] => Ok(Value::Float(f.ceil())),
-        [other] => Err(format!("ceil: expected numeric, got {:?}", other)),
+        [other] => Err(format!("ceil: expected numeric, got {}", other)),
         _ => Err(format!("ceil: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3103,7 +3217,7 @@ fn builtin_err(args: &[Value]) -> RResult<Value> {
 fn builtin_is_ok(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Result { ok, .. }] => Ok(Value::Bool(*ok)),
-        [other] => Err(format!("is_ok: expected Result, got {:?}", other)),
+        [other] => Err(format!("is_ok: expected Result, got {}", other)),
         _ => Err(format!("is_ok: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3112,7 +3226,7 @@ fn builtin_is_ok(args: &[Value]) -> RResult<Value> {
 fn builtin_is_err(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Result { ok, .. }] => Ok(Value::Bool(!ok)),
-        [other] => Err(format!("is_err: expected Result, got {:?}", other)),
+        [other] => Err(format!("is_err: expected Result, got {}", other)),
         _ => Err(format!("is_err: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3124,7 +3238,7 @@ fn builtin_unwrap(args: &[Value]) -> RResult<Value> {
         [Value::Result { ok: false, payload }] => {
             Err(format!("unwrap called on Err({})", payload))
         }
-        [other] => Err(format!("unwrap: expected Result, got {:?}", other)),
+        [other] => Err(format!("unwrap: expected Result, got {}", other)),
         _ => Err(format!("unwrap: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3136,7 +3250,7 @@ fn builtin_unwrap_err(args: &[Value]) -> RResult<Value> {
         [Value::Result { ok: true, payload }] => {
             Err(format!("unwrap_err called on Ok({})", payload))
         }
-        [other] => Err(format!("unwrap_err: expected Result, got {:?}", other)),
+        [other] => Err(format!("unwrap_err: expected Result, got {}", other)),
         _ => Err(format!(
             "unwrap_err: expected 1 argument, got {}",
             args.len()
@@ -3168,7 +3282,7 @@ fn builtin_split(args: &[Value]) -> RResult<Value> {
 fn builtin_trim(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::String(s.trim().to_string())),
-        [other] => Err(format!("trim: expected string, got {:?}", other)),
+        [other] => Err(format!("trim: expected string, got {}", other)),
         _ => Err(format!("trim: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3189,7 +3303,7 @@ fn builtin_contains(args: &[Value]) -> RResult<Value> {
 fn builtin_to_upper(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::String(s.to_uppercase())),
-        [other] => Err(format!("to_upper: expected string, got {:?}", other)),
+        [other] => Err(format!("to_upper: expected string, got {}", other)),
         _ => Err(format!("to_upper: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3198,7 +3312,7 @@ fn builtin_to_upper(args: &[Value]) -> RResult<Value> {
 fn builtin_to_lower(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::String(s.to_lowercase())),
-        [other] => Err(format!("to_lower: expected string, got {:?}", other)),
+        [other] => Err(format!("to_lower: expected string, got {}", other)),
         _ => Err(format!("to_lower: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3212,7 +3326,7 @@ fn builtin_push(args: &[Value]) -> RResult<Value> {
             out.push(x.clone());
             Ok(Value::Array(out))
         }
-        [other, _] => Err(format!("push: expected array as first arg, got {:?}", other)),
+        [other, _] => Err(format!("push: expected array as first arg, got {}", other)),
         _ => Err(format!("push: expected 2 arguments, got {}", args.len())),
     }
 }
@@ -3229,7 +3343,7 @@ fn builtin_pop(args: &[Value]) -> RResult<Value> {
                 Ok(Value::Array(out))
             }
         }
-        [other] => Err(format!("pop: expected array, got {:?}", other)),
+        [other] => Err(format!("pop: expected array, got {}", other)),
         _ => Err(format!("pop: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3263,7 +3377,7 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s)] => Ok(Value::Int(s.chars().count() as i64)),
         [Value::Array(items)] => Ok(Value::Int(items.len() as i64)),
-        [other] => Err(format!("len: expected string or array, got {:?}", other)),
+        [other] => Err(format!("len: expected string or array, got {}", other)),
         _ => Err(format!("len: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3324,7 +3438,7 @@ fn builtin_abs(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(i)] => Ok(Value::Int(i.abs())),
         [Value::Float(f)] => Ok(Value::Float(f.abs())),
-        [other] => Err(format!("abs: expected int or float, got {:?}", other)),
+        [other] => Err(format!("abs: expected int or float, got {}", other)),
         _ => Err(format!("abs: expected 1 argument, got {}", args.len())),
     }
 }
@@ -3372,7 +3486,7 @@ fn builtin_file_read(args: &[Value]) -> RResult<Value> {
             Err(e) => Err(format!("file_read: {}: {}", path, e)),
         },
         [other] => Err(format!(
-            "file_read: expected String argument, got {:?}",
+            "file_read: expected String argument, got {}",
             other
         )),
         _ => Err(format!(
@@ -3428,7 +3542,7 @@ fn builtin_map_insert(args: &[Value]) -> RResult<Value> {
             Ok(Value::Map(out))
         }
         [a, _, _] => Err(format!(
-            "map_insert: first argument must be a Map, got {:?}",
+            "map_insert: first argument must be a Map, got {}",
             a
         )),
         _ => Err(format!(
@@ -3456,7 +3570,7 @@ fn builtin_map_get(args: &[Value]) -> RResult<Value> {
             }
         }
         [a, _] => Err(format!(
-            "map_get: first argument must be a Map, got {:?}",
+            "map_get: first argument must be a Map, got {}",
             a
         )),
         _ => Err(format!(
@@ -3479,7 +3593,7 @@ fn builtin_map_remove(args: &[Value]) -> RResult<Value> {
             Ok(Value::Map(out))
         }
         [a, _] => Err(format!(
-            "map_remove: first argument must be a Map, got {:?}",
+            "map_remove: first argument must be a Map, got {}",
             a
         )),
         _ => Err(format!(
@@ -3509,7 +3623,7 @@ fn builtin_map_keys(args: &[Value]) -> RResult<Value> {
             Ok(Value::Array(out))
         }
         [a] => Err(format!(
-            "map_keys: expected a Map, got {:?}",
+            "map_keys: expected a Map, got {}",
             a
         )),
         _ => Err(format!(
@@ -3524,7 +3638,7 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
         [a] => Err(format!(
-            "map_len: expected a Map, got {:?}",
+            "map_len: expected a Map, got {}",
             a
         )),
         _ => Err(format!(
@@ -3645,7 +3759,7 @@ impl Interpreter {
                 let items = match iter_val {
                     Value::Array(v) => v,
                     other => return Err(format!(
-                        "`for` iterable must be an array, got {:?}",
+                        "`for` iterable must be an array, got {}",
                         other
                     )),
                 };
@@ -3789,7 +3903,7 @@ impl Interpreter {
                         })))
                     }
                     other => Err(format!(
-                        "? operator expects a Result, got {:?}",
+                        "? operator expects a Result, got {}",
                         other
                     )),
                 }
@@ -3910,7 +4024,7 @@ impl Interpreter {
                         }
                     }
                     (Value::Array(_), other) => Err(format!(
-                        "Array index must be int, got {:?}",
+                        "Array index must be int, got {}",
                         other
                     )),
                     (other, _) => Err(format!("Cannot index {:?}", other)),
@@ -3950,7 +4064,7 @@ impl Interpreter {
                 for idx_expr in &path_exprs {
                     let idx_val = self.eval(idx_expr)?;
                     let Value::Int(i) = idx_val else {
-                        return Err(format!("Array index must be int, got {:?}", idx_val));
+                        return Err(format!("Array index must be int, got {}", idx_val));
                     };
                     path_indices.push(i);
                 }
@@ -8451,6 +8565,64 @@ mod tests {
             "expected no parse errors for ASCII ident, got: {:?}",
             errs
         );
+    }
+
+    // --- RES-118: parser "expected one of …" hints ---
+
+    #[test]
+    fn expected_hint_multi_token_alternatives() {
+        // `{ x: 1 y: 2 }` — missing comma between fields inside a
+        // struct literal. The parser now points at `y` as the
+        // offending token and lists both `,` and `}` as valid
+        // alternatives via `format_expected`.
+        let src = "struct Point { int x, int y, } let p = new Point { x: 1 y: 2 };";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("expected one of")
+                && e.contains("`,`")
+                && e.contains("`}`")),
+            "expected multi-alternative diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn expected_hint_singleton_specializes_to_singular_form() {
+        // Singleton: `format_expected(&["`,`"], got)` must render
+        // `expected `,`, got …` — not `expected one of `,`, got …`.
+        // The generator specializes on the singleton case so the
+        // common "missing X" message reads naturally.
+        let s = format_expected(&["`,`"], "`)`");
+        assert_eq!(s, "expected `,`, got `)`");
+    }
+
+    #[test]
+    fn expected_hint_caps_long_lists_with_ellipsis() {
+        // Slices longer than 5 entries truncate with `…`.
+        let s = format_expected(
+            &["`a`", "`b`", "`c`", "`d`", "`e`", "`f`", "`g`"],
+            "`x`",
+        );
+        assert!(
+            s.starts_with("expected one of `a`, `b`, `c`, `d`, `e`, …"),
+            "unexpected shape: {}",
+            s
+        );
+        assert!(s.ends_with(", got `x`"), "unexpected tail: {}", s);
+    }
+
+    #[test]
+    fn token_display_syntax_renders_source_form() {
+        // Punctuation → backticked source form. Keywords → backticked
+        // source form. Identifier payload appears inline.
+        assert_eq!(Token::Semicolon.display_syntax(), "`;`");
+        assert_eq!(Token::LeftBrace.display_syntax(), "`{`");
+        assert_eq!(Token::Function.display_syntax(), "`fn`");
+        assert_eq!(
+            Token::Identifier("x".to_string()).display_syntax(),
+            "identifier `x`"
+        );
+        assert_eq!(Token::Eof.display_syntax(), "end of input");
     }
 
     #[test]
