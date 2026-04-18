@@ -1,7 +1,7 @@
 ---
 id: RES-175
 title: Cranelift: inline trivial leaf functions at call sites
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G15
 created: 2026-04-17
@@ -38,3 +38,4 @@ their body into the caller at lower-time.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
