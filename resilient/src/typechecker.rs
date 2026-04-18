@@ -326,6 +326,12 @@ pub struct TypeChecker {
     /// Z3 proof. The driver writes these to disk when invoked with
     /// `--emit-certificate <DIR>`.
     pub certificates: Vec<CapturedCertificate>,
+    /// RES-153: struct name → (field_name → parsed field type). Populated
+    /// when we visit each `StructDecl`. Used by `FieldAccess` to return
+    /// the declared field's type instead of `Type::Any`, and by
+    /// `FieldAssignment` to reject writes to non-existent fields
+    /// statically.
+    struct_fields: HashMap<String, Vec<(String, Type)>>,
 }
 
 impl TypeChecker {
@@ -473,6 +479,7 @@ impl TypeChecker {
             const_bindings: HashMap::new(),
             stats: VerificationStats::default(),
             certificates: Vec::new(),
+            struct_fields: HashMap::new(),
         }
     }
     
@@ -856,7 +863,19 @@ impl TypeChecker {
                 Ok(Type::Any)
             },
 
-            Node::StructDecl { .. } => Ok(Type::Void),
+            // RES-153: record the struct's (field, type) list so
+            // `FieldAccess` / `FieldAssignment` downstream can check
+            // field existence and surface typed-field errors
+            // statically.
+            Node::StructDecl { name, fields, .. } => {
+                let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
+                for (type_name, field_name) in fields {
+                    let ty = self.parse_type_name(type_name)?;
+                    resolved.push((field_name.clone(), ty));
+                }
+                self.struct_fields.insert(name.clone(), resolved);
+                Ok(Type::Void)
+            }
 
             Node::StructLiteral { name, fields, .. } => {
                 for (_, e) in fields {
@@ -865,15 +884,41 @@ impl TypeChecker {
                 Ok(Type::Struct(name.clone()))
             },
 
-            Node::FieldAccess { target, .. } => {
-                let _ = self.check_node(target)?;
-                // Field types not tracked at MVP.
+            Node::FieldAccess { target, field, .. } => {
+                let tgt_ty = self.check_node(target)?;
+                // RES-153: if the target is a known struct, return the
+                // declared field's type. Otherwise fall back to Any so
+                // non-struct targets (e.g. through generic containers)
+                // keep the old permissive behaviour.
+                if let Type::Struct(sname) = &tgt_ty
+                    && let Some(declared) = self.struct_fields.get(sname)
+                    && let Some((_, ty)) = declared.iter().find(|(n, _)| n == field)
+                {
+                    return Ok(ty.clone());
+                }
                 Ok(Type::Any)
             },
 
-            Node::FieldAssignment { target, value, .. } => {
-                let _ = self.check_node(target)?;
+            Node::FieldAssignment { target, field, value, .. } => {
+                let tgt_ty = self.check_node(target)?;
                 let _ = self.check_node(value)?;
+                // RES-153: reject writes to non-existent fields
+                // statically when the target's struct is known. The
+                // old runtime error ("Struct Point has no field 'z'")
+                // still fires for dynamic `Any` targets.
+                if let Type::Struct(sname) = &tgt_ty
+                    && let Some(declared) = self.struct_fields.get(sname)
+                    && !declared.iter().any(|(n, _)| n == field)
+                {
+                    let avail: Vec<&str> =
+                        declared.iter().map(|(n, _)| n.as_str()).collect();
+                    return Err(format!(
+                        "struct `{}` has no field `{}`; available fields: {}",
+                        sname,
+                        field,
+                        avail.join(", ")
+                    ));
+                }
                 Ok(Type::Void)
             },
 

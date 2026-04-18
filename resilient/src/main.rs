@@ -5351,6 +5351,90 @@ mod tests {
         }
     }
 
+    // --- RES-153: struct field assignment ---
+
+    #[test]
+    fn struct_field_assign_one_deep_mutates_field() {
+        let src = "\
+            struct Point { int x, int y, }\n\
+            let p = new Point { x: 1, y: 2 };\n\
+            p.x = 42;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let p = interp.env.get("p").expect("binding `p`");
+        match p {
+            Value::Struct { fields, .. } => {
+                let x = fields.iter().find(|(n, _)| n == "x").map(|(_, v)| v);
+                assert!(matches!(x, Some(Value::Int(42))), "got x = {:?}", x);
+            }
+            other => panic!("expected Struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn struct_field_assign_two_deep_mutates_nested_field() {
+        let src = "\
+            struct Point { int x, int y, }\n\
+            struct Line { Point a, Point b, }\n\
+            let l = new Line { \
+                a: new Point { x: 1, y: 2 }, \
+                b: new Point { x: 3, y: 4 } \
+            };\n\
+            l.a.x = 99;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        let l = interp.env.get("l").expect("binding `l`");
+        let Value::Struct { fields, .. } = l else {
+            panic!("expected Line struct, got {:?}", l);
+        };
+        let a = fields.iter().find(|(n, _)| n == "a").map(|(_, v)| v);
+        let Some(Value::Struct { fields: a_fields, .. }) = a else {
+            panic!("expected Point struct for a, got {:?}", a);
+        };
+        let x = a_fields.iter().find(|(n, _)| n == "x").map(|(_, v)| v);
+        assert!(matches!(x, Some(Value::Int(99))), "got x = {:?}", x);
+        // b is unchanged.
+        let b = fields.iter().find(|(n, _)| n == "b").map(|(_, v)| v);
+        let Some(Value::Struct { fields: b_fields, .. }) = b else {
+            panic!("expected Point struct for b, got {:?}", b);
+        };
+        let bx = b_fields.iter().find(|(n, _)| n == "x").map(|(_, v)| v);
+        assert!(matches!(bx, Some(Value::Int(3))), "b.x should be unchanged, got {:?}", bx);
+    }
+
+    #[test]
+    fn struct_field_assign_to_unknown_field_is_typecheck_error() {
+        // RES-153: writing to a field the struct didn't declare now
+        // fails at typecheck time (pre-runtime).
+        let src = "\
+            struct Point { int x, int y, }\n\
+            let p = new Point { x: 1, y: 2 };\n\
+            p.z = 3;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("typecheck should reject unknown field");
+        assert!(
+            err.contains("has no field `z`"),
+            "expected `has no field `z`` in: {}",
+            err
+        );
+        assert!(
+            err.contains("available fields: x, y"),
+            "expected fields list in: {}",
+            err
+        );
+    }
+
     #[test]
     fn map_literal_with_non_hashable_key_is_runtime_error() {
         // Float keys are rejected at interpret time — the parser
