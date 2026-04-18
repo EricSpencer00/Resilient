@@ -1,7 +1,7 @@
 ---
 id: RES-191
 title: `@pure` function annotation + purity checker
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G18
 created: 2026-04-17
@@ -42,3 +42,4 @@ unannotated user fns.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
