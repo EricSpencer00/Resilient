@@ -8613,6 +8613,71 @@ mod tests {
 
     // --- RES-123: optional (inferred) return type annotations ---
 
+    // --- RES-126: nominal struct equivalence ---
+
+    #[test]
+    fn nominal_distinct_empty_braces() {
+        // Two zero-field structs must still be distinct types —
+        // assignment across them is a type error. This pins the
+        // rule against accidental structural collapse in a later
+        // refactor.
+        let src = "\
+            struct A { }\n\
+            struct B { }\n\
+            let a: A = new B { };\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("A and B must be nominally distinct even with zero fields");
+        assert!(
+            err.contains("let a: A") && err.contains("value has type B"),
+            "expected nominal mismatch diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn nominal_distinct_same_shape() {
+        // Two structs with identical `int val` fields still must
+        // not unify. This is the RES-126 canonical case —
+        // `Meters { val: 5 }` must not flow into a `Seconds`.
+        let src = "\
+            struct Meters { int val, }\n\
+            struct Seconds { int val, }\n\
+            let s: Seconds = new Meters { val: 5 };\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("Meters and Seconds must not unify despite same shape");
+        assert!(
+            err.contains("let s: Seconds") && err.contains("value has type Meters"),
+            "expected nominal mismatch diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn nominal_same_name_accepts() {
+        // Sanity: an assignment from the same named struct still
+        // works — nominal distinctness is about different NAMES,
+        // not about rejecting every struct-valued assignment.
+        let src = "\
+            struct Point { int x, int y, }\n\
+            let p: Point = new Point { x: 1, y: 2 };\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let res = tc.check_program(&program);
+        assert!(res.is_ok(), "same-named struct assignment should pass: {:?}", res);
+    }
+
     #[test]
     fn fn_without_return_type_annotation_typechecks() {
         // Omitting `-> TYPE` is supported: the typechecker falls
