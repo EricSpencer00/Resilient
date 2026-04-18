@@ -1,7 +1,7 @@
 ---
 id: RES-162
 title: Match against string literal patterns
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G13
 created: 2026-04-17
@@ -32,3 +32,4 @@ algorithmic complexity — string equality at each arm.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
