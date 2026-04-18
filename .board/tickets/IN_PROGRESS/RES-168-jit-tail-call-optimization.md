@@ -1,7 +1,7 @@
 ---
 id: RES-168
 title: JIT: tail-call optimization for direct self-recursion
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G15
 created: 2026-04-17
@@ -40,3 +40,4 @@ cross-function tail calls are harder and can wait.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
