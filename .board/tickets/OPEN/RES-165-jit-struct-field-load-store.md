@@ -39,3 +39,36 @@ repr(C) struct with the field order from the declaration.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed and bailed by executor (oversized JIT lowering)
+
+## Attempt 1 failed
+
+Oversized: this ticket is new Cranelift IR lowering across four
+distinct code paths (literal construction with stack slots, field
+load, field store, struct-valued returns via an out-ptr ABI), plus
+a layout cache keyed by struct decl, plus four end-to-end tests
+driving `--features jit`.
+
+The existing JIT backend (`src/jit_backend.rs`, 1137 lines) has no
+struct lowering today — no stack-slot emission for composites, no
+layout cache, no out-ptr ABI. Landing all four pieces in one
+iteration on top of an unfamiliar Cranelift backend is not
+realistic.
+
+## Clarification needed
+
+Manager, please split into:
+
+- RES-165a: struct layout cache
+  (`decl_name -> Vec<(field, offset, cranelift_ty)>`) built from
+  every `Node::StructDecl` before lowering. Testable in isolation
+  by asserting offsets for a known decl.
+- RES-165b: literal construction — emit a sized stack slot and the
+  sequence of `stack_store(val, ss, offset)` calls per field.
+- RES-165c: field load + store when the struct lives in a stack
+  slot (`p.x` read + `p.x = v` write).
+- RES-165d: struct-valued return via out-ptr ABI, plus one end-to-
+  end test that builds a struct in a compiled fn and returns it.
+
+No code changes landed — only the ticket state toggle and this
+clarification note.
