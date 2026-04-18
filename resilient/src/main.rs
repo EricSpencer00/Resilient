@@ -7350,6 +7350,11 @@ fn main() {
     // results because the compiler runs peephole before the
     // disassembler sees the chunks.
     let mut dump_chunks = false;
+    // RES-174: --jit-cache-stats prints the process-wide JIT AST-
+    // hash cache counters (hits/misses/compiles) to stderr on
+    // exit. Stats come from `jit_backend::cache_stats()` which
+    // reads relaxed-atomic counters updated by each `run()`.
+    let mut jit_cache_stats = false;
     // RES-137: per-query Z3 solver timeout in milliseconds. 0 means
     // "no timeout". Default 5000 matches the ticket's recommendation.
     let mut verifier_timeout_ms: u32 = 5000;
@@ -7402,6 +7407,10 @@ fn main() {
                 // included). Exits after the dump — mutually
                 // exclusive with `--lsp` / `--dump-tokens`.
                 dump_chunks = true;
+            } else if arg == "--jit-cache-stats" {
+                // RES-174: print the JIT cache's cumulative
+                // (hits / misses / compiles) on exit.
+                jit_cache_stats = true;
             } else if arg == "--verifier-timeout-ms" {
                 // RES-137: --verifier-timeout-ms <N> overrides the
                 // per-Z3-query budget. `0` disables the timeout.
@@ -7576,7 +7585,7 @@ fn main() {
             // Execute a file. RES-027: a failed run exits non-zero so
             // `run_examples.sh` / CI / ops tooling can distinguish
             // success from failure without parsing stdout.
-            match execute_file(
+            let run_result = execute_file(
                 filename,
                 type_check,
                 audit,
@@ -7584,7 +7593,27 @@ fn main() {
                 use_vm,
                 use_jit,
                 verifier_timeout_ms,
-            ) {
+            );
+            // RES-174: print cache stats on exit whenever the
+            // flag is set, regardless of whether the run
+            // succeeded. Stats only reflect JIT usage; `--vm` /
+            // tree-walker runs leave the counters untouched, so
+            // printing zeros in that case is accurate.
+            #[cfg(feature = "jit")]
+            if jit_cache_stats {
+                let (h, m, c) = jit_backend::cache_stats();
+                eprintln!(
+                    "jit-cache: hits={} misses={} compiles={}",
+                    h, m, c
+                );
+            }
+            #[cfg(not(feature = "jit"))]
+            if jit_cache_stats {
+                eprintln!(
+                    "jit-cache: unavailable (built without `--features jit`)"
+                );
+            }
+            match run_result {
                 Ok(_) => {
                     println!("Program executed successfully");
                     return;

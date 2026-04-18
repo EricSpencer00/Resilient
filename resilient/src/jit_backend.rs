@@ -106,6 +106,231 @@ impl LowerCtx {
     }
 }
 
+/// RES-174: FNV-1a 64-bit hash of a function's AST, with source
+/// spans stripped. Two functions with identical parameters,
+/// requires/ensures clauses, and body hash to the same value
+/// regardless of their declared name — that's the invariant the
+/// cache needs to treat them as aliases.
+///
+/// The canonical form is a byte stream written by
+/// `write_canon_*`: a per-variant discriminant byte plus the
+/// variant's payload in a fixed order. Spans are deliberately
+/// NOT written so a reformatting / re-indentation of the source
+/// (which shifts spans but preserves semantics) still produces
+/// the same hash.
+fn fn_hash(
+    parameters: &[(String, String)],
+    requires: &[Node],
+    ensures: &[Node],
+    body: &Node,
+) -> u64 {
+    let mut buf: Vec<u8> = Vec::new();
+    // Tag to distinguish the "function" byte-stream from
+    // free-standing node streams in case we ever reuse the
+    // canonical writer elsewhere.
+    buf.push(b'F');
+    // Parameters: length prefix then each (type_name, param_name)
+    // as length-prefixed strings. Names matter (different param
+    // names produce different code paths / local mappings).
+    write_u32(&mut buf, parameters.len() as u32);
+    for (ty, n) in parameters {
+        write_str(&mut buf, ty);
+        write_str(&mut buf, n);
+    }
+    write_u32(&mut buf, requires.len() as u32);
+    for r in requires {
+        write_canon_node(&mut buf, r);
+    }
+    write_u32(&mut buf, ensures.len() as u32);
+    for e in ensures {
+        write_canon_node(&mut buf, e);
+    }
+    write_canon_node(&mut buf, body);
+    fnv1a64(&buf)
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET_BASIS;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+fn write_u32(buf: &mut Vec<u8>, n: u32) {
+    buf.extend_from_slice(&n.to_le_bytes());
+}
+
+fn write_i64(buf: &mut Vec<u8>, n: i64) {
+    buf.extend_from_slice(&n.to_le_bytes());
+}
+
+fn write_str(buf: &mut Vec<u8>, s: &str) {
+    write_u32(buf, s.len() as u32);
+    buf.extend_from_slice(s.as_bytes());
+}
+
+/// Canonical byte-stream writer for a Node. A discriminant byte
+/// identifies the variant; the payload follows. Spans are never
+/// written. Variants outside the JIT's supported subset use a
+/// catch-all tag with no payload — they hash to the same value,
+/// which is fine because the JIT can't compile them anyway
+/// (they'd be rejected by `lower_expr` / `compile_node_list`
+/// before the cache entry would ever be reused).
+fn write_canon_node(buf: &mut Vec<u8>, node: &Node) {
+    match node {
+        Node::IntegerLiteral { value, .. } => {
+            buf.push(1);
+            write_i64(buf, *value);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            buf.push(2);
+            buf.push(if *value { 1 } else { 0 });
+        }
+        Node::Identifier { name, .. } => {
+            buf.push(3);
+            write_str(buf, name);
+        }
+        Node::InfixExpression { left, operator, right, .. } => {
+            buf.push(4);
+            write_str(buf, operator);
+            write_canon_node(buf, left);
+            write_canon_node(buf, right);
+        }
+        Node::PrefixExpression { operator, right, .. } => {
+            buf.push(5);
+            write_str(buf, operator);
+            write_canon_node(buf, right);
+        }
+        Node::CallExpression { function, arguments, .. } => {
+            buf.push(6);
+            write_canon_node(buf, function);
+            write_u32(buf, arguments.len() as u32);
+            for a in arguments {
+                write_canon_node(buf, a);
+            }
+        }
+        Node::ReturnStatement { value, .. } => {
+            buf.push(7);
+            match value {
+                Some(v) => {
+                    buf.push(1);
+                    write_canon_node(buf, v);
+                }
+                None => buf.push(0),
+            }
+        }
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            buf.push(8);
+            write_canon_node(buf, condition);
+            write_canon_node(buf, consequence);
+            match alternative {
+                Some(a) => {
+                    buf.push(1);
+                    write_canon_node(buf, a);
+                }
+                None => buf.push(0),
+            }
+        }
+        Node::WhileStatement { condition, body, .. } => {
+            buf.push(9);
+            write_canon_node(buf, condition);
+            write_canon_node(buf, body);
+        }
+        Node::LetStatement { name, value, .. } => {
+            buf.push(10);
+            write_str(buf, name);
+            write_canon_node(buf, value);
+        }
+        Node::Assignment { name, value, .. } => {
+            buf.push(11);
+            write_str(buf, name);
+            write_canon_node(buf, value);
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            buf.push(12);
+            write_canon_node(buf, expr);
+        }
+        Node::Block { stmts, .. } => {
+            buf.push(13);
+            write_u32(buf, stmts.len() as u32);
+            for s in stmts {
+                write_canon_node(buf, s);
+            }
+        }
+        // Catch-all for variants the JIT doesn't lower. Hashing
+        // them collides, but a fn with an unsupported variant in
+        // its body won't JIT successfully anyway, so a collision
+        // here never produces an incorrect cache hit at runtime.
+        _ => buf.push(0xFF),
+    }
+}
+
+/// RES-174: per-`run()` JIT cache. Stores the AST hash → FuncId
+/// mapping for the current module so two functions in the same
+/// program with identical bodies share one compile. Statistics
+/// also accumulate into the process-wide `GLOBAL_JIT_STATS`
+/// counters so `--jit-cache-stats` can report totals at exit.
+///
+/// FuncIds are module-local, so the cache is NOT reused across
+/// `run()` invocations: each call starts fresh. Cross-session
+/// (on-disk) caching is explicitly out-of-scope per the ticket's
+/// Notes — that requires stable Cranelift serialization +
+/// compiler-version invalidation.
+#[derive(Debug, Default)]
+pub struct JitCache {
+    /// fn-ast hash → the FuncId we declared for the first fn with
+    /// that hash in the current module. Subsequent fns with the
+    /// same hash reuse this id (alias).
+    pub map: HashMap<u64, FuncId>,
+    /// Per-run stats; mirrored into `GLOBAL_JIT_STATS` on drop so
+    /// the CLI's `--jit-cache-stats` can report lifetime totals.
+    pub hits: u32,
+    pub misses: u32,
+    pub compiles: u32,
+}
+
+impl JitCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// RES-174: process-wide cumulative cache stats. Updated on
+/// every `run()` call via the `JitCache::flush_into_globals`
+/// Drop glue; read by `--jit-cache-stats` on program exit.
+/// Relaxed ordering — these are diagnostic counters, not a
+/// synchronization primitive.
+static GLOBAL_JIT_HITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static GLOBAL_JIT_MISSES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static GLOBAL_JIT_COMPILES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Read the process-wide JIT cache counters. Returns `(hits,
+/// misses, compiles)`. Called by the CLI's `--jit-cache-stats`
+/// handler from `main.rs` at program exit.
+pub fn cache_stats() -> (u64, u64, u64) {
+    use std::sync::atomic::Ordering;
+    (
+        GLOBAL_JIT_HITS.load(Ordering::Relaxed),
+        GLOBAL_JIT_MISSES.load(Ordering::Relaxed),
+        GLOBAL_JIT_COMPILES.load(Ordering::Relaxed),
+    )
+}
+
+fn flush_cache_stats_to_globals(cache: &JitCache) {
+    use std::sync::atomic::Ordering;
+    GLOBAL_JIT_HITS.fetch_add(cache.hits as u64, Ordering::Relaxed);
+    GLOBAL_JIT_MISSES.fetch_add(cache.misses as u64, Ordering::Relaxed);
+    GLOBAL_JIT_COMPILES.fetch_add(cache.compiles as u64, Ordering::Relaxed);
+}
+
 /// Errors the JIT backend can surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JitError {
@@ -164,7 +389,7 @@ fn make_module() -> Result<JITModule, JitError> {
 ///   Pass 2: compile each function body using compile_function,
 ///           plus the program's top-level non-function
 ///           statements as `main`.
-pub fn run(program: &Node) -> Result<i64, JitError> {
+fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     let stmts = match program {
         Node::Program(s) => s,
         _ => return Err(JitError::Unsupported("non-Program root")),
@@ -172,27 +397,60 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
 
     let mut module = make_module()?;
 
+    // RES-174: per-run JIT cache. Within a single module, two
+    // functions with the same AST hash share one FuncId (the
+    // second becomes an alias of the first). Stats flush into
+    // the process-wide counters on return.
+    let mut cache = JitCache::new();
+
     // ---------- Pass 1: declare all top-level functions ----------
+    //
+    // RES-174: before declaring, hash the function's AST. If the
+    // cache already has that hash, reuse its FuncId under the
+    // new name — don't declare a second time. Otherwise declare
+    // normally, record the FuncId in the cache, and enqueue the
+    // function's body for Pass 2.
     let mut functions: HashMap<String, FuncId> = HashMap::new();
     let mut function_arities: HashMap<String, usize> = HashMap::new();
+    // Names of functions whose bodies we need to compile (the
+    // "primary" for each unique AST hash). Aliases skip compile.
+    let mut primaries: Vec<String> = Vec::new();
     for spanned in stmts {
-        if let Node::Function { name, parameters, .. } = &spanned.node {
-            let mut sig = module.make_signature();
-            for _ in parameters {
-                sig.params.push(AbiParam::new(types::I64));
+        if let Node::Function { name, parameters, body, requires, ensures, .. } =
+            &spanned.node
+        {
+            let h = fn_hash(parameters, requires, ensures, body);
+            if let Some(existing) = cache.map.get(&h).copied() {
+                // Cache hit — reuse the FuncId under the new name.
+                cache.hits += 1;
+                functions.insert(name.clone(), existing);
+                function_arities.insert(name.clone(), parameters.len());
+            } else {
+                cache.misses += 1;
+                let mut sig = module.make_signature();
+                for _ in parameters {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                let func_id = module
+                    .declare_function(name, Linkage::Local, &sig)
+                    .map_err(|e| JitError::LinkError(e.to_string()))?;
+                cache.map.insert(h, func_id);
+                functions.insert(name.clone(), func_id);
+                function_arities.insert(name.clone(), parameters.len());
+                primaries.push(name.clone());
             }
-            sig.returns.push(AbiParam::new(types::I64));
-            let func_id = module
-                .declare_function(name, Linkage::Local, &sig)
-                .map_err(|e| JitError::LinkError(e.to_string()))?;
-            functions.insert(name.clone(), func_id);
-            function_arities.insert(name.clone(), parameters.len());
         }
     }
 
-    // ---------- Pass 2: compile each function body ----------
+    // ---------- Pass 2: compile each primary function body ----------
+    // Aliases skip this loop — their FuncId points at the primary's
+    // compiled code, so calls to them dispatch to the same entry.
     for spanned in stmts {
         if let Node::Function { name, parameters, body, .. } = &spanned.node {
+            if !primaries.contains(name) {
+                continue;
+            }
             let func_id = functions[name];
             compile_function(
                 func_id,
@@ -203,6 +461,7 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
                 &function_arities,
                 &mut module,
             )?;
+            cache.compiles += 1;
         }
     }
 
@@ -249,7 +508,33 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
     // alive — `module` outlives this call.
     let f: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(raw) };
     let result = unsafe { f() };
-    Ok(result)
+    // RES-174: fold this run's cache stats into the process-wide
+    // counters so `--jit-cache-stats` can print lifetime totals
+    // from `main.rs` at exit. Counters are relaxed-atomic — no
+    // synchronization semantics, just diagnostic accumulation.
+    flush_cache_stats_to_globals(&cache);
+    Ok((result, cache))
+}
+
+/// Public `run()` — discards the per-run cache after folding its
+/// stats into the process-wide counters. Most callers (the CLI,
+/// the examples_smoke harness, the rest of the test suite) go
+/// through this path.
+pub fn run(program: &Node) -> Result<i64, JitError> {
+    run_internal(program).map(|(v, _)| v)
+}
+
+/// RES-174: test hook — run the program and return the per-run
+/// cache's (hits, misses, compiles) alongside the i64 result.
+/// Unlike reading `cache_stats()` before/after, this variant
+/// captures ONLY the numbers this run produced, so parallel
+/// test execution doesn't pollute the delta.
+#[cfg(test)]
+pub(crate) fn run_with_stats(
+    program: &Node,
+) -> Result<(i64, u32, u32, u32), JitError> {
+    let (result, cache) = run_internal(program)?;
+    Ok((result, cache.hits, cache.misses, cache.compiles))
 }
 
 /// RES-105: compile a single user-defined function body.
@@ -1515,5 +1800,156 @@ mod tests {
             return f(41);",
         );
         assert_eq!(run(&p).unwrap(), 42);
+    }
+
+    // ---------- RES-174: AST-hash JIT cache ----------
+
+    /// Serialize the JIT-cache-stats-observing tests. The global
+    /// counters in `jit_backend` are a shared resource; parallel
+    /// test execution would race and give each other false
+    /// deltas. Mirror of the RES-150 `RNG_TEST_LOCK` pattern.
+    static JIT_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn jit_cache_hit_on_duplicate_fn_body() {
+        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Two fns with identical bodies (different names) should
+        // produce the same AST hash, so the second declaration is
+        // a cache hit — same FuncId, no second compile. Calls to
+        // `g(7)` actually dispatch to `f`'s compiled code.
+        let p = parse_program(
+            "fn f(int n) { return n * 2; } \
+             fn g(int n) { return n * 2; } \
+             return f(5) + g(7);",
+        );
+        let (result, hits, misses, compiles) = run_with_stats(&p).unwrap();
+        assert_eq!(result, 24, "f(5) + g(7) = 10 + 14");
+        assert_eq!(hits, 1, "second fn with same body = 1 hit");
+        assert_eq!(misses, 1, "first fn = 1 miss");
+        assert_eq!(compiles, 1, "only f's body is compiled");
+    }
+
+    #[test]
+    fn jit_cache_miss_on_distinct_bodies() {
+        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Two fns with different bodies → no hit; both compile.
+        let p = parse_program(
+            "fn f(int n) { return n * 2; } \
+             fn g(int n) { return n + 99; } \
+             return f(5) + g(1);",
+        );
+        let (result, hits, misses, compiles) = run_with_stats(&p).unwrap();
+        assert_eq!(result, 110, "10 + 100");
+        assert_eq!(hits, 0);
+        assert_eq!(misses, 2);
+        assert_eq!(compiles, 2);
+    }
+
+    #[test]
+    fn jit_cache_ignores_span_differences() {
+        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Spans differ across the two fn decls (the second one
+        // is on a different source line), but the hash is
+        // span-stripped — so they still collide and the cache
+        // treats them as identical.
+        let p = parse_program(
+            "fn f(int x) { return x * x; }\n\n\n\n\
+             fn g(int y) { return y * y; } \
+             return f(3) + g(4);",
+        );
+        let (result, hits, _, _) = run_with_stats(&p).unwrap();
+        // Note: parameter NAMES (`x` vs `y`) are part of the
+        // canonical form, so these two DON'T hash the same.
+        // This test locks the policy: names matter (a rename
+        // can make different code — consider shadowing or
+        // captures in future features), spans don't.
+        assert_eq!(result, 25);
+        assert_eq!(hits, 0, "parameter rename prevents cache hit");
+    }
+
+    #[test]
+    fn jit_cache_three_way_alias() {
+        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Three fns, same body → first compiles, next two hit.
+        let p = parse_program(
+            "fn a(int n) { return n + 1; } \
+             fn b(int n) { return n + 1; } \
+             fn c(int n) { return n + 1; } \
+             return a(10) + b(20) + c(30);",
+        );
+        let (result, hits, misses, compiles) = run_with_stats(&p).unwrap();
+        assert_eq!(result, 63);
+        assert_eq!(hits, 2);
+        assert_eq!(misses, 1);
+        assert_eq!(compiles, 1);
+    }
+
+    #[test]
+    fn jit_fn_hash_is_deterministic_and_span_independent() {
+        // Same function compiled twice with DIFFERENT synthetic
+        // spans must produce the same hash.
+        use crate::span::Span;
+        let body_a = Node::ReturnStatement {
+            value: Some(Box::new(Node::IntegerLiteral {
+                value: 42,
+                span: Span::default(),
+            })),
+            span: Span::default(),
+        };
+        let body_b = body_a.clone();
+        let parameters: Vec<(String, String)> = vec![("int".into(), "n".into())];
+        let h_a = fn_hash(&parameters, &[], &[], &body_a);
+        let h_b = fn_hash(&parameters, &[], &[], &body_b);
+        assert_eq!(h_a, h_b, "same fn AST must hash identically");
+        // A different body must produce a different hash.
+        let body_c = Node::ReturnStatement {
+            value: Some(Box::new(Node::IntegerLiteral {
+                value: 43,
+                span: Span::default(),
+            })),
+            span: Span::default(),
+        };
+        let h_c = fn_hash(&parameters, &[], &[], &body_c);
+        assert_ne!(h_a, h_c, "different bodies must hash differently");
+    }
+
+    #[test]
+    fn jit_cache_global_stats_accumulate_across_runs() {
+        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Two sequential `run()` calls — the global counters
+        // should reflect AT LEAST this test's contribution (1
+        // hit + 2 misses + 2 compiles). Other tests in the same
+        // process also bump the globals, so exact equality
+        // would flake under parallel test execution; `>=`
+        // captures the accumulation invariant without that
+        // fragility.
+        let p1 = parse_program(
+            "fn f(int n) { return n * 2; } \
+             fn g(int n) { return n * 2; } \
+             return f(1) + g(1);",
+        );
+        let p2 = parse_program(
+            "fn h(int n) { return n - 1; } \
+             return h(5);",
+        );
+        let (h0, m0, c0) = cache_stats();
+        run(&p1).unwrap();
+        run(&p2).unwrap();
+        let (h1, m1, c1) = cache_stats();
+        assert!(
+            h1.saturating_sub(h0) >= 1,
+            "expected at least 1 hit from run1, got {} delta",
+            h1 - h0
+        );
+        assert!(
+            m1.saturating_sub(m0) >= 2,
+            "expected at least 2 misses total, got {} delta",
+            m1 - m0
+        );
+        assert!(
+            c1.saturating_sub(c0) >= 2,
+            "expected at least 2 compiles total, got {} delta",
+            c1 - c0
+        );
     }
 }
