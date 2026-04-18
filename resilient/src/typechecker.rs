@@ -493,6 +493,12 @@ impl TypeChecker {
             return_type: Box::new(Type::Int),
         });
 
+        // RES-138: current retry counter of the enclosing live block.
+        env.set("live_retries".to_string(), Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Int),
+        });
+
         // RES-143: file I/O builtins (std-only; the resilient-runtime
         // sibling crate has no builtins table so its no_std posture is
         // unaffected).

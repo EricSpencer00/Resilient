@@ -3120,6 +3120,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-130: explicit int ↔ float conversions.
     ("to_float", builtin_to_float),
     ("to_int", builtin_to_int),
+    // RES-138: read the current retry count inside a live block.
+    ("live_retries", builtin_live_retries),
     ("sqrt", builtin_sqrt),
     ("pow", builtin_pow),
     ("floor", builtin_floor),
@@ -3782,6 +3784,66 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
     }
 }
 
+// --- RES-138: live-block retry-counter thread-local ---
+//
+// `live_retries()` inside a `live { ... }` body needs to read
+// the current retry counter. A thread-local stack holds one
+// `usize` per active live block (top = innermost), let through
+// the builtin. The RAII `LiveRetryGuard` guarantees the stack
+// pops on every exit path from `eval_live_block` — success, max-
+// retry-exhausted, or panic — so the stack can't leak across
+// blocks.
+
+thread_local! {
+    static LIVE_RETRY_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+struct LiveRetryGuard;
+
+impl LiveRetryGuard {
+    fn enter() -> Self {
+        LIVE_RETRY_STACK.with(|s| s.borrow_mut().push(0));
+        LiveRetryGuard
+    }
+
+    /// Update the innermost stack entry (the one `live_retries()`
+    /// will read) to `count`. Called from the retry branch of
+    /// `eval_live_block` after incrementing the local counter.
+    fn set(count: usize) {
+        LIVE_RETRY_STACK.with(|s| {
+            if let Some(top) = s.borrow_mut().last_mut() {
+                *top = count;
+            }
+        });
+    }
+}
+
+impl Drop for LiveRetryGuard {
+    fn drop(&mut self) {
+        LIVE_RETRY_STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+}
+
+/// RES-138: `live_retries() -> Int`. Inside a `live { ... }`
+/// block returns the current retry count (0 on the first
+/// attempt, 1..∞ thereafter). Nested `live` blocks read the
+/// innermost block's counter. Called outside any live block,
+/// returns a clean runtime error.
+fn builtin_live_retries(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "live_retries: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    LIVE_RETRY_STACK.with(|s| match s.borrow().last() {
+        Some(&n) => Ok(Value::Int(n as i64)),
+        None => Err("live_retries() called outside a live block".to_string()),
+    })
+}
+
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
@@ -4298,6 +4360,14 @@ impl Interpreter {
         // Log the start of live block execution
         eprintln!("\x1B[36m[LIVE BLOCK] Starting execution of live block\x1B[0m");
 
+        // RES-138: push a fresh retry counter onto the thread-local
+        // stack so `live_retries()` inside `body` / invariants can
+        // read it. The RAII `_guard` drops on ALL exit paths
+        // (success, max-retry-exhausted, panic), keeping the stack
+        // from leaking across `live` blocks — including nested
+        // ones, where the builtin reads the innermost block's top.
+        let _guard = LiveRetryGuard::enter();
+
         // Try to evaluate the body with multiple retries
         loop {
             // RES-036: treat an invariant failure as the same class of
@@ -4324,6 +4394,11 @@ impl Interpreter {
                 }
                 Err(error) => {
                     retry_count += 1;
+                    // RES-138: keep the thread-local counter in
+                    // sync so `live_retries()` inside the body on
+                    // the NEXT attempt sees the current retry
+                    // number (0 on first attempt, then 1, 2, …).
+                    LiveRetryGuard::set(retry_count);
 
                     eprintln!(
                         "\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m",
@@ -8805,6 +8880,100 @@ mod tests {
     }
 
     // --- RES-123: optional (inferred) return type annotations ---
+
+    // --- RES-138: live_retries() builtin ---
+
+    #[test]
+    fn live_retries_outside_live_block_errors() {
+        // Outside any live block — the thread-local stack is empty,
+        // the builtin returns the dedicated diagnostic.
+        let err = builtin_live_retries(&[]).unwrap_err();
+        assert!(
+            err.contains("called outside a live block"),
+            "expected outside-block diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn live_retries_wrong_arity_errors() {
+        let err = builtin_live_retries(&[Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("expected 0 arguments"),
+            "expected arity diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn live_retries_counts_up_across_failures() {
+        // Force two failures, succeed on the third attempt. Collect
+        // the `live_retries()` value on each attempt; must read
+        // 0, 1, 2 in order.
+        let src = "\
+            static let fails_left = 2;\n\
+            static let seen = [];\n\
+            fn step() {\n\
+                seen = push(seen, live_retries());\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced\");\n\
+                }\n\
+                return 42;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live { let r = step(); }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        match interp.statics.borrow().get("seen").expect("static `seen`") {
+            Value::Array(items) => {
+                let ns: Vec<i64> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => *n,
+                        other => panic!("non-int in seen: {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(
+                    ns,
+                    vec![0, 1, 2],
+                    "live_retries should count 0, 1, 2 across attempts"
+                );
+            }
+            other => panic!("expected Array for seen, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_retries_after_block_exit_errors() {
+        // Sanity check on the RAII guard: after a live block
+        // completes, `live_retries()` must again be an error.
+        // Run through the runtime-error formatter since the call is
+        // at top level after the live block closes.
+        let src = "\
+            fn main(int _d) {\n\
+                live { let x = 1; }\n\
+                let r = live_retries();\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("post-live-block call should fail");
+        assert!(
+            err.contains("called outside a live block"),
+            "expected outside-block diagnostic, got: {}",
+            err
+        );
+    }
 
     // --- RES-130: no implicit int ↔ float coercion ---
 

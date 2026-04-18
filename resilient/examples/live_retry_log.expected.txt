@@ -1,0 +1,5 @@
+retry 0
+retry 1
+retry 2
+succeeded with 42
+Program executed successfully
