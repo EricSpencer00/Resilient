@@ -1,0 +1,132 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Resilient",
+  "scopeName": "source.resilient",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#operators" },
+    { "include": "#function-definition" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.resilient",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.resilient",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.resilient",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.resilient",
+              "match": "\\\\([nrt0\"\\\\]|x[0-9A-Fa-f]{2})"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.bytes.resilient",
+          "begin": "b\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.resilient",
+              "match": "\\\\([nrt0\"\\\\]|x[0-9A-Fa-f]{2})"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.resilient",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.resilient",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.resilient",
+          "match": "\\b(if|else|while|for|in|return|match|default|use|impl)\\b"
+        },
+        {
+          "name": "keyword.declaration.resilient",
+          "match": "\\b(fn|let|static|struct|new|type)\\b"
+        },
+        {
+          "name": "keyword.other.contract.resilient",
+          "match": "\\b(requires|ensures|invariant|assert|live)\\b"
+        },
+        {
+          "name": "constant.language.boolean.resilient",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.resilient",
+          "match": "\\b(int|float|bool|string|void)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arithmetic.resilient",
+          "match": "(\\+|-|\\*|/|%)"
+        },
+        {
+          "name": "keyword.operator.comparison.resilient",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.resilient",
+          "match": "(&&|\\|\\||!)"
+        },
+        {
+          "name": "keyword.operator.bitwise.resilient",
+          "match": "(<<|>>|&|\\||\\^)"
+        },
+        {
+          "name": "keyword.operator.assignment.resilient",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arrow.resilient",
+          "match": "(=>|->)"
+        }
+      ]
+    },
+    "function-definition": {
+      "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "beginCaptures": {
+        "1": { "name": "keyword.declaration.resilient" },
+        "2": { "name": "entity.name.function.resilient" }
+      },
+      "end": "(?=\\()",
+      "patterns": []
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "name": "resilient-vscode",
+  "displayName": "Resilient",
+  "description": "Language support for Resilient — syntax highlighting + Language Server integration.",
+  "version": "0.1.0",
+  "publisher": "ericspencer00",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ericspencer00/Resilient"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:resilient"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "resilient",
+        "aliases": [
+          "Resilient",
+          "resilient"
+        ],
+        "extensions": [
+          ".rs"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "resilient",
+        "scopeName": "source.resilient",
+        "path": "./syntaxes/resilient.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Resilient",
+      "properties": {
+        "resilient.serverPath": {
+          "type": "string",
+          "default": "resilient",
+          "description": "Path to the `resilient` binary. Defaults to the one on PATH; point at a dev build (e.g. /path/to/Resilient/resilient/target/debug/resilient) when hacking on the compiler."
+        },
+        "resilient.serverArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "--lsp"
+          ],
+          "description": "Arguments passed to the Resilient binary when starting the Language Server. The default `--lsp` is what the server expects."
+        },
+        "resilient.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces communication between VS Code and the Resilient Language Server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --out resilient-vscode.vsix"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^2.24.0"
+  }
+}
