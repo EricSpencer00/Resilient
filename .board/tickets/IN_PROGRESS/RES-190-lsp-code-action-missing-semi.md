@@ -1,7 +1,7 @@
 ---
 id: RES-190
 title: LSP: code action "insert `;`" for missing-semicolon diagnostics
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G17
 created: 2026-04-17
@@ -34,3 +34,4 @@ can follow.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
