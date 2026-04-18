@@ -1,7 +1,7 @@
 ---
 id: RES-205
 title: `resilient pkg init` creates a minimal project skeleton
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: ecosystem
 created: 2026-04-17
@@ -43,3 +43,4 @@ schema before we build dependency resolution.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
