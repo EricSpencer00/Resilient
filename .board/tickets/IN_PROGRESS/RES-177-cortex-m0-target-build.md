@@ -1,7 +1,7 @@
 ---
 id: RES-177
 title: Cortex-M0 (thumbv6m-none-eabi) target: runtime builds clean
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -37,3 +37,4 @@ approach as RES-097 / RES-176: script + CI gate.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
