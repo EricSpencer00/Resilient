@@ -1,0 +1,16 @@
+KW fn 2 1
+IDENT main 2 4
+PUNCT ( 2 8
+PUNCT ) 2 9
+PUNCT { 2 11
+IDENT println 3 5
+PUNCT ( 3 12
+STRING "Hello, Resilient world!" 3 13
+PUNCT ) 3 38
+PUNCT ; 3 39
+PUNCT } 4 1
+IDENT main 5 1
+PUNCT ( 5 5
+PUNCT ) 5 6
+PUNCT ; 5 7
+EOF  6 1

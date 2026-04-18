@@ -585,3 +585,26 @@ calls); for one-shot arithmetic the VM is the right backend.
 - G8–G10 (function contracts, symbolic assert, live-block invariants)
 - G11+ (stdlib, structs, pattern matching, cranelift backend, LSP,
   `no_std`, self-hosting)
+
+### Self-hosting progress (G20)
+
+G20 is a long arc. The first milestone is a Resilient program
+that can lex Resilient source.
+
+- **RES-196** — [`self-host/lex.rs`](./self-host/lex.rs): a byte-
+  level lexer for a restricted subset of the language, written
+  in Resilient itself. Recognizes identifiers, integer + string
+  literals, the `fn` / `let` / `return` / `if` / `else` / `while` /
+  `true` / `false` keywords, single-char punctuation,
+  single-char operators, the two-char comparison / logical
+  operators, and `//` line comments. Whitespace-skipping with
+  line / column tracking.
+
+  Run it: `./self-host/run.sh` (diffs output against
+  [`self-host/hello.tokens.txt`](./self-host/hello.tokens.txt)).
+
+  Not in CI — informative only until the self-hosted toolchain
+  becomes load-bearing. See the source file's top-comment for
+  the feature gaps (multiline strings, block comments, `live`
+  contracts, float / bytes literals) and the parser workarounds
+  the prototype needed to land today.
