@@ -40,3 +40,34 @@ full builtin table.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed and bailed by executor (blocked + oversized)
+
+## Attempt 1 failed
+
+Two blockers.
+
+1. **No JIT FFI wiring yet.** The JIT backend has no
+   `JITBuilder::symbol(...)` registrations today (`grep -n "\.symbol("
+   src/jit_backend.rs` → 0 hits). This ticket proposes a
+   `builtin_addrs: HashMap<&'static str, usize>` populated from the
+   builtin registry at JIT-init and consumed by a new
+   `Node::CallExpression` lowering arm. Both pieces are brand-new
+   Cranelift-facing code. Similar scope to RES-166 (also bailed).
+2. **Depends on RES-124 monomorphization** for mixed-type builtins
+   like `pow`, per the acceptance criteria: "we already monomorphize
+   by types post-RES-124, so the JIT sees exactly one variant per
+   call site." RES-124 is currently in OPEN with a `## Clarification
+   needed` note (itself blocked on RES-120 and RES-122). Without
+   monomorphization the JIT cannot pick a single address for a
+   mixed-signature builtin.
+
+## Clarification needed
+
+Recommended sequencing: land RES-166a (the scaffolding half of
+RES-166 — `mod runtime_shims` + `JITBuilder::symbol(...)` wiring)
+first, then make RES-167 a follow-up that only covers single-
+signature builtins (`println`, `abs`, the arity-stable ones). The
+mixed-signature branch waits for RES-124's monomorphization pass.
+
+No code changes landed — only the ticket state toggle and this
+clarification note.
