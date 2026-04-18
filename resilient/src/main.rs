@@ -29,6 +29,10 @@ mod lexer_logos;
 // RES-121: Hindley-Milner unification + occurs check. Unconditionally
 // compiled; consumed by the inference walker when RES-120 lands.
 mod unify;
+// RES-117: shared diagnostic rendering (caret underlines under
+// the offending source span). Used by the driver when formatting
+// parser / typechecker / interpreter / VM errors.
+mod diag;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -4625,12 +4629,73 @@ fn has_line_col_prefix(msg: &str) -> bool {
 /// the full `filename:line:col: Runtime error: <msg>` prefix; un-
 /// decorated errors (e.g. pre-statement-evaluation issues that never
 /// reached `eval_program`) fall back to a bare `Runtime error: <msg>`.
+///
+/// RES-117: when `src` is provided, appends a caret diagnostic from
+/// `diag::format_diagnostic_from_line_col` below the header line so
+/// the offending source position is visually underlined.
 fn format_interpreter_error(filename: &str, err: &str) -> String {
     if has_line_col_prefix(err) {
-        format!("{}:{}", filename, err.replacen(": ", ": Runtime error: ", 1))
+        let header = format!("{}:{}", filename, err.replacen(": ", ": Runtime error: ", 1));
+        header
     } else {
         format!("Runtime error: {}", err)
     }
+}
+
+/// RES-117: enrich a `line:col:` prefixed error string with a caret
+/// underline pulled from `src`. Returns `err` unchanged when the
+/// prefix can't be parsed. Callers supply `level` (e.g. `"Runtime
+/// error"`, `"Parser error"`, `"Type error"`, `"VM runtime error"`)
+/// and the helper handles the rest.
+///
+/// Handles both shapes the codebase uses today:
+/// - `<line>:<col>: <msg>` (parser errors)
+/// - `<path>:<line>:<col>: <msg>` (typechecker, decorated runtime)
+///
+/// If `msg` already starts with `<level>:` (the driver composed the
+/// header with the level baked in), that inner duplicate is
+/// stripped so the caret block doesn't read `Runtime error: Runtime
+/// error: ...`.
+fn render_with_caret(src: &str, err: &str, level: &str) -> String {
+    let dedupe = |msg: &str| -> String {
+        let trimmed = msg.trim();
+        let prefix = format!("{}:", level);
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            rest.trim().to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+
+    // Try the bare `<line>:<col>: <msg>` form first.
+    let mut it = err.splitn(3, ':');
+    if let (Some(line_s), Some(col_s), Some(rest)) = (it.next(), it.next(), it.next())
+        && let (Ok(line), Ok(col)) = (line_s.trim().parse::<usize>(), col_s.trim().parse::<usize>())
+    {
+        return format!(
+            "{}\n{}",
+            err,
+            diag::format_diagnostic_from_line_col(src, line, col, level, &dedupe(rest))
+        );
+    }
+
+    // Fall back to the `<path>:<line>:<col>: <msg>` shape — find the
+    // FIRST colon after which `<uint>:<uint>:` follows.
+    for (i, _) in err.match_indices(':') {
+        let tail = &err[i + 1..];
+        let mut parts = tail.splitn(3, ':');
+        let ls = parts.next().unwrap_or("");
+        let cs = parts.next().unwrap_or("");
+        let msg = parts.next().unwrap_or("");
+        if let (Ok(line), Ok(col)) = (ls.trim().parse::<usize>(), cs.trim().parse::<usize>()) {
+            return format!(
+                "{}\n{}",
+                err,
+                diag::format_diagnostic_from_line_col(src, line, col, level, &dedupe(msg))
+            );
+        }
+    }
+    err.to_string()
 }
 
 /// RES-112: scan `src` through the default routing (hand-rolled or
@@ -4717,12 +4782,22 @@ fn execute_file(
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
 
-    let lexer = Lexer::new(contents);
+    let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
     let mut program = parser.parse_program();
 
-    // Check for parser errors (already printed at the point they occurred)
+    // Check for parser errors (already printed at the point they occurred).
+    //
+    // RES-117: print each collected error again with a caret
+    // underline from the source. The original `record_error`
+    // eprintln still fires inline (it's the low-latency path users
+    // see while the parser is still scanning); this follow-up
+    // dump gives them the source-context block. We keep the
+    // original emission intact to minimise surgery on the parser.
     if !parser.errors.is_empty() {
+        for e in &parser.errors {
+            eprintln!("{}", render_with_caret(&contents, e, "Parser error"));
+        }
         return Err(format!("Failed to parse program: {} parser error(s)", parser.errors.len()));
     }
 
@@ -4754,6 +4829,10 @@ fn execute_file(
             Ok(_) => println!("\x1B[32mType check passed\x1B[0m"),
             Err(e) => {
                 eprintln!("\x1B[31mType error: {}\x1B[0m", e);
+                // RES-117: add a caret diagnostic beneath the
+                // ANSI-red header so the offending source position
+                // is visually underlined.
+                eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
                 return Err(format!("Type check failed: {}", e));
             }
         }
@@ -4812,8 +4891,22 @@ fn execute_file(
             // so VM runtime errors are editor-clickable when the
             // wrapper carries a source line. Other variants fall back
             // to the bare Display form.
+            //
+            // RES-117: `AtLine` carries line but not column — treat
+            // as column 1 for the caret renderer. The caret still
+            // points at the offending line; precise column info
+            // would need RES-091 to upgrade from line-only to a
+            // full Span (tracked there, not here).
             if let vm::VmError::AtLine { line, kind } = &e {
-                format!("{}:{}: {}", filename, line, kind)
+                let header = format!("{}:{}: VM runtime error: {}", filename, line, kind);
+                let caret = diag::format_diagnostic_from_line_col(
+                    &contents,
+                    *line as usize,
+                    1,
+                    "VM runtime error",
+                    &kind.to_string(),
+                );
+                format!("{}\n{}", header, caret)
             } else {
                 format!("VM runtime error: {}", e)
             }
@@ -4831,9 +4924,17 @@ fn execute_file(
     // driver's output matches the VM's RES-091 shape and is
     // editor-clickable. Un-decorated errors fall back to the older
     // bare `Runtime error: <msg>` format.
-    interpreter
-        .eval(&program)
-        .map_err(|e| format_interpreter_error(filename, &e))?;
+    //
+    // RES-117: also attach a caret diagnostic beneath the header
+    // so the offending source line is visually underlined.
+    interpreter.eval(&program).map_err(|e| {
+        let header = format_interpreter_error(filename, &e);
+        if has_line_col_prefix(&e) {
+            render_with_caret(&contents, &header, "Runtime error")
+        } else {
+            header
+        }
+    })?;
 
     Ok(())
 }
