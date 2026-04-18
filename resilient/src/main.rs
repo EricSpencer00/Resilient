@@ -712,6 +712,40 @@ enum Pattern {
     Wildcard,
 }
 
+/// RES-139: exponential-backoff policy for a `live` block. Sleep
+/// between retries on a capped exponential curve
+/// `min(max_ms, base_ms * factor^retries)`. Kwargs are parsed from
+/// the `live backoff(base_ms=N, factor=K, max_ms=M) { ... }` prefix;
+/// any missing kwarg uses the ticket's default.
+///
+/// `factor` is capped at 10 — the parser rejects values above that
+/// to prevent an accidental `factor=1e9` runaway that would block
+/// the interpreter thread for hours on the first retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackoffConfig {
+    pub base_ms: u64,
+    pub factor: u64,
+    pub max_ms: u64,
+}
+
+impl BackoffConfig {
+    /// Ticket defaults: `base_ms=1`, `factor=2`, `max_ms=100`.
+    pub const fn default_ticket() -> Self {
+        Self { base_ms: 1, factor: 2, max_ms: 100 }
+    }
+
+    /// Sleep duration for `retries` completed (retries=0 → first
+    /// retry after the first failure; schedule the body's fresh
+    /// attempt `min(max_ms, base_ms * factor^retries)` ms later).
+    /// Uses `saturating_pow` / `saturating_mul` so an aggressive
+    /// `factor^retries` can't overflow `u64`.
+    pub fn delay_ms(&self, retries: u32) -> u64 {
+        let growth = (self.factor).saturating_pow(retries);
+        let want = self.base_ms.saturating_mul(growth);
+        want.min(self.max_ms)
+    }
+}
+
 // AST nodes for our parser
 #[derive(Debug, Clone)]
 enum Node {
@@ -754,6 +788,11 @@ enum Node {
         /// every iteration of the body. A failing invariant triggers
         /// the same retry path as a body-level error.
         invariants: Vec<Node>,
+        /// RES-139: optional exponential-backoff policy set via the
+        /// `live backoff(base_ms=..., factor=..., max_ms=...) { ... }`
+        /// prefix. `None` → zero-sleep retries (the original
+        /// behaviour; existing `live { ... }` stays unchanged).
+        backoff: Option<BackoffConfig>,
         /// RES-088: span of the `live` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -1880,6 +1919,15 @@ impl Parser {
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
 
+        // RES-139: optional `backoff(base_ms=N, factor=K, max_ms=M)`
+        // prefix. Context-sensitive: `backoff` is only a keyword
+        // in this position, so we match on the Identifier token
+        // rather than burning a reserved word for it.
+        let backoff = match &self.current_token {
+            Token::Identifier(n) if n == "backoff" => Some(self.parse_backoff_kwargs()),
+            _ => None,
+        };
+
         // RES-036: zero or more `invariant EXPR` clauses between `live`
         // and `{`.
         let mut invariants = Vec::new();
@@ -1896,6 +1944,7 @@ impl Parser {
             return Node::LiveBlock {
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
                 invariants,
+                backoff,
                 span: self.span_at_current(),
             };
         }
@@ -1905,8 +1954,110 @@ impl Parser {
         Node::LiveBlock {
             body: Box::new(body),
             invariants,
+            backoff,
             span: self.span_at_current()
         }
+    }
+
+    /// RES-139: parse `backoff(base_ms=N, factor=K, max_ms=M)` —
+    /// each kwarg optional with ticket defaults (1 / 2 / 100). On
+    /// entry, `current_token` is the `backoff` identifier. On exit,
+    /// `current_token` sits on whatever follows the closing `)`.
+    ///
+    /// Parse errors (missing `(`, non-int literal, `factor > 10`,
+    /// unknown kwarg) `record_error` with a clean diagnostic; we
+    /// then keep going with a best-effort default so the caller
+    /// can still parse the `{ ... }` body without cascading.
+    fn parse_backoff_kwargs(&mut self) -> BackoffConfig {
+        let mut cfg = BackoffConfig::default_ticket();
+        self.next_token(); // skip `backoff`
+        if self.current_token != Token::LeftParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '(' after 'backoff', found {}",
+                tok
+            ));
+            return cfg;
+        }
+        self.next_token(); // skip '('
+
+        let mut first = true;
+        while self.current_token != Token::RightParen && self.current_token != Token::Eof {
+            if !first {
+                if self.current_token != Token::Comma {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ',' or ')' in backoff args, found {}",
+                        tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip ','
+            }
+            first = false;
+
+            // kwarg name
+            let name = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                other => {
+                    self.record_error(format!(
+                        "Expected backoff kwarg name (`base_ms`, `factor`, `max_ms`), found {}",
+                        other
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // skip name
+
+            if self.current_token != Token::Assign {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected '=' after backoff kwarg `{}`, found {}",
+                    name, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip '='
+
+            // kwarg value — integer literal only.
+            let value = match &self.current_token {
+                Token::IntLiteral(n) if *n >= 0 => *n as u64,
+                other => {
+                    self.record_error(format!(
+                        "Expected non-negative integer literal for backoff.`{}`, found {}",
+                        name, other
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // skip value
+
+            match name.as_str() {
+                "base_ms" => cfg.base_ms = value,
+                "factor" => {
+                    if value > 10 {
+                        self.record_error(format!(
+                            "backoff `factor` must be <= 10 (got {}) — larger values risk runaway sleeps on flaky hardware",
+                            value
+                        ));
+                    } else {
+                        cfg.factor = value;
+                    }
+                }
+                "max_ms" => cfg.max_ms = value,
+                other => {
+                    self.record_error(format!(
+                        "unknown backoff kwarg `{}` — expected one of `base_ms`, `factor`, `max_ms`",
+                        other
+                    ));
+                }
+            }
+        }
+
+        if self.current_token == Token::RightParen {
+            self.next_token(); // skip ')'
+        }
+        cfg
     }
     
     fn parse_assert(&mut self) -> Node {
@@ -3906,7 +4057,9 @@ impl Interpreter {
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
             },
-            Node::LiveBlock { body, invariants, .. } => self.eval_live_block(body, invariants),
+            Node::LiveBlock { body, invariants, backoff, .. } => {
+                self.eval_live_block(body, invariants, backoff.as_ref())
+            }
             Node::Assert { condition, message, .. } => self.eval_assert(condition, message),
             Node::Block { stmts: statements, .. } => self.eval_block_statement(statements),
             Node::LetStatement { name, value, .. } => {
@@ -4347,7 +4500,12 @@ impl Interpreter {
         Ok(result)
     }
     
-    fn eval_live_block(&mut self, body: &Node, invariants: &[Node]) -> RResult<Value> {
+    fn eval_live_block(
+        &mut self,
+        body: &Node,
+        invariants: &[Node],
+        backoff: Option<&BackoffConfig>,
+    ) -> RResult<Value> {
         const MAX_RETRIES: usize = 3;
         let mut retry_count = 0;
 
@@ -4423,6 +4581,19 @@ impl Interpreter {
                         retry_count + 1,
                         MAX_RETRIES
                     );
+
+                    // RES-139: exponential backoff between retries.
+                    // `retries` here is `retry_count - 1` so the
+                    // first retry (after the first failure) sleeps
+                    // `base_ms`, the second `base_ms * factor`,
+                    // etc., capped at `max_ms`. `None` preserves
+                    // the zero-sleep behaviour for plain `live { }`.
+                    if let Some(cfg) = backoff {
+                        let ms = cfg.delay_ms((retry_count - 1) as u32);
+                        if ms > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                        }
+                    }
 
                     // Restore the environment from the snapshot
                     // Each retry gets a FRESH deep copy of the snapshot
@@ -8880,6 +9051,133 @@ mod tests {
     }
 
     // --- RES-123: optional (inferred) return type annotations ---
+
+    // --- RES-139: live exponential backoff ---
+
+    #[test]
+    fn backoff_delay_ms_caps_at_max() {
+        let cfg = BackoffConfig { base_ms: 1, factor: 2, max_ms: 100 };
+        assert_eq!(cfg.delay_ms(0), 1);    // 1 * 2^0 = 1
+        assert_eq!(cfg.delay_ms(1), 2);    // 1 * 2^1 = 2
+        assert_eq!(cfg.delay_ms(5), 32);   // 1 * 2^5 = 32
+        assert_eq!(cfg.delay_ms(7), 100);  // 1 * 2^7 = 128, capped at 100
+        assert_eq!(cfg.delay_ms(30), 100); // huge growth still capped
+    }
+
+    #[test]
+    fn backoff_delay_ms_saturates_without_overflow() {
+        // `saturating_pow` / `saturating_mul` guard against `u64`
+        // wrap on intentionally aggressive values; the cap still
+        // holds.
+        let cfg = BackoffConfig { base_ms: 1_000_000, factor: 10, max_ms: 50 };
+        assert_eq!(cfg.delay_ms(63), 50);
+    }
+
+    #[test]
+    fn parse_live_backoff_kwargs_populates_config() {
+        // All three kwargs explicit.
+        let src = "fn main(int _d) { live backoff(base_ms=7, factor=3, max_ms=250) { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        // Dig out the backoff config from the parsed main fn's
+        // body block's first LiveBlock.
+        let cfg = find_first_live_backoff(&program).expect("live block with backoff");
+        assert_eq!(cfg.base_ms, 7);
+        assert_eq!(cfg.factor, 3);
+        assert_eq!(cfg.max_ms, 250);
+    }
+
+    #[test]
+    fn parse_live_backoff_defaults_fill_missing_kwargs() {
+        // Only factor specified — others fall back to ticket
+        // defaults (1 / 2 / 100).
+        let src = "fn main(int _d) { live backoff(factor=4) { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let cfg = find_first_live_backoff(&program).expect("live block with backoff");
+        assert_eq!(cfg.base_ms, 1);
+        assert_eq!(cfg.factor, 4);
+        assert_eq!(cfg.max_ms, 100);
+    }
+
+    #[test]
+    fn parse_live_backoff_factor_over_10_errors() {
+        let src = "fn main(int _d) { live backoff(factor=25) { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("`factor` must be <= 10")),
+            "expected factor-cap diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_without_backoff_keeps_none() {
+        let src = "fn main(int _d) { live { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert!(
+            find_first_live_backoff(&program).is_none(),
+            "plain `live` must not carry a BackoffConfig"
+        );
+    }
+
+    #[test]
+    fn backoff_sleeps_between_retries() {
+        // With base_ms=20 / factor=2 / max_ms=100 and two forced
+        // failures, the total sleep is 20 + 40 = 60 ms. We measure
+        // wall-clock from before `eval` to after and require the
+        // elapsed >= 60 ms (generous lower bound that avoids test
+        // flake from faster-than-promised sleeps — std::thread::sleep
+        // only *lower-bounds* the duration).
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced\");\n\
+                }\n\
+                return 42;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live backoff(base_ms=20, factor=2, max_ms=100) {\n\
+                    let r = maybe_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let t0 = std::time::Instant::now();
+        interp.eval(&program).unwrap();
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed.as_millis() >= 60,
+            "expected >= 60ms wall-clock (20 + 40), got {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    /// Helper: find the `BackoffConfig` attached to the first
+    /// `Node::LiveBlock` reached by a depth-first walk of `program`.
+    /// Returns `None` if no live block is present or the one found
+    /// has `backoff: None`.
+    fn find_first_live_backoff(program: &Node) -> Option<BackoffConfig> {
+        fn walk(n: &Node) -> Option<BackoffConfig> {
+            match n {
+                Node::LiveBlock { backoff, .. } => *backoff,
+                Node::Program(stmts) => stmts.iter().find_map(|s| walk(&s.node)),
+                Node::Function { body, .. } => walk(body),
+                Node::Block { stmts, .. } => stmts.iter().find_map(walk),
+                Node::IfStatement { consequence, alternative, .. } => walk(consequence).or_else(|| {
+                    alternative.as_ref().and_then(|a| walk(a))
+                }),
+                _ => None,
+            }
+        }
+        walk(program)
+    }
 
     // --- RES-138: live_retries() builtin ---
 
