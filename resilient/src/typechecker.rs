@@ -274,6 +274,13 @@ pub struct VerificationStats {
     /// RES-067: clauses the hand-rolled folder couldn't decide but Z3
     /// could. Bumped when --features z3 is in use; otherwise zero.
     pub requires_discharged_by_z3: usize,
+    /// RES-137: clauses where the Z3 solver returned Unknown —
+    /// typically because the per-query timeout fired on an
+    /// undecidable or expensive NIA obligation. Counted separately
+    /// from `requires_left_for_runtime` so the `--audit` table can
+    /// flag them: the user may want to bump the timeout or rewrite
+    /// the clause into a decidable subset.
+    pub verifier_timeouts: usize,
     /// RES-068: per-function counters. fn_name → (discharged, runtime).
     /// A function is "fully provable" iff every call site discharged
     /// every requires clause statically. The interpreter elides runtime
@@ -315,22 +322,27 @@ fn z3_prove(_expr: &Node, _bindings: &HashMap<String, i64>) -> Option<bool> {
 /// when the proof succeeds. RES-136: additionally returns a formatted
 /// counterexample whenever the negated formula is satisfiable (the
 /// `Some(false)` and `None` verdict cases), for use in verifier error
-/// diagnostics. Without `--features z3`, returns `(None, None, None)`.
+/// diagnostics. RES-137: fourth slot is `true` when Z3 returned
+/// Unknown (per-query timeout fired); callers bump the timed-out
+/// audit counter and emit a hint instead of treating as a proof
+/// failure. Without `--features z3`, returns all-`None` / `false`.
 #[cfg(feature = "z3")]
 fn z3_prove_with_cert(
     expr: &Node,
     bindings: &HashMap<String, i64>,
-) -> (Option<bool>, Option<String>, Option<String>) {
-    let (verdict, cert, cx) =
-        crate::verifier_z3::prove_with_certificate_and_counterexample(expr, bindings);
-    (verdict, cert.map(|c| c.smt2), cx)
+    timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    let (verdict, cert, cx, timed_out) =
+        crate::verifier_z3::prove_with_timeout(expr, bindings, timeout_ms);
+    (verdict, cert.map(|c| c.smt2), cx, timed_out)
 }
 #[cfg(not(feature = "z3"))]
 fn z3_prove_with_cert(
     _expr: &Node,
     _bindings: &HashMap<String, i64>,
-) -> (Option<bool>, Option<String>, Option<String>) {
-    (None, None, None)
+    _timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    (None, None, None, false)
 }
 
 /// RES-071: a single SMT-LIB2 proof certificate that the typechecker
@@ -369,6 +381,13 @@ pub struct TypeChecker {
     /// walks the chain (with a `seen` set for cycle detection) and
     /// returns the ultimate `Type` the alias resolves to.
     type_aliases: HashMap<String, String>,
+    /// RES-137: per-query Z3 solver timeout in milliseconds. `0`
+    /// disables the timeout (use Z3's default, which is unlimited).
+    /// The driver sets this from the `--verifier-timeout-ms <N>`
+    /// CLI flag (default 5000). On timeout, the verifier returns
+    /// Unknown — treated as "not proven" rather than an error, so
+    /// compilation continues with the runtime check retained.
+    verifier_timeout_ms: u32,
 }
 
 impl TypeChecker {
@@ -531,7 +550,19 @@ impl TypeChecker {
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
             type_aliases: HashMap::new(),
+            // RES-137: ticket's default is 5 seconds per query.
+            verifier_timeout_ms: 5000,
         }
+    }
+
+    /// RES-137: override the per-query Z3 solver timeout in ms.
+    /// Called by the driver from the `--verifier-timeout-ms` CLI
+    /// flag. Pass `0` to disable the timeout entirely (NIA proofs
+    /// that would otherwise hit the default budget run to
+    /// completion — use at your own risk).
+    pub fn with_verifier_timeout_ms(mut self, ms: u32) -> Self {
+        self.verifier_timeout_ms = ms;
+        self
     }
     
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
@@ -656,7 +687,8 @@ impl TypeChecker {
                         // RES-071: capture the SMT-LIB2 certificate
                         // alongside the verdict so the driver can dump
                         // it to disk if --emit-certificate is set.
-                        let (v, cert, cx) = z3_prove_with_cert(clause, &no_bindings);
+                        let (v, cert, cx, timed_out) =
+                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
                         verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
@@ -668,6 +700,16 @@ impl TypeChecker {
                                     smt2,
                                 });
                             }
+                        }
+                        if timed_out {
+                            // RES-137: soft-failure — compilation
+                            // continues, runtime check stays in,
+                            // audit counter bumps, user sees a hint.
+                            self.stats.verifier_timeouts += 1;
+                            eprintln!(
+                                "hint: proof timed out after {}ms — runtime check retained (fn {})",
+                                self.verifier_timeout_ms, name
+                            );
                         }
                         decl_counterexample = cx;
                     }
@@ -1257,10 +1299,20 @@ impl TypeChecker {
                         // (only when the binary was built --features z3).
                         if verdict.is_none() {
                             // RES-071: also capture certificate.
-                            let (v, cert, cx) = z3_prove_with_cert(clause, &bindings);
+                            let (v, cert, cx, timed_out) =
+                                z3_prove_with_cert(clause, &bindings, self.verifier_timeout_ms);
                             verdict = v;
                             if verdict.is_some() {
                                 self.stats.requires_discharged_by_z3 += 1;
+                            }
+                            if timed_out {
+                                // RES-137: soft-failure — runtime
+                                // check stays in; audit bumps.
+                                self.stats.verifier_timeouts += 1;
+                                eprintln!(
+                                    "hint: proof timed out after {}ms — runtime check retained (call to fn {})",
+                                    self.verifier_timeout_ms, callee_name
+                                );
                             }
                             if matches!(verdict, Some(true))
                                 && let Some(smt2) = cert

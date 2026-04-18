@@ -5041,6 +5041,7 @@ fn execute_file(
     emit_cert_dir: Option<&Path>,
     use_vm: bool,
     use_jit: bool,
+    verifier_timeout_ms: u32,
 ) -> RResult<()> {
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
@@ -5085,7 +5086,12 @@ fn execute_file(
     let mut proven_fns: HashSet<String> = HashSet::new();
     if want_typecheck {
         println!("Running type checker...");
-        let mut tc = typechecker::TypeChecker::new();
+        let mut tc = typechecker::TypeChecker::new()
+            // RES-137: apply the driver's --verifier-timeout-ms
+            // value. A fresh `TypeChecker::new()` defaults to 5000;
+            // passing the CLI value through keeps the flag
+            // meaningful on the `--typecheck` / `--audit` paths.
+            .with_verifier_timeout_ms(verifier_timeout_ms);
         // RES-080: pass the source filename so per-statement errors
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
@@ -5228,6 +5234,15 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
             stats.requires_discharged_by_z3
         );
     }
+    // RES-137: timeouts sit alongside the runtime-retained
+    // counter — the yellow bar of "we tried and gave up." Only
+    // printed when non-zero so the common case stays tidy.
+    if stats.verifier_timeouts > 0 {
+        println!(
+            "    of which timed out:                     \x1B[33m{}\x1B[0m",
+            stats.verifier_timeouts
+        );
+    }
     println!(
         "  call-site requires left for runtime:      \x1B[33m{} / {}\x1B[0m",
         stats.requires_left_for_runtime, total_callsite
@@ -5254,6 +5269,9 @@ fn main() {
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
+    // RES-137: per-query Z3 solver timeout in milliseconds. 0 means
+    // "no timeout". Default 5000 matches the ticket's recommendation.
+    let mut verifier_timeout_ms: u32 = 5000;
     let mut filename = "";
 
     // Simple argument parsing
@@ -5294,6 +5312,31 @@ fn main() {
                 // the logos-lexer feature path — both go through
                 // `Lexer::new` + `next_token_with_span`.
                 dump_tokens = true;
+            } else if arg == "--verifier-timeout-ms" {
+                // RES-137: --verifier-timeout-ms <N> overrides the
+                // per-Z3-query budget. `0` disables the timeout.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!(
+                        "Error: --verifier-timeout-ms requires a positive integer argument (ms)"
+                    );
+                    std::process::exit(2);
+                }
+                verifier_timeout_ms = args[i].parse().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: --verifier-timeout-ms expects a u32, got {:?}",
+                        args[i]
+                    );
+                    std::process::exit(2);
+                });
+            } else if let Some(val) = arg.strip_prefix("--verifier-timeout-ms=") {
+                verifier_timeout_ms = val.parse().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: --verifier-timeout-ms expects a u32, got {:?}",
+                        val
+                    );
+                    std::process::exit(2);
+                });
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -5354,6 +5397,7 @@ fn main() {
                 emit_cert_dir.as_deref(),
                 use_vm,
                 use_jit,
+                verifier_timeout_ms,
             ) {
                 Ok(_) => {
                     println!("Program executed successfully");

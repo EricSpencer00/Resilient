@@ -80,22 +80,55 @@ pub fn prove_with_certificate_and_counterexample(
     expr: &Node,
     bindings: &HashMap<String, i64>,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>) {
+    let (v, c, cx, _timed_out) = prove_with_timeout(expr, bindings, 0);
+    (v, c, cx)
+}
+
+/// RES-137: like `prove_with_certificate_and_counterexample` but
+/// with a per-query wall-clock timeout in milliseconds. A value of
+/// 0 disables the timeout (use the solver's default, which is
+/// unlimited).
+///
+/// The fourth return slot is `true` when Z3 reported `Unknown` —
+/// i.e. the tautology check timed out. Callers treat this the same
+/// as the existing `None` verdict (not proven → runtime check
+/// retained) but get enough signal to emit a hint diagnostic and
+/// to bump the `timed-out` audit counter.
+pub fn prove_with_timeout(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
 
     // Translate the expression to a Z3 boolean.
     let formula = match translate_bool(&ctx, expr, bindings) {
         Some(f) => f,
-        None => return (None, None, None),
+        None => return (None, None, None, false),
+    };
+
+    // RES-137: apply the per-query timeout to both solvers below.
+    // Z3's `"timeout"` param is in milliseconds; 0 disables it.
+    let apply_timeout = |solver: &z3::Solver<'_>| {
+        if timeout_ms > 0 {
+            let mut params = z3::Params::new(&ctx);
+            params.set_u32("timeout", timeout_ms);
+            solver.set_params(&params);
+        }
     };
 
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
     // is always true regardless of any free variables.
     let solver = z3::Solver::new(&ctx);
+    apply_timeout(&solver);
     let negated = formula.not();
     solver.assert(&negated);
     let check = solver.check();
     let tautology = matches!(check, z3::SatResult::Unsat);
+    // RES-137: Z3 returns Unknown when the timeout fires (or when
+    // the theory doesn't decide — QF_NIA, for instance).
+    let timed_out = matches!(check, z3::SatResult::Unknown);
 
     // RES-136: extract a counterexample whenever the negated formula
     // is satisfiable — the model is an assignment that falsifies the
@@ -139,20 +172,21 @@ pub fn prove_with_certificate_and_counterexample(
         smt2.push_str(&format!("(assert {})\n", negated));
         smt2.push_str("(check-sat)\n");
 
-        return (Some(true), Some(ProofCertificate { smt2 }), None);
+        return (Some(true), Some(ProofCertificate { smt2 }), None, false);
     }
 
     // Contradiction check: is `formula` unsatisfiable? If yes, the
     // contract can never hold.
     let solver = z3::Solver::new(&ctx);
+    apply_timeout(&solver);
     solver.assert(&formula);
     let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
 
     if contradiction {
-        return (Some(false), None, counterexample);
+        return (Some(false), None, counterexample, false);
     }
 
-    (None, None, counterexample)
+    (None, None, counterexample, timed_out)
 }
 
 /// RES-136: harvest identifier assignments from a satisfied Z3
@@ -542,6 +576,59 @@ mod tests {
             cx.contains("a =") || cx.contains("b ="),
             "counterexample should name at least one free var; got: {:?}",
             cx,
+        );
+    }
+
+    // --- RES-137: per-query timeout ---
+
+    #[test]
+    fn timeout_returns_timed_out_flag_on_hard_nia() {
+        // Construct a non-linear integer arithmetic obligation that
+        // Z3 can't decide in the default QF_NIA fragment without
+        // significant work. `x * x = 2 * y * y + 3` (a variant of
+        // Pell-style / norm-form equations) has integer solutions
+        // that Z3's decision procedures won't exhaust quickly.
+        //
+        // With a 1ms timeout, Z3 should return Unknown and the
+        // fourth return slot should be `true`. With no timeout,
+        // Z3 might eventually settle (on this machine) — so we
+        // only assert the timed-out path, not the unlimited path.
+        let no_b = HashMap::new();
+        // `x * x != 2 * y * y + 3` as an asserted-tautology query.
+        // The negated-formula check forces Z3 to reason about the
+        // full integer plane. A 1-ms budget is plenty to fire the
+        // timeout before the solver finds its answer.
+        let x = ident("x");
+        let y = ident("y");
+        let expr = infix(
+            infix(x.clone(), "*", x.clone()),
+            "!=",
+            infix(
+                infix(int(2), "*", infix(y.clone(), "*", y.clone())),
+                "+",
+                int(3),
+            ),
+        );
+        let (_verdict, _cert, _cx, timed_out) =
+            prove_with_timeout(&expr, &no_b, 1);
+        assert!(
+            timed_out,
+            "expected the 1ms budget to trigger Z3's Unknown return"
+        );
+    }
+
+    #[test]
+    fn timeout_zero_disables_timeout() {
+        // `x + 0 == x` is a straightforward tautology Z3 closes in
+        // microseconds; the 0 (unlimited) timeout argument must
+        // preserve the existing success path.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        let (verdict, _cert, _cx, timed_out) = prove_with_timeout(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true));
+        assert!(
+            !timed_out,
+            "unlimited timeout should not report timed_out"
         );
     }
 }
