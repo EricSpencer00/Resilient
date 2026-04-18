@@ -2726,6 +2726,11 @@ impl Parser {
 
         self.next_token(); // skip '{'
         loop {
+            // Capture the span of the field-name token so a
+            // shorthand expansion's `Identifier` carries the
+            // correct source position (the original field name's
+            // location, not some synthetic blank span).
+            let fname_span = self.span_at_current();
             let fname = match &self.current_token {
                 Token::Identifier(n) => n.clone(),
                 _ => {
@@ -2738,6 +2743,31 @@ impl Parser {
                 }
             };
             self.next_token();
+            // RES-154: shorthand desugar. `Point { x, y }` expands
+            // to `Point { x: x, y: y }` — if the field name is
+            // followed directly by `,` or `}` instead of `:`, we
+            // synthesize an `Identifier` value referring to the
+            // same name. The typechecker / interpreter stay
+            // ignorant of the sugar; unknown-identifier diagnostics
+            // surface naturally if the name isn't bound in scope.
+            if self.current_token == Token::Comma
+                || self.current_token == Token::RightBrace
+            {
+                let value = Node::Identifier {
+                    name: fname.clone(),
+                    span: fname_span,
+                };
+                fields.push((fname, value));
+                if self.current_token == Token::Comma {
+                    self.next_token();
+                    if self.current_token == Token::RightBrace {
+                        break; // trailing-comma-before-`}`
+                    }
+                    continue; // another field follows
+                } else {
+                    break; // `}` closes the literal
+                }
+            }
             if self.current_token != Token::Colon {
                 let tok = self.current_token.clone();
                 self.record_error(format!(
@@ -7500,6 +7530,160 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-154: struct-literal field shorthand ---
+
+    /// Extract the (name, value) pairs of the first `StructLiteral`
+    /// reached by a depth-first walk. Returns `None` if the program
+    /// has no struct literals or if walk hits an unsupported variant
+    /// before reaching one.
+    fn first_struct_literal_fields(program: &Node) -> Option<Vec<(String, Node)>> {
+        fn walk(n: &Node) -> Option<Vec<(String, Node)>> {
+            match n {
+                Node::StructLiteral { fields, .. } => Some(fields.clone()),
+                Node::Program(stmts) => stmts.iter().find_map(|s| walk(&s.node)),
+                Node::Function { body, .. } => walk(body),
+                Node::Block { stmts, .. } => stmts.iter().find_map(walk),
+                Node::LetStatement { value, .. } => walk(value),
+                Node::IfStatement { consequence, alternative, .. } => {
+                    walk(consequence).or_else(|| alternative.as_ref().and_then(|a| walk(a)))
+                }
+                _ => None,
+            }
+        }
+        walk(program)
+    }
+
+    #[test]
+    fn struct_literal_shorthand_desugars_to_field_name_identifier() {
+        // `Point { x, y }` expands to `Point { x: x, y: y }` — the
+        // AST stores two `(name, Node::Identifier { name })` pairs.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let x = 1; let y = 2;\n\
+                let p = new Point { x, y };\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let fields = first_struct_literal_fields(&program).expect("struct literal");
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].0, "x");
+        assert!(
+            matches!(&fields[0].1, Node::Identifier { name, .. } if name == "x"),
+            "expected Identifier(x) for x shorthand, got {:?}",
+            fields[0].1
+        );
+        assert_eq!(fields[1].0, "y");
+        assert!(
+            matches!(&fields[1].1, Node::Identifier { name, .. } if name == "y"),
+            "expected Identifier(y) for y shorthand, got {:?}",
+            fields[1].1
+        );
+    }
+
+    #[test]
+    fn struct_literal_shorthand_mixed_with_explicit_field() {
+        // `Point { x, y: z }` — shorthand first, explicit second.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let x = 1; let z = 9;\n\
+                let p = new Point { x, y: z };\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let fields = first_struct_literal_fields(&program).expect("struct literal");
+        assert_eq!(fields.len(), 2);
+        assert!(
+            matches!(&fields[0].1, Node::Identifier { name, .. } if name == "x"),
+            "first field should be shorthand"
+        );
+        // Second field is explicit `y: z` — value is Identifier(z),
+        // distinct from the field name `y`.
+        assert_eq!(fields[1].0, "y");
+        assert!(
+            matches!(&fields[1].1, Node::Identifier { name, .. } if name == "z"),
+            "second field should be explicit `y: z`, got {:?}",
+            fields[1].1
+        );
+    }
+
+    #[test]
+    fn struct_literal_shorthand_explicit_then_shorthand() {
+        // Order flipped: explicit first, shorthand second — ensures
+        // the parser's comma-handling works in both cases.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let x = 1; let y = 2;\n\
+                let p = new Point { x: 7, y };\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let fields = first_struct_literal_fields(&program).expect("struct literal");
+        assert_eq!(fields.len(), 2);
+        // First is explicit int literal
+        assert!(
+            matches!(&fields[0].1, Node::IntegerLiteral { value: 7, .. }),
+            "first field should be IntegerLiteral(7), got {:?}",
+            fields[0].1
+        );
+        // Second is shorthand Identifier(y)
+        assert!(
+            matches!(&fields[1].1, Node::Identifier { name, .. } if name == "y")
+        );
+    }
+
+    #[test]
+    fn struct_literal_shorthand_with_trailing_comma() {
+        // Trailing comma after a shorthand must be accepted — same
+        // as the explicit-form's trailing-comma policy.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let x = 1; let y = 2;\n\
+                let p = new Point { x, y, };\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (_program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+    }
+
+    #[test]
+    fn struct_literal_shorthand_unbound_name_errors_at_runtime() {
+        // No `x` / `y` in scope — the desugared form produces an
+        // "Identifier not found" at eval, which is what the
+        // ticket's acceptance criterion specifies.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn main(int _d) {\n\
+                let p = new Point { x, y };\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("Identifier not found"),
+            "expected unbound-identifier diagnostic, got: {}",
+            err
+        );
     }
 
     // --- RES-152: Bytes value type + builtins ---

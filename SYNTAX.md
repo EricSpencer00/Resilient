@@ -260,6 +260,37 @@ RES-130 change is a one-time break for pre-1.0 code that relied
 on silent coercion; the errors explicitly point users at the
 `to_float` / `to_int` hint.
 
+## Structs
+
+```rust
+struct Point {
+    int x,
+    int y,
+}
+
+fn main(int _d) {
+    let x = 3;
+    let y = 4;
+
+    // Explicit form — field name followed by colon and value.
+    let a = new Point { x: x, y: y };
+
+    // Shorthand (RES-154): when the value expression is simply the
+    // field's name, drop the `:<name>`. Equivalent to the explicit
+    // form above.
+    let b = new Point { x, y };
+
+    // Shorthand and explicit can mix in the same literal, in any
+    // order:
+    let c = new Point { x, y: y + 1 };
+}
+```
+
+The shorthand is pure parser sugar — the AST reconstructs the
+`field -> Identifier(name)` pair before typechecking — so an
+unbound name produces the same `Identifier not found` diagnostic as
+any other use.
+
 ## Data Types
 
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
@@ -267,6 +298,7 @@ on silent coercion; the errors explicitly point users at the
   `0xDEAD_BEEF`.
 - `float`: 64-bit floating point
 - `string`: UTF-8 text; `len(s)` returns scalar count
+- `bytes`: raw byte sequence, `b"\x00\x01abc"` literal (RES-152)
 - `bool`: `true` / `false`
 
 ## Operators
