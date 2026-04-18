@@ -265,6 +265,118 @@ fn lsp_did_open_publishes_diagnostics() {
 }
 
 #[test]
+fn lsp_document_symbol_lists_outline() {
+    // RES-185: round-trip through the real LSP server —
+    // initialize → didOpen a 3-fn + 1-struct program →
+    // textDocument/documentSymbol → assert the response lists
+    // all four symbols.
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // initialize
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    stdin.write_all(frame(init).as_bytes()).unwrap();
+    stdin.flush().ok();
+    let init_deadline = Instant::now() + Duration::from_secs(5);
+    let init_resp = read_one_message(&mut stdout, init_deadline)
+        .expect("read initialize response");
+    // Capability smoke-check — the server should advertise
+    // documentSymbolProvider.
+    assert!(
+        init_resp.contains(r#""documentSymbolProvider":true"#),
+        "expected documentSymbolProvider:true in capabilities, got:\n{}",
+        init_resp
+    );
+
+    // initialized
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).unwrap();
+
+    // didOpen with a 3-fn + 1-struct program.
+    let uri = "file:///tmp/lsp_docsym_test.rs";
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"fn alpha() {{ return 0; }}\nstruct Point {{ int x, int y }}\nfn beta(int n) {{ return n; }}\nfn gamma() {{ return 1; }}\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // Drain the publishDiagnostics notification so it doesn't
+    // land as the next read's body.
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read publishDiagnostics");
+
+    // textDocument/documentSymbol request.
+    let docsym_req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
+    );
+    stdin.write_all(frame(&docsym_req).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // Read the id:2 response specifically (skip any other
+    // notifications the server might emit in the meantime).
+    let response = read_until(
+        &mut stdout,
+        |body| body.contains(r#""id":2"#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read documentSymbol response");
+
+    // All four symbol names should appear in the response body.
+    for name in ["alpha", "Point", "beta", "gamma"] {
+        let needle = format!(r#""name":"{name}""#);
+        assert!(
+            response.contains(&needle),
+            "expected `{needle}` in documentSymbol response:\n{response}"
+        );
+    }
+
+    // Kind field — SymbolKind::FUNCTION is 12, STRUCT is 23 in
+    // the LSP spec. Pin at least one of each to verify the
+    // kinds are threading through.
+    assert!(
+        response.contains(r#""kind":12"#),
+        "expected a FUNCTION kind (12) in: {response}"
+    );
+    assert!(
+        response.contains(r#""kind":23"#),
+        "expected a STRUCT kind (23) in: {response}"
+    );
+
+    // exit + clean shutdown.
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    let _ = stdin.write_all(frame(exit).as_bytes());
+    drop(stdin);
+
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > exit_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("LSP server did not exit within 3s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+    }
+}
+
+#[test]
 fn lsp_did_change_republishes_diagnostics() {
     // RES-094: simulate the editor flow — clean program → buggy
     // edit → fixed edit. Each transition triggers a fresh
