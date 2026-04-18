@@ -1,7 +1,7 @@
 ---
 id: RES-176
 title: RISC-V rv32imac no_std target: `resilient-runtime` builds clean
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -40,3 +40,4 @@ anyone targeting HiFive / GD32V / ESP32-C3 chips.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
