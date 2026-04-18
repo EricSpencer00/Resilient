@@ -35,6 +35,10 @@ mod unify;
 // the offending source span). Used by the driver when formatting
 // parser / typechecker / interpreter / VM errors.
 mod diag;
+// RES-205: `resilient pkg init <name>` — project scaffolding.
+// Standalone from the compiler pipeline; lives here so the single
+// `resilient` binary carries it alongside the runtime.
+mod pkg_init;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -7627,9 +7631,82 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
 
 // Example programs
 
+/// RES-205: `resilient pkg <sub>` subcommand dispatcher. Runs
+/// before the file-execution arg parser so the `pkg` verb doesn't
+/// have to fight the existing flag grammar. Returns `Some(code)`
+/// with the exit status if a `pkg` subcommand matched (and the
+/// caller should exit); `None` if no `pkg` verb was seen and main
+/// should fall through to its normal flow.
+fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("pkg") {
+        return None;
+    }
+    match args.get(2).map(|s| s.as_str()) {
+        Some("init") => {
+            // `pkg init <name>` — the only subcommand for now.
+            // Future `pkg add`, `pkg build`, etc. will branch here.
+            let name = match args.get(3) {
+                Some(n) => n.as_str(),
+                None => {
+                    eprintln!(
+                        "Error: {}",
+                        pkg_init::PkgInitError::MissingName
+                    );
+                    return Some(2);
+                }
+            };
+            let cwd = match env::current_dir() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Error: could not read current directory: {}", e);
+                    return Some(2);
+                }
+            };
+            match pkg_init::scaffold_in(&cwd, name) {
+                Ok(scaffold) => {
+                    println!(
+                        "Created {} at {}",
+                        name,
+                        scaffold.root.display()
+                    );
+                    for p in &scaffold.wrote {
+                        println!("  wrote {}", p.display());
+                    }
+                    println!("\nNext steps:");
+                    println!("  cd {}", name);
+                    println!("  resilient src/main.rs");
+                    Some(0)
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    Some(1)
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!(
+                "Error: unknown pkg subcommand `{}`. Known: init",
+                other
+            );
+            Some(2)
+        }
+        None => {
+            eprintln!("Error: `resilient pkg` requires a subcommand. Known: init");
+            Some(2)
+        }
+    }
+}
+
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
+
+    // RES-205: intercept `pkg` subcommands before the normal flow.
+    // Exits directly on handled verbs so the rest of main stays
+    // focused on the compiler driver.
+    if let Some(code) = dispatch_pkg_subcommand(&args) {
+        std::process::exit(code);
+    }
 
     let mut type_check = false;
     let mut audit = false;
