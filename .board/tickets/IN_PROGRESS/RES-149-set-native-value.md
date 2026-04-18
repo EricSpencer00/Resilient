@@ -1,7 +1,7 @@
 ---
 id: RES-149
 title: `Set<T>` native value type, mirror of Map
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -33,3 +33,4 @@ With Map landing in RES-148, Set is cheap to add and covers the
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
