@@ -1,7 +1,7 @@
 ---
 id: RES-154
 title: Struct literal shorthand `Point { x, y }`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G12
 created: 2026-04-17
@@ -33,3 +33,4 @@ typechecker sees it.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
