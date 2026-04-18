@@ -1,0 +1,26 @@
+[package]
+name = "resilient-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# RES-201: `libfuzzer-sys` wraps libFuzzer so we can write the
+# target as a plain Rust `fuzz_target!` macro. Tracks the cargo-
+# fuzz recommended pin.
+libfuzzer-sys = "0.4"
+
+# Both targets shell out to the built `resilient` binary (since
+# `resilient` is binary-only; there's no lib surface to link
+# against). `tempfile` gives us the scratch .rs files.
+tempfile = "3"
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false

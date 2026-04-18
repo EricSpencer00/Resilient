@@ -1,0 +1,74 @@
+# RES-201: cargo-fuzz workflow for the parser target.
+#
+# Manual dispatch only — fuzzing is bursty work, not per-PR. Each
+# target runs for 30 seconds against its own corpus directory
+# (first run starts empty; subsequent runs would pick up seeded
+# corpora if we were to commit them, which we intentionally don't
+# today).
+#
+# RES-111 was expected to create this workflow with a `lex` target;
+# that ticket bailed, so RES-201 brings both workflow and its one
+# target up at once. When RES-111 lands (or is resequenced), its
+# `lex` target slots into the matrix below with zero workflow
+# changes.
+
+name: fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "Per-target fuzz duration in seconds"
+        required: false
+        default: "30"
+
+jobs:
+  fuzz:
+    name: cargo-fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - parse
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo + fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+            fuzz/corpus
+          key: fuzz-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.toml', 'fuzz/fuzz_targets/**') }}
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build resilient (release)
+        run: cargo build --release --manifest-path resilient/Cargo.toml
+
+      - name: Run ${{ matrix.target }} fuzzer for ${{ github.event.inputs.duration_seconds }}s
+        env:
+          RESILIENT_FUZZ_BIN: ${{ github.workspace }}/resilient/target/release/resilient
+        working-directory: fuzz
+        run: |
+          # Per-input timeout: 1 second. libFuzzer records inputs
+          # that exceed it as timeouts (surfaced as crashes).
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${{ github.event.inputs.duration_seconds }} \
+            -timeout=1
+
+      - name: Upload any crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 30
