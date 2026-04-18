@@ -852,6 +852,16 @@ impl TypeChecker {
                         }
                     })?;
                 }
+
+                // RES-191: after regular type-checking, enforce the
+                // `@pure` annotation. Collect the set of fn names
+                // that are declared `@pure`, then re-walk each of
+                // their bodies flagging any forbidden operation
+                // (impure builtin, unannotated user-fn call, etc.).
+                // Failures prepend the same file:line:col prefix as
+                // above so users land on the violating site.
+                check_program_purity(statements, source_path)?;
+
                 Ok(result_type)
             }
             _ => Err("Expected program node".to_string()),
@@ -1805,5 +1815,458 @@ impl TypeChecker {
             // reject unknown type names, but at MVP we're permissive.
             other => Ok(Type::Struct(other.to_string())),
         }
+    }
+}
+
+// ============================================================
+// RES-191: `@pure` purity checker.
+// ============================================================
+//
+// Impurity model:
+// - I/O (println, print, input, file_*) is impure.
+// - Nondeterminism (clock_ms, random_int/float) is impure.
+// - Environment reads (env) are impure (external state).
+// - Live-block-state readers (live_retries, live_total_*) are
+//   impure — they observe runtime retry counters.
+// - Everything else in the builtin set is pure.
+//
+// An unannotated user fn called from a `@pure` fn is ALWAYS a
+// violation per the ticket ("call unannotated user fns" →
+// rejected). Pure-to-pure calls are fine, including mutual
+// recursion.
+//
+// Implementation:
+// 1. Walk the program top-level twice: first to collect
+//    `pure_fns: HashSet<String>`, then to check each `@pure` fn's
+//    body.
+// 2. `check_body_purity` is a recursive AST walker. At every
+//    `CallExpression`, look up the callee against the impure-
+//    builtin set + the pure-fn set; emit a violation message on
+//    mismatch.
+// 3. `LiveBlock` (live ... {}) is impure by nature — retries are
+//    observable behaviour. A `@pure` fn containing one is a
+//    violation too.
+
+/// Names of builtin functions the runtime provides that have
+/// observable side effects or nondeterminism. Any `@pure` fn
+/// that calls one of these is rejected at type-check time.
+///
+/// Keep in sync with `resilient/src/main.rs::BUILTINS` — adding a
+/// new I/O / clock / env builtin there means adding it here.
+const IMPURE_BUILTINS: &[&str] = &[
+    // RES-004 / RES-144: stdio.
+    "println", "print", "input",
+    // RES-147: monotonic clock.
+    "clock_ms",
+    // RES-150: seedable PRNG — nondeterministic from the caller's
+    // point of view even though the seed pins it globally.
+    "random_int", "random_float",
+    // RES-143: disk I/O.
+    "file_read", "file_write",
+    // RES-151: env-var reads depend on process state outside
+    // the fn.
+    "env",
+    // RES-138 / RES-141: retry-counter readers — observe runtime
+    // state that isn't the fn's parameters.
+    "live_retries", "live_total_retries", "live_total_exhaustions",
+];
+
+/// RES-191: top-level entry for the purity pass. Walks the
+/// program's statement list once to collect `@pure` fn names
+/// (their declarations include the `pure: bool` flag per the
+/// ticket), then re-walks each declared-pure fn's body and
+/// reports the first violation.
+///
+/// Errors use the `<path>:<line>:<col>: <msg>` prefix convention
+/// from RES-080 when a useful span is available.
+fn check_program_purity(
+    statements: &[crate::span::Spanned<Node>],
+    source_path: &str,
+) -> Result<(), String> {
+    // Optimistic assumption: every `@pure` fn is pure until proven
+    // otherwise. Populate the set so mutual-recursion checks
+    // succeed.
+    let mut pure_fns: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for stmt in statements {
+        if let Node::Function { name, pure: true, .. } = &stmt.node {
+            pure_fns.insert(name.clone());
+        }
+    }
+
+    // Second pass: check each pure fn's body.
+    for stmt in statements {
+        if let Node::Function { name, body, pure: true, .. } = &stmt.node
+            && let Err(reason) = check_body_purity(body, name, &pure_fns)
+        {
+            let (line, col) = (stmt.span.start.line, stmt.span.start.column);
+            return Err(if line == 0 {
+                format!("@pure fn `{}`: {}", name, reason)
+            } else {
+                format!(
+                    "{}:{}:{}: @pure fn `{}`: {}",
+                    source_path, line, col, name, reason
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+/// RES-191: recursive AST walker that enforces the purity rules
+/// inside a fn body. Returns `Err(<reason>)` with the violating
+/// construct described for the caller to prefix with the fn's
+/// span. On success every reachable call / live block was a
+/// pure-to-pure edge.
+///
+/// `pure_fns` is the set of user fn names that have been declared
+/// `@pure` — callees in that set pass; callees outside (user fn
+/// without annotation) fail. `fn_name` is currently used only by
+/// recursive self-calls; it's threaded through so a future
+/// extension (e.g. "don't recurse into nested fn decls of a
+/// different name") can read it without a signature change —
+/// hence the `only_used_in_recursion` allow.
+#[allow(clippy::only_used_in_recursion)]
+fn check_body_purity(
+    node: &Node,
+    fn_name: &str,
+    pure_fns: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    match node {
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                check_body_purity(s, fn_name, pure_fns)?;
+            }
+        }
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            check_body_purity(value, fn_name, pure_fns)?;
+        }
+        Node::ReturnStatement { value: Some(value), .. } => {
+            check_body_purity(value, fn_name, pure_fns)?;
+        }
+        Node::ReturnStatement { value: None, .. } => {}
+        Node::IfStatement { condition, consequence, alternative, .. } => {
+            check_body_purity(condition, fn_name, pure_fns)?;
+            check_body_purity(consequence, fn_name, pure_fns)?;
+            if let Some(a) = alternative {
+                check_body_purity(a, fn_name, pure_fns)?;
+            }
+        }
+        Node::WhileStatement { condition, body, .. } => {
+            check_body_purity(condition, fn_name, pure_fns)?;
+            check_body_purity(body, fn_name, pure_fns)?;
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            check_body_purity(iterable, fn_name, pure_fns)?;
+            check_body_purity(body, fn_name, pure_fns)?;
+        }
+        Node::Assert { condition, .. } => {
+            check_body_purity(condition, fn_name, pure_fns)?;
+        }
+        Node::LiveBlock { .. } => {
+            // live-blocks retry on failure — that's observable,
+            // non-pure behaviour by construction.
+            return Err("contains a `live` block (retries are \
+                        observable side effects)".to_string());
+        }
+        Node::InfixExpression { left, right, .. } => {
+            check_body_purity(left, fn_name, pure_fns)?;
+            check_body_purity(right, fn_name, pure_fns)?;
+        }
+        Node::PrefixExpression { right, .. } => {
+            check_body_purity(right, fn_name, pure_fns)?;
+        }
+        Node::CallExpression { function, arguments, .. } => {
+            // Recurse into args first (nested calls get checked too).
+            for a in arguments {
+                check_body_purity(a, fn_name, pure_fns)?;
+            }
+            // Determine the callee name. We only resolve bare
+            // identifier calls; `(expr)(...)` style indirect
+            // calls aren't used in pure code paths today. Method
+            // calls flow through FieldAccess and get the
+            // conservative "unknown callee — reject" treatment.
+            if let Node::Identifier { name: callee, .. } = function.as_ref() {
+                if IMPURE_BUILTINS.contains(&callee.as_str()) {
+                    return Err(format!(
+                        "calls impure builtin `{}`", callee
+                    ));
+                }
+                // Pure-to-pure is fine.
+                if pure_fns.contains(callee) {
+                    return Ok(());
+                }
+                // Known pure builtins are implicitly fine. The
+                // "pure builtin" set is the complement of
+                // `IMPURE_BUILTINS` over the BUILTINS table —
+                // rather than maintain two lists, we treat any
+                // non-impure builtin name as implicitly pure.
+                // User fns NOT declared `@pure` fall through to
+                // the unannotated-user-fn error path.
+                if is_known_pure_builtin(callee) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "calls unannotated fn `{}`", callee
+                ));
+            }
+            // Indirect / method callee — can't resolve statically.
+            // Conservatively reject so @pure is meaningful.
+            check_body_purity(function, fn_name, pure_fns)?;
+            return Err(
+                "calls a non-identifier callee (method or computed); \
+                 only bare-identifier calls to pure fns are allowed"
+                    .to_string()
+            );
+        }
+        Node::FieldAccess { target, .. } => {
+            check_body_purity(target, fn_name, pure_fns)?;
+        }
+        Node::FieldAssignment { target, value, .. } => {
+            check_body_purity(target, fn_name, pure_fns)?;
+            check_body_purity(value, fn_name, pure_fns)?;
+            // Mutating a field is observable — disallow.
+            return Err(
+                "mutates a struct field (field assignment is a side effect)".to_string()
+            );
+        }
+        Node::Assignment { value, .. } => {
+            check_body_purity(value, fn_name, pure_fns)?;
+        }
+        Node::IndexExpression { target, index, .. } => {
+            check_body_purity(target, fn_name, pure_fns)?;
+            check_body_purity(index, fn_name, pure_fns)?;
+        }
+        Node::IndexAssignment { target, index, value, .. } => {
+            check_body_purity(target, fn_name, pure_fns)?;
+            check_body_purity(index, fn_name, pure_fns)?;
+            check_body_purity(value, fn_name, pure_fns)?;
+            return Err(
+                "mutates an array/map element (index assignment is a side effect)".to_string()
+            );
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                check_body_purity(i, fn_name, pure_fns)?;
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                check_body_purity(v, fn_name, pure_fns)?;
+            }
+        }
+        Node::Match { scrutinee, arms, .. } => {
+            check_body_purity(scrutinee, fn_name, pure_fns)?;
+            // Each arm is `(pattern, guard?, body)`. Recurse into
+            // the optional guard and the body.
+            for (_pat, guard, body) in arms {
+                if let Some(g) = guard {
+                    check_body_purity(g, fn_name, pure_fns)?;
+                }
+                check_body_purity(body, fn_name, pure_fns)?;
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            check_body_purity(expr, fn_name, pure_fns)?;
+        }
+        Node::TryExpression { expr, .. } => {
+            check_body_purity(expr, fn_name, pure_fns)?;
+        }
+        // Pure literals / identifier reads / etc — no work.
+        Node::IntegerLiteral { .. }
+        | Node::FloatLiteral { .. }
+        | Node::StringLiteral { .. }
+        | Node::BooleanLiteral { .. }
+        | Node::BytesLiteral { .. }
+        | Node::Identifier { .. }
+        | Node::DurationLiteral { .. } => {}
+        // Declarations inside a fn body are unusual but not
+        // inherently impure — recurse to be thorough.
+        Node::Function { body, .. } => {
+            check_body_purity(body, fn_name, pure_fns)?;
+        }
+        // Everything else: default to "not inspected; not known-
+        // impure". If a new AST variant needs treatment, add an
+        // arm. Until then, be lenient rather than over-strict.
+        _ => {}
+    }
+    Ok(())
+}
+
+/// RES-191: helper mirroring the split in `IMPURE_BUILTINS`. We
+/// don't want to hard-code the full pure-builtin list (bit-rot
+/// risk — new builtins would silently be treated as user fns);
+/// instead we mark the interpreter's builtin names as pure by
+/// default, leaving `IMPURE_BUILTINS` as the authoritative list
+/// of exceptions.
+///
+/// Input is the callee name. Returns true iff the name is one of
+/// the pure-by-default builtins we ship.
+fn is_known_pure_builtin(name: &str) -> bool {
+    // Keep this list in sync with `resilient/src/main.rs::BUILTINS`
+    // minus the names in `IMPURE_BUILTINS`.
+    const PURE_BUILTINS: &[&str] = &[
+        // Math.
+        "abs", "min", "max", "sqrt", "pow", "floor", "ceil",
+        "to_float", "to_int",
+        "sin", "cos", "tan", "ln", "log", "exp",
+        // String/collection.
+        "len", "push", "pop", "slice", "split", "trim", "contains",
+        "to_upper", "to_lower", "replace", "format",
+        // Result helpers.
+        "Ok", "Err", "is_ok", "is_err", "unwrap", "unwrap_err",
+        // Map/Set/Bytes.
+        "map_new", "map_insert", "map_get", "map_remove",
+        "map_keys", "map_len",
+        "set_new", "set_insert", "set_remove", "set_has",
+        "set_len", "set_items",
+        "bytes_len", "bytes_slice", "byte_at",
+    ];
+    PURE_BUILTINS.contains(&name)
+}
+
+#[cfg(test)]
+mod purity_tests {
+    use super::*;
+    use crate::parse;
+
+    /// Pull the statement list out of a parsed program.
+    fn stmts(src: &str) -> Vec<crate::span::Spanned<Node>> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(s) => s,
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    // ---------- AC: success ----------
+
+    #[test]
+    fn pure_fn_calling_only_arithmetic_passes() {
+        let src = "@pure fn double(int x) { return x * 2; }\n";
+        let s = stmts(src);
+        check_program_purity(&s, "<t>").expect("should pass");
+    }
+
+    #[test]
+    fn pure_fn_calling_pure_builtin_passes() {
+        let src = "@pure fn f(int x) { return abs(x); }\n";
+        let s = stmts(src);
+        check_program_purity(&s, "<t>").expect("abs is pure");
+    }
+
+    #[test]
+    fn pure_fn_with_struct_construction_passes() {
+        let src = "\
+            struct Point { int x, int y }\n\
+            @pure fn make(int a, int b) { return new Point { x: a, y: b }; }\n";
+        let s = stmts(src);
+        check_program_purity(&s, "<t>").expect("struct construction is pure");
+    }
+
+    // ---------- AC: impure builtin ----------
+
+    #[test]
+    fn pure_fn_calling_println_is_rejected() {
+        let src = "@pure fn f(int x) { println(\"hi\"); return x; }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>").expect_err("println is impure");
+        assert!(
+            err.contains("calls impure builtin `println`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pure_fn_calling_clock_ms_is_rejected() {
+        let src = "@pure fn f() { return clock_ms(); }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>").expect_err("clock_ms is impure");
+        assert!(err.contains("clock_ms"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn pure_fn_calling_file_read_is_rejected() {
+        let src = "@pure fn f() { return file_read(\"x\"); }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>").expect_err("file_read is impure");
+        assert!(err.contains("file_read"), "unexpected error: {err}");
+    }
+
+    // ---------- AC: impure user-fn call ----------
+
+    #[test]
+    fn pure_fn_calling_unannotated_user_fn_is_rejected() {
+        let src = "\
+            fn helper(int x) { return x + 1; }\n\
+            @pure fn f(int x) { return helper(x); }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>")
+            .expect_err("unannotated user fn is rejected");
+        assert!(
+            err.contains("calls unannotated fn `helper`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ---------- AC: mutual recursion between two @pure fns ----------
+
+    #[test]
+    fn two_mutually_recursive_pure_fns_pass() {
+        let src = "\
+            @pure fn a(int n) { return b(n); }\n\
+            @pure fn b(int n) { return a(n); }\n";
+        let s = stmts(src);
+        // Only the purity pass — the main typechecker rejects
+        // forward refs today (orthogonal limitation, see
+        // typechecker.rs `pre-pass` comment at line ~800). The
+        // purity pass itself correctly handles mutual recursion
+        // because the optimistic first pass populates `pure_fns`
+        // with both names.
+        check_program_purity(&s, "<t>")
+            .expect("mutual recursion between two @pure fns is fine");
+    }
+
+    #[test]
+    fn pure_fn_calling_live_block_is_rejected() {
+        // `live` blocks retry on failure — observable from outside.
+        let src = "@pure fn f(int x) { live { return x; } return 0; }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>")
+            .expect_err("live blocks are impure");
+        assert!(err.contains("live"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn unannotated_fn_is_not_checked_for_purity() {
+        // Non-@pure fns are free to do anything; the checker must
+        // leave them alone even if they'd violate purity.
+        let src = "fn noisy() { println(\"hi\"); return 0; }\n";
+        let s = stmts(src);
+        check_program_purity(&s, "<t>")
+            .expect("non-@pure fns bypass the purity checker");
+    }
+
+    // ---------- error message shape ----------
+
+    #[test]
+    fn error_mentions_fn_name_and_violating_site() {
+        let src = "@pure fn noisy(int x) { println(\"hi\"); return x; }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "<t>").unwrap_err();
+        assert!(err.contains("noisy"), "expected fn name in error: {err}");
+        assert!(err.contains("println"), "expected callee name in error: {err}");
+    }
+
+    #[test]
+    fn error_carries_file_path_and_position() {
+        let src = "@pure fn noisy() { println(\"hi\"); return 0; }\n";
+        let s = stmts(src);
+        let err = check_program_purity(&s, "src/thing.rs").unwrap_err();
+        assert!(
+            err.starts_with("src/thing.rs:"),
+            "expected RES-080 prefix `<path>:<line>:<col>:`, got: {err}"
+        );
     }
 }

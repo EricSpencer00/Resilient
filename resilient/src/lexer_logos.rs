@@ -79,6 +79,9 @@ enum Tok {
     #[token(":")] Colon,
     #[token(".")] Dot,
     #[token("?")] Question,
+    // RES-191: attribute prefix (`@pure`, etc.). Emitted as a bare
+    // `@`; the parser reads the following identifier.
+    #[token("@")] At,
 
     // --- block comments: skip via callback ---
     #[regex(r"/\*", block_comment)]
@@ -437,6 +440,7 @@ fn convert(t: Tok) -> Token {
         Tok::Colon => Token::Colon,
         Tok::Dot => Token::Dot,
         Tok::Question => Token::Question,
+        Tok::At => Token::At,
         Tok::HexInt(n) => Token::IntLiteral(n),
         Tok::BinInt(n) => Token::IntLiteral(n),
         Tok::Int(n) => Token::IntLiteral(n),

@@ -140,6 +140,11 @@ enum Token {
     
     /// Prefix logical-not.
     Bang,
+    /// RES-191: attribute prefix — `@pure`, `@inline`, etc. Only
+    /// `@pure` is recognized today; unknown annotations are a
+    /// parse error. Carried as a bare `At` token so the parser
+    /// can read the following identifier and decide what to do.
+    At,
 
     // Other
     Eof,
@@ -227,6 +232,7 @@ impl Token {
             Token::Semicolon => "`;`".to_string(),
             Token::Colon => "`:`".to_string(),
             Token::Bang => "`!`".to_string(),
+            Token::At => "`@`".to_string(),
             Token::Identifier(name) => format!("identifier `{}`", name),
             Token::IntLiteral(v) => format!("integer literal `{}`", v),
             Token::FloatLiteral(v) => format!("float literal `{}`", v),
@@ -525,6 +531,10 @@ impl Lexer {
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,
+            // RES-191: attribute prefix (e.g. `@pure`). The parser
+            // consumes the following identifier; the lexer just
+            // tags the `@` itself.
+            '@' => Token::At,
             '"' => {
                 self.read_char();
                 let str_value = self.read_string();
@@ -927,6 +937,14 @@ enum Node {
         /// RES-088: span of the `fn` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
+        /// RES-191: `@pure` annotation — the fn promises to be
+        /// side-effect-free. The purity checker in
+        /// `typechecker::check_purity` verifies this at type-check
+        /// time; an un-annotated fn defaults to `false` and the
+        /// checker ignores it entirely. A future ticket (RES-192)
+        /// infers purity for unannotated fns.
+        #[allow(dead_code)] // read via pattern destructure in typechecker
+        pure: bool,
     },
     LiveBlock {
         body: Box<Node>,
@@ -1369,6 +1387,10 @@ impl Parser {
     
     fn parse_statement(&mut self) -> Option<Node> {
         match self.current_token {
+            // RES-191: `@pure` (and future attributes) prefix a
+            // function declaration. Dispatched here so the
+            // annotation + fn parse as a unit.
+            Token::At => Some(self.parse_attributed_item()),
             Token::Function => Some(self.parse_function()),
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
@@ -1487,10 +1509,90 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Node {
+        // Default: no `@pure` annotation. The attribute-dispatch
+        // path (see parse_attributed_item) calls
+        // `parse_function_with_pure(true)` instead.
+        self.parse_function_with_pure(false)
+    }
+
+    /// RES-191: parse an attribute prefix (`@pure`) followed by the
+    /// attributed declaration. Only `@pure` is recognized today;
+    /// future attributes (`@inline`, `@deprecated`, …) dispatch
+    /// here. On entry `current_token` is `@`.
+    ///
+    /// Error-recovery strategy: if the attribute name is unknown,
+    /// emit a diagnostic but continue — parse the following item
+    /// without annotation. If the attributed item isn't a `fn`,
+    /// same thing: diagnose and fall through to the generic
+    /// statement parser. That way a user's in-flight file doesn't
+    /// cascade into unrelated parse errors just because of a typo.
+    fn parse_attributed_item(&mut self) -> Node {
+        debug_assert_eq!(self.current_token, Token::At);
+        self.next_token(); // skip '@'
+
+        let attr_name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Expected attribute name after '@', found {}",
+                    tok
+                ));
+                // Best-effort: ignore the broken attribute, try to
+                // parse whatever follows as a normal statement.
+                return self
+                    .parse_statement()
+                    .unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    });
+            }
+        };
+        self.next_token(); // skip attribute name
+
+        let pure_flag = match attr_name.as_str() {
+            "pure" => true,
+            other => {
+                self.record_error(format!(
+                    "Unknown attribute `@{}`. Known: @pure",
+                    other
+                ));
+                // Fall through — treat as if no attribute was
+                // present; the fn still parses.
+                false
+            }
+        };
+
+        // Only `fn` may be annotated today. Reject other targets
+        // with a clear error.
+        if self.current_token != Token::Function {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "@{} may only annotate a `fn` declaration, found {}",
+                attr_name, tok
+            ));
+            // Best-effort recovery: parse whatever's next so the
+            // rest of the file still parses.
+            return self
+                .parse_statement()
+                .unwrap_or(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                });
+        }
+
+        self.parse_function_with_pure(pure_flag)
+    }
+
+    /// RES-191: shared parser for `fn ...` with an explicit `pure`
+    /// flag. Called from `parse_function` (no annotation → pure=false)
+    /// and from `parse_attributed_item` when a `@pure` prefix
+    /// precedes the `fn`.
+    fn parse_function_with_pure(&mut self, pure: bool) -> Node {
         // RES-088: capture the `fn` keyword's span before advancing.
         let fn_span = self.span_at_current();
         self.next_token(); // Skip 'fn'
-        
+
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
             _ => {
@@ -1500,9 +1602,9 @@ impl Parser {
                 String::from("error_function")
             },
         };
-        
+
         self.next_token(); // Skip name
-        
+
         // Check if we have a left parenthesis as expected
         if self.current_token != Token::LeftParen {
             // For better error messages, provide more context
@@ -1511,12 +1613,12 @@ impl Parser {
             } else {
                 self.record_error(format!("Expected '(' after function name '{}'", name));
             }
-            
+
             // Try to recover by skipping to the opening brace
             while self.current_token != Token::LeftBrace && self.current_token != Token::Eof {
                 self.next_token();
             }
-            
+
             if self.current_token == Token::Eof {
                 return Node::Function {
                     name,
@@ -1526,6 +1628,7 @@ impl Parser {
                     ensures: Vec::new(),
                     return_type: None,
                     span: fn_span,
+                    pure,
                 };
             }
 
@@ -1537,7 +1640,8 @@ impl Parser {
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 return_type: None,
-            span: fn_span
+                span: fn_span,
+                pure,
             };
         }
 
@@ -1569,6 +1673,7 @@ impl Parser {
                     ensures,
                     return_type,
                     span: fn_span,
+                    pure,
                 };
             }
         }
@@ -1582,7 +1687,8 @@ impl Parser {
             requires,
             ensures,
             return_type,
-            span: fn_span
+            span: fn_span,
+            pure,
         }
     }
 
@@ -1726,6 +1832,10 @@ impl Parser {
             ensures,
             return_type,
             span: fn_span,
+            // Impl methods inherit no annotation today. When
+            // `@pure fn method(...)` is supported inside `impl`
+            // blocks, this will take the method-level flag.
+            pure: false,
         }
     }
 
