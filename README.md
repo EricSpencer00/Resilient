@@ -204,6 +204,16 @@ documented output.
 - `cert_demo.rs` — minimal program whose contract Z3 can discharge,
   used by `--emit-certificate` (RES-071)
 - `imports_demo/` — multi-file import resolution
+- `file_io_demo.rs` — round-trip through `file_read` / `file_write`
+  (RES-143)
+
+**Safety considerations for `file_read` / `file_write` (RES-143):**
+the CLI has ambient filesystem authority and these builtins inherit
+it with no sandboxing. Run untrusted Resilient programs inside a
+chroot or container if you care about what they can touch. The
+`resilient-runtime` sibling crate (used by embedded targets) has no
+builtins table and therefore no file I/O surface — it stays
+no_std-clean.
 
 ### REPL Commands
 

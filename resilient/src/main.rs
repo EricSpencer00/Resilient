@@ -2638,6 +2638,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
+    // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
+    // no builtins table and stays no_std-clean.
+    ("file_read", builtin_file_read),
+    ("file_write", builtin_file_write),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -3029,6 +3033,55 @@ fn builtin_max(args: &[Value]) -> RResult<Value> {
         [Value::Float(a), Value::Int(b)] => Ok(Value::Float(a.max(*b as f64))),
         [a, b] => Err(format!("max: expected numeric args, got {:?} and {:?}", a, b)),
         _ => Err(format!("max: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-143: `file_read(path)` — read a file as a UTF-8 string. Only
+/// lives in the `resilient` CLI binary (which is std-only); the
+/// `resilient-runtime` sibling crate has no builtins table and stays
+/// no_std-clean. Errors surface as runtime diagnostics; the
+/// interpreter wraps them with the call-site span (RES-116).
+///
+/// Security: the CLI has ambient authority over the filesystem, and
+/// this builtin inherits it with no sandbox. Users running untrusted
+/// Resilient programs should drop them in a chroot / container.
+fn builtin_file_read(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(path)] => match fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(contents) => Ok(Value::String(contents)),
+                Err(_) => Err(format!("file_read: {} is not valid UTF-8", path)),
+            },
+            Err(e) => Err(format!("file_read: {}: {}", path, e)),
+        },
+        [other] => Err(format!(
+            "file_read: expected String argument, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "file_read: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-143: `file_write(path, contents)` — write-truncate. Returns
+/// `Void`. Errors surface as runtime diagnostics. Same security
+/// posture as `file_read`.
+fn builtin_file_write(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(path), Value::String(contents)] => match fs::write(path, contents) {
+            Ok(()) => Ok(Value::Void),
+            Err(e) => Err(format!("file_write: {}: {}", path, e)),
+        },
+        [a, b] => Err(format!(
+            "file_write: expected (String, String), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!(
+            "file_write: expected 2 arguments, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -4740,6 +4793,89 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-143: file_read / file_write builtins ---
+
+    /// Create a fresh path in the OS temp dir for round-trip tests.
+    /// Using pid + counter keeps parallel test runs from colliding;
+    /// the file is cleaned up at the end of each test.
+    fn tmp_path(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "res_143_{}_{}_{}.tmp",
+            tag,
+            std::process::id(),
+            n
+        ))
+    }
+
+    #[test]
+    fn file_write_then_file_read_round_trips() {
+        let path = tmp_path("roundtrip");
+        let path_str = path.to_string_lossy().to_string();
+        let contents = "hello, resilient\nline two\n".to_string();
+
+        builtin_file_write(&[
+            Value::String(path_str.clone()),
+            Value::String(contents.clone()),
+        ])
+        .expect("file_write");
+
+        let read_back = builtin_file_read(&[Value::String(path_str.clone())]).expect("file_read");
+        match read_back {
+            Value::String(s) => assert_eq!(s, contents),
+            other => panic!("expected String, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_read_errors_on_missing_file() {
+        let path = tmp_path("missing");
+        // Ensure it doesn't exist.
+        let _ = std::fs::remove_file(&path);
+        let err = builtin_file_read(&[Value::String(path.to_string_lossy().to_string())])
+            .unwrap_err();
+        assert!(
+            err.starts_with("file_read:"),
+            "expected `file_read:` prefix, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn file_read_errors_on_non_utf8_contents() {
+        let path = tmp_path("nonutf8");
+        // 0xFF is never a valid UTF-8 start byte.
+        std::fs::write(&path, [0xFFu8, 0xFE, 0xFD]).expect("write bytes");
+        let err = builtin_file_read(&[Value::String(path.to_string_lossy().to_string())])
+            .unwrap_err();
+        assert!(
+            err.contains("not valid UTF-8"),
+            "expected UTF-8 error, got: {}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn file_read_rejects_wrong_arity() {
+        let err = builtin_file_read(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "got: {}", err);
+        let err = builtin_file_read(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected String"), "got: {}", err);
+    }
+
+    #[test]
+    fn file_write_rejects_wrong_arity_and_types() {
+        let err = builtin_file_write(&[Value::String("x".into())]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "got: {}", err);
+        let err = builtin_file_write(&[Value::Int(1), Value::String("x".into())]).unwrap_err();
+        assert!(err.contains("expected (String, String)"), "got: {}", err);
     }
 
     #[test]

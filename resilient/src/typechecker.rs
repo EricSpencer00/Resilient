@@ -418,6 +418,18 @@ impl TypeChecker {
             return_type: Box::new(Type::String),
         });
 
+        // RES-143: file I/O builtins (std-only; the resilient-runtime
+        // sibling crate has no builtins table so its no_std posture is
+        // unaffected).
+        env.set("file_read".to_string(), Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::String),
+        });
+        env.set("file_write".to_string(), Type::Function {
+            params: vec![Type::String, Type::String],
+            return_type: Box::new(Type::Void),
+        });
+
         // Result builtins
         env.set("Ok".to_string(), fn_any_to_result());
         env.set("Err".to_string(), fn_any_to_result());
