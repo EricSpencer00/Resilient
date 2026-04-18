@@ -321,6 +321,38 @@ fn run_inner(
                     frames[frame_idx].pc = new_pc as usize;
                 }
             }
+            // RES-172: inverse of JumpIfFalse. Peephole emits this
+            // for `Not; JumpIfFalse(off)` folds.
+            Op::JumpIfTrue(offset) => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let is_truthy = match v {
+                    Value::Bool(b) => b,
+                    Value::Int(i) => i != 0,
+                    _ => return Err(VmError::TypeMismatch("JumpIfTrue")),
+                };
+                if is_truthy {
+                    let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
+                    if new_pc < 0 || (new_pc as usize) > chunk.code.len() {
+                        return Err(VmError::JumpOutOfBounds);
+                    }
+                    frames[frame_idx].pc = new_pc as usize;
+                }
+            }
+            // RES-172: in-place local increment. The peephole emits
+            // this for `LoadLocal x; Const 1; Add; StoreLocal x`
+            // idioms, saving three ops + the stack churn of the
+            // fold.
+            Op::IncLocal(idx) => {
+                let base = frames[frame_idx].locals_base;
+                let abs = base + idx as usize;
+                let v = locals
+                    .get(abs)
+                    .ok_or(VmError::LocalOutOfBounds(idx))?;
+                let Value::Int(n) = *v else {
+                    return Err(VmError::TypeMismatch("IncLocal"));
+                };
+                locals[abs] = Value::Int(n.wrapping_add(1));
+            }
             Op::Eq => {
                 let (a, b) = pop_two_ints(&mut stack, "Eq")?;
                 stack.push(Value::Bool(a == b));

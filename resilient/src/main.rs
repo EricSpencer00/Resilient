@@ -14,6 +14,7 @@ mod span;
 mod imports;
 mod bytecode;
 mod compiler;
+mod peephole;
 mod vm;
 #[cfg(feature = "z3")]
 mod verifier_z3;

@@ -61,6 +61,16 @@ pub enum Op {
     /// (`Bool(false)` or `Int(0)`), apply the relative jump.
     /// Otherwise fall through. Non-bool/non-int → TypeMismatch.
     JumpIfFalse(i16),
+    /// RES-172: pop the operand stack; if the value is "truthy"
+    /// (`Bool(true)` or `Int(!= 0)`), apply the relative jump.
+    /// Mirrors `JumpIfFalse` so the peephole pass can fold
+    /// `Not; JumpIfFalse(off)` into a single `JumpIfTrue(off)`.
+    JumpIfTrue(i16),
+    /// RES-172: increment the local at `idx` by 1 in place. No
+    /// stack churn. Emitted by the peephole optimizer when it
+    /// detects the `LoadLocal x; Const 1; Add; StoreLocal x`
+    /// idiom.
+    IncLocal(u16),
     /// RES-083: pop two ints (or bools), push `Value::Bool(lhs == rhs)`.
     Eq,
     /// RES-083: pop two ints, push `Value::Bool(lhs != rhs)`.
@@ -141,6 +151,7 @@ impl Chunk {
         match &mut self.code[patch_idx] {
             Op::Jump(o) => *o = offset,
             Op::JumpIfFalse(o) => *o = offset,
+            Op::JumpIfTrue(o) => *o = offset,
             other => {
                 panic!("patch_jump called on non-jump op: {:?}", other);
             }

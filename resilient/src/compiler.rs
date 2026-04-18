@@ -90,6 +90,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 )?;
             }
             chunk.emit(Op::ReturnFromCall, 0);
+            // RES-172: run the peephole optimizer over the
+            // just-emitted chunk. Idempotent and linear-scan —
+            // no effect on chunks that don't contain any of the
+            // shipped idioms.
+            crate::peephole::optimize(&mut chunk);
             functions.push(Function {
                 name: name.clone(),
                 arity,
@@ -119,6 +124,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         )?;
     }
     main.emit(Op::Return, 0);
+    // RES-172: peephole pass over the main chunk too.
+    crate::peephole::optimize(&mut main);
 
     Ok(Program { main, functions })
 }
