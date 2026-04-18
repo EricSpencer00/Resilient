@@ -359,7 +359,43 @@ while condition {
 Parentheses around conditions are optional. `while` has a built-in
 1,000,000-iteration runaway guard.
 
-## Comments
+## Match expressions
+
+`match` picks the first arm whose pattern matches the scrutinee.
+Patterns can be literals (int / float / string / bool), `_`
+(wildcard), or an identifier that binds the scrutinee.
+
+```rust
+match n {
+    0 => "zero",
+    x => "non-zero: " + x,
+}
+```
+
+### Arm guards (RES-159)
+
+An optional `if <bool-expr>` between the pattern and `=>` gates
+the arm on a runtime condition. The guard is evaluated in the
+pattern's binding scope, so it can reference pattern bindings:
+
+```rust
+match n {
+    x if x < 0 => "negative",
+    0          => "zero",
+    x if x > 100 => "big",
+    _          => "small-positive",
+}
+```
+
+A guarded arm **does not count** toward exhaustiveness — the
+typechecker treats it as "might not fire", so a match with only
+guarded arms still needs an unguarded catch-all (`_` / bare
+identifier) or full literal coverage of a finite type like
+`bool`. Non-boolean guard expressions are a typecheck error.
+
+Guards can call impure functions or inspect mutable state, but
+this is strongly discouraged: the verifier (G9) will refuse to
+reason about them.
 
 ```rust
 // line comment

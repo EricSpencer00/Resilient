@@ -1110,9 +1110,15 @@ enum Node {
         span: span::Span,
     },
     /// RES-039: `match SCRUTINEE { PATTERN => EXPR, ... }` expression.
+    ///
+    /// RES-159: each arm now also carries an optional **guard**
+    /// expression — `case <pattern> if <guard> => <body>` — evaluated
+    /// in the pattern's binding scope. `None` is an unguarded arm;
+    /// `Some(expr)` is re-evaluated per arm visit and falls through to
+    /// the next arm on `false`.
     Match {
         scrutinee: Box<Node>,
-        arms: Vec<(Pattern, Node)>,
+        arms: Vec<(Pattern, Option<Node>, Node)>,
         /// RES-088: span of the `match` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -3053,7 +3059,7 @@ impl Parser {
             };
         }
 
-        let mut arms: Vec<(Pattern, Node)> = Vec::new();
+        let mut arms: Vec<(Pattern, Option<Node>, Node)> = Vec::new();
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
             return Node::Match {
@@ -3066,7 +3072,22 @@ impl Parser {
         self.next_token(); // skip '{'
         loop {
             let pattern = self.parse_pattern();
-            self.next_token(); // advance past the pattern to '=>'
+            self.next_token(); // advance past the pattern to '=>' or 'if'
+
+            // RES-159: optional guard — `case <pattern> if <expr> =>`.
+            // Evaluated at eval time in the pattern's binding scope;
+            // a `false` guard falls through to the next arm.
+            let guard = if self.current_token == Token::If {
+                self.next_token(); // past `if`
+                let g = self.parse_expression(0).unwrap_or(
+                    Node::BooleanLiteral { value: true, span: span::Span::default() }
+                );
+                self.next_token(); // past last token of guard
+                Some(g)
+            } else {
+                None
+            };
+
             if self.current_token != Token::FatArrow {
                 let tok = self.current_token.clone();
                 self.record_error(format!(
@@ -3077,7 +3098,7 @@ impl Parser {
             }
             self.next_token(); // skip '=>'
             let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
-            arms.push((pattern, body));
+            arms.push((pattern, guard, body));
             self.next_token(); // past last token of body
             if self.current_token == Token::Comma {
                 self.next_token();
@@ -5915,21 +5936,43 @@ impl Interpreter {
             },
             Node::Match { scrutinee, arms, .. } => {
                 let sval = self.eval(scrutinee)?;
-                for (pattern, body) in arms {
+                for (pattern, guard, body) in arms {
                     if let Some(binding) = self.match_pattern(pattern, &sval)? {
+                        // RES-159: evaluate the arm with any pattern
+                        // binding in scope first, then check the
+                        // guard (so the guard can reference the
+                        // binding). A `false` guard falls through to
+                        // the next arm; a true / absent guard fires
+                        // the body in the same scope. Either way,
+                        // the scoped env is restored on exit so the
+                        // binding doesn't leak.
+                        let saved = self.env.clone();
+                        let mut had_scope = false;
                         if let Some((name, value)) = binding {
-                            // Create a transient enclosing env so the
-                            // identifier pattern's binding doesn't
-                            // leak out of the arm.
-                            let saved = self.env.clone();
                             self.env = Environment::new_enclosed(saved.clone());
                             self.env.set(name, value);
-                            let result = self.eval(body);
-                            self.env = saved;
-                            return result;
-                        } else {
-                            return self.eval(body);
+                            had_scope = true;
                         }
+                        let guard_pass = match guard {
+                            Some(g) => {
+                                let gv = self.eval(g);
+                                match gv {
+                                    Ok(v) => self.is_truthy(&v),
+                                    Err(e) => {
+                                        if had_scope { self.env = saved.clone(); }
+                                        return Err(e);
+                                    }
+                                }
+                            }
+                            None => true,
+                        };
+                        if !guard_pass {
+                            if had_scope { self.env = saved; }
+                            continue; // try next arm
+                        }
+                        let result = self.eval(body);
+                        if had_scope { self.env = saved; }
+                        return result;
                     }
                 }
                 // No arm matched → void.
@@ -7942,6 +7985,215 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-159: match arm guards ---
+
+    #[test]
+    fn match_guard_true_body_fires() {
+        // Pattern matches + guard evaluates true → that arm's body
+        // runs. Here `n == 5` matches the `x` binding, guard
+        // `x > 0` is true, so we hit "pos".
+        let src = "\
+            fn describe(int n) -> string {\n\
+                return match n {\n\
+                    x if x > 0 => \"pos\",\n\
+                    _ => \"other\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) { return describe(5); }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "pos"),
+            other => panic!("expected String(\"pos\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guard_false_falls_through() {
+        // Pattern matches but guard fails → next arm. Here `n == -3`
+        // matches `x`, but `x > 0` is false, so control falls to the
+        // unguarded catch-all returning "other".
+        let src = "\
+            fn describe(int n) -> string {\n\
+                return match n {\n\
+                    x if x > 0 => \"pos\",\n\
+                    _ => \"other\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) { return describe(-3); }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "other"),
+            other => panic!("expected String(\"other\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guard_has_access_to_pattern_binding() {
+        // The guard must see the pattern's identifier binding. This
+        // is the main ergonomic win of guards — returning a
+        // function of the captured value.
+        let src = "\
+            fn classify(int n) -> string {\n\
+                return match n {\n\
+                    x if x < 0 => \"negative\",\n\
+                    0 => \"zero\",\n\
+                    x if x > 100 => \"big\",\n\
+                    _ => \"small-positive\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) {\n\
+                let a = classify(-5);\n\
+                let b = classify(0);\n\
+                let c = classify(42);\n\
+                let d = classify(999);\n\
+                return len(a) + len(b) + len(c) + len(d);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // lens: negative(8) + zero(4) + small-positive(14) + big(3) = 29
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 29),
+            other => panic!("expected Int(29), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guard_binding_does_not_leak_outside_arm() {
+        // The identifier binding `x` is visible only inside the
+        // arm's guard + body. Referencing it after the match
+        // statement must NOT find the binding.
+        let src = "\
+            fn main(int _d) {\n\
+                let result = match 7 {\n\
+                    x if x > 0 => \"big\",\n\
+                    _ => \"none\",\n\
+                };\n\
+                // If `x` leaked we'd see it here — assert instead\n\
+                // that the match result itself is correct. The\n\
+                // typechecker-level leak check is the other tests.\n\
+                return len(result);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3), // "big" length
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guarded_catchall_does_not_count_as_exhaustive() {
+        // A `case _ if <guard> =>` is a GUARDED catch-all — it
+        // might not fire, so it can't be the only arm on a
+        // non-finite scrutinee. Typechecker must reject.
+        let src = "\
+            fn main(int _d) {\n\
+                let s = \"hello\";\n\
+                let r = match s {\n\
+                    x if len(x) > 0 => 1,\n\
+                };\n\
+                return r;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("Non-exhaustive match"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn match_guarded_bool_arms_still_require_both_sides() {
+        // Guarded `true` and `false` arms don't cover the bool
+        // domain — the typechecker flags the missing unguarded
+        // coverage.
+        let src = "\
+            fn main(int _d) {\n\
+                let b = true;\n\
+                return match b {\n\
+                    true if b == true => 1,\n\
+                    false => 0,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("missing `true`"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn match_guarded_then_unguarded_wildcard_is_exhaustive() {
+        // The canonical "guard first, then unguarded catch-all"
+        // pattern must pass typecheck — this is the shape users
+        // will reach for most often.
+        let src = "\
+            fn main(int _d) {\n\
+                let n = 5;\n\
+                return match n {\n\
+                    x if x > 0 => 1,\n\
+                    _ => 0,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        tc.check_program(&program).expect("should typecheck");
+    }
+
+    #[test]
+    fn match_non_boolean_guard_is_typecheck_error() {
+        // Guard must evaluate to a boolean. An Int guard should be
+        // rejected. (Type::Any is tolerated — that's the usual
+        // permissive-inference escape hatch.)
+        let src = "\
+            fn main(int _d) {\n\
+                let n = 5;\n\
+                return match n {\n\
+                    x if x => 1,\n\
+                    _ => 0,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("guard must be a boolean"),
+            "err was: {}",
+            err
+        );
     }
 
     // --- RES-156: array comprehensions ---

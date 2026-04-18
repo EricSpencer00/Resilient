@@ -250,6 +250,15 @@ impl TypeEnvironment {
     pub fn set(&mut self, name: String, typ: Type) {
         self.store.insert(name, typ);
     }
+
+    /// RES-159: remove a binding from the **current** scope only.
+    /// Used to roll back transient pattern-binding entries after a
+    /// match arm's body is type-checked so the identifier doesn't
+    /// leak out. Outer-scope bindings with the same name are left
+    /// untouched; this only clears what this scope owns.
+    pub fn remove(&mut self, name: &str) {
+        self.store.remove(name);
+    }
 }
 
 /// RES-061: signature-and-contract record stored per top-level fn so
@@ -1119,27 +1128,76 @@ impl TypeChecker {
 
             Node::Match { scrutinee, arms, .. } => {
                 let scrutinee_type = self.check_node(scrutinee)?;
-                for (_, body) in arms {
-                    let _ = self.check_node(body)?;
+                for (pattern, guard, body) in arms {
+                    // RES-159: if the arm's pattern binds an identifier,
+                    // register that binding (as the scrutinee's type) so
+                    // guards and bodies can reference it. The env entry
+                    // is rolled back after the arm so it doesn't leak.
+                    // This matches the interpreter's scoping behaviour
+                    // (see the `Match` eval arm) — previously the
+                    // typechecker just rejected any use of the binding.
+                    let rollback_ident: Option<(String, Option<Type>)> =
+                        if let Pattern::Identifier(n) = pattern {
+                            let prev = self.env.get(n);
+                            self.env.set(n.clone(), scrutinee_type.clone());
+                            Some((n.clone(), prev))
+                        } else {
+                            None
+                        };
+
+                    if let Some(g) = guard {
+                        // RES-159: guards must be boolean-ish. Accept
+                        // Bool / Any so existing permissive inference
+                        // stays compatible.
+                        let gt = self.check_node(g)?;
+                        if gt != Type::Bool && gt != Type::Any {
+                            // Restore env before propagating.
+                            if let Some((n, prev)) = &rollback_ident {
+                                match prev {
+                                    Some(t) => self.env.set(n.clone(), t.clone()),
+                                    None => { self.env.remove(n); }
+                                }
+                            }
+                            return Err(format!(
+                                "Match arm guard must be a boolean, got {}",
+                                gt
+                            ));
+                        }
+                    }
+                    let body_res = self.check_node(body);
+                    // Roll back the pattern-binding entry.
+                    if let Some((n, prev)) = rollback_ident {
+                        match prev {
+                            Some(t) => self.env.set(n, t),
+                            None => { self.env.remove(&n); }
+                        }
+                    }
+                    let _ = body_res?;
                 }
 
-                // RES-054: exhaustiveness check.
+                // RES-054 + RES-159: exhaustiveness check.
                 // Any wildcard or identifier pattern makes the match
-                // trivially exhaustive.
-                let has_default = arms.iter().any(|(p, _)| {
-                    matches!(p, Pattern::Wildcard | Pattern::Identifier(_))
+                // trivially exhaustive — but ONLY if that arm is
+                // unguarded. A guarded catch-all doesn't necessarily
+                // fire, so it can't count as covering.
+                let has_default = arms.iter().any(|(p, guard, _)| {
+                    guard.is_none()
+                        && matches!(p, Pattern::Wildcard | Pattern::Identifier(_))
                 });
 
                 if !has_default {
                     match scrutinee_type {
                         // Bool is the only finite-domain scalar; require
-                        // coverage of both true and false.
+                        // coverage of both true and false via UNGUARDED
+                        // arms (guarded arms don't count).
                         Type::Bool => {
-                            let has_true = arms.iter().any(|(p, _)| {
-                                matches!(p, Pattern::Literal(Node::BooleanLiteral { value: true, .. }))
+                            let has_true = arms.iter().any(|(p, guard, _)| {
+                                guard.is_none()
+                                    && matches!(p, Pattern::Literal(Node::BooleanLiteral { value: true, .. }))
                             });
-                            let has_false = arms.iter().any(|(p, _)| {
-                                matches!(p, Pattern::Literal(Node::BooleanLiteral { value: false, .. }))
+                            let has_false = arms.iter().any(|(p, guard, _)| {
+                                guard.is_none()
+                                    && matches!(p, Pattern::Literal(Node::BooleanLiteral { value: false, .. }))
                             });
                             if !(has_true && has_false) {
                                 return Err(format!(
