@@ -1,0 +1,9 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) { return 10 / 0; } main(0);\n"
+expression: output
+---
+Error: <tmp>.rs:1:40: Runtime error: Division by zero
+Runtime error: Division by zero
+   fn main(int _d) { return 10 / 0; } main(0);
+                                          ^

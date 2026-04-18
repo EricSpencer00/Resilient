@@ -1,0 +1,11 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) { let = 1; return 0; } main(0);\n"
+expression: output
+---
+Parser error: 1:23: Expected identifier after 'let', found `=`
+1:23: Expected identifier after 'let', found `=`
+Parser error: Expected identifier after 'let', found `=`
+   fn main(int _d) { let = 1; return 0; } main(0);
+                         ^
+Error: Failed to parse program: 1 parser error(s)

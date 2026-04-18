@@ -1,0 +1,11 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn 42() { return 0; } main(0);\n"
+expression: output
+---
+Parser error: 1:4: Expected identifier after 'fn', found integer literal `42`
+1:4: Expected identifier after 'fn', found integer literal `42`
+Parser error: Expected identifier after 'fn', found integer literal `42`
+   fn 42() { return 0; } main(0);
+      ^
+Error: Failed to parse program: 1 parser error(s)

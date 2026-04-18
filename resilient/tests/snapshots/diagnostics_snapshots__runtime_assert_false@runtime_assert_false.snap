@@ -1,0 +1,11 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) {\n    assert(false);\n    return 0;\n}\nmain(0);\n"
+expression: output
+---
+Error: <tmp>.rs:5:5: Runtime error: ASSERTION ERROR: Assertion failed
+  - Condition evaluated to: false
+Runtime error: ASSERTION ERROR: Assertion failed
+  - Condition evaluated to: false
+   main(0);
+       ^

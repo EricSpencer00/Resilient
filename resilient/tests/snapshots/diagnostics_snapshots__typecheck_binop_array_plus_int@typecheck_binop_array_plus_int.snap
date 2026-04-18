@@ -1,0 +1,12 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) {\n    let xs = [1, 2, 3];\n    return xs + 1;\n}\nmain(0);\n"
+expression: output
+---
+Running type checker...
+Type error: <tmp>.rs:1:4: Cannot apply '+' to array and int
+<tmp>.rs:1:4: Cannot apply '+' to array and int
+Type error: Cannot apply '+' to array and int
+   fn main(int _d) {
+      ^
+Error: Type check failed: <tmp>.rs:1:4: Cannot apply '+' to array and int

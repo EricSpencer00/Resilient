@@ -1,0 +1,12 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) {\n    let bad: int = \"hi\";\n    return 0;\n}\n"
+expression: output
+---
+Running type checker...
+Type error: <tmp>.rs:1:4: let bad: int — value has type string
+<tmp>.rs:1:4: let bad: int — value has type string
+Type error: let bad: int — value has type string
+   fn main(int _d) {
+      ^
+Error: Type check failed: <tmp>.rs:1:4: let bad: int — value has type string

@@ -1,0 +1,12 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) {\n    if 1 { return 0; }\n    return 0;\n}\nmain(0);\n"
+expression: output
+---
+Running type checker...
+Type error: <tmp>.rs:1:4: If condition must be a boolean, got int
+<tmp>.rs:1:4: If condition must be a boolean, got int
+Type error: If condition must be a boolean, got int
+   fn main(int _d) {
+      ^
+Error: Type check failed: <tmp>.rs:1:4: If condition must be a boolean, got int

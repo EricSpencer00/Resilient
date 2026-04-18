@@ -65,3 +65,11 @@ cranelift = { version = "0.108", optional = true }
 cranelift-jit = { version = "0.108", optional = true }
 cranelift-native = { version = "0.108", optional = true }
 cranelift-module = { version = "0.108", optional = true }
+
+[dev-dependencies]
+# RES-200: snapshot tests for diagnostic rendering. Test-only dep —
+# doesn't appear in the release binary's transitive tree. Use
+# `cargo insta review` (requires `cargo install cargo-insta`) to
+# audit pending diffs when a snapshot drifts; commit the reviewed
+# `.snap` files under `resilient/tests/snapshots/`.
+insta = { version = "1", features = ["filters"] }

@@ -1,0 +1,11 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) {\n    assert false;\n    return 0;\n}\nmain(0);\n"
+expression: output
+---
+Parser error: 2:12: Expected '(' after 'assert', found `false`
+2:12: Expected '(' after 'assert', found `false`
+Parser error: Expected '(' after 'assert', found `false`
+       assert false;
+              ^
+Error: Failed to parse program: 1 parser error(s)

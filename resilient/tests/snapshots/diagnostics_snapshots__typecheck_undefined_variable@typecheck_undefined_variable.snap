@@ -1,0 +1,12 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn main(int _d) {\n    return x;\n}\nmain(0);\n"
+expression: output
+---
+Running type checker...
+Type error: <tmp>.rs:1:4: Undefined variable 'x' at 2:13
+<tmp>.rs:1:4: Undefined variable 'x' at 2:13
+Type error: Undefined variable 'x' at 2:13
+   fn main(int _d) {
+      ^
+Error: Type check failed: <tmp>.rs:1:4: Undefined variable 'x' at 2:13

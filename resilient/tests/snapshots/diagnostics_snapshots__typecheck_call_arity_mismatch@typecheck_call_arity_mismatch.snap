@@ -1,0 +1,12 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn add(int a, int b) {\n    return a + b;\n}\nfn main(int _d) {\n    return add(1);\n}\nmain(0);\n"
+expression: output
+---
+Running type checker...
+Type error: <tmp>.rs:4:4: Expected 2 arguments, got 1
+<tmp>.rs:4:4: Expected 2 arguments, got 1
+Type error: Expected 2 arguments, got 1
+   fn main(int _d) {
+      ^
+Error: Type check failed: <tmp>.rs:4:4: Expected 2 arguments, got 1

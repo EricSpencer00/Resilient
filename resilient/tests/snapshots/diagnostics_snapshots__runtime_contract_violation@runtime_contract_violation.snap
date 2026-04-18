@@ -1,0 +1,9 @@
+---
+source: tests/diagnostics_snapshots.rs
+description: "fn add(int a, int b) requires a > 0 {\n    return a + b;\n}\nfn main(int _d) { return add(0, 1); } main(0);\n"
+expression: output
+---
+Error: <tmp>.rs:4:43: Runtime error: Contract violation in fn add: requires a > 0 failed
+Runtime error: Contract violation in fn add: requires a > 0 failed
+   fn main(int _d) { return add(0, 1); } main(0);
+                                             ^
