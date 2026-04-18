@@ -189,6 +189,13 @@ project; `resilient-runtime/` is a separate Cargo project alongside
 it. A future ticket can promote both to a workspace if there's a
 real reason (shared profile config, cross-crate testing).
 
+See [`resilient-runtime-cortex-m-demo/`](resilient-runtime-cortex-m-demo/)
+for a buildable example that links the runtime with an
+`embedded-alloc` global allocator on Cortex-M4F (RES-101). Run
+`scripts/build_cortex_m_demo.sh` from the repo root to verify the
+cross-compile; the demo is a build check, not a runtime
+demonstration.
+
 ### Available Examples
 
 All in `resilient/examples/`. Each ships with a `.expected.txt`

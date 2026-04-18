@@ -1,0 +1,10 @@
+# RES-101: pin the default target to Cortex-M4F so `cargo build` /
+# `cargo clippy` without `--target` still cross-compile. The
+# `link-arg=-Tlink.x` rustflag picks up `cortex-m-rt`'s linker
+# script, which reads `memory.x` from the crate root for the
+# FLASH / RAM layout.
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+rustflags = ["-C", "link-arg=-Tlink.x"]

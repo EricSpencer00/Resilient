@@ -1,7 +1,7 @@
 ---
 id: RES-101
 title: Cortex-M demo crate links resilient-runtime + wires LlffHeap
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G18
 created: 2026-04-17
@@ -101,3 +101,65 @@ won't run it under QEMU in CI. Building clean is the proof.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 acceptance criteria filled in by manager
+- 2026-04-17 claimed by executor
+- 2026-04-17 done by executor
+
+## Resolution
+
+Files added (all new):
+- `resilient-runtime-cortex-m-demo/Cargo.toml` — binary target,
+  edition 2024, release profile `opt-level = "z"`, `panic = "abort"`,
+  `lto = true`. `thumbv7em-none-eabihf` deps: `cortex-m = "0.7"`
+  (with `critical-section-single-core` — see deviation below),
+  `cortex-m-rt = "0.7"`, `embedded-alloc = "0.5"`, and a
+  path-dep on `../resilient-runtime` with `features = ["alloc"]`.
+- `resilient-runtime-cortex-m-demo/.cargo/config.toml` — pins
+  `target = "thumbv7em-none-eabihf"` and adds `rustflags = ["-C",
+  "link-arg=-Tlink.x"]` for cortex-m-rt.
+- `resilient-runtime-cortex-m-demo/memory.x` — placeholder FLASH /
+  RAM map (256 KiB / 64 KiB; documented inline as
+  representative-not-prescriptive).
+- `resilient-runtime-cortex-m-demo/src/main.rs` — `#![no_std]` +
+  `#![no_main]` + `extern crate alloc`, 4 KiB static heap
+  initialised inside `#[entry] fn main() -> !`, one `Value::String`
+  + one `Value::Float`, exercises `.add()` + `.eq()`, loops on
+  `cortex_m::asm::nop()`. Minimal spin panic handler (no
+  `panic-halt`, per the ticket's "keep deps minimal" note).
+- `resilient-runtime-cortex-m-demo/README.md` — onboarding +
+  flashing hints + pointer back to `../resilient-runtime`.
+- `scripts/build_cortex_m_demo.sh` — idempotent `rustup target
+  add` + release build + `clippy -- -D warnings`. Exits 0 on
+  success. Marked executable.
+- `README.md` (top-level) — new paragraph under the existing
+  embedded-runtime section pointing at the demo crate.
+
+Verification:
+- `scripts/build_cortex_m_demo.sh` → exits 0.
+  - `cargo build --release --target thumbv7em-none-eabihf` clean.
+  - `cargo clippy --release --target thumbv7em-none-eabihf -- -D
+    warnings` clean.
+- `cd resilient && cargo test` — unaffected: 271 unit + 13
+  integration + 1 golden still pass. The demo crate is a sibling,
+  not a workspace member.
+
+Deviations from the ticket sketch:
+
+1. The ticket's `src/main.rs` sketch uses
+   `use embedded_alloc::LlffHeap as Heap`. That rename landed in
+   `embedded-alloc` 0.7; the pinned 0.5 version still exports its
+   allocator as `Heap` (the `linked_list_allocator::Heap` wrapper
+   under the hood). Acceptance criteria pin 0.5 explicitly, so we
+   use the historical name and document the rename inline. The
+   semantics (`empty()` + `init(addr, size)`) are unchanged.
+2. `embedded-alloc` 0.5's `Heap::dealloc` touches a
+   `critical_section::Mutex`, so the binary links only when a
+   critical-section impl is provided. Enabling
+   `cortex-m`'s `critical-section-single-core` feature is the
+   standard wiring on a single-core M4F and adds no new
+   dependency (cortex-m is already pulled in). Documented
+   inline in `Cargo.toml`.
+
+Neither deviation changes the ticket's substance — `resilient-
+runtime` links cleanly under the `alloc` feature with an
+`embedded-alloc` global allocator on Cortex-M4F, which is the
+onboarding evidence the ticket exists to produce.

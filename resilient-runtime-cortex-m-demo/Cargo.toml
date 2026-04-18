@@ -1,0 +1,34 @@
+[package]
+name = "resilient-runtime-cortex-m-demo"
+version = "0.1.0"
+edition = "2024"
+description = "Cortex-M4F buildable demo wiring `resilient-runtime` with `embedded-alloc::LlffHeap` as the global allocator (RES-101)."
+authors = ["Eric Spencer"]
+
+# Binary target: the default `src/main.rs` entry point.
+[[bin]]
+name = "resilient-runtime-cortex-m-demo"
+path = "src/main.rs"
+
+# The release profile is what proves the integration: size-optimized,
+# aborting panics, full LTO. Debug profile is unused on-target.
+[profile.release]
+opt-level = "z"
+panic = "abort"
+lto = true
+codegen-units = 1
+
+# Host-target deps (intentionally empty — this crate is
+# thumbv7em-none-eabihf-only). The `.cargo/config.toml` pins the
+# default target so `cargo build` / `cargo clippy` without an
+# explicit `--target` still compile for Cortex-M4F.
+
+[target.thumbv7em-none-eabihf.dependencies]
+# `critical-section-single-core` wires a simple cortex-m critical-
+# section impl so `embedded-alloc`'s `Mutex<RefCell<...>>` inside
+# `Heap::dealloc` can resolve without an external provider crate.
+# Single-core is correct for an M4F demo.
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+embedded-alloc = "0.5"
+resilient-runtime = { path = "../resilient-runtime", features = ["alloc"] }
