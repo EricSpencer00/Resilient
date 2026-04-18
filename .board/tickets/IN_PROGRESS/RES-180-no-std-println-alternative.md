@@ -1,7 +1,7 @@
 ---
 id: RES-180
 title: no_std `println` via a `Write`-based sink abstraction
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -37,3 +37,4 @@ runtime doesn't bake in a sink.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
