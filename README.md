@@ -67,6 +67,26 @@ Resilient provides detailed error messages and has sophisticated error recovery 
 
 ## Getting Started
 
+### Docker (RES-203)
+
+A prebuilt image is published to GitHub Container Registry on
+every tagged release. Pull + run without installing Rust:
+
+```bash
+docker run --rm ghcr.io/ericspencer00/resilient:latest --help
+
+# Run a source file by mounting it in:
+docker run --rm -v "$PWD":/work -w /work \
+    ghcr.io/ericspencer00/resilient:latest examples/hello.rs
+```
+
+The image is multi-arch (linux/amd64 + linux/arm64), built from
+`Dockerfile` at repo root. Ships with the `--features z3` build
+so the SMT-backed verifier works out of the box. Runs as an
+unprivileged `resilient` user (UID 1001) — mount working
+directories with matching permissions if you want the binary to
+write certificates / artifacts back.
+
 ### Running the REPL
 
 ```bash

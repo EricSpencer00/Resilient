@@ -1,0 +1,33 @@
+# RES-203: exclude everything the docker build doesn't need,
+# so `COPY . .` is fast and the build cache doesn't invalidate
+# on unrelated local churn.
+.git
+.github
+.board
+**/target
+**/*.rs.bk
+**/Cargo.lock.bak
+*.profraw
+
+# Local scratch + editor droppings.
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Editor extension build output (RES-204). Not needed by the
+# Rust build.
+vscode-extension/node_modules
+vscode-extension/out
+vscode-extension/*.vsix
+
+# Fuzz crate has its own target/ and corpus dirs.
+fuzz/target
+fuzz/corpus
+fuzz/artifacts
+
+# Benchmarks: we copy them (docker run scenarios might want them)
+# but the compiled fib_native binary is host-specific.
+benchmarks/**/fib_native
+benchmarks/**/sum_native
