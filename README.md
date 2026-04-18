@@ -247,6 +247,21 @@ resilient --dump-tokens examples/hello.rs
 - `examples` - Show example code snippets
 - `typecheck` - Toggle type checking
 
+### Randomness (RES-150)
+
+The `random_int(lo, hi)` and `random_float()` builtins are backed
+by **SplitMix64**, a tiny deterministic PRNG. The seed is either
+pinned with `--seed <u64>` (for reproducible runs) or derived from
+the monotonic clock at startup and echoed to stderr as
+`seed=<N>` so a failing run can be replayed verbatim.
+
+**These are NOT cryptographic.** Do not use `random_*` for key
+material, session tokens, salts, nonces, or anything an attacker
+could exploit if guessed. SplitMix64 is chosen for determinism and
+small code size (≈15 LOC, zero dependencies), not unpredictability.
+When the language grows a cryptographic-grade primitive it will
+live under a separate name with the appropriate guarantees.
+
 ## Syntax Requirements
 
 See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and examples. Key points:

@@ -3502,6 +3502,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("exp", builtin_exp),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
+    // RES-150: seedable SplitMix64 random builtins. std-only.
+    ("random_int", builtin_random_int),
+    ("random_float", builtin_random_float),
     ("len", builtin_len),
     ("push", builtin_push),
     ("pop", builtin_pop),
@@ -3852,6 +3855,120 @@ fn builtin_exp(args: &[Value]) -> RResult<Value> {
 /// through `clock_ms()`: users get deltas, not absolute times.
 static CLOCK_EPOCH: std::sync::OnceLock<std::time::Instant> =
     std::sync::OnceLock::new();
+
+/// RES-150: SplitMix64 — tiny, deterministic, dependency-free PRNG.
+///
+/// The state is a process-wide `AtomicU64`. `next_u64()` atomically
+/// advances the state by the SplitMix64 constant and returns the
+/// finalized mix. Relaxed ordering is fine: RNG is a consumer of
+/// monotonically-updating state, not a synchronization primitive.
+///
+/// The seed is set once — either by `--seed <N>` from the CLI, or
+/// by `seed_rng_from_clock()` early in `main()`. If nothing seeds
+/// it, the first call initializes to `0xdead_beef_cafe_f00d` as a
+/// visibly-synthetic default. **This is not cryptographic** — do
+/// not use for key material; see README for guidance.
+static RNG_STATE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0xdead_beef_cafe_f00d);
+
+/// Remember the seed that was committed so `main` can echo it to
+/// stderr ("seed=<N>") per the ticket's reproducibility guarantee.
+/// Only written from main at startup; readers sample once.
+static RNG_SEED_USED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0xdead_beef_cafe_f00d);
+
+/// RES-150: install `seed` into the RNG state and remember it for
+/// the `seed=<N>` banner. Safe to call at most once from `main`.
+fn seed_rng(seed: u64) {
+    use std::sync::atomic::Ordering;
+    RNG_STATE.store(seed, Ordering::Relaxed);
+    RNG_SEED_USED.store(seed, Ordering::Relaxed);
+}
+
+/// RES-150: when the CLI didn't pass `--seed`, seed from the
+/// monotonic ms clock so repeat runs differ. The seed is logged
+/// so the user can pin it via `--seed <N>` on the next run.
+fn seed_rng_from_clock() -> u64 {
+    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+    let ns = std::time::Instant::now()
+        .duration_since(*epoch)
+        .as_nanos() as u64;
+    // XOR with a process-id and a fixed constant so two processes
+    // launched at the "same" epoch still differ.
+    let pid = std::process::id() as u64;
+    let seed = ns
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(pid.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        // Avoid zero — SplitMix64 with a zero state produces a
+        // well-defined but uninteresting stream; salt by the
+        // ticket's mention of `clock_ms()` so the "default" is
+        // legible.
+        | 1;
+    seed_rng(seed);
+    seed
+}
+
+/// RES-150: SplitMix64 step. See https://prng.di.unimi.it/splitmix64.c
+/// — the three-constant finalizer is the canonical mix.
+fn splitmix64_next() -> u64 {
+    use std::sync::atomic::Ordering;
+    // Advance atomically so concurrent callers each get a distinct
+    // pre-finalizer state. Using `fetch_add` with a wrapping
+    // constant keeps the generator stateless across threads
+    // without a mutex.
+    let pre = RNG_STATE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    let z = pre.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// RES-150: `random_int(lo, hi) -> Int` — half-open `[lo, hi)`.
+/// Biased-but-tiny approach: a 64-bit sample mod (hi - lo). Good
+/// enough for sim / tests; not uniform over astronomical ranges.
+/// Users needing uniformity at full i64 width can roll their own
+/// over `random_float() * (hi - lo)` and `to_int`.
+fn builtin_random_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(lo), Value::Int(hi)] => {
+            if hi <= lo {
+                return Err(format!(
+                    "random_int: hi must be > lo ({} <= {})",
+                    hi, lo
+                ));
+            }
+            let span = (*hi - *lo) as u64;
+            let r = splitmix64_next() % span;
+            Ok(Value::Int((*lo).wrapping_add(r as i64)))
+        }
+        [a, b] => Err(format!(
+            "random_int: expected (Int, Int), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!(
+            "random_int: expected 2 arguments (lo, hi), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-150: `random_float() -> Float` — uniform in `[0.0, 1.0)`.
+/// The 53-bit conversion (top 53 bits of a u64, divided by 2^53)
+/// is the standard trick — gives every representable double in
+/// the range a chance proportional to its mantissa density.
+fn builtin_random_float(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "random_float: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let x = splitmix64_next();
+    // Top 53 bits → f64 in [0, 1).
+    let mantissa = x >> 11;
+    let f = (mantissa as f64) / ((1u64 << 53) as f64);
+    Ok(Value::Float(f))
+}
 
 /// RES-147: `clock_ms() -> Int` — milliseconds since a per-process
 /// monotonic epoch. Monotonic: `clock_ms()` observed twice in a
@@ -6394,6 +6511,9 @@ fn main() {
     // RES-137: per-query Z3 solver timeout in milliseconds. 0 means
     // "no timeout". Default 5000 matches the ticket's recommendation.
     let mut verifier_timeout_ms: u32 = 5000;
+    // RES-150: `--seed <u64>` pins the RNG seed for determinism.
+    // `None` → fall back to clock-derived seed at startup.
+    let mut seed_override: Option<u64> = None;
     let mut filename = "";
 
     // Simple argument parsing
@@ -6459,6 +6579,29 @@ fn main() {
                     );
                     std::process::exit(2);
                 });
+            } else if arg == "--seed" {
+                // RES-150: `--seed <u64>` pins the SplitMix64 PRNG.
+                // Reproducible runs: same seed → same sequence.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --seed requires a u64 argument");
+                    std::process::exit(2);
+                }
+                seed_override = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: --seed expects a u64, got {:?}",
+                        args[i]
+                    );
+                    std::process::exit(2);
+                }));
+            } else if let Some(val) = arg.strip_prefix("--seed=") {
+                seed_override = Some(val.parse().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: --seed expects a u64, got {:?}",
+                        val
+                    );
+                    std::process::exit(2);
+                }));
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -6482,6 +6625,23 @@ fn main() {
         if dump_tokens && lsp_mode {
             eprintln!("Error: --dump-tokens and --lsp are mutually exclusive");
             std::process::exit(2);
+        }
+
+        // RES-150: install the RNG seed before any user program
+        // can pull from it. `--seed <N>` pins the sequence
+        // (silently, since the user asked for reproducibility);
+        // otherwise we derive from the monotonic clock and echo
+        // the chosen seed to stderr so a failing run can be
+        // replayed verbatim with `--seed <N>`.
+        let used_seed = match seed_override {
+            Some(n) => {
+                seed_rng(n);
+                n
+            }
+            None => seed_rng_from_clock(),
+        };
+        if seed_override.is_none() {
+            eprintln!("seed={}", used_seed);
         }
 
         // RES-112: short-circuit straight to the token dumper before
@@ -7052,6 +7212,154 @@ mod tests {
     fn builtin_println_rejects_too_many_args() {
         let err = builtin_println(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expects 0 or 1"), "err was: {}", err);
+    }
+
+    // --- RES-150: seedable SplitMix64 random builtins ---
+
+    /// Guard that serializes tests which assert on exact RNG
+    /// sequences. `RNG_STATE` is a process-wide atomic, so under
+    /// cargo's default parallel test runner a second test could
+    /// reset-and-read between this test's own reset and its reads,
+    /// producing nondeterministic pairs. Tests that only assert on
+    /// bounds (not exact values) don't need this lock.
+    static RNG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Reset the RNG state to `seed` so each test runs against a
+    /// fresh, reproducible stream regardless of what other tests
+    /// pulled from the shared atomic.
+    fn reset_rng(seed: u64) {
+        use std::sync::atomic::Ordering;
+        RNG_STATE.store(seed, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn splitmix64_matches_reference_sequence_for_seed_1() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Canonical SplitMix64 — values generated by a reference
+        // Rust port at rustc 1.x. Any divergence here means the
+        // mix constants drifted; lock it down.
+        reset_rng(1);
+        let expected: [u64; 10] = [
+            10451216379200822465,
+            13757245211066428519,
+            17911839290282890590,
+            8196980753821780235,
+            8195237237126968761,
+            14072917602864530048,
+            16184226688143867045,
+            9648886400068060533,
+            5266705631892356520,
+            14646652180046636950,
+        ];
+        for (i, want) in expected.iter().enumerate() {
+            let got = splitmix64_next();
+            assert_eq!(got, *want, "index {}: got {}, want {}", i, got, want);
+        }
+    }
+
+    #[test]
+    fn random_int_is_deterministic_under_same_seed() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_rng(42);
+        let a: Vec<i64> = (0..10)
+            .map(|_| {
+                match builtin_random_int(&[Value::Int(0), Value::Int(1_000_000)])
+                    .unwrap()
+                {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                }
+            })
+            .collect();
+        reset_rng(42);
+        let b: Vec<i64> = (0..10)
+            .map(|_| {
+                match builtin_random_int(&[Value::Int(0), Value::Int(1_000_000)])
+                    .unwrap()
+                {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                }
+            })
+            .collect();
+        assert_eq!(a, b, "same seed must produce same sequence");
+    }
+
+    #[test]
+    fn random_int_stays_in_half_open_range() {
+        reset_rng(7);
+        for _ in 0..200 {
+            let v = builtin_random_int(&[Value::Int(10), Value::Int(20)]).unwrap();
+            match v {
+                Value::Int(n) => {
+                    assert!(
+                        (10..20).contains(&n),
+                        "value {} outside [10, 20)",
+                        n
+                    );
+                }
+                other => panic!("expected Int, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn random_int_rejects_reversed_bounds() {
+        let err =
+            builtin_random_int(&[Value::Int(5), Value::Int(5)]).unwrap_err();
+        assert!(err.contains("hi must be > lo"), "err was: {}", err);
+        let err =
+            builtin_random_int(&[Value::Int(10), Value::Int(5)]).unwrap_err();
+        assert!(err.contains("hi must be > lo"), "err was: {}", err);
+    }
+
+    #[test]
+    fn random_int_rejects_non_int_args() {
+        let err =
+            builtin_random_int(&[Value::Float(1.0), Value::Int(5)]).unwrap_err();
+        assert!(err.contains("expected (Int, Int)"), "err was: {}", err);
+    }
+
+    #[test]
+    fn random_int_rejects_wrong_arity() {
+        let err = builtin_random_int(&[Value::Int(5)]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn random_float_in_unit_interval() {
+        reset_rng(123);
+        for _ in 0..200 {
+            let v = builtin_random_float(&[]).unwrap();
+            match v {
+                Value::Float(f) => {
+                    assert!(
+                        (0.0..1.0).contains(&f),
+                        "value {} outside [0.0, 1.0)",
+                        f
+                    );
+                }
+                other => panic!("expected Float, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn random_float_rejects_arguments() {
+        let err = builtin_random_float(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected 0 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn seed_rng_pins_subsequent_calls() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Seeding twice with the same value and drawing 5 samples
+        // both times must produce the same sequence.
+        seed_rng(999);
+        let a: Vec<u64> = (0..5).map(|_| splitmix64_next()).collect();
+        seed_rng(999);
+        let b: Vec<u64> = (0..5).map(|_| splitmix64_next()).collect();
+        assert_eq!(a, b);
     }
 
     // --- RES-149: Set<T> native value type ---

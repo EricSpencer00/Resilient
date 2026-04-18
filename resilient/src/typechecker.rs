@@ -457,6 +457,16 @@ impl TypeChecker {
             return_type: Box::new(Type::Int),
         });
 
+        // RES-150: seedable random builtins. std-only.
+        env.set("random_int".to_string(), Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Int),
+        });
+        env.set("random_float".to_string(), Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Float),
+        });
+
         // len: any -> int
         env.set(
             "len".to_string(),
