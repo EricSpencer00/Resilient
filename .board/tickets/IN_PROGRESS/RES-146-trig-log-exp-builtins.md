@@ -1,7 +1,7 @@
 ---
 id: RES-146
 title: Trig / log / exp math builtins (sin cos tan ln log exp)
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -42,3 +42,4 @@ policy).
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
