@@ -26,6 +26,38 @@ fn caller() { return callee(); }
 fn callee() { return 42; }
 ```
 
+### Type aliases
+
+`type <Name> = <Target>;` at top level declares an alias:
+
+```rust
+type Meters = int;
+fn step(Meters m) -> Meters { return m + 1; }
+```
+
+Aliases are **structural, not nominal**. `Meters` unifies with
+`int` at every use site — there is no distinction between
+`int` and `Meters` once typechecking has expanded the alias. If
+you want a fresh nominal type (`Meters` ≠ `int`), wrap the
+target in a one-field struct instead (see RES-126):
+
+```rust
+struct Meters { int val, }
+// `new Meters { val: 5 }` does NOT flow into an `int` parameter.
+```
+
+Within-file forward references work — `fn foo(Meters x) { ...}`
+can precede `type Meters = int;` because the typechecker hoists
+alias declarations in the same pass it uses for function
+contracts. Cross-module forward references wait for the module
+system to grow (today imports are textually spliced before the
+typechecker runs, so aliases imported from another file are
+already present).
+
+Cycles (`type A = B; type B = A;`) surface as a clean
+diagnostic: `type alias cycle: A -> B -> A`. No infinite loop,
+no panic.
+
 ### Return types
 
 A `-> TYPE` annotation is **optional** (RES-123). When omitted, the

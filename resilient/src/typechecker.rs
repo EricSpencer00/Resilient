@@ -332,6 +332,11 @@ pub struct TypeChecker {
     /// `FieldAssignment` to reject writes to non-existent fields
     /// statically.
     struct_fields: HashMap<String, Vec<(String, Type)>>,
+    /// RES-128: alias name → raw target type name. Populated by
+    /// every `TypeAlias` node. Consulted by `parse_type_name` which
+    /// walks the chain (with a `seen` set for cycle detection) and
+    /// returns the ultimate `Type` the alias resolves to.
+    type_aliases: HashMap<String, String>,
 }
 
 impl TypeChecker {
@@ -480,6 +485,7 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
+            type_aliases: HashMap::new(),
         }
     }
     
@@ -510,23 +516,31 @@ impl TypeChecker {
                 // even for forward references.
                 // RES-077: top-level statements are now Spanned<Node>;
                 // deref via .node for the existing destructure.
+                // RES-128: also hoist type aliases in the same pass so
+                // `fn foo(Meters x) ...` typechecks when the
+                // `type Meters = Int;` declaration textually follows.
                 for stmt in statements {
-                    if let Node::Function {
-                        name,
-                        parameters,
-                        requires,
-                        ensures,
-                        ..
-                    } = &stmt.node
-                    {
-                        self.contract_table.insert(
-                            name.clone(),
-                            ContractInfo {
-                                parameters: parameters.clone(),
-                                requires: requires.clone(),
-                                ensures: ensures.clone(),
-                            },
-                        );
+                    match &stmt.node {
+                        Node::Function {
+                            name,
+                            parameters,
+                            requires,
+                            ensures,
+                            ..
+                        } => {
+                            self.contract_table.insert(
+                                name.clone(),
+                                ContractInfo {
+                                    parameters: parameters.clone(),
+                                    requires: requires.clone(),
+                                    ensures: ensures.clone(),
+                                },
+                            );
+                        }
+                        Node::TypeAlias { name, target, .. } => {
+                            self.type_aliases.insert(name.clone(), target.clone());
+                        }
+                        _ => {}
                     }
                 }
 
@@ -871,6 +885,22 @@ impl TypeChecker {
                 for method in methods {
                     let _ = self.check_node(method)?;
                 }
+                Ok(Type::Void)
+            }
+
+            // RES-128: register the alias. Resolution (with cycle
+            // detection) happens in `parse_type_name` / the companion
+            // `resolve_type_alias` helper; this arm just records the
+            // mapping. A duplicate alias-name declaration overwrites
+            // the earlier one — consistent with how `StructDecl`
+            // treats duplicate struct names today.
+            //
+            // NOTE: aliases are NOT nominal — `Meters` unifies with
+            // `Int`. Users who want a fresh nominal type wrap the
+            // target in a one-field struct (RES-126 covers the
+            // nominal rule).
+            Node::TypeAlias { name, target, .. } => {
+                self.type_aliases.insert(name.clone(), target.clone());
                 Ok(Type::Void)
             }
 
@@ -1267,6 +1297,16 @@ impl TypeChecker {
     }
     
     fn parse_type_name(&self, name: &str) -> Result<Type, String> {
+        self.parse_type_name_inner(name, &mut Vec::new())
+    }
+
+    /// RES-128: alias-aware parse with cycle detection. `seen`
+    /// tracks the alias names we've already expanded on the
+    /// current walk — re-entering any of them means the user
+    /// wrote a loop (`type A = B; type B = A;`), which we surface
+    /// as a diagnostic instead of looping forever or stack-
+    /// overflowing.
+    fn parse_type_name_inner(&self, name: &str, seen: &mut Vec<String>) -> Result<Type, String> {
         match name {
             "int" => Ok(Type::Int),
             "float" => Ok(Type::Float),
@@ -1276,6 +1316,22 @@ impl TypeChecker {
             "Result" => Ok(Type::Result),
             "array" => Ok(Type::Array),
             "" => Ok(Type::Any), // Empty type name means "any" for now
+            // RES-128: a registered alias expands transitively.
+            other if self.type_aliases.contains_key(other) => {
+                if seen.iter().any(|n| n == other) {
+                    // Cycle — include the full chain so users see
+                    // how they got into it.
+                    let mut chain = seen.clone();
+                    chain.push(other.to_string());
+                    return Err(format!(
+                        "type alias cycle: {}",
+                        chain.join(" -> ")
+                    ));
+                }
+                seen.push(other.to_string());
+                let target = self.type_aliases[other].clone();
+                self.parse_type_name_inner(&target, seen)
+            }
             // RES-053: any other identifier is assumed to be a
             // user-defined struct. G7 will register struct decls and
             // reject unknown type names, but at MVP we're permissive.

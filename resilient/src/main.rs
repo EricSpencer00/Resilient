@@ -70,6 +70,8 @@ enum Token {
     Use,
     /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
     Impl,
+    /// RES-128: `type <Name> = <Target>;` non-nominal alias.
+    Type,
     
     // Literals
     Identifier(String),
@@ -162,6 +164,7 @@ impl Token {
             Token::Match => "`match`".to_string(),
             Token::Use => "`use`".to_string(),
             Token::Impl => "`impl`".to_string(),
+            Token::Type => "`type`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Dot => "`.`".to_string(),
             Token::FatArrow => "`=>`".to_string(),
@@ -515,6 +518,7 @@ impl Lexer {
                         "match" => Token::Match,
                         "use" => Token::Use,
                         "impl" => Token::Impl,
+                        "type" => Token::Type,
                         "_" => Token::Underscore,
                         "true" => Token::BoolLiteral(true),
                         "false" => Token::BoolLiteral(false),
@@ -1008,6 +1012,19 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-128: top-level `type <Name> = <Target>;` type alias.
+    /// Aliases are structural, NOT nominal — `Meters` unifies with
+    /// `Int` at every use site. For a fresh nominal type, declare a
+    /// one-field struct instead (the ticket notes call this out).
+    /// The typechecker maintains a `type_aliases` map populated
+    /// from every `TypeAlias` statement and expands aliases
+    /// transitively (with cycle detection) in `parse_type_name`.
+    TypeAlias {
+        name: String,
+        target: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 // Parser for creating AST from tokens
@@ -1099,6 +1116,7 @@ impl Parser {
             Token::Function => Some(self.parse_function()),
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
+            Token::Type => Some(self.parse_type_alias()),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
@@ -1453,6 +1471,62 @@ impl Parser {
             return_type,
             span: fn_span,
         }
+    }
+
+    /// RES-128: parse `type <Name> = <Target>;` at top level. Emits
+    /// a `Node::TypeAlias`. The target is parsed as a single
+    /// identifier — tuple / generic alias targets are an RES-129
+    /// follow-up. A missing `=`, a non-identifier on either side, or
+    /// a missing `;` gets a clean diagnostic but doesn't stop the
+    /// parser — we still emit the node so later passes don't null-
+    /// pointer on missing metadata.
+    fn parse_type_alias(&mut self) -> Node {
+        let kw_span = self.span_at_current();
+        self.next_token(); // skip `type`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected alias name after 'type', found {}",
+                    other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after 'type {}', found {}",
+                name, tok
+            ));
+        } else {
+            self.next_token(); // skip '='
+        }
+
+        let target = match &self.current_token {
+            Token::Identifier(t) => t.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected target type name after 'type {} =', found {}",
+                    name, other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip target
+
+        // Trailing `;` — optional (mirrors LetStatement's semicolon
+        // handling so copy-paste doesn't trip users up).
+        if self.current_token == Token::Semicolon {
+            // leave cursor on `;`; parse_program advances past it
+        } else if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::TypeAlias { name, target, span: kw_span }
     }
 
     /// Parse an optional `-> TYPE`. If present, current_token advances
@@ -3937,6 +4011,11 @@ impl Interpreter {
                 // construction trusts the literal.
                 Ok(Value::Void)
             },
+            // RES-128: `type NAME = TARGET;` is purely a
+            // typechecker / documentation concern. Runtime never
+            // sees aliases — by the time `eval` runs, every use
+            // site has already been resolved by the typechecker.
+            Node::TypeAlias { .. } => Ok(Value::Void),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -8612,6 +8691,90 @@ mod tests {
     }
 
     // --- RES-123: optional (inferred) return type annotations ---
+
+    // --- RES-128: type alias declarations ---
+
+    #[test]
+    fn type_alias_accepts_structurally_compatible_value() {
+        // `type M = int` + `fn inc(M x) -> M`: aliases are
+        // structural, so `int` flows freely through `M`.
+        let src = "\
+            type M = int;\n\
+            fn inc(M x) -> M { return x + 1; }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        assert!(tc.check_program(&program).is_ok());
+    }
+
+    #[test]
+    fn type_alias_rejects_wrong_value_type() {
+        // `let m: M = "hi";` where `M = int` — still a type error,
+        // with the alias expanded in the diagnostic message.
+        let src = "\
+            type M = int;\n\
+            let m: M = \"hi\";\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("string cannot flow into int-via-alias");
+        assert!(
+            err.contains("let m: int") && err.contains("value has type string"),
+            "expected alias-expanded diagnostic, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn type_alias_cycle_is_diagnostic_not_panic() {
+        // `A` → `B` → `A` cycle. Must surface as a clean
+        // diagnostic — no stack overflow, no panic.
+        let src = "\
+            type A = B;\n\
+            type B = A;\n\
+            let a: A = 1;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("alias cycle must fail typecheck");
+        assert!(
+            err.contains("type alias cycle"),
+            "expected cycle diagnostic, got: {}",
+            err
+        );
+        // Chain is rendered for debuggability.
+        assert!(
+            err.contains("A") && err.contains("B"),
+            "expected cycle chain to mention both aliases, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn type_alias_forward_reference_works() {
+        // `fn foo(M x)` references `M` before `type M = int;` is
+        // declared. The RES-128 hoisting pass in check_program_
+        // with_source must register aliases BEFORE per-stmt walks,
+        // same as the RES-061 contract-table pass.
+        let src = "\
+            fn inc(M x) -> M { return x + 1; }\n\
+            type M = int;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        assert!(
+            tc.check_program_with_source(&program, "<test>").is_ok(),
+            "forward ref should typecheck"
+        );
+    }
 
     // --- RES-126: nominal struct equivalence ---
 

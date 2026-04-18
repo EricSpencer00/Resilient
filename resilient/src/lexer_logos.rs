@@ -123,6 +123,9 @@ enum Tok {
     // hand-rolled lexer's `"impl" => Token::Impl` kw arm so feature
     // parity is preserved.
     #[token("impl")] Impl,
+    // RES-128: `type <Name> = <Target>;` alias keyword. Same parity
+    // requirement as above.
+    #[token("type")] Type,
     #[token("true")] True,
     #[token("false")] False,
     #[token("_")] Underscore,
@@ -315,6 +318,7 @@ fn convert(t: Tok) -> Token {
         Tok::Match => Token::Match,
         Tok::Use => Token::Use,
         Tok::Impl => Token::Impl,
+        Tok::Type => Token::Type,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,
