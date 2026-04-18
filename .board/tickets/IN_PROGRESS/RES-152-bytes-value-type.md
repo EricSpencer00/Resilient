@@ -1,7 +1,7 @@
 ---
 id: RES-152
 title: `Bytes` value type with `b"..."` literal, `len`, `slice`, `byte_at`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-17
@@ -40,3 +40,4 @@ the memory).
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
