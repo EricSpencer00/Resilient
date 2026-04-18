@@ -505,6 +505,9 @@ fn node_line(n: &Node) -> Option<u32> {
             span.start.line as u32
         }
 
+        // RES-148: map literal carries a span at its opening brace.
+        Node::MapLiteral { span, .. } => span.start.line as u32,
+
         // Structural variants (RES-088).
         Node::Function { span, .. }
         | Node::Use { span, .. }

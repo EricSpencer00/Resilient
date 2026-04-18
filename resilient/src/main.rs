@@ -897,6 +897,16 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-148: map literal — `{"k" -> 1, "m" -> 2}`. Entries are
+    /// (key_expr, value_expr) pairs; keys are evaluated at runtime
+    /// and must produce one of the three hashable primitives
+    /// (`Int`, `String`, `Bool`) or the interpreter errors.
+    MapLiteral {
+        entries: Vec<(Node, Node)>,
+        /// Span of the opening `{`.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 // Parser for creating AST from tokens
@@ -1742,6 +1752,13 @@ impl Parser {
                 expr
             },
             Token::LeftBracket => Some(self.parse_array_literal()),
+            // RES-148: `{"k" -> v, ...}` in expression position parses
+            // as a Map literal. Map literals are only valid in
+            // expression context; statement-level `{` still starts a
+            // block (e.g. fn body, live body, if/else blocks) and is
+            // parsed by the statement-level machinery, which never
+            // calls `parse_expression` at a `{` token.
+            Token::LeftBrace => Some(self.parse_map_literal()),
             Token::New => Some(self.parse_struct_literal()),
             Token::Match => Some(self.parse_match_expression()),
             Token::Function => Some(self.parse_function_literal()),
@@ -2206,6 +2223,67 @@ impl Parser {
         Node::ArrayLiteral { items, span: bracket_span }
     }
 
+    /// RES-148: parse a map literal — `{k -> v, k2 -> v2, ...}`.
+    /// `current_token` is `{` on entry; on exit it is `}`. The
+    /// disambiguation against statement-level `{` (blocks) is handled
+    /// by `parse_expression` only invoking this when it sees `{` in
+    /// expression position.
+    ///
+    /// Trailing comma is accepted, like the array parser.
+    fn parse_map_literal(&mut self) -> Node {
+        let brace_span = self.span_at_current();
+        let mut entries: Vec<(Node, Node)> = Vec::new();
+        // Empty map: `{}`.
+        if self.peek_token == Token::RightBrace {
+            self.next_token(); // to '}'
+            return Node::MapLiteral { entries, span: brace_span };
+        }
+        self.next_token(); // step past '{'
+        // First entry.
+        if let Some((k, v)) = self.parse_map_entry() {
+            entries.push((k, v));
+        }
+        while self.peek_token == Token::Comma {
+            self.next_token(); // to ','
+            if self.peek_token == Token::RightBrace {
+                break; // trailing comma
+            }
+            self.next_token(); // step past ','
+            if let Some((k, v)) = self.parse_map_entry() {
+                entries.push((k, v));
+            }
+        }
+        if self.peek_token != Token::RightBrace {
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected '}}' to close map literal, found {:?}",
+                tok
+            ));
+        } else {
+            self.next_token(); // to '}'
+        }
+        Node::MapLiteral { entries, span: brace_span }
+    }
+
+    /// RES-148: parse a single `key -> value` pair. `current_token`
+    /// is the first token of the key expression on entry; on exit
+    /// it is the last token of the value expression.
+    fn parse_map_entry(&mut self) -> Option<(Node, Node)> {
+        let key = self.parse_expression(0)?;
+        if self.peek_token != Token::Arrow {
+            let tok = self.peek_token.clone();
+            self.record_error(format!(
+                "Expected '->' between map key and value, found {:?}",
+                tok
+            ));
+            return None;
+        }
+        self.next_token(); // to '->'
+        self.next_token(); // step past '->' to value
+        let value = self.parse_expression(0)?;
+        Some((key, value))
+    }
+
     /// Parse `target[index]`. current_token is `[` on entry; on exit
     /// current_token is `]`.
     fn parse_index_expression(&mut self, target: Node) -> Option<Node> {
@@ -2321,6 +2399,64 @@ enum Value {
     },
     Return(Box<Value>),
     Void,
+    /// RES-148: associative map. Keys are restricted (via `MapKey`) to
+    /// the hashable primitives (`Int`, `String`, `Bool`) — anything
+    /// else at a key slot is a runtime error. The interpreter lives in
+    /// `std`, so we use `HashMap`; the `resilient-runtime` sibling
+    /// crate has no `Value::Map` at all and stays no_std-clean.
+    ///
+    /// Value identity is structural — two maps compare equal when
+    /// their (K, V) pair sets match. (Implemented case-by-case in the
+    /// few paths that need it; `Value` itself does not derive
+    /// `PartialEq`.)
+    Map(std::collections::HashMap<MapKey, Value>),
+}
+
+/// RES-148: hashable-key restriction for `Value::Map`. Only the three
+/// primitives (`Int`, `String`, `Bool`) are permitted; anything else
+/// at a key position surfaces a runtime error via `MapKey::from_value`.
+/// Derives `Hash + Eq` so `HashMap` works without any custom hasher.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum MapKey {
+    Int(i64),
+    Str(String),
+    Bool(bool),
+}
+
+impl MapKey {
+    /// Coerce a `Value` into a `MapKey`, returning a runtime error if
+    /// the value is not one of the three hashable primitives.
+    fn from_value(v: &Value) -> Result<Self, String> {
+        match v {
+            Value::Int(n) => Ok(MapKey::Int(*n)),
+            Value::String(s) => Ok(MapKey::Str(s.clone())),
+            Value::Bool(b) => Ok(MapKey::Bool(*b)),
+            other => Err(format!(
+                "Map key must be Int, String, or Bool; got {:?}",
+                other
+            )),
+        }
+    }
+
+    /// Reverse: `MapKey` → `Value` for round-tripping into the
+    /// interpreter's Value plane (used by `map_keys`).
+    fn to_value(&self) -> Value {
+        match self {
+            MapKey::Int(n) => Value::Int(*n),
+            MapKey::Str(s) => Value::String(s.clone()),
+            MapKey::Bool(b) => Value::Bool(*b),
+        }
+    }
+}
+
+impl std::fmt::Display for MapKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            MapKey::Int(n) => write!(f, "{}", n),
+            MapKey::Str(s) => write!(f, "\"{}\"", s),
+            MapKey::Bool(b) => write!(f, "{}", b),
+        }
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -2343,6 +2479,7 @@ impl std::fmt::Debug for Value {
             }
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
+            Value::Map(m) => write!(f, "Map({} entries)", m.len()),
         }
     }
 }
@@ -2381,6 +2518,30 @@ impl std::fmt::Display for Value {
             }
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
+            Value::Map(m) => {
+                // RES-148: iterate keys in sorted order so Display is
+                // deterministic across runs — HashMap's iteration
+                // order would make golden tests flaky otherwise.
+                write!(f, "{{")?;
+                let mut keys: Vec<&MapKey> = m.keys().collect();
+                keys.sort_by(|a, b| match (a, b) {
+                    (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                    (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                    (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                    // Different key types: Int < Str < Bool for stable tie-break.
+                    (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                    (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                    (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                    (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+                });
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} -> {}", k, m.get(k).expect("key is from map"))?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -2642,6 +2803,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
     ("file_write", builtin_file_write),
+    // RES-148: Map builtins.
+    ("map_new", builtin_map_new),
+    ("map_insert", builtin_map_insert),
+    ("map_get", builtin_map_get),
+    ("map_remove", builtin_map_remove),
+    ("map_keys", builtin_map_keys),
+    ("map_len", builtin_map_len),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -3085,6 +3253,138 @@ fn builtin_file_write(args: &[Value]) -> RResult<Value> {
     }
 }
 
+// --- RES-148: Map builtins ---
+
+/// `map_new()` — produce an empty map.
+fn builtin_map_new(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "map_new: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    Ok(Value::Map(std::collections::HashMap::new()))
+}
+
+/// `map_insert(m, k, v)` — insert / overwrite and return the updated
+/// map. The argument map is cloned so the caller's binding is
+/// unaffected, matching the immutable-value conventions elsewhere in
+/// the interpreter (`push` on arrays returns a new array).
+fn builtin_map_insert(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k, v] => {
+            let key = MapKey::from_value(k)?;
+            let mut out = m.clone();
+            out.insert(key, v.clone());
+            Ok(Value::Map(out))
+        }
+        [a, _, _] => Err(format!(
+            "map_insert: first argument must be a Map, got {:?}",
+            a
+        )),
+        _ => Err(format!(
+            "map_insert: expected 3 arguments (map, key, value), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `map_get(m, k) -> Result<V, Err>` — `Ok(v)` when present,
+/// `Err("not found")` when absent.
+fn builtin_map_get(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k] => {
+            let key = MapKey::from_value(k)?;
+            match m.get(&key) {
+                Some(v) => Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(v.clone()),
+                }),
+                None => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String("not found".to_string())),
+                }),
+            }
+        }
+        [a, _] => Err(format!(
+            "map_get: first argument must be a Map, got {:?}",
+            a
+        )),
+        _ => Err(format!(
+            "map_get: expected 2 arguments (map, key), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `map_remove(m, k)` — return the map with the key removed. Missing
+/// keys are silently ignored (no-op), matching
+/// `HashMap::remove`'s "Option<V>" shape interpreted in the
+/// remove-for-side-effect direction.
+fn builtin_map_remove(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k] => {
+            let key = MapKey::from_value(k)?;
+            let mut out = m.clone();
+            out.remove(&key);
+            Ok(Value::Map(out))
+        }
+        [a, _] => Err(format!(
+            "map_remove: first argument must be a Map, got {:?}",
+            a
+        )),
+        _ => Err(format!(
+            "map_remove: expected 2 arguments (map, key), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `map_keys(m) -> Array<K>` — keys in deterministic sort order so
+/// golden tests and downstream logic don't observe HashMap's random
+/// iteration.
+fn builtin_map_keys(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m)] => {
+            let mut keys: Vec<&MapKey> = m.keys().collect();
+            keys.sort_by(|a, b| match (a, b) {
+                (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+            });
+            let out: Vec<Value> = keys.iter().map(|k| k.to_value()).collect();
+            Ok(Value::Array(out))
+        }
+        [a] => Err(format!(
+            "map_keys: expected a Map, got {:?}",
+            a
+        )),
+        _ => Err(format!(
+            "map_keys: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `map_len(m) -> Int` — number of entries.
+fn builtin_map_len(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
+        [a] => Err(format!(
+            "map_len: expected a Map, got {:?}",
+            a
+        )),
+        _ => Err(format!(
+            "map_len: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
@@ -3278,6 +3578,21 @@ impl Interpreter {
                 }
                 Ok(Value::Array(out))
             },
+            // RES-148: `{k -> v, ...}` — evaluate each key / value and
+            // coerce keys to `MapKey` (errors if a key isn't one of
+            // the hashable primitives). Later insertions on the same
+            // key overwrite earlier ones, matching HashMap's semantics.
+            Node::MapLiteral { entries, .. } => {
+                let mut m: std::collections::HashMap<MapKey, Value> =
+                    std::collections::HashMap::with_capacity(entries.len());
+                for (k_node, v_node) in entries {
+                    let k_val = self.eval(k_node)?;
+                    let v_val = self.eval(v_node)?;
+                    let k = MapKey::from_value(&k_val)?;
+                    m.insert(k, v_val);
+                }
+                Ok(Value::Map(m))
+            }
             Node::FunctionLiteral { parameters, body, requires, ensures, .. } => {
                 Ok(Value::Function {
                     parameters: parameters.clone(),
@@ -4876,6 +5191,180 @@ mod tests {
         assert!(err.contains("expected 2 arguments"), "got: {}", err);
         let err = builtin_file_write(&[Value::Int(1), Value::String("x".into())]).unwrap_err();
         assert!(err.contains("expected (String, String)"), "got: {}", err);
+    }
+
+    // --- RES-148: Map builtins + literal syntax ---
+
+    #[test]
+    fn map_new_returns_empty_map() {
+        let m = builtin_map_new(&[]).unwrap();
+        match m {
+            Value::Map(m) => assert_eq!(m.len(), 0),
+            other => panic!("expected Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_insert_then_get_round_trip() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[
+            m,
+            Value::String("a".into()),
+            Value::Int(1),
+        ])
+        .unwrap();
+        let r = builtin_map_get(&[m, Value::String("a".into())]).unwrap();
+        match r {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::Int(1) => {}
+                other => panic!("expected Int(1), got {:?}", other),
+            },
+            other => panic!("expected Ok(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_get_missing_key_returns_err_not_found() {
+        let m = builtin_map_new(&[]).unwrap();
+        let r = builtin_map_get(&[m, Value::String("nope".into())]).unwrap();
+        match r {
+            Value::Result { ok: false, payload } => match *payload {
+                Value::String(s) => assert_eq!(s, "not found"),
+                other => panic!("expected err payload `not found`, got {:?}", other),
+            },
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_remove_drops_key() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_map_remove(&[m, Value::String("a".into())]).unwrap();
+        match builtin_map_len(&[m]).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_keys_returns_sorted_array() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("b".into()), Value::Int(2)]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("c".into()), Value::Int(3)]).unwrap();
+        let ks = builtin_map_keys(&[m]).unwrap();
+        match ks {
+            Value::Array(items) => {
+                let strs: Vec<String> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::String(s) => s,
+                        other => panic!("non-string key, got {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(strs, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_len_counts_entries() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::Int(1), Value::String("one".into())]).unwrap();
+        let m = builtin_map_insert(&[m, Value::Int(2), Value::String("two".into())]).unwrap();
+        match builtin_map_len(&[m]).unwrap() {
+            Value::Int(2) => {}
+            other => panic!("expected Int(2), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_insert_rejects_non_hashable_key() {
+        // Float isn't a hashable key — must surface the key-type
+        // error (source of which is `MapKey::from_value`).
+        let m = builtin_map_new(&[]).unwrap();
+        let err = builtin_map_insert(&[m, Value::Float(1.5), Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("Map key must be Int, String, or Bool"),
+            "expected key-type error, got: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn map_insert_overwrites_existing_key() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("a".into()), Value::Int(99)]).unwrap();
+        let r = builtin_map_get(&[m, Value::String("a".into())]).unwrap();
+        match r {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::Int(99) => {}
+                other => panic!("expected Int(99), got {:?}", other),
+            },
+            other => panic!("expected Ok(99), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_literal_parses_and_evaluates() {
+        // End-to-end: the new `{k -> v}` syntax through the parser
+        // and the interpreter's `MapLiteral` arm.
+        let (p, errs) = parse(r#"let m = {"a" -> 1, "b" -> 2};"#);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("m").unwrap() {
+            Value::Map(m) => {
+                assert_eq!(m.len(), 2);
+                assert!(matches!(m.get(&MapKey::Str("a".into())), Some(Value::Int(1))));
+                assert!(matches!(m.get(&MapKey::Str("b".into())), Some(Value::Int(2))));
+            }
+            other => panic!("expected Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_literal_accepts_heterogeneous_hashable_keys() {
+        // Int, String, Bool all work in the same map literal.
+        let (p, errs) = parse(r#"let m = {1 -> "one", "two" -> 2, true -> 3};"#);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("m").unwrap() {
+            Value::Map(m) => assert_eq!(m.len(), 3),
+            other => panic!("expected Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_literal_empty_braces() {
+        let (p, errs) = parse("let m = {};");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("m").unwrap() {
+            Value::Map(m) => assert_eq!(m.len(), 0),
+            other => panic!("expected empty Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_literal_with_non_hashable_key_is_runtime_error() {
+        // Float keys are rejected at interpret time — the parser
+        // happily accepts anything for the key slot, so this is a
+        // runtime check via `MapKey::from_value`.
+        let (p, errs) = parse("let m = {1.5 -> 1};");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(
+            err.contains("Map key must be Int, String, or Bool"),
+            "expected key-type error, got: {}",
+            err,
+        );
     }
 
     #[test]

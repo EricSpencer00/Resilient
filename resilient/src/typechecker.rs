@@ -430,6 +430,35 @@ impl TypeChecker {
             return_type: Box::new(Type::Void),
         });
 
+        // RES-148: Map builtins. The typechecker doesn't (yet) carry
+        // a dedicated `Type::Map<K, V>` constructor — following the
+        // same permissive-Any convention as the Array / Result
+        // builtins until G7 inference lands.
+        env.set("map_new".to_string(), Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Any),
+        });
+        env.set("map_insert".to_string(), Type::Function {
+            params: vec![Type::Any, Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        });
+        env.set("map_get".to_string(), Type::Function {
+            params: vec![Type::Any, Type::Any],
+            return_type: Box::new(Type::Result),
+        });
+        env.set("map_remove".to_string(), Type::Function {
+            params: vec![Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        });
+        env.set("map_keys".to_string(), Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Array),
+        });
+        env.set("map_len".to_string(), Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int),
+        });
+
         // Result builtins
         env.set("Ok".to_string(), fn_any_to_result());
         env.set("Err".to_string(), fn_any_to_result());
@@ -726,6 +755,18 @@ impl TypeChecker {
                     let _ = self.check_node(item)?;
                 }
                 Ok(Type::Array)
+            },
+
+            // RES-148: map literal — walk every key and value to
+            // surface nested type errors, but fall back to `Type::Any`
+            // for the result until a real `Type::Map<K, V>` lands in
+            // the typechecker.
+            Node::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    let _ = self.check_node(k)?;
+                    let _ = self.check_node(v)?;
+                }
+                Ok(Type::Any)
             },
 
             Node::TryExpression { expr: inner, .. } => {
