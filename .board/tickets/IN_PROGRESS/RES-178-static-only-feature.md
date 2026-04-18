@@ -1,7 +1,7 @@
 ---
 id: RES-178
 title: `static-only` feature: ban alloc at build time, enforce heap-free
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G16
 created: 2026-04-17
@@ -37,3 +37,4 @@ without touching `Vec`, `Box`, `String`, or any alloc type.
 
 ## Log
 - 2026-04-17 created by manager
+- 2026-04-17 claimed by executor
