@@ -22,12 +22,15 @@ use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, InitializeParams,
     InitializeResult, InitializedParams, Location, MessageType, OneOf, Position, Range,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
     ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Url, WorkspaceSymbolParams,
+    TextDocumentSyncKind, Url, WorkDoneProgressOptions, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::{parse, typechecker, Node};
+use crate::{compute_semantic_tokens, parse, typechecker, Node};
 
 /// RES-186: one workspace-level symbol entry. A flat vec of these
 /// is the backend's search index — substring filter at query time,
@@ -58,6 +61,14 @@ pub struct Backend {
     /// LSP handlers run on the tokio runtime's worker threads,
     /// and we never hold the lock across an `.await`.
     documents: Mutex<HashMap<Url, Node>>,
+    /// RES-187: URI → latest raw source text. Stored separately
+    /// from the AST because `semantic_tokens_full` re-lexes the
+    /// source (the lexer's token stream is the source of truth
+    /// for highlighting — the AST discards too much by this
+    /// point, e.g. operator forms collapse into `BinaryOp`).
+    /// Same mutex discipline as `documents`: synchronous lock,
+    /// never held across `.await`.
+    documents_text: Mutex<HashMap<Url, String>>,
     /// RES-186: per-file symbol index. Keyed by `Url` so a
     /// `did_save` can replace just that file's entries instead of
     /// rebuilding the whole thing. The vec-of-entries form inside
@@ -81,6 +92,7 @@ impl Backend {
         Self {
             client,
             documents: Mutex::new(HashMap::new()),
+            documents_text: Mutex::new(HashMap::new()),
             workspace_index: Mutex::new(HashMap::new()),
             workspace_root: Mutex::new(None),
             workspace_index_built: Mutex::new(false),
@@ -105,6 +117,11 @@ impl Backend {
         // the partial AST still covers the recovered fns / structs.
         if let Ok(mut map) = self.documents.lock() {
             map.insert(uri.clone(), program.clone());
+        }
+        // RES-187: cache the raw source text too, for semantic-
+        // tokens requests that re-lex the file.
+        if let Ok(mut tmap) = self.documents_text.lock() {
+            tmap.insert(uri.clone(), text.clone());
         }
 
         for err in &parser_errors {
@@ -362,6 +379,61 @@ fn filter_workspace_symbols(
         .collect()
 }
 
+/// RES-187: the semantic-tokens legend. The order here MUST match
+/// the `sem_tok::*` token-type indices declared in `main.rs`
+/// (KEYWORD=0 … OPERATOR=8) and the modifier bit positions
+/// (MOD_DECLARATION=bit0, MOD_READONLY=bit1). Any drift between
+/// these two tables yields mis-colored output in every client.
+fn semantic_tokens_legend() -> SemanticTokensLegend {
+    // Indices (0..=8): keyword, function, variable, parameter,
+    // type, string, number, comment, operator.
+    let token_types = vec![
+        SemanticTokenType::KEYWORD,
+        SemanticTokenType::FUNCTION,
+        SemanticTokenType::VARIABLE,
+        SemanticTokenType::PARAMETER,
+        SemanticTokenType::TYPE,
+        SemanticTokenType::STRING,
+        SemanticTokenType::NUMBER,
+        SemanticTokenType::COMMENT,
+        SemanticTokenType::OPERATOR,
+    ];
+    // Bit positions: declaration=bit0, readonly=bit1.
+    let token_modifiers = vec![
+        SemanticTokenModifier::DECLARATION,
+        SemanticTokenModifier::READONLY,
+    ];
+    SemanticTokensLegend { token_types, token_modifiers }
+}
+
+/// RES-187: the capability advertised in `initialize` — full-file
+/// tokens only (delta left for a follow-up per the ticket notes).
+fn semantic_tokens_capability() -> SemanticTokensServerCapabilities {
+    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+        work_done_progress_options: WorkDoneProgressOptions::default(),
+        legend: semantic_tokens_legend(),
+        range: Some(false),
+        full: Some(SemanticTokensFullOptions::Bool(true)),
+    })
+}
+
+/// RES-187: turn the `compute_semantic_tokens` u32 wire format
+/// into the `Vec<SemanticToken>` that `tower-lsp`'s
+/// `SemanticTokens::data` expects. The serializer reassembles
+/// the flat u32 stream on the wire — we just need to round-trip
+/// through the struct form.
+fn semantic_tokens_from_wire(wire: Vec<u32>) -> Vec<SemanticToken> {
+    wire.chunks_exact(5)
+        .map(|c| SemanticToken {
+            delta_line: c[0],
+            delta_start: c[1],
+            length: c[2],
+            token_type: c[3],
+            token_modifiers_bitset: c[4],
+        })
+        .collect()
+}
+
 #[allow(deprecated)] // `DocumentSymbol::deprecated` is deprecated in the LSP type
 fn make_symbol(name: &str, kind: SymbolKind, span: crate::span::Span) -> DocumentSymbol {
     let range = span_to_range(span);
@@ -416,6 +488,9 @@ impl LanguageServer for Backend {
                 // RES-186: workspace-symbol search across all .rs
                 // files in the workspace root.
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                // RES-187: full-file semantic tokens. Delta is a
+                // follow-up; many clients use `full` anyway.
+                semantic_tokens_provider: Some(semantic_tokens_capability()),
                 ..Default::default()
             },
         })
@@ -460,6 +535,10 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: tower_lsp::lsp_types::DidCloseTextDocumentParams) {
         if let Ok(mut map) = self.documents.lock() {
             map.remove(&params.text_document.uri);
+        }
+        // RES-187: free the cached source text too.
+        if let Ok(mut tmap) = self.documents_text.lock() {
+            tmap.remove(&params.text_document.uri);
         }
     }
 
@@ -541,6 +620,31 @@ impl LanguageServer for Backend {
         };
         let symbols = document_symbols_for_program(&program);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    /// RES-187: respond to `textDocument/semanticTokens/full` with
+    /// a full-file token stream. Reads the cached source text,
+    /// runs the lexer-driven classifier, and returns the delta-
+    /// encoded LSP payload. `Ok(None)` when the document text
+    /// isn't cached (i.e. the client asked before `didOpen`); a
+    /// strict client would just skip semantic highlighting for
+    /// this file until the next change.
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> JsonResult<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else { return Ok(None) };
+        let wire = compute_semantic_tokens(&text);
+        let data = semantic_tokens_from_wire(wire);
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        })))
     }
 }
 
@@ -834,6 +938,69 @@ mod tests {
         // Limit cap.
         let r = filter_workspace_symbols(&index, "", 2);
         assert_eq!(r.len(), 2);
+    }
+
+    // ---------- RES-187: semantic tokens legend + wire glue ----------
+
+    /// The legend's type-index order MUST match the `sem_tok::*`
+    /// constants in main.rs. If someone adds a new token type
+    /// between them, this test catches the drift before an editor
+    /// starts mis-coloring things.
+    #[test]
+    fn semantic_tokens_legend_indices_match_sem_tok_constants() {
+        use crate::sem_tok;
+        let legend = semantic_tokens_legend();
+        assert_eq!(legend.token_types[sem_tok::KEYWORD as usize],
+                   SemanticTokenType::KEYWORD);
+        assert_eq!(legend.token_types[sem_tok::FUNCTION as usize],
+                   SemanticTokenType::FUNCTION);
+        assert_eq!(legend.token_types[sem_tok::VARIABLE as usize],
+                   SemanticTokenType::VARIABLE);
+        assert_eq!(legend.token_types[sem_tok::PARAMETER as usize],
+                   SemanticTokenType::PARAMETER);
+        assert_eq!(legend.token_types[sem_tok::TYPE as usize],
+                   SemanticTokenType::TYPE);
+        assert_eq!(legend.token_types[sem_tok::STRING as usize],
+                   SemanticTokenType::STRING);
+        assert_eq!(legend.token_types[sem_tok::NUMBER as usize],
+                   SemanticTokenType::NUMBER);
+        assert_eq!(legend.token_types[sem_tok::COMMENT as usize],
+                   SemanticTokenType::COMMENT);
+        assert_eq!(legend.token_types[sem_tok::OPERATOR as usize],
+                   SemanticTokenType::OPERATOR);
+        // Modifier bit positions: bit 0 = declaration, bit 1 = readonly.
+        assert_eq!(legend.token_modifiers[0], SemanticTokenModifier::DECLARATION);
+        assert_eq!(legend.token_modifiers[1], SemanticTokenModifier::READONLY);
+    }
+
+    /// `semantic_tokens_from_wire` must unpack an n-tuple u32 stream
+    /// into n `SemanticToken`s preserving field order.
+    #[test]
+    fn semantic_tokens_from_wire_unpacks_correctly() {
+        // Two tokens: [0,0,3,0,0] then [0,4,3,1,1].
+        let wire = vec![0, 0, 3, 0, 0, 0, 4, 3, 1, 1];
+        let toks = semantic_tokens_from_wire(wire);
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].delta_line, 0);
+        assert_eq!(toks[0].delta_start, 0);
+        assert_eq!(toks[0].length, 3);
+        assert_eq!(toks[0].token_type, 0);
+        assert_eq!(toks[0].token_modifiers_bitset, 0);
+        assert_eq!(toks[1].delta_line, 0);
+        assert_eq!(toks[1].delta_start, 4);
+        assert_eq!(toks[1].length, 3);
+        assert_eq!(toks[1].token_type, 1);
+        assert_eq!(toks[1].token_modifiers_bitset, 1);
+    }
+
+    /// Trailing-partial u32 chunks (not a multiple of 5) are
+    /// dropped by `chunks_exact`. Not expected in practice, but
+    /// pinning the behaviour.
+    #[test]
+    fn semantic_tokens_from_wire_drops_partial_trailing_chunk() {
+        let wire = vec![0, 0, 3, 0, 0, 0, 4]; // 7 elements — last 2 dropped
+        let toks = semantic_tokens_from_wire(wire);
+        assert_eq!(toks.len(), 1);
     }
 
     #[test]

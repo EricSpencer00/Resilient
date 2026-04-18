@@ -503,6 +503,133 @@ fn lsp_workspace_symbol_searches_multiple_files() {
 }
 
 #[test]
+fn lsp_semantic_tokens_full() {
+    // RES-187: initialize → didOpen a small program → request
+    // `textDocument/semanticTokens/full` → assert the response
+    // body is shaped like the LSP spec requires (a `data` array
+    // whose length is a multiple of 5 and is non-empty for this
+    // program).
+    let mut child = Command::new(bin())
+        .arg("--lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn resilient --lsp");
+
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // initialize
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    stdin.write_all(frame(init).as_bytes()).unwrap();
+    stdin.flush().ok();
+    let init_deadline = Instant::now() + Duration::from_secs(5);
+    let init_resp = read_one_message(&mut stdout, init_deadline)
+        .expect("read initialize response");
+    // Capability advertised — presence of the `legend` key is
+    // enough to confirm the server registered semantic tokens.
+    assert!(
+        init_resp.contains(r#""semanticTokensProvider""#),
+        "expected semanticTokensProvider in capabilities, got:\n{}",
+        init_resp
+    );
+    assert!(
+        init_resp.contains(r#""legend""#),
+        "expected legend in semanticTokensProvider, got:\n{}",
+        init_resp
+    );
+
+    let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
+    stdin.write_all(frame(initialized).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // didOpen a program with each token type represented:
+    // comment, keyword, fn decl, type decl, string, number,
+    // variable, operator.
+    let uri = "file:///tmp/lsp_semtok.rs";
+    let did_open = format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","languageId":"resilient","version":1,"text":"// hi\nstruct Point {{ int x }}\nfn greet(int n) {{ let s = \"hi\"; let v = n + 1; return 0; }}\n"}}}}}}"#
+    );
+    stdin.write_all(frame(&did_open).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    // Drain publishDiagnostics so the next read is the
+    // semanticTokens response.
+    let _ = read_until(
+        &mut stdout,
+        |body| body.contains(r#""method":"textDocument/publishDiagnostics""#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read publishDiagnostics");
+
+    // textDocument/semanticTokens/full
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full","params":{{"textDocument":{{"uri":"{uri}"}}}}}}"#
+    );
+    stdin.write_all(frame(&req).as_bytes()).unwrap();
+    stdin.flush().ok();
+
+    let response = read_until(
+        &mut stdout,
+        |body| body.contains(r#""id":2"#),
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read semanticTokens response");
+
+    // Shape: `{"jsonrpc":"2.0","id":2,"result":{"data":[...]}}`.
+    assert!(
+        response.contains(r#""data""#),
+        "expected `data` field in semanticTokens response:\n{response}"
+    );
+
+    // Parse out the data array and verify:
+    //  - length is a multiple of 5 (LSP spec);
+    //  - length is > 0 (non-trivial program);
+    //  - the first 5-tuple starts with `0,0,...` (first token on
+    //    the first line at column 0 — the `//` comment).
+    let data_start = response.find(r#""data":["#).expect("find data array");
+    let after_bracket = data_start + r#""data":["#.len();
+    let bracket_end = after_bracket + response[after_bracket..].find(']')
+        .expect("find closing ]");
+    let nums: Vec<u32> = response[after_bracket..bracket_end]
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .collect();
+    assert!(!nums.is_empty(), "data array should be non-empty, got response:\n{response}");
+    assert_eq!(
+        nums.len() % 5,
+        0,
+        "data array must contain 5-tuples, got {} entries:\n{response}",
+        nums.len()
+    );
+    // First token: the `//` comment at line 0 column 0.
+    assert_eq!(nums[0], 0, "first deltaLine should be 0");
+    assert_eq!(nums[1], 0, "first deltaStart should be 0");
+
+    // exit + clean shutdown
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+    let _ = stdin.write_all(frame(exit).as_bytes());
+    drop(stdin);
+
+    let exit_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() > exit_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("LSP server did not exit within 3s");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("try_wait failed: {}", e),
+        }
+    }
+}
+
+#[test]
 fn lsp_did_change_republishes_diagnostics() {
     // RES-094: simulate the editor flow — clean program → buggy
     // edit → fixed edit. Each transition triggers a fresh
