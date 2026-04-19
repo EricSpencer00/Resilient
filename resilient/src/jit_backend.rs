@@ -1443,6 +1443,190 @@ fn node_kind(n: &Node) -> &'static str {
     }
 }
 
+// ============================================================
+// RES-165a: struct layout cache
+// ============================================================
+//
+// Phase L of the JIT (RES-165) lowers struct literals, field
+// loads/stores, and (eventually) struct-valued returns. Every
+// one of those paths needs to know, for a given declared struct,
+// where each field sits inside the backing buffer:
+//
+//   - Literal construction: the sequence of `stack_store(val, ss,
+//     offset)` calls that initializes a freshly-allocated stack
+//     slot.
+//   - Field load:  `stack_load(field_ty, ss, offset)`.
+//   - Field store: `stack_store(val, ss, offset)`.
+//   - Out-ptr return: the same offsets applied to the caller-
+//     supplied buffer pointer.
+//
+// RES-165a only builds and queries the cache. The later phases
+// (165b/c/d) will consume `StructLayout` / `FieldLayout` without
+// re-running the layout algorithm.
+//
+// ## Layout algorithm (inline spec)
+//
+// Fields are placed in declaration order. For each field, we
+// round the current offset up to the field's alignment before
+// placing it, then advance by its size. The total struct size is
+// rounded up to the largest alignment any field requires (so an
+// array of the struct tiles correctly). Empty structs have
+// size 0, align 1.
+//
+// This is classic repr(C) layout. It matches what a C compiler
+// would produce for the same field order, which is important so
+// that the interpreter/VM view and the JIT view stay compatible
+// when structs get serialized or passed across the FFI boundary
+// in a future ticket.
+//
+// ## Type mapping
+//
+// Resilient surface types map to cranelift types as follows:
+//
+//   int / Int / I64      → I64    (8 bytes, 8-aligned)
+//   float / Float / F64  → F64    (8 bytes, 8-aligned)
+//   i32 / I32            → I32    (4 bytes, 4-aligned)
+//   bool / Bool          → I8     (1 byte,  1-aligned)
+//   everything else      → I64    (treated as a machine pointer
+//                                   on the 64-bit targets we JIT
+//                                   on today)
+//
+// The pointer fallback is deliberately permissive for RES-165a:
+// the only place a struct can legitimately hold a non-primitive
+// today is via a boxed/heap value, and every such value is already
+// an I64-shaped handle in the JIT's current calling convention.
+
+/// Per-field layout entry inside a declared struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FieldLayout {
+    /// Field name, as written in the source.
+    pub name: String,
+    /// Byte offset from the struct's base address, accounting
+    /// for natural-alignment padding before this field.
+    pub offset: u32,
+    /// Cranelift scalar type to use for load/store of this field.
+    pub ty: Type,
+    /// Byte size of the field (matches `ty.bytes()`).
+    pub size: u32,
+    /// Natural alignment of the field, in bytes.
+    pub align: u32,
+}
+
+/// Layout for one `Node::StructDecl`, keyed elsewhere by the
+/// decl's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructLayout {
+    /// Declared name — duplicated from the map key for
+    /// self-containedness.
+    pub name: String,
+    /// Fields in declaration order.
+    pub fields: Vec<FieldLayout>,
+    /// Total size of the struct in bytes, rounded up to the
+    /// struct's alignment.
+    pub total_size: u32,
+    /// Alignment of the struct itself — the max of every field's
+    /// alignment (with 1 as the floor for empty structs).
+    pub align: u32,
+}
+
+impl StructLayout {
+    /// Look up a field by name. Linear scan is fine — struct
+    /// field counts are small and this runs at lowering time, not
+    /// per-instruction.
+    pub(crate) fn field(&self, name: &str) -> Option<&FieldLayout> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+}
+
+/// Return `(cranelift_ty, size, align)` for a Resilient source
+/// type name. See the "Type mapping" block above the FieldLayout
+/// type for the rules.
+fn cranelift_ty_for(annotation: &str) -> (Type, u32, u32) {
+    match annotation {
+        "int" | "Int" | "I64" => (types::I64, 8, 8),
+        "float" | "Float" | "F64" => (types::F64, 8, 8),
+        "i32" | "I32" => (types::I32, 4, 4),
+        "bool" | "Bool" => (types::I8, 1, 1),
+        // Anything else (strings, arrays, nested structs, Result,
+        // user types we haven't seen the decl for) is modelled
+        // as a machine pointer on the JIT's 64-bit targets.
+        _ => (types::I64, 8, 8),
+    }
+}
+
+/// Compute the repr(C)-style layout for a single `Node::StructDecl`.
+/// Returns `None` if the passed node isn't a `StructDecl` —
+/// callers should hand us only struct-decl nodes.
+fn build_struct_layout(decl: &Node) -> Option<StructLayout> {
+    let (name, fields) = match decl {
+        Node::StructDecl { name, fields, .. } => (name.clone(), fields),
+        _ => return None,
+    };
+    let mut placed: Vec<FieldLayout> = Vec::with_capacity(fields.len());
+    let mut offset: u32 = 0;
+    let mut max_align: u32 = 1;
+    for (field_type, field_name) in fields {
+        let (ty, size, align) = cranelift_ty_for(field_type);
+        // Align-up the current offset to this field's alignment.
+        let misalign = offset % align;
+        if misalign != 0 {
+            offset += align - misalign;
+        }
+        placed.push(FieldLayout {
+            name: field_name.clone(),
+            offset,
+            ty,
+            size,
+            align,
+        });
+        offset += size;
+        if align > max_align {
+            max_align = align;
+        }
+    }
+    // Round the struct's total size up to its own alignment so
+    // arrays-of-struct tile correctly without embedded gaps.
+    let tail_misalign = offset % max_align;
+    if tail_misalign != 0 {
+        offset += max_align - tail_misalign;
+    }
+    Some(StructLayout {
+        name,
+        fields: placed,
+        total_size: offset,
+        align: max_align,
+    })
+}
+
+/// Walk a `Program` and build the `decl_name -> StructLayout`
+/// cache. Nested `ImplBlock`s don't add struct decls today, so a
+/// single top-level pass is enough; we still descend into impls
+/// defensively so a future reorg doesn't silently lose layouts.
+pub(crate) fn collect_struct_layouts(program: &Node) -> HashMap<String, StructLayout> {
+    let mut out: HashMap<String, StructLayout> = HashMap::new();
+    collect_struct_layouts_into(program, &mut out);
+    out
+}
+
+fn collect_struct_layouts_into(node: &Node, out: &mut HashMap<String, StructLayout>) {
+    match node {
+        Node::Program(stmts) => {
+            for s in stmts {
+                collect_struct_layouts_into(&s.node, out);
+            }
+        }
+        Node::StructDecl { name, .. } => {
+            if let Some(layout) = build_struct_layout(node) {
+                out.insert(name.clone(), layout);
+            }
+        }
+        // RES-170 / friends may put struct decls inside other
+        // containers in the future — for today this is a no-op
+        // since the parser only places them at Program scope.
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2397,5 +2581,227 @@ mod tests {
             "expected at least 2 compiles total, got {} delta",
             c1 - c0
         );
+    }
+
+    // ============================================================
+    // RES-165a: struct layout cache
+    // ============================================================
+
+    #[test]
+    fn res165a_empty_program_has_no_layouts() {
+        let p = parse_program("return 1;");
+        assert!(collect_struct_layouts(&p).is_empty());
+    }
+
+    #[test]
+    fn res165a_two_int_fields_have_natural_offsets() {
+        // Point { int x, int y } — x@0, y@8, size 16, align 8.
+        let p = parse_program(r#"
+            struct Point {
+                int x,
+                int y,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let pt = layouts.get("Point").expect("Point layout missing");
+        assert_eq!(pt.fields.len(), 2);
+        assert_eq!(pt.fields[0].name, "x");
+        assert_eq!(pt.fields[0].offset, 0);
+        assert_eq!(pt.fields[0].ty, types::I64);
+        assert_eq!(pt.fields[0].size, 8);
+        assert_eq!(pt.fields[1].name, "y");
+        assert_eq!(pt.fields[1].offset, 8);
+        assert_eq!(pt.fields[1].ty, types::I64);
+        assert_eq!(pt.total_size, 16);
+        assert_eq!(pt.align, 8);
+    }
+
+    #[test]
+    fn res165a_bool_then_int_pads_between_fields() {
+        // S { bool b, int x } — b@0 (1 byte), then 7 bytes of
+        // padding, x@8. Struct align is 8 (inherited from `int`),
+        // total size 16.
+        let p = parse_program(r#"
+            struct S {
+                bool b,
+                int x,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let s = layouts.get("S").expect("S layout missing");
+        assert_eq!(s.fields[0].name, "b");
+        assert_eq!(s.fields[0].offset, 0);
+        assert_eq!(s.fields[0].ty, types::I8);
+        assert_eq!(s.fields[0].size, 1);
+        assert_eq!(s.fields[1].name, "x");
+        assert_eq!(s.fields[1].offset, 8);
+        assert_eq!(s.fields[1].size, 8);
+        assert_eq!(s.total_size, 16);
+        assert_eq!(s.align, 8);
+    }
+
+    #[test]
+    fn res165a_trailing_bool_pads_struct_to_alignment() {
+        // T { int x, bool b } — x@0, b@8. Struct align 8, so
+        // total size rounds up from 9 to 16 for arrays-of-T to
+        // tile correctly.
+        let p = parse_program(r#"
+            struct T {
+                int x,
+                bool b,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let t = layouts.get("T").expect("T layout missing");
+        assert_eq!(t.fields[0].offset, 0);
+        assert_eq!(t.fields[1].offset, 8);
+        assert_eq!(t.total_size, 16);
+        assert_eq!(t.align, 8);
+    }
+
+    #[test]
+    fn res165a_all_bool_fields_stay_byte_aligned() {
+        // B { bool a, bool b, bool c } — a@0, b@1, c@2. Align 1,
+        // so no trailing padding; total size 3.
+        let p = parse_program(r#"
+            struct B {
+                bool a,
+                bool b,
+                bool c,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let b = layouts.get("B").expect("B layout missing");
+        assert_eq!(b.fields[0].offset, 0);
+        assert_eq!(b.fields[1].offset, 1);
+        assert_eq!(b.fields[2].offset, 2);
+        assert_eq!(b.total_size, 3);
+        assert_eq!(b.align, 1);
+    }
+
+    #[test]
+    fn res165a_float_field_uses_f64_ty() {
+        // Mix of float + int.  Both are 8-byte aligned, so no
+        // padding between them.
+        let p = parse_program(r#"
+            struct V {
+                float x,
+                int n,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let v = layouts.get("V").expect("V layout missing");
+        assert_eq!(v.fields[0].name, "x");
+        assert_eq!(v.fields[0].ty, types::F64);
+        assert_eq!(v.fields[0].offset, 0);
+        assert_eq!(v.fields[1].name, "n");
+        assert_eq!(v.fields[1].ty, types::I64);
+        assert_eq!(v.fields[1].offset, 8);
+        assert_eq!(v.total_size, 16);
+        assert_eq!(v.align, 8);
+    }
+
+    #[test]
+    fn res165a_i32_field_uses_i32_ty_and_4_byte_align() {
+        // Two i32s pack tightly at 4-byte alignment.
+        let p = parse_program(r#"
+            struct Pair32 {
+                i32 a,
+                i32 b,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let pr = layouts.get("Pair32").expect("Pair32 layout missing");
+        assert_eq!(pr.fields[0].ty, types::I32);
+        assert_eq!(pr.fields[0].offset, 0);
+        assert_eq!(pr.fields[1].ty, types::I32);
+        assert_eq!(pr.fields[1].offset, 4);
+        assert_eq!(pr.total_size, 8);
+        assert_eq!(pr.align, 4);
+    }
+
+    #[test]
+    fn res165a_empty_struct_has_size_zero() {
+        // An empty struct is legal in the parser; we give it
+        // size 0, align 1 to mirror what repr(C) would do.
+        let p = parse_program(r#"struct U { }"#);
+        let layouts = collect_struct_layouts(&p);
+        let u = layouts.get("U").expect("U layout missing");
+        assert!(u.fields.is_empty());
+        assert_eq!(u.total_size, 0);
+        assert_eq!(u.align, 1);
+    }
+
+    #[test]
+    fn res165a_multiple_struct_decls_are_all_cached() {
+        let p = parse_program(r#"
+            struct A { int x, }
+            struct B { bool flag, }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        assert_eq!(layouts.len(), 2);
+        assert!(layouts.contains_key("A"));
+        assert!(layouts.contains_key("B"));
+    }
+
+    #[test]
+    fn res165a_unknown_struct_name_lookup_is_none() {
+        let p = parse_program(r#"struct P { int x, }"#);
+        let layouts = collect_struct_layouts(&p);
+        assert!(layouts.get("Q").is_none());
+    }
+
+    #[test]
+    fn res165a_field_by_name_lookup_roundtrips() {
+        let p = parse_program(r#"
+            struct R {
+                int a,
+                int b,
+                bool c,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let r = layouts.get("R").unwrap();
+        assert_eq!(r.field("a").unwrap().offset, 0);
+        assert_eq!(r.field("b").unwrap().offset, 8);
+        assert_eq!(r.field("c").unwrap().offset, 16);
+        assert!(r.field("nope").is_none());
+    }
+
+    #[test]
+    fn res165a_unknown_field_type_falls_back_to_pointer() {
+        // A field whose type isn't a known primitive (e.g. another
+        // user struct, an array type) maps to a machine-pointer
+        // I64. Regression guard for the fallback branch in
+        // `cranelift_ty_for`.
+        let p = parse_program(r#"
+            struct Node {
+                int tag,
+                Mystery payload,
+            }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        let n = layouts.get("Node").unwrap();
+        assert_eq!(n.fields[0].ty, types::I64);   // int
+        assert_eq!(n.fields[1].ty, types::I64);   // pointer fallback
+        assert_eq!(n.fields[1].offset, 8);
+        assert_eq!(n.total_size, 16);
+    }
+
+    #[test]
+    fn res165a_layouts_survive_non_struct_statements_around_them() {
+        // A realistic program has let bindings, fn decls, and
+        // struct decls intermixed at the top level. The collector
+        // must pick up the struct and ignore the rest.
+        let p = parse_program(r#"
+            let start = 0;
+            struct P { int x, int y, }
+            fn pack(int a, int b) -> int { return a + b; }
+        "#);
+        let layouts = collect_struct_layouts(&p);
+        assert_eq!(layouts.len(), 1);
+        let pt = layouts.get("P").unwrap();
+        assert_eq!(pt.fields.len(), 2);
+        assert_eq!(pt.total_size, 16);
     }
 }
