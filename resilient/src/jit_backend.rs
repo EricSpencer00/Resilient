@@ -671,6 +671,148 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         "res_array_free",
         runtime_shims::res_array_free as *const u8,
     );
+    // RES-167a: register the JIT-side builtin shims alongside the
+    // array runtime shims. Both surfaces use the same absolute-
+    // address `JITBuilder::symbol` mechanism, so piggy-backing on
+    // the same entry point keeps `make_module` single-purpose.
+    register_jit_builtin_symbols(builder);
+}
+
+// ============================================================
+// RES-167a: JIT-side builtin shim table
+// ============================================================
+//
+// The interpreter's builtin functions (`abs`, `min`, `max`, etc.
+// — see `BUILTINS` in main.rs) take `&[Value]` and return
+// `RResult<Value>`. That signature isn't callable from
+// Cranelift-compiled code, which only speaks i64 (and soon f64
+// via RES-098). This module provides thin `extern "C-unwind"`
+// wrappers whose signatures match the JIT's value model, plus
+// a lookup registry so the (future) `Node::CallExpression`
+// lowering in RES-167b can resolve a callee name to an absolute
+// address and arity.
+//
+// RES-167a deliberately lands ONLY the arity-stable, single-
+// signature Int builtins: `abs`, `min`, `max`. These three
+// operate purely on i64 and have exactly one overload each, so
+// the JIT can lower them without needing the RES-124
+// monomorphization pass (which was the second blocker in this
+// ticket's original Attempt-1 bail). Mixed-type builtins (`pow`
+// returning Int or Float) and side-effecting IO (`println`) stay
+// deferred to RES-167b/c.
+//
+// Convention: JIT-side symbol names are prefixed with `res_jit_`
+// to keep them distinct from the interpreter's BUILTINS table
+// and from the `res_array_*` runtime shims. The registry maps
+// the *Resilient* name (as written in user source) to the
+// JIT-side symbol, absolute address, and arity.
+
+pub(crate) mod jit_builtins {
+    //! RES-167a: extern-"C-unwind" shim wrappers over the arity-
+    //! stable Int builtins in main.rs's BUILTINS table. These
+    //! match the interpreter's semantics for the integer-only
+    //! case so tree-walker and JIT output agree.
+    //!
+    //! `pub(crate)` so tests in the parent module can exercise
+    //! the shims directly without going through Cranelift.
+
+    /// Integer absolute value. Matches `builtin_abs` for the
+    /// `Value::Int` case in main.rs. `i64::MIN` wraps (same as
+    /// `wrapping_abs`) to avoid a panic on the minimum value —
+    /// the interpreter does the same via `.abs()` on two's-
+    /// complement, which panics in debug but wraps in release.
+    /// We wrap explicitly so behaviour is predictable.
+    pub extern "C-unwind" fn res_jit_abs(x: i64) -> i64 {
+        x.wrapping_abs()
+    }
+
+    /// Two-argument integer min. Matches `builtin_min` for the
+    /// two-Int case in main.rs.
+    pub extern "C-unwind" fn res_jit_min(a: i64, b: i64) -> i64 {
+        a.min(b)
+    }
+
+    /// Two-argument integer max. Matches `builtin_max` for the
+    /// two-Int case in main.rs.
+    pub extern "C-unwind" fn res_jit_max(a: i64, b: i64) -> i64 {
+        a.max(b)
+    }
+}
+
+/// RES-167a: descriptor for a JIT-side builtin. `name` is the
+/// Resilient source-level identifier a user writes; `symbol` is
+/// the FFI symbol cranelift looks up via
+/// `Module::declare_function`; `addr` is the absolute address
+/// registered with `JITBuilder::symbol`; `arity` is the number
+/// of i64 parameters (all JIT builtins today take i64 args and
+/// return i64).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct JitBuiltinSig {
+    pub name: &'static str,
+    pub symbol: &'static str,
+    pub arity: usize,
+    pub addr: *const u8,
+}
+
+// SAFETY: `JitBuiltinSig` contains a raw function pointer. It's
+// only ever read, never dereferenced directly in safe Rust — the
+// JIT hands the address to Cranelift, which emits code that
+// calls through it. Function pointers are trivially Send/Sync
+// between threads; we mark the wrapper so the static table can
+// live in a `const`.
+unsafe impl Send for JitBuiltinSig {}
+unsafe impl Sync for JitBuiltinSig {}
+
+/// RES-167a: the full set of JIT-callable builtins. Keep this
+/// table sorted alphabetically by `name` to make the miss-lookup
+/// test's assertions stable and to surface accidental duplicates
+/// when a new entry is inserted.
+pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
+    // Can't be a `const` (raw function-pointer casts aren't
+    // usable in const initializers on stable), so we return a
+    // reference to a `static` initialized once at first call.
+    // The slice contents are compile-time known; the only
+    // non-const bit is the `as *const u8` coercion.
+    use jit_builtins::*;
+    static TABLE: std::sync::OnceLock<[JitBuiltinSig; 3]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| [
+        JitBuiltinSig {
+            name: "abs",
+            symbol: "res_jit_abs",
+            arity: 1,
+            addr: res_jit_abs as *const u8,
+        },
+        JitBuiltinSig {
+            name: "max",
+            symbol: "res_jit_max",
+            arity: 2,
+            addr: res_jit_max as *const u8,
+        },
+        JitBuiltinSig {
+            name: "min",
+            symbol: "res_jit_min",
+            arity: 2,
+            addr: res_jit_min as *const u8,
+        },
+    ])
+}
+
+/// RES-167a: look up a JIT builtin by the Resilient source-level
+/// name. Returns `None` if no JIT shim exists for that name —
+/// caller (RES-167b's lowering) turns this into
+/// `JitError::Unsupported` so an un-JIT-able builtin falls back
+/// to the tree-walker.
+pub(crate) fn lookup_jit_builtin(name: &str) -> Option<&'static JitBuiltinSig> {
+    jit_builtin_table().iter().find(|b| b.name == name)
+}
+
+/// RES-167a: register every JIT builtin's FFI symbol on the
+/// `JITBuilder`. Mirrors `register_runtime_symbols` for the
+/// `res_array_*` surface. Called from `make_module`.
+fn register_jit_builtin_symbols(builder: &mut JITBuilder) {
+    for b in jit_builtin_table() {
+        builder.symbol(b.symbol, b.addr);
+    }
 }
 
 /// RES-072 + RES-096 + RES-105: compile a Resilient `Program`
@@ -3135,5 +3277,147 @@ mod tests {
             assert_eq!(res_array_get(arr, i), i * 2);
         }
         res_array_free(arr);
+    }
+
+    // ============================================================
+    // RES-167a: JIT builtin shim table + registry
+    // ============================================================
+
+    use super::jit_builtins::{res_jit_abs, res_jit_max, res_jit_min};
+    use super::{lookup_jit_builtin, jit_builtin_table};
+
+    #[test]
+    fn res167a_abs_positive_is_unchanged() {
+        assert_eq!(res_jit_abs(7), 7);
+    }
+
+    #[test]
+    fn res167a_abs_negative_is_magnitude() {
+        assert_eq!(res_jit_abs(-7), 7);
+    }
+
+    #[test]
+    fn res167a_abs_zero_is_zero() {
+        assert_eq!(res_jit_abs(0), 0);
+    }
+
+    #[test]
+    fn res167a_abs_min_i64_wraps_without_panic() {
+        // `i64::MIN.abs()` would panic in debug; the JIT shim
+        // uses `wrapping_abs` to match release-mode interpreter
+        // behaviour and keep the FFI call total.
+        assert_eq!(res_jit_abs(i64::MIN), i64::MIN);
+    }
+
+    #[test]
+    fn res167a_min_picks_smaller_arg() {
+        assert_eq!(res_jit_min(3, 7), 3);
+        assert_eq!(res_jit_min(7, 3), 3);
+        assert_eq!(res_jit_min(-5, 5), -5);
+        assert_eq!(res_jit_min(-5, -10), -10);
+    }
+
+    #[test]
+    fn res167a_min_equal_args_returns_either() {
+        assert_eq!(res_jit_min(4, 4), 4);
+    }
+
+    #[test]
+    fn res167a_max_picks_larger_arg() {
+        assert_eq!(res_jit_max(3, 7), 7);
+        assert_eq!(res_jit_max(7, 3), 7);
+        assert_eq!(res_jit_max(-5, 5), 5);
+        assert_eq!(res_jit_max(-5, -10), -5);
+    }
+
+    #[test]
+    fn res167a_max_equal_args_returns_either() {
+        assert_eq!(res_jit_max(4, 4), 4);
+    }
+
+    #[test]
+    fn res167a_lookup_known_builtin_roundtrips() {
+        let b = lookup_jit_builtin("abs").expect("abs missing from table");
+        assert_eq!(b.name, "abs");
+        assert_eq!(b.symbol, "res_jit_abs");
+        assert_eq!(b.arity, 1);
+        // The address field is opaque — we only verify it's
+        // non-null (function pointers to live Rust fns always
+        // are).
+        assert!(!b.addr.is_null());
+    }
+
+    #[test]
+    fn res167a_lookup_unknown_builtin_is_none() {
+        // `println` is a real interpreter builtin, but the JIT
+        // doesn't support it yet (RES-167b/c scope). Looking it
+        // up returns None so the lowering can bail cleanly with
+        // Unsupported instead of crashing.
+        assert!(lookup_jit_builtin("println").is_none());
+        // Pure gibberish returns None as well.
+        assert!(lookup_jit_builtin("nonexistent").is_none());
+    }
+
+    #[test]
+    fn res167a_registry_is_sorted_by_name() {
+        // Keep the registry alphabetically sorted so the
+        // miss-lookup test above stays stable when more entries
+        // are added (sort by `name`, not `symbol` — name is the
+        // Resilient-source identifier, symbol is the FFI prefix).
+        let names: Vec<&str> = jit_builtin_table().iter().map(|b| b.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "jit builtin table must stay alphabetically sorted");
+    }
+
+    #[test]
+    fn res167a_registry_has_no_duplicate_names() {
+        let mut names: Vec<&str> = jit_builtin_table().iter().map(|b| b.name).collect();
+        names.sort();
+        let orig_len = names.len();
+        names.dedup();
+        assert_eq!(names.len(), orig_len, "duplicate builtin name in registry");
+    }
+
+    #[test]
+    fn res167a_arity_matches_actual_signature() {
+        // Sanity-check each entry's `arity` field matches the
+        // shim's real parameter count. Without this, RES-167b's
+        // lowering could silently emit a wrong signature.
+        assert_eq!(lookup_jit_builtin("abs").unwrap().arity, 1);
+        assert_eq!(lookup_jit_builtin("min").unwrap().arity, 2);
+        assert_eq!(lookup_jit_builtin("max").unwrap().arity, 2);
+    }
+
+    #[test]
+    fn res167a_symbol_prefix_distinguishes_from_array_runtime() {
+        // Every JIT builtin symbol starts with `res_jit_`; every
+        // array runtime shim starts with `res_array_`. The
+        // distinct prefixes prevent namespace collisions in
+        // cranelift's module-level symbol table.
+        for b in jit_builtin_table() {
+            assert!(
+                b.symbol.starts_with("res_jit_"),
+                "symbol {} missing res_jit_ prefix",
+                b.symbol
+            );
+        }
+    }
+
+    #[test]
+    fn res167a_module_still_builds_after_jit_builtin_wiring() {
+        // Regression guard: adding `register_jit_builtin_symbols`
+        // to `register_runtime_symbols` must not break module
+        // construction.
+        let m = make_module().expect("make_module failed after RES-167a wiring");
+        drop(m);
+    }
+
+    #[test]
+    fn res167a_existing_jit_run_path_still_returns_correct_result() {
+        // Mirror of res166a's end-to-end guard, re-asserted
+        // after this ticket's additional wiring.
+        let p = parse_program("return 10 + 20;");
+        assert_eq!(run(&p).unwrap(), 30);
     }
 }
