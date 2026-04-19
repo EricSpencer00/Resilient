@@ -1,7 +1,7 @@
 ---
 id: RES-164
 title: JIT: closure capture by value (RES-072 Phase K)
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -40,6 +40,7 @@ harder ticket.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized, new JIT calling convention)
+- 2026-04-17 claimed by executor — landing RES-164a scope (free_vars helper only)
 
 ## Attempt 1 failed
 
