@@ -1,7 +1,7 @@
 ---
 id: RES-166
 title: JIT: array indexed load/store (RES-072 Phase M)
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -43,6 +43,7 @@ of our example programs can run end-to-end through the JIT.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized; first JIT FFI)
+- 2026-04-17 claimed by executor — landing RES-166a scope (runtime shims + symbol wiring)
 
 ## Attempt 1 failed
 
