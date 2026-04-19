@@ -1,7 +1,7 @@
 ---
 id: RES-188
 title: LSP: completion for builtins and in-scope locals
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -35,6 +35,8 @@ prefix. No fuzzy matching yet; no type-driven filtering.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (same shared LSP infra
   gap flagged by RES-181 / RES-182)
+- 2026-04-17 claimed by executor — landing RES-188a scope (builtins + top-level
+  decls; locals/params deferred to RES-188b — same scope-walker gap as RES-182b)
 
 ## Attempt 1 failed
 
