@@ -4059,6 +4059,25 @@ enum Value {
     /// versa. No interior mutability — `bytes_slice` returns a new
     /// `Value::Bytes`.
     Bytes(Vec<u8>),
+    /// RES-169a (skeleton, unused): bytecode-VM closure value. Holds
+    /// an index into the compiled `Program::functions` table and a
+    /// slab of captured upvalues (already copied — capture-by-value).
+    /// The interpreter uses `Value::Function` with an `Environment`
+    /// for its closure representation; the VM needs a distinct
+    /// variant because its function table lookup is by u16 index,
+    /// not by name.
+    ///
+    /// This variant is laid down in RES-169a so RES-169b (compiler
+    /// emits `Op::MakeClosure`) and RES-169c (VM dispatches both
+    /// new opcodes) can land as additive changes. Today nothing
+    /// constructs it — the interpreter doesn't produce it, the VM
+    /// compiler doesn't emit `Op::MakeClosure` yet, and the VM's
+    /// dispatch for the new opcodes returns `VmError::Unsupported`.
+    #[allow(dead_code)]
+    Closure {
+        fn_idx: u16,
+        upvalues: Box<[Value]>,
+    },
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -4131,6 +4150,12 @@ impl std::fmt::Debug for Value {
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
             Value::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
+            // RES-169a: skeleton Debug for the VM-side closure value.
+            // Not constructed today; kept for completeness so a
+            // future test printf doesn't silently no-op.
+            Value::Closure { fn_idx, upvalues } => {
+                write!(f, "Closure(fn={}, {} upvalues)", fn_idx, upvalues.len())
+            }
         }
     }
 }
@@ -4240,6 +4265,11 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            // RES-169a: skeleton Display for VM closures — mirror
+            // `Value::Function`'s placeholder rendering so tests
+            // that happen to stringify a closure see something
+            // intelligible instead of "unreachable".
+            Value::Closure { .. } => write!(f, "<closure>"),
         }
     }
 }

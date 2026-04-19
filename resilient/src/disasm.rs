@@ -159,6 +159,17 @@ fn write_op(
         Op::Ge => write!(out, "Ge")?,
         Op::Not => write!(out, "Not")?,
         Op::Return => write!(out, "Return")?,
+        // RES-169a: skeleton disassembly for the two unused
+        // closure opcodes. RES-169b/c will make these emittable
+        // and executable; the format mirrors how the VM will
+        // ultimately interpret the operands.
+        Op::MakeClosure { fn_idx, upvalue_count } => {
+            write!(out, "MakeClosure {} {}", fn_idx, upvalue_count)?;
+            if let Some(name) = fn_names.get(fn_idx as usize) {
+                write!(out, "  ; -> {}", name)?;
+            }
+        }
+        Op::LoadUpvalue(idx) => write!(out, "LoadUpvalue {}", idx)?,
     }
     Ok(())
 }
@@ -302,5 +313,66 @@ mod tests {
         disassemble(&program, &mut out).unwrap();
         assert!(out.contains("(empty)"));
         assert!(out.contains("constants: (none)"));
+    }
+
+    // ---------- RES-169a: skeleton closure-opcode disasm ----------
+
+    #[test]
+    fn res169a_make_closure_renders_with_operands() {
+        let program = prog_main_only(mk_chunk(
+            vec![
+                Op::MakeClosure { fn_idx: 0, upvalue_count: 2 },
+                Op::Return,
+            ],
+            vec![],
+            vec![1, 1],
+        ));
+        let mut out = String::new();
+        disassemble(&program, &mut out).unwrap();
+        assert!(
+            out.contains("MakeClosure 0 2"),
+            "expected `MakeClosure 0 2` in disasm, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn res169a_load_upvalue_renders_with_idx() {
+        let program = prog_main_only(mk_chunk(
+            vec![Op::LoadUpvalue(3), Op::Return],
+            vec![],
+            vec![1, 1],
+        ));
+        let mut out = String::new();
+        disassemble(&program, &mut out).unwrap();
+        assert!(
+            out.contains("LoadUpvalue 3"),
+            "expected `LoadUpvalue 3` in disasm, got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn res169a_make_closure_with_named_fn_renders_pointer() {
+        let program = Program {
+            main: mk_chunk(
+                vec![Op::MakeClosure { fn_idx: 0, upvalue_count: 1 }, Op::Return],
+                vec![],
+                vec![1, 1],
+            ),
+            functions: vec![Function {
+                name: "adder".into(),
+                arity: 1,
+                chunk: Chunk::new(),
+                local_count: 0,
+            }],
+        };
+        let mut out = String::new();
+        disassemble(&program, &mut out).unwrap();
+        assert!(
+            out.contains("MakeClosure 0 1") && out.contains("-> adder"),
+            "expected `MakeClosure 0 1 ... -> adder` in disasm, got:\n{}",
+            out
+        );
     }
 }

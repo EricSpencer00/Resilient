@@ -88,6 +88,25 @@ pub enum Op {
     /// Halt execution. The top of the operand stack (if any) is the
     /// program's return value; an empty stack returns `Value::Void`.
     Return,
+    /// RES-169a (skeleton, unused): build a closure value from a
+    /// function index and a count of upvalues. The compiler (RES-169b)
+    /// will emit this immediately after `upvalue_count` copies of
+    /// `LoadLocal(src)` that put the to-be-captured values onto the
+    /// operand stack; the VM dispatch (RES-169c) will pop them into a
+    /// `Value::Closure { fn_idx, upvalues }` and push that back.
+    ///
+    /// Today the variant exists so RES-169b/c can land as additive
+    /// changes without another opcode-enum migration. The VM
+    /// dispatch arm returns `VmError::Unsupported` — the compiler
+    /// never emits this yet.
+    MakeClosure { fn_idx: u16, upvalue_count: u8 },
+    /// RES-169a (skeleton, unused): push `upvalues[idx]` from the
+    /// current `CallFrame`'s captured-value slab onto the operand
+    /// stack. Distinct from `LoadLocal` so the compiler can disambiguate
+    /// captures from params/locals at the opcode level. RES-169c will
+    /// wire the actual slab; today the dispatch arm returns
+    /// `VmError::Unsupported`.
+    LoadUpvalue(u16),
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
@@ -278,5 +297,71 @@ mod tests {
     fn compile_error_display_is_descriptive() {
         let e = CompileError::Unsupported("struct decl");
         assert_eq!(e.to_string(), "bytecode compile: unsupported construct: struct decl");
+    }
+
+    // ---------- RES-169a: skeleton closure opcodes ----------
+
+    #[test]
+    fn res169a_make_closure_constructs_with_payload() {
+        // Sanity: the variant accepts both operands. Not yet
+        // emitted by the compiler — RES-169b will add that.
+        let op = Op::MakeClosure { fn_idx: 7, upvalue_count: 3 };
+        if let Op::MakeClosure { fn_idx, upvalue_count } = op {
+            assert_eq!(fn_idx, 7);
+            assert_eq!(upvalue_count, 3);
+        } else {
+            panic!("expected MakeClosure");
+        }
+    }
+
+    #[test]
+    fn res169a_load_upvalue_constructs_with_payload() {
+        let op = Op::LoadUpvalue(4);
+        if let Op::LoadUpvalue(idx) = op {
+            assert_eq!(idx, 4);
+        } else {
+            panic!("expected LoadUpvalue");
+        }
+    }
+
+    #[test]
+    fn res169a_closure_ops_are_copy() {
+        // `Op` derives Copy — adding new variants must not break
+        // that, because the VM dispatch reads `*op` per step.
+        let a = Op::MakeClosure { fn_idx: 0, upvalue_count: 0 };
+        let b = a; // copy, not move
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn res169a_closure_ops_have_same_op_size_envelope() {
+        // Regression guard. The module doc claims `Op` stays 4 bytes
+        // up through u16-indexed variants. `MakeClosure` carries a
+        // u16 + u8, so fits inside the same 4-byte envelope (with
+        // discriminant + alignment). This test pins that — if
+        // someone adds a `u32` later that inflates sizeof(Op), the
+        // assertion fires and they have to justify the growth.
+        // We allow a generous upper bound (8 bytes) so the check
+        // survives cross-platform layout variation, but flag
+        // anything catastrophically larger.
+        assert!(
+            std::mem::size_of::<Op>() <= 8,
+            "sizeof(Op) = {} bytes; closure opcodes should not inflate this",
+            std::mem::size_of::<Op>()
+        );
+    }
+
+    #[test]
+    fn res169a_emit_make_closure_roundtrips_through_chunk() {
+        // The emit/line_info pipeline must accept the new opcodes
+        // verbatim. No semantic expectation yet (the VM returns
+        // Unsupported on dispatch); RES-169b/c make these live.
+        let mut c = Chunk::new();
+        let a = c.emit(Op::MakeClosure { fn_idx: 1, upvalue_count: 2 }, 10);
+        let b = c.emit(Op::LoadUpvalue(0), 11);
+        assert_eq!(a, 0);
+        assert_eq!(b, 1);
+        assert_eq!(c.code.len(), 2);
+        assert_eq!(c.line_info, vec![10, 11]);
     }
 }

@@ -42,6 +42,12 @@ pub enum VmError {
         line: u32,
         kind: Box<VmError>,
     },
+    /// RES-169a: an opcode was dispatched that the VM recognizes as
+    /// a valid variant but hasn't wired runtime semantics for yet.
+    /// Currently used as the placeholder dispatch arm for
+    /// `Op::MakeClosure` and `Op::LoadUpvalue` — the compiler never
+    /// emits these until RES-169b lands.
+    Unsupported(&'static str),
 }
 
 impl VmError {
@@ -68,6 +74,7 @@ impl std::fmt::Display for VmError {
             VmError::CallStackUnderflow => write!(f, "vm: call stack underflow"),
             VmError::CallStackOverflow => write!(f, "vm: call stack overflow (>1024 frames)"),
             VmError::JumpOutOfBounds => write!(f, "vm: jump target out of bounds"),
+            VmError::Unsupported(what) => write!(f, "vm: unsupported opcode: {}", what),
             VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
         }
     }
@@ -386,6 +393,18 @@ fn run_inner(
             }
             Op::Return => {
                 return Ok(stack.pop().unwrap_or(Value::Void));
+            }
+            // RES-169a: skeleton dispatch arms. The compiler never
+            // emits these until RES-169b lands the MakeClosure /
+            // LoadUpvalue emission pass; if one shows up in a chunk
+            // today it's a wiring bug, not user-facing. Return
+            // Unsupported with a self-describing descriptor so the
+            // at-line wrapper still works.
+            Op::MakeClosure { .. } => {
+                return Err(VmError::Unsupported("MakeClosure"));
+            }
+            Op::LoadUpvalue(_) => {
+                return Err(VmError::Unsupported("LoadUpvalue"));
             }
         }
     }
@@ -710,5 +729,66 @@ mod tests {
             panic!("expected Program");
         };
         interp.eval(&stmts[0].node).expect("eval")
+    }
+
+    // ---------- RES-169a: skeleton closure-opcode dispatch ----------
+
+    #[test]
+    fn res169a_make_closure_dispatch_returns_unsupported() {
+        // MakeClosure is laid down as a skeleton in RES-169a; the
+        // compiler never emits it yet, so if it shows up in a
+        // chunk that's a wiring bug. The dispatch arm reports that
+        // cleanly via `VmError::Unsupported("MakeClosure")`.
+        let p = const_program(
+            &[],
+            &[Op::MakeClosure { fn_idx: 0, upvalue_count: 0 }],
+        );
+        let err = run(&p).unwrap_err();
+        match err.kind() {
+            VmError::Unsupported(what) => assert_eq!(*what, "MakeClosure"),
+            other => panic!("expected Unsupported(MakeClosure), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res169a_load_upvalue_dispatch_returns_unsupported() {
+        let p = const_program(&[], &[Op::LoadUpvalue(0)]);
+        let err = run(&p).unwrap_err();
+        match err.kind() {
+            VmError::Unsupported(what) => assert_eq!(*what, "LoadUpvalue"),
+            other => panic!("expected Unsupported(LoadUpvalue), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res169a_unsupported_error_display_is_descriptive() {
+        let e = VmError::Unsupported("MakeClosure");
+        assert_eq!(e.to_string(), "vm: unsupported opcode: MakeClosure");
+    }
+
+    #[test]
+    fn res169a_closure_value_variant_constructs() {
+        // `Value::Closure` is a skeleton variant — not constructed
+        // by the interpreter or VM today, but must be usable when
+        // RES-169c hooks up the dispatch. Build one directly and
+        // sanity-check its Debug + Display outputs.
+        let c = Value::Closure {
+            fn_idx: 5,
+            upvalues: vec![Value::Int(1), Value::Int(2)].into_boxed_slice(),
+        };
+        assert_eq!(format!("{:?}", c), "Closure(fn=5, 2 upvalues)");
+        assert_eq!(format!("{}", c), "<closure>");
+    }
+
+    #[test]
+    fn res169a_existing_vm_path_still_returns_correct_result() {
+        // Regression guard: adding the new Value / Op / VmError
+        // variants must not regress any existing opcode's
+        // behaviour. Smoke-test a non-trivial arithmetic program.
+        let p = const_program(
+            &[Value::Int(10), Value::Int(32)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        assert_int(run(&p).unwrap(), 42);
     }
 }
