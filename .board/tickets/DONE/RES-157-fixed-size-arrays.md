@@ -1,7 +1,7 @@
 ---
 id: RES-157
 title: Fixed-size array type `[Int; N]` for stack allocation
-state: IN_PROGRESS
+state: DONE
 priority: P2
 goalpost: G12
 created: 2026-04-17
@@ -39,6 +39,79 @@ without alloc. Add a fixed-size variant with compile-known length.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized; nominal rule collides with existing code)
 - 2026-04-17 claimed by executor — landing RES-157a scope (parser type annotation only)
+- 2026-04-17 landed RES-157a (parser); RES-157b / RES-157c / RES-157d deferred
+
+## Resolution (RES-157a — parser type annotation only)
+
+This landing covers only the **RES-157a** piece from the Attempt-1
+clarification split: parser support for `[T; N]` at the four
+type-annotation sites. The `ArrayLiteral` inference-policy decision
+(RES-157b), structured `Type::FixedArray` + constant OOB detection
+(RES-157c), and `to_dynamic` builtin (RES-157d) remain deferred as
+follow-ups.
+
+### Files changed
+
+- `resilient/src/main.rs`
+  - New helper `Parser::parse_type_annotation(ctx)` accepts either a
+    bare identifier or a fixed-size array form `[T; N]` where `T` is
+    an identifier and `N` is a non-negative `IntLiteral`. The result
+    is a `String` formatted as `"[T; N]"`, storing the annotation in
+    the same slot existing callers already use.
+  - Four existing call sites swapped to the helper:
+    1. `parse_let_statement` (`let x: TYPE = ...`).
+    2. `parse_function_parameters` (`fn f(TYPE name, ...)`).
+    3. `parse_optional_return_type` (`fn f(...) -> TYPE`).
+    4. `parse_struct_decl` fields (`struct S { TYPE field, ... }`).
+  - Error recovery: on malformed `[...]` the parser skips forward to
+    `]` (or EOF) so a single bad annotation doesn't derail the rest
+    of the program.
+- Eight new unit tests named `res157a_*` cover:
+  - Fixed-size annotation on `let`, fn parameter, fn return type,
+    and struct field (AST-shape asserts).
+  - Back-compat: bare `int` annotations still parse unchanged.
+  - Clean error messages for missing `;` and for non-literal
+    length expressions.
+  - Runtime parity: the tree-walker executes `let a: [Int; 3] = ...`
+    identically to an unannotated binding.
+
+### Verification
+
+```
+$ cargo build                                   # OK
+$ cargo build --features z3                     # OK
+$ cargo build --features lsp,logos-lexer,infer  # OK
+$ cargo test --locked
+test result: ok. 591 passed; 0 failed; 0 ignored
+(+ 58 integration tests, all OK)
+$ cargo test res157a
+test result: ok. 8 passed; 0 failed
+```
+
+### What was intentionally NOT done
+
+- **RES-157b** — no `ArrayLiteral` inference-policy change. Array
+  literals still infer `Type::Array` (heap-backed). A
+  `let a: [Int; 3] = [1, 2, 3];` declaration parses but does not
+  typecheck against a structured fixed-array type, because none
+  exists yet. The typechecker treats the `[Int; 3]` annotation
+  string as opaque (it does not appear in `Type::Named` lookup
+  tables, so falls through the same no-op path that any unknown
+  annotation string hits today).
+- **RES-157c** — no `Type::FixedArray(elem, len)` variant, no
+  unification rule, no constant OOB detection at `IndexExpression`.
+- **RES-157d** — no `to_dynamic` builtin.
+- No changes to `push`, `pop`, `slice`, or other `Array<T>` builtins.
+
+### Follow-ups the Manager should mint
+
+- **RES-157b** — decide the `ArrayLiteral` inference policy and add
+  the assign-time length check.
+- **RES-157c** — introduce `Type::FixedArray`, unification, and
+  constant OOB detection, consuming the `[T; N]` strings RES-157a
+  now produces.
+- **RES-157d** — `to_dynamic(a: [T; N]) -> Array<T>` builtin as
+  explicit escape hatch against the nominal rule.
 
 ## Attempt 1 failed
 

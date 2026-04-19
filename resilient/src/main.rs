@@ -1954,16 +1954,120 @@ impl Parser {
             return None;
         }
         self.next_token(); // skip '->'
-        let ty = match &self.current_token {
-            Token::Identifier(t) => Some(t.clone()),
+        let ty = self.parse_type_annotation("after '->'");
+        // `parse_type_annotation` leaves current_token on the token
+        // after the type. Nothing more to do here.
+        ty
+    }
+
+    /// RES-157a: parse a single type annotation starting at
+    /// `current_token`. Accepts either a bare identifier (e.g. `Int`,
+    /// `MyStruct`) or a fixed-size array form `[T; N]` where `T` is
+    /// an identifier and `N` is a non-negative integer literal. The
+    /// result is stored as a string (mirroring the existing
+    /// single-identifier convention); downstream passes treat the
+    /// annotation as opaque for now. RES-157c will promote this to a
+    /// structured `Type::FixedArray(elem, len)`.
+    ///
+    /// On entry `current_token` is the first token of the type. On
+    /// exit `current_token` is the token immediately after the type
+    /// (matching the single-identifier convention this replaces so
+    /// every call site stays a drop-in swap).
+    ///
+    /// Returns `None` and records an error when the tokens don't form
+    /// a valid type annotation. `ctx` is a short phrase for error
+    /// messages (e.g. `"after ':'"`, `"in struct field"`).
+    fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
+        match &self.current_token {
+            Token::Identifier(t) => {
+                let ty = t.clone();
+                self.next_token(); // advance past the identifier
+                Some(ty)
+            }
+            Token::LeftBracket => {
+                // `[T; N]` — fixed-size array type.
+                self.next_token(); // skip `[`
+                let elem = match &self.current_token {
+                    Token::Identifier(t) => t.clone(),
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected element type inside `[...; N]` {}, found {}",
+                            ctx, tok
+                        ));
+                        // Recover: skip until we find the closing `]`
+                        // so the parser doesn't get stuck on a partial
+                        // annotation.
+                        while self.current_token != Token::RightBracket
+                            && self.current_token != Token::Eof
+                        {
+                            self.next_token();
+                        }
+                        if self.current_token == Token::RightBracket {
+                            self.next_token();
+                        }
+                        return None;
+                    }
+                };
+                self.next_token(); // skip element type
+                if self.current_token != Token::Semicolon {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ';' after element type in `[{}; N]` {}, found {}",
+                        elem, ctx, tok
+                    ));
+                    while self.current_token != Token::RightBracket
+                        && self.current_token != Token::Eof
+                    {
+                        self.next_token();
+                    }
+                    if self.current_token == Token::RightBracket {
+                        self.next_token();
+                    }
+                    return None;
+                }
+                self.next_token(); // skip `;`
+                let len = match &self.current_token {
+                    Token::IntLiteral(n) if *n >= 0 => *n,
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected non-negative integer length in `[{}; N]` {}, found {}",
+                            elem, ctx, tok
+                        ));
+                        while self.current_token != Token::RightBracket
+                            && self.current_token != Token::Eof
+                        {
+                            self.next_token();
+                        }
+                        if self.current_token == Token::RightBracket {
+                            self.next_token();
+                        }
+                        return None;
+                    }
+                };
+                self.next_token(); // skip length
+                if self.current_token != Token::RightBracket {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ']' to close `[{}; {}` {}, found {}",
+                        elem, len, ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `]`
+                // Serialize into the same single-string slot existing
+                // callers use. Downstream passes parse it back (or
+                // ignore it) for now; RES-157c promotes the slot to a
+                // typed representation.
+                Some(format!("[{}; {}]", elem, len))
+            }
             _ => {
                 let tok = self.current_token.clone();
-                self.record_error(format!("Expected type name after '->', found {}", tok));
+                self.record_error(format!("Expected type name {}, found {}", ctx, tok));
                 None
             }
-        };
-        self.next_token(); // skip type identifier
-        ty
+        }
     }
 
     /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses. On
@@ -2055,18 +2159,13 @@ impl Parser {
         }
         
         while self.current_token != Token::RightParen {
-            let param_type = match &self.current_token {
-                Token::Identifier(typ) => typ.clone(),
-                _ => {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!("Expected parameter type, found {}", tok));
-                    // Recover: bail out of the loop; caller will see RightParen
-                    // or Eof and stop.
-                    break;
-                }
+            // RES-157a: accept `[T; N]` as well as bare identifiers.
+            // `parse_type_annotation` advances past the whole type on
+            // success (equivalent to the old single `next_token()`).
+            let param_type = match self.parse_type_annotation("for parameter") {
+                Some(t) => t,
+                None => break,
             };
-
-            self.next_token(); // Skip type
 
             let param_name = match &self.current_token {
                 Token::Identifier(name) => name.clone(),
@@ -2322,18 +2421,11 @@ impl Parser {
         }
 
         // RES-052: optional `: TYPE` annotation.
+        // RES-157a: `TYPE` may now also be a fixed-size array form
+        // `[T; N]`. The helper normalizes both shapes into a string.
         let type_annot = if self.current_token == Token::Colon {
             self.next_token(); // skip ':'
-            let ty = match &self.current_token {
-                Token::Identifier(t) => Some(t.clone()),
-                _ => {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!("Expected type name after ':', found {}", tok));
-                    None
-                }
-            };
-            self.next_token(); // skip type
-            ty
+            self.parse_type_annotation("after ':'")
         } else {
             None
         };
@@ -3155,15 +3247,12 @@ impl Parser {
 
         let mut fields = Vec::new();
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
-            let ty = match &self.current_token {
-                Token::Identifier(t) => t.clone(),
-                _ => {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!("Expected field type, found {}", tok));
-                    break;
-                }
+            // RES-157a: struct fields may now carry `[T; N]`
+            // annotations too. Helper consumes the whole type.
+            let ty = match self.parse_type_annotation("for struct field") {
+                Some(t) => t,
+                None => break,
             };
-            self.next_token();
             let fname = match &self.current_token {
                 Token::Identifier(n) => n.clone(),
                 _ => {
@@ -12538,6 +12627,156 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         assert!(matches!(interp.env.get("y").unwrap(), Value::Int(43)));
+    }
+
+    // ---------- RES-157a: fixed-size-array type annotations ----------
+    //
+    // These tests cover only the parser + AST side of RES-157. The
+    // length-aware typechecking (RES-157c) and the `ArrayLiteral`
+    // inference-policy decision (RES-157b) remain deferred. For now
+    // the annotation is stored as a verbatim `[T; N]` string and the
+    // typechecker treats it opaquely.
+
+    #[test]
+    fn res157a_let_accepts_fixed_array_annotation() {
+        let (p, errors) = parse("let a: [Int; 3] = [1, 2, 3];");
+        assert!(errors.is_empty(), "{:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::LetStatement { name, type_annot, .. } => {
+                    assert_eq!(name, "a");
+                    assert_eq!(type_annot.as_deref(), Some("[Int; 3]"));
+                }
+                other => panic!("expected LetStatement, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn res157a_let_preserves_bare_identifier_annotation() {
+        // Plain `: int` still works — the helper must be a strict
+        // superset of the old single-identifier parse.
+        let (p, errors) = parse("let x: int = 1;");
+        assert!(errors.is_empty(), "{:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::LetStatement { type_annot, .. } => {
+                    assert_eq!(type_annot.as_deref(), Some("int"));
+                }
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res157a_fn_param_accepts_fixed_array_annotation() {
+        let src = r#"
+            fn head([Int; 3] xs) -> int {
+                return xs[0];
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { parameters, .. } => {
+                    assert_eq!(parameters.len(), 1);
+                    assert_eq!(parameters[0].0, "[Int; 3]");
+                    assert_eq!(parameters[0].1, "xs");
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn res157a_fn_return_type_accepts_fixed_array_annotation() {
+        let src = r#"
+            fn triple(int a, int b, int c) -> [Int; 3] {
+                return [a, b, c];
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { return_type, .. } => {
+                    assert_eq!(return_type.as_deref(), Some("[Int; 3]"));
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn res157a_struct_field_accepts_fixed_array_annotation() {
+        let src = r#"
+            struct Point {
+                [Int; 2] coords,
+                int id,
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::StructDecl { name, fields, .. } => {
+                    assert_eq!(name, "Point");
+                    assert_eq!(fields.len(), 2);
+                    assert_eq!(fields[0].0, "[Int; 2]");
+                    assert_eq!(fields[0].1, "coords");
+                    assert_eq!(fields[1].0, "int");
+                    assert_eq!(fields[1].1, "id");
+                }
+                other => panic!("expected StructDecl, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn res157a_missing_semicolon_in_array_type_errors_cleanly() {
+        // `[Int 3]` missing the `;` — parser must record an error,
+        // not panic, and must keep advancing.
+        let (_p, errors) = parse("let a: [Int 3] = [1, 2, 3];");
+        assert!(
+            errors.iter().any(|e| e.contains("';'") || e.contains("semicolon")),
+            "expected a ';' error, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn res157a_non_integer_length_errors_cleanly() {
+        // `[Int; x]` — non-literal length is not yet supported
+        // (const-generics are deferred per the ticket notes).
+        let (_p, errors) = parse("let a: [Int; x] = [1, 2, 3];");
+        assert!(
+            errors.iter().any(|e| e.contains("integer") || e.contains("length")),
+            "expected an integer-length error, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn res157a_annotation_does_not_affect_runtime() {
+        // The tree-walker ignores the annotation today — whether the
+        // source says `[Int; 3]` or nothing at all, the assignment
+        // runs the same. This protects the backward-compat story
+        // until RES-157b/c land the typechecker piece.
+        let src = r#"
+            let a: [Int; 3] = [10, 20, 30];
+            let s = a[0] + a[1] + a[2];
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("s").unwrap(), Value::Int(60)));
     }
 
     #[test]
