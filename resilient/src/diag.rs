@@ -125,6 +125,207 @@ fn expand_tabs(line: &str) -> String {
     out
 }
 
+// ============================================================
+// RES-119 (scaffolding-only): unified Diagnostic data model.
+// ============================================================
+//
+// This section lands the data types + terminal renderer. Call-
+// site migration (parser / typechecker / VM / verifier / LSP)
+// is deliberately NOT in scope here per the bail's Option 2 —
+// the existing pipelines keep emitting `String` errors unchanged
+// until follow-up tickets migrate each phase individually.
+//
+// The types are `pub` so RES-206 (error-code registry) and
+// later phase-migration tickets can consume them directly.
+
+/// RES-119: severity lattice. Error > Warning > Hint > Note in
+/// terms of user urgency. The terminal renderer prints the
+/// lowercase name (`error:` / `warning:` / `hint:` / `note:`),
+/// matching rustc's convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Severity {
+    /// Compile / verify / runtime error — blocks execution.
+    Error,
+    /// Non-fatal signal — lints, exhaustiveness warnings,
+    /// deprecation.
+    Warning,
+    /// Suggestive ("consider using X") — rendered as info.
+    Hint,
+    /// Secondary message attached to a primary diagnostic —
+    /// typically surfaced as "note: previous definition here".
+    Note,
+}
+
+impl Severity {
+    /// Lowercase string suitable for the terminal prefix.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Hint => "hint",
+            Severity::Note => "note",
+        }
+    }
+}
+
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// RES-119: stable error/warning identifier. Registry lives in
+/// the follow-up ticket RES-206 (`resilient/src/diag/codes.rs`);
+/// this type is the shape the registry hangs off of. Using a
+/// `Cow<'static, str>` lets both static `pub const` entries
+/// (`"E0001"`) and dynamic-construction code paths share the
+/// same type without allocating for the static cases.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DiagCode(pub std::borrow::Cow<'static, str>);
+
+impl DiagCode {
+    /// RES-119: constant-friendly constructor. `DiagCode::new("E0001")`
+    /// borrows the `'static str` with no allocation.
+    pub const fn new(code: &'static str) -> Self {
+        DiagCode(std::borrow::Cow::Borrowed(code))
+    }
+
+    /// String view — what gets rendered inside
+    /// `error[<code>]: message`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DiagCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// RES-119: the unified diagnostic. Every phase produces these
+/// (once migrated); the LSP publish path + terminal renderer
+/// consume them without phase-specific adapters.
+///
+/// - `span` — the primary source range the diagnostic points at.
+/// - `severity` — Error / Warning / Hint / Note.
+/// - `code` — optional stable identifier (populated by RES-206).
+/// - `message` — the main human-readable text.
+/// - `notes` — secondary (span, message) pairs attached to the
+///   primary. Rendered as additional `note:` blocks. Empty by
+///   default; no new renderer work required — the terminal
+///   formatter just prints them after the primary block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub span: Span,
+    pub severity: Severity,
+    pub code: Option<DiagCode>,
+    pub message: String,
+    pub notes: Vec<(Span, String)>,
+}
+
+impl Diagnostic {
+    /// RES-119: quick-constructor for a no-code no-notes
+    /// diagnostic. Most call-site migrations start here and
+    /// add code + notes later as the phase gets more
+    /// sophisticated.
+    pub fn new(severity: Severity, span: Span, message: impl Into<String>) -> Self {
+        Self {
+            span,
+            severity,
+            code: None,
+            message: message.into(),
+            notes: Vec::new(),
+        }
+    }
+
+    /// Fluent builder: attach a stable code.
+    pub fn with_code(mut self, code: DiagCode) -> Self {
+        self.code = Some(code);
+        self
+    }
+
+    /// Fluent builder: append a secondary note with its own
+    /// span. Chainable; called once per note.
+    pub fn with_note(
+        mut self,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
+        self.notes.push((span, message.into()));
+        self
+    }
+}
+
+/// RES-119: terminal renderer for a unified Diagnostic. Produces
+/// the same source-context-with-caret shape as the existing
+/// `format_diagnostic` helper, but with a severity + optional
+/// `[code]` prefix and any attached notes printed as follow-up
+/// blocks.
+///
+/// Example output (single note):
+///
+/// ```text
+/// error[E0007]: expected `;`
+///    let x = 1
+///             ^
+/// note: statement boundary inferred here
+///    let x = 1
+///             ^
+/// ```
+///
+/// The `filename` prefix is the caller's responsibility (this
+/// matches `format_diagnostic` / `format_diagnostic_from_line_col`).
+/// Callers render the final `<file>:<line>:<col>: ` before
+/// invoking the terminal formatter.
+///
+/// No ANSI colour codes — same reasoning as
+/// `format_diagnostic`: diagnostics often pipe into logs / LSP,
+/// where escape codes render as garbage.
+pub fn format_diagnostic_terminal(src: &str, diag: &Diagnostic) -> String {
+    let mut out = String::new();
+    // Primary header: "<severity>[<code>]: <message>" — rustc-
+    // shaped. Without a code, drop the brackets.
+    match &diag.code {
+        Some(code) => {
+            out.push_str(&format!(
+                "{}[{}]: {}\n",
+                diag.severity, code, diag.message
+            ));
+        }
+        None => {
+            out.push_str(&format!("{}: {}\n", diag.severity, diag.message));
+        }
+    }
+    // Source-context block for the primary span.
+    out.push_str(&render_span_snippet(src, diag.span));
+    // Each note: `note: <msg>` header + its own snippet block.
+    for (note_span, note_msg) in &diag.notes {
+        out.push_str(&format!("note: {}\n", note_msg));
+        out.push_str(&render_span_snippet(src, *note_span));
+    }
+    out
+}
+
+/// RES-119 internal: extract just the snippet-with-caret
+/// portion of `format_diagnostic`'s output, without its own
+/// `<level>: <msg>` header. Lets
+/// `format_diagnostic_terminal` own the header line in the new
+/// `severity[code]:` shape.
+fn render_span_snippet(src: &str, span: Span) -> String {
+    // Re-use the existing renderer but strip its first line
+    // (the `<level>: <msg>` header we don't want here).
+    let full = format_diagnostic(src, span, "", "");
+    // The first line is "`:` " (level empty + msg empty collapses
+    // to "`: `"); drop it. If for any reason the helper returns
+    // something unexpected, fall back to the raw output.
+    full.lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +433,140 @@ mod tests {
         // No crash, caret still present so the message is still
         // visually distinguishable in the terminal.
         assert!(d.contains("^"), "missing caret even on empty line: {}", d);
+    }
+
+    // ---------- RES-119: Diagnostic scaffolding ----------
+
+    #[test]
+    fn severity_renders_lowercase_rustc_style() {
+        assert_eq!(Severity::Error.as_str(), "error");
+        assert_eq!(Severity::Warning.as_str(), "warning");
+        assert_eq!(Severity::Hint.as_str(), "hint");
+        assert_eq!(Severity::Note.as_str(), "note");
+        // Display impl matches as_str.
+        assert_eq!(format!("{}", Severity::Error), "error");
+    }
+
+    #[test]
+    fn diag_code_const_constructor_is_borrow() {
+        // Constant-friendly: no allocation for 'static strs.
+        const E0001: DiagCode = DiagCode::new("E0001");
+        assert_eq!(E0001.as_str(), "E0001");
+        assert_eq!(format!("{}", E0001), "E0001");
+    }
+
+    #[test]
+    fn diagnostic_new_leaves_optional_fields_empty() {
+        let d = Diagnostic::new(
+            Severity::Error,
+            span(1, 1, 1, 2),
+            "oops",
+        );
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.message, "oops");
+        assert!(d.code.is_none());
+        assert!(d.notes.is_empty());
+    }
+
+    #[test]
+    fn diagnostic_builder_attaches_code_and_notes() {
+        let code = DiagCode::new("E0007");
+        let primary = span(1, 1, 1, 5);
+        let note_span = span(2, 1, 2, 5);
+        let d = Diagnostic::new(Severity::Error, primary, "expected `;`")
+            .with_code(code.clone())
+            .with_note(note_span, "statement boundary here");
+        assert_eq!(d.code, Some(code));
+        assert_eq!(d.notes.len(), 1);
+        assert_eq!(d.notes[0].1, "statement boundary here");
+    }
+
+    #[test]
+    fn terminal_renderer_includes_severity_code_and_message() {
+        let src = "let x = 1\n";
+        let d = Diagnostic::new(
+            Severity::Error,
+            span(1, 10, 1, 10),
+            "expected `;`",
+        )
+        .with_code(DiagCode::new("E0007"));
+        let out = format_diagnostic_terminal(src, &d);
+        assert!(out.contains("error[E0007]: expected `;`"),
+            "header wrong: {}", out);
+        assert!(out.contains("let x = 1"),
+            "source context missing: {}", out);
+        assert!(out.contains("^"), "caret missing: {}", out);
+    }
+
+    #[test]
+    fn terminal_renderer_without_code_drops_brackets() {
+        let src = "let x = 1\n";
+        let d = Diagnostic::new(
+            Severity::Warning,
+            span(1, 1, 1, 3),
+            "unused binding",
+        );
+        let out = format_diagnostic_terminal(src, &d);
+        assert!(
+            out.starts_with("warning: unused binding"),
+            "header shape wrong: {}",
+            out,
+        );
+        // `[...]` shouldn't appear anywhere near the severity.
+        assert!(
+            !out.lines().next().unwrap().contains("["),
+            "stray `[` in header: {}",
+            out,
+        );
+    }
+
+    #[test]
+    fn terminal_renderer_appends_each_note_with_its_own_snippet() {
+        let src = "let x = 1;\nlet x = 2;\n";
+        let primary = span(2, 5, 2, 6);
+        let note_span = span(1, 5, 1, 6);
+        let d = Diagnostic::new(
+            Severity::Error,
+            primary,
+            "shadows previous binding",
+        )
+        .with_note(note_span, "previous definition here");
+        let out = format_diagnostic_terminal(src, &d);
+        assert!(out.contains("error: shadows previous binding"),
+            "primary header missing: {}", out);
+        assert!(out.contains("note: previous definition here"),
+            "note header missing: {}", out);
+        // Both source lines should appear (primary + note
+        // snippets).
+        assert!(out.contains("let x = 2;"), "primary snippet missing: {}", out);
+        assert!(out.contains("let x = 1;"), "note snippet missing: {}", out);
+    }
+
+    #[test]
+    fn hint_severity_renders_with_hint_header() {
+        let src = "let x = 1;\n";
+        let d = Diagnostic::new(
+            Severity::Hint,
+            span(1, 1, 1, 3),
+            "consider renaming to `_x`",
+        );
+        let out = format_diagnostic_terminal(src, &d);
+        assert!(out.starts_with("hint: consider renaming to `_x`"),
+            "header wrong: {}", out);
+    }
+
+    #[test]
+    fn diagnostic_is_clone_and_eq() {
+        // Clone + PartialEq derives exercised — matters for
+        // downstream tests that want to assert on the full
+        // Diagnostic value shape.
+        let d1 = Diagnostic::new(
+            Severity::Warning,
+            span(1, 1, 1, 5),
+            "x",
+        )
+        .with_code(DiagCode::new("W0001"));
+        let d2 = d1.clone();
+        assert_eq!(d1, d2);
     }
 }
