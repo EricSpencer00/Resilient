@@ -20,14 +20,15 @@ use std::sync::Mutex;
 use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, InitializeParams,
-    InitializeResult, InitializedParams, InlayHint, InlayHintKind, InlayHintLabel,
-    InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location, MessageType,
-    OneOf, Position, Range, SemanticToken, SemanticTokenModifier, SemanticTokenType,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Url, WorkDoneProgressOptions, WorkspaceSymbolParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
+    InlayHintServerCapabilities, Location, MarkedString, MessageType, OneOf, Position, Range,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
+    SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    WorkDoneProgressOptions, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -235,6 +236,75 @@ fn span_to_range(span: crate::span::Span) -> Range {
         span.end.column.saturating_sub(1) as u32,
     );
     Range::new(start, end)
+}
+
+/// RES-181a: classify the token kind at LSP `pos` inside `src`
+/// and return `(type_name, range)` for hover display. Returns
+/// `None` if no literal token covers that position.
+///
+/// Why drive the lexer directly instead of walking the AST? The
+/// parser's `span_at_current` records `last_token_*` after the
+/// lexer has ALREADY advanced to the next token — so a
+/// `Node::IntegerLiteral` built inside `parse_expression` ends
+/// up with a span pointing at whatever lexeme follows, not at
+/// the literal itself. Reliable per-token positions come straight
+/// from `Lexer::next_token_with_span`, which returns true start
+/// AND end coordinates in one call.
+///
+/// This lookup is O(tokens). A cached-source document is small
+/// enough that re-lexing on each hover request is cheap — faster
+/// than the HashMap operation that reads it.
+pub(crate) fn hover_literal_at(
+    src: &str,
+    pos: Position,
+) -> Option<(&'static str, Range)> {
+    use crate::{Lexer, Token};
+    let mut lex = Lexer::new(src.to_string());
+    loop {
+        let (tok, span) = lex.next_token_with_span();
+        if matches!(tok, Token::Eof) {
+            return None;
+        }
+        if !lex_span_contains_lsp_position(span, pos) {
+            continue;
+        }
+        let type_name: &'static str = match tok {
+            Token::IntLiteral(_) => "Int",
+            Token::FloatLiteral(_) => "Float",
+            Token::StringLiteral(_) => "String",
+            Token::BoolLiteral(_) => "Bool",
+            Token::BytesLiteral(_) => "Bytes",
+            _ => return None, // non-literal token at cursor → no hover
+        };
+        return Some((type_name, span_to_range(span)));
+    }
+}
+
+/// RES-181a: does a lexer-produced `Span` (proper start + end,
+/// 1-indexed) contain LSP `Position` (0-indexed)? End is
+/// exclusive.
+fn lex_span_contains_lsp_position(span: crate::span::Span, pos: Position) -> bool {
+    let start_line = span.start.line.saturating_sub(1) as u32;
+    let start_col = span.start.column.saturating_sub(1) as u32;
+    let end_line = span.end.line.saturating_sub(1) as u32;
+    let end_col = span.end.column.saturating_sub(1) as u32;
+    // Check line ordering first: pos.line must be in [start, end].
+    if pos.line < start_line || pos.line > end_line {
+        return false;
+    }
+    // Single-line span: constrain by columns within that line.
+    if start_line == end_line {
+        return pos.character >= start_col && pos.character < end_col;
+    }
+    // Multi-line token (e.g. multi-line string literal). Inner
+    // lines match unconditionally; boundaries check their column.
+    if pos.line == start_line {
+        return pos.character >= start_col;
+    }
+    if pos.line == end_line {
+        return pos.character < end_col;
+    }
+    true
 }
 
 /// RES-185: walk a `Node::Program` and emit one `DocumentSymbol`
@@ -743,6 +813,14 @@ impl LanguageServer for Backend {
                         resolve_provider: Some(false),
                     }),
                 )),
+                // RES-181a: advertise hover support. Today the handler
+                // only surfaces a type for literals (Int / Float /
+                // Bool / String / Bytes / Duration) — identifier
+                // hover is RES-181b, deferred behind RES-120's
+                // inferred-type table. `Simple(true)` is the compact
+                // form; `HoverOptions` would let us opt into
+                // work-done progress reporting which we don't need.
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -872,6 +950,47 @@ impl LanguageServer for Backend {
         };
         let symbols = document_symbols_for_program(&program);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    /// RES-181a: respond to `textDocument/hover` — today, only
+    /// literal positions yield a result. A literal under the
+    /// cursor returns its Resilient-surface type name (`Int`,
+    /// `Float`, `String`, `Bool`, `Bytes`); any other position
+    /// returns `Ok(None)` so the client renders nothing.
+    ///
+    /// Implementation drives the lexer directly against the
+    /// cached source text (not the AST), because the parser's
+    /// per-leaf spans record `last_token_*` AFTER the lexer
+    /// advances — unreliable for literal positions. See the
+    /// module-level comment on `hover_literal_at` for the
+    /// rationale.
+    ///
+    /// RES-181b will extend this to identifier positions once
+    /// RES-120 exposes a per-position inferred-type table. The
+    /// plumbing here (document lookup, capability advertisement,
+    /// Hover response shape) is the shared scaffolding that
+    /// ticket will build on.
+    async fn hover(&self, params: HoverParams) -> JsonResult<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+        let Some((type_name, range)) = hover_literal_at(&text, pos) else {
+            return Ok(None);
+        };
+        // `MarkedString::String` keeps the bubble universal —
+        // both markdown-rendering and plain-text clients display
+        // it identically. Type name alone is the body; no extra
+        // prose.
+        Ok(Some(Hover {
+            contents: HoverContents::Scalar(MarkedString::String(type_name.to_string())),
+            range: Some(range),
+        }))
     }
 
     /// RES-187: respond to `textDocument/semanticTokens/full` with
@@ -1518,5 +1637,151 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ============================================================
+    // RES-181a: hover handler helpers
+    // ============================================================
+    //
+    // Drive the lexer directly (via `hover_literal_at`) to classify
+    // the token at a cursor position. Returns `(type_name, range)`
+    // or `None`. Tests use zero-indexed `Position` values to mirror
+    // how real LSP clients send cursor coordinates.
+
+    #[test]
+    fn res181a_hover_on_int_literal_start_returns_int() {
+        // `let x = 42;` — `42` spans cols 9..11 (1-indexed) = LSP
+        // chars 8..11. Cursor at `4` (char 8) returns Int.
+        let r = hover_literal_at("let x = 42;", Position::new(0, 8));
+        let (ty, _range) = r.expect("expected Int hover at col 8");
+        assert_eq!(ty, "Int");
+    }
+
+    #[test]
+    fn res181a_hover_on_int_literal_middle_returns_int() {
+        // Anywhere inside the token's extent — cursor at `2` (char 9)
+        // still returns Int because the lexer's real span covers
+        // the whole literal.
+        let r = hover_literal_at("let x = 42;", Position::new(0, 9));
+        let (ty, _) = r.expect("expected Int hover at col 9");
+        assert_eq!(ty, "Int");
+    }
+
+    #[test]
+    fn res181a_hover_on_bool_literal_returns_bool() {
+        // `let b = true;` — `true` spans cols 9..13.
+        let r = hover_literal_at("let b = true;", Position::new(0, 10));
+        let (ty, _) = r.expect("expected Bool hover");
+        assert_eq!(ty, "Bool");
+    }
+
+    #[test]
+    fn res181a_hover_on_false_literal_returns_bool() {
+        // `let b = false;` — `false` spans cols 9..14.
+        let r = hover_literal_at("let b = false;", Position::new(0, 10));
+        let (ty, _) = r.expect("expected Bool hover");
+        assert_eq!(ty, "Bool");
+    }
+
+    #[test]
+    fn res181a_hover_on_string_literal_returns_string() {
+        // `let s = "hi";` — quoted string spans cols 9..13.
+        let r = hover_literal_at(r#"let s = "hi";"#, Position::new(0, 10));
+        let (ty, _) = r.expect("expected String hover");
+        assert_eq!(ty, "String");
+    }
+
+    #[test]
+    fn res181a_hover_on_float_literal_returns_float() {
+        let r = hover_literal_at("let f = 3.14;", Position::new(0, 10));
+        let (ty, _) = r.expect("expected Float hover");
+        assert_eq!(ty, "Float");
+    }
+
+    #[test]
+    fn res181a_hover_on_bytes_literal_returns_bytes() {
+        // `let b = b"\x00\x01";` — bytes literal.
+        let r = hover_literal_at(r#"let b = b"\x00";"#, Position::new(0, 10));
+        let (ty, _) = r.expect("expected Bytes hover");
+        assert_eq!(ty, "Bytes");
+    }
+
+    #[test]
+    fn res181a_hover_on_keyword_returns_none() {
+        // Cursor on `let` (non-literal token) → no hover.
+        assert!(hover_literal_at("let x = 42;", Position::new(0, 0)).is_none());
+    }
+
+    #[test]
+    fn res181a_hover_on_identifier_returns_none() {
+        // Cursor on `x` identifier — identifier hover is RES-181b
+        // (needs inferred types). Today we deliberately return
+        // None so the client renders nothing.
+        let r = hover_literal_at("let x = 42;", Position::new(0, 4));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res181a_hover_on_operator_returns_none() {
+        // Cursor on `+` → no hover.
+        let r = hover_literal_at("let r = 1 + 2;", Position::new(0, 10));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res181a_hover_out_of_range_returns_none() {
+        // Cursor way past the file end → None (no tokens past EOF).
+        let r = hover_literal_at("let x = 42;", Position::new(10, 0));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res181a_hover_on_empty_source_returns_none() {
+        let r = hover_literal_at("", Position::new(0, 0));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res181a_hover_inside_fn_body_returns_literal_type() {
+        let src = "fn f(int n) { return 7; }";
+        // `7` is at col 22 (1-indexed) = LSP col 21.
+        let r = hover_literal_at(src, Position::new(0, 21));
+        let (ty, _) = r.expect("expected Int hover inside fn body");
+        assert_eq!(ty, "Int");
+    }
+
+    #[test]
+    fn res181a_hover_returns_range_covering_the_token() {
+        // The Range returned with the hover should span the whole
+        // literal. For `42` at cols 9..11 (1-indexed) = LSP 8..10.
+        let (ty, range) = hover_literal_at("let x = 42;", Position::new(0, 8))
+            .expect("expected hover");
+        assert_eq!(ty, "Int");
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.end.line, 0);
+        // Start column is 8 (LSP 0-indexed = `4`). End column is
+        // 10 (exclusive = position of `;`).
+        assert_eq!(range.start.character, 8);
+        assert_eq!(range.end.character, 10);
+    }
+
+    #[test]
+    fn res181a_lex_span_contains_lsp_position_single_line() {
+        use crate::span::{Pos, Span};
+        // Token at line 1, cols 5..10 (1-indexed) — LSP 0-indexed
+        // [line 0, chars 4..9].
+        let sp = Span::new(Pos::new(1, 5, 0), Pos::new(1, 10, 5));
+        assert!(lex_span_contains_lsp_position(sp, Position::new(0, 4)));
+        assert!(lex_span_contains_lsp_position(sp, Position::new(0, 8)));
+        assert!(!lex_span_contains_lsp_position(sp, Position::new(0, 9)));
+        assert!(!lex_span_contains_lsp_position(sp, Position::new(0, 3)));
+    }
+
+    #[test]
+    fn res181a_lex_span_contains_lsp_position_different_line() {
+        use crate::span::{Pos, Span};
+        let sp = Span::new(Pos::new(2, 1, 0), Pos::new(2, 5, 4));
+        assert!(!lex_span_contains_lsp_position(sp, Position::new(0, 1)));
+        assert!(!lex_span_contains_lsp_position(sp, Position::new(5, 1)));
     }
 }

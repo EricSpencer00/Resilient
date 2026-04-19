@@ -634,7 +634,12 @@ impl Lexer {
     /// Existing call sites still use `next_token()` and ignore spans —
     /// they will migrate as the AST gains span fields.
     #[allow(dead_code)]
-    fn next_token_with_span(&mut self) -> (Token, span::Span) {
+    // RES-181a: `pub(crate)` so the LSP hover handler can drive
+    // the lexer directly to find the token at a cursor position.
+    // (AST-based span lookup is unreliable for literal positions —
+    // `Parser::span_at_current` records the NEXT token's start, not
+    // the current one's extent.)
+    pub(crate) fn next_token_with_span(&mut self) -> (Token, span::Span) {
         // `next_token` snapshots line / column / char-offset at the
         // first non-whitespace character of the token into
         // `last_token_*`, then advances the cursor. We use those for
