@@ -47,6 +47,10 @@ jit = ["dep:cranelift", "dep:cranelift-jit", "dep:cranelift-native", "dep:cranel
 # hand-rolled scanner. A parity test in the unit-test module cross-
 # checks the two token streams on every example in `resilient/examples/`.
 logos-lexer = ["dep:logos"]
+# RES-120: opt-in Hindley-Milner inference prototype. Adds the
+# `infer` module; off by default until RES-123 flips it on once
+# the surface is covered.
+infer = []
 
 [dependencies]
 # RES-115: source-position types live in their own crate so

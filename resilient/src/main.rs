@@ -31,6 +31,11 @@ mod lexer_logos;
 // RES-121: Hindley-Milner unification + occurs check. Unconditionally
 // compiled; consumed by the inference walker when RES-120 lands.
 mod unify;
+// RES-120: Hindley-Milner inference prototype. Feature-gated
+// (opt-in) until RES-123 turns it on by default. Consumes the
+// unify module above.
+#[cfg(feature = "infer")]
+mod infer;
 // RES-117: shared diagnostic rendering (caret underlines under
 // the offending source span). Used by the driver when formatting
 // parser / typechecker / interpreter / VM errors.
