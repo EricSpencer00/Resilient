@@ -118,10 +118,30 @@ pub fn prove_with_timeout(
         }
     };
 
+    // RES-131: collect every `len(<ident>)` reference in the
+    // formula and inject `len_<ident> >= 0` as an axiom on each
+    // solver. Without the axiom the solver treats `len_xs` as an
+    // unconstrained Int, which is too loose to prove
+    // `len(xs) > 0 → len(xs) >= 1`.
+    let mut len_args: BTreeSet<String> = BTreeSet::new();
+    collect_len_args(expr, &mut len_args);
+    let len_axioms: Vec<(String, Bool<'_>)> = len_args
+        .iter()
+        .map(|arg| {
+            let c = Int::new_const(&ctx, format!("len_{}", arg));
+            let zero = Int::from_i64(&ctx, 0);
+            let axiom = c.ge(&zero);
+            (arg.clone(), axiom)
+        })
+        .collect();
+
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
     // is always true regardless of any free variables.
     let solver = z3::Solver::new(&ctx);
     apply_timeout(&solver);
+    for (_, axiom) in &len_axioms {
+        solver.assert(axiom);
+    }
     let negated = formula.not();
     solver.assert(&negated);
     let check = solver.check();
@@ -159,6 +179,16 @@ pub fn prove_with_timeout(
         for name in &idents {
             smt2.push_str(&format!("(declare-const {} Int)\n", name));
         }
+        // RES-131: declare one Int const per `len(<arg>)` call
+        // seen in the formula + emit its `>= 0` axiom so a
+        // stock Z3 re-verifying the cert gets the same
+        // context the prover used.
+        for arg in &len_args {
+            smt2.push_str(&format!("(declare-const len_{} Int)\n", arg));
+        }
+        for arg in &len_args {
+            smt2.push_str(&format!("(assert (>= len_{} 0))\n", arg));
+        }
         // Bound identifiers: pin them to their concrete value with an
         // equality assertion. Free identifiers are left unconstrained
         // so the proof is universal over them.
@@ -179,6 +209,9 @@ pub fn prove_with_timeout(
     // contract can never hold.
     let solver = z3::Solver::new(&ctx);
     apply_timeout(&solver);
+    for (_, axiom) in &len_axioms {
+        solver.assert(axiom);
+    }
     solver.assert(&formula);
     let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
 
@@ -320,7 +353,69 @@ fn translate_int<'c>(
                 _ => return None,
             })
         }
+        // RES-131 (RES-131a): `len(<ident>)` as an uninterpreted
+        // Int constant, named `len_<ident>`. Every reference to
+        // `len` on the same array identifier maps to the same Int
+        // constant (same name → same Z3 const by convention),
+        // giving the solver enough structure to prove
+        // `len(xs) > 0 → len(xs) >= 1`. The `>= 0` axiom is
+        // injected by `collect_len_args` + the `prove_with_timeout`
+        // caller, not here; this fn stays side-effect-free on the
+        // solver.
+        Node::CallExpression { function, arguments, .. }
+            if is_len_call(function, arguments) =>
+        {
+            if let Node::Identifier { name, .. } = &arguments[0] {
+                Some(Int::new_const(ctx, format!("len_{}", name)))
+            } else {
+                // `len(<non-identifier>)` isn't supported —
+                // bail to None so the caller's existing
+                // fallback logic fires.
+                None
+            }
+        }
         _ => None,
+    }
+}
+
+/// RES-131 (RES-131a): syntactic check for `len(<anything>)` —
+/// exactly one arg, callee is a bare `Identifier("len")`. Method
+/// calls / shadowed `len` don't qualify (we only recognize the
+/// top-level builtin).
+fn is_len_call(function: &Node, arguments: &[Node]) -> bool {
+    if arguments.len() != 1 {
+        return false;
+    }
+    matches!(function, Node::Identifier { name, .. } if name == "len")
+}
+
+/// RES-131: collect every array identifier that appears inside
+/// a `len(<id>)` call within `node`. Returns the ARG names
+/// (not the synthesized `len_<arg>` z3 names) so callers can
+/// format the axiom / certificate consistently.
+fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
+    match node {
+        Node::CallExpression { function, arguments, .. }
+            if is_len_call(function, arguments) =>
+        {
+            if let Node::Identifier { name, .. } = &arguments[0] {
+                out.insert(name.clone());
+            }
+        }
+        Node::PrefixExpression { right, .. } => {
+            collect_len_args(right, out);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            collect_len_args(left, out);
+            collect_len_args(right, out);
+        }
+        Node::CallExpression { function, arguments, .. } => {
+            collect_len_args(function, out);
+            for arg in arguments {
+                collect_len_args(arg, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -630,5 +725,167 @@ mod tests {
             !timed_out,
             "unlimited timeout should not report timed_out"
         );
+    }
+
+    // ---------- RES-131 (RES-131a): len(<ident>) SMT encoding ----------
+
+    fn len_call(arg_name: &str) -> Node {
+        Node::CallExpression {
+            function: Box::new(Node::Identifier {
+                name: "len".to_string(),
+                span: crate::span::Span::default(),
+            }),
+            arguments: vec![Node::Identifier {
+                name: arg_name.to_string(),
+                span: crate::span::Span::default(),
+            }],
+            span: crate::span::Span::default(),
+        }
+    }
+
+    fn int_lit(v: i64) -> Node {
+        Node::IntegerLiteral { value: v, span: crate::span::Span::default() }
+    }
+
+    #[test]
+    fn len_of_ident_is_nonnegative_by_axiom() {
+        // `len(xs) >= 0` — the injected axiom says this is
+        // always true, so the solver proves it.
+        let no_b = HashMap::new();
+        let expr = infix(len_call("xs"), ">=", int_lit(0));
+        assert_eq!(prove(&expr, &no_b), Some(true));
+    }
+
+    #[test]
+    fn len_of_ident_gt_zero_is_not_universal() {
+        // `len(xs) > 0` without a precondition is NOT a
+        // tautology — the axiom only says `>= 0`, so `xs`
+        // empty is still a valid Z3 model.
+        let no_b = HashMap::new();
+        let expr = infix(len_call("xs"), ">", int_lit(0));
+        assert_eq!(prove(&expr, &no_b), None);
+    }
+
+    #[test]
+    fn compound_formula_using_len_proves() {
+        // `len(xs) >= 0 && 0 <= 0` — tautology reachable only
+        // because both sides are discharged, and the `len`
+        // side uses the axiom.
+        let no_b = HashMap::new();
+        let lhs = infix(len_call("xs"), ">=", int_lit(0));
+        let rhs = infix(int_lit(0), "<=", int_lit(0));
+        let expr = infix(lhs, "&&", rhs);
+        assert_eq!(prove(&expr, &no_b), Some(true));
+    }
+
+    #[test]
+    fn certificate_declares_len_const_and_axiom() {
+        // Tautology round-trip: the SMT-LIB2 cert includes
+        // a `(declare-const len_xs Int)` line + its `>= 0`
+        // assertion so a stock Z3 can re-verify.
+        let no_b = HashMap::new();
+        let expr = infix(len_call("xs"), ">=", int_lit(0));
+        let (_, cert, _cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        let smt2 = cert.expect("should produce a certificate").smt2;
+        assert!(
+            smt2.contains("(declare-const len_xs Int)"),
+            "missing len_xs declaration in cert:\n{}",
+            smt2
+        );
+        assert!(
+            smt2.contains("(assert (>= len_xs 0))"),
+            "missing len_xs >= 0 axiom in cert:\n{}",
+            smt2
+        );
+    }
+
+    #[test]
+    fn multiple_len_calls_on_different_arrays_get_distinct_consts() {
+        // `len(a) >= 0 && len(b) >= 0` — two distinct
+        // Int consts + two axioms.
+        let no_b = HashMap::new();
+        let lhs = infix(len_call("a"), ">=", int_lit(0));
+        let rhs = infix(len_call("b"), ">=", int_lit(0));
+        let expr = infix(lhs, "&&", rhs);
+        let (verdict, cert, _) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, Some(true));
+        let smt2 = cert.unwrap().smt2;
+        assert!(smt2.contains("(declare-const len_a Int)"));
+        assert!(smt2.contains("(declare-const len_b Int)"));
+        assert!(smt2.contains("(assert (>= len_a 0))"));
+        assert!(smt2.contains("(assert (>= len_b 0))"));
+    }
+
+    #[test]
+    fn len_of_same_array_reuses_same_const() {
+        // `len(xs) == len(xs)` — trivially true because the
+        // same Z3 const is used on both sides. No two
+        // different consts created.
+        let no_b = HashMap::new();
+        let expr = infix(len_call("xs"), "==", len_call("xs"));
+        let (verdict, cert, _) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, Some(true));
+        let smt2 = cert.unwrap().smt2;
+        // Exactly one `(declare-const len_xs Int)` line.
+        assert_eq!(
+            smt2.matches("(declare-const len_xs Int)").count(),
+            1,
+            "expected one declaration, got cert:\n{}",
+            smt2
+        );
+    }
+
+    #[test]
+    fn len_with_non_identifier_arg_bails() {
+        // `len(1)` — the arg isn't an identifier; translator
+        // returns None and the existing fallback logic keeps
+        // the runtime check. `prove` returns None.
+        let no_b = HashMap::new();
+        let call = Node::CallExpression {
+            function: Box::new(Node::Identifier {
+                name: "len".to_string(),
+                span: crate::span::Span::default(),
+            }),
+            arguments: vec![int_lit(1)],
+            span: crate::span::Span::default(),
+        };
+        let expr = infix(call, ">=", int_lit(0));
+        assert_eq!(prove(&expr, &no_b), None);
+    }
+
+    #[test]
+    fn collect_len_args_finds_all_references() {
+        let expr = infix(
+            infix(len_call("xs"), "+", len_call("ys")),
+            ">",
+            int_lit(0),
+        );
+        let mut out = BTreeSet::new();
+        collect_len_args(&expr, &mut out);
+        assert_eq!(
+            out,
+            ["xs".to_string(), "ys".to_string()].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn collect_len_args_ignores_non_len_calls() {
+        // `foo(xs) + 1 > 0` — `foo` is not `len`, so the
+        // collector returns an empty set.
+        let foo_call = Node::CallExpression {
+            function: Box::new(Node::Identifier {
+                name: "foo".to_string(),
+                span: crate::span::Span::default(),
+            }),
+            arguments: vec![Node::Identifier {
+                name: "xs".to_string(),
+                span: crate::span::Span::default(),
+            }],
+            span: crate::span::Span::default(),
+        };
+        let expr = infix(infix(foo_call, "+", int_lit(1)), ">", int_lit(0));
+        let mut out = BTreeSet::new();
+        collect_len_args(&expr, &mut out);
+        assert!(out.is_empty());
     }
 }
