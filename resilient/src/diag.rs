@@ -143,6 +143,7 @@ fn expand_tabs(line: &str) -> String {
 /// lowercase name (`error:` / `warning:` / `hint:` / `note:`),
 /// matching rustc's convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub enum Severity {
     /// Compile / verify / runtime error — blocks execution.
     Error,
@@ -183,6 +184,7 @@ impl std::fmt::Display for Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DiagCode(pub std::borrow::Cow<'static, str>);
 
+#[allow(dead_code)]
 impl DiagCode {
     /// RES-119: constant-friendly constructor. `DiagCode::new("E0001")`
     /// borrows the `'static str` with no allocation.
@@ -216,6 +218,7 @@ impl std::fmt::Display for DiagCode {
 ///   default; no new renderer work required — the terminal
 ///   formatter just prints them after the primary block.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct Diagnostic {
     pub span: Span,
     pub severity: Severity,
@@ -224,6 +227,7 @@ pub struct Diagnostic {
     pub notes: Vec<(Span, String)>,
 }
 
+#[allow(dead_code)]
 impl Diagnostic {
     /// RES-119: quick-constructor for a no-code no-notes
     /// diagnostic. Most call-site migrations start here and
@@ -282,6 +286,7 @@ impl Diagnostic {
 /// No ANSI colour codes — same reasoning as
 /// `format_diagnostic`: diagnostics often pipe into logs / LSP,
 /// where escape codes render as garbage.
+#[allow(dead_code)]
 pub fn format_diagnostic_terminal(src: &str, diag: &Diagnostic) -> String {
     let mut out = String::new();
     // Primary header: "<severity>[<code>]: <message>" — rustc-
@@ -312,6 +317,7 @@ pub fn format_diagnostic_terminal(src: &str, diag: &Diagnostic) -> String {
 /// `<level>: <msg>` header. Lets
 /// `format_diagnostic_terminal` own the header line in the new
 /// `severity[code]:` shape.
+#[allow(dead_code)]
 fn render_span_snippet(src: &str, span: Span) -> String {
     // Re-use the existing renderer but strip its first line
     // (the `<level>: <msg>` header we don't want here).

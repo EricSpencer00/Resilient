@@ -1968,10 +1968,9 @@ impl Parser {
             return None;
         }
         self.next_token(); // skip '->'
-        let ty = self.parse_type_annotation("after '->'");
         // `parse_type_annotation` leaves current_token on the token
         // after the type. Nothing more to do here.
-        ty
+        self.parse_type_annotation("after '->'") 
     }
 
     /// RES-157a: parse a single type annotation starting at

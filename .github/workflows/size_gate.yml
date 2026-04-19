@@ -30,7 +30,7 @@ env:
 
 jobs:
   size_gate:
-    name: cortex-m demo .text <= ${{ env.SIZE_BUDGET_KIB }} KiB
+    name: cortex-m demo .text budget check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
