@@ -1,7 +1,7 @@
 ---
 id: RES-120
 title: Hindley-Milner inference prototype over Int / Bool / Float / String
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G7
 created: 2026-04-17
@@ -43,6 +43,9 @@ scoped to function bodies (no generics, no let-polymorphism yet).
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked — see Attempt 1)
+- 2026-04-17 re-claimed by executor — Attempt 1 blocker 1
+  (Diagnostic) cleared by RES-119 scaffolding; blocker 2
+  (NodeId) worked around via Option 2 substitution-map shape.
 
 ## Attempt 1 failed
 
