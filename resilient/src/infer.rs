@@ -87,6 +87,165 @@ impl Default for Inferer {
     }
 }
 
+// ============================================================
+// RES-122: type schemes + generalize + instantiate.
+// ============================================================
+//
+// A `Scheme` is a universally-quantified type:
+//
+//   ∀ var1, var2, ... . ty
+//
+// Concretely, `Scheme { vars: [0, 1], ty: Fn([Var(0), Var(1)],
+// Var(0)) }` represents `∀a b. (a, b) -> a`. `instantiate`
+// turns the scheme back into a plain `Type` by replacing each
+// quantified var with a fresh variable, ready to unify at a
+// call site. `generalize` takes a freshly-inferred type and
+// quantifies over the variables that are free in it but not
+// in the surrounding env (classic Damas-Hindley-Milner).
+//
+// Scope deviation: we ship the helpers + unit tests here;
+// threading schemes through the full
+// infer-function-then-instantiate-at-call-site flow requires
+// RES-124a (`fn<T>` parser + AST field), which is a separate
+// follow-up. When that lands, the call-site wiring is additive
+// — no breaking changes to this API.
+
+/// RES-122: a polymorphic type scheme. `vars` lists the
+/// type-variable ids bound by the outer `∀` quantifier; any
+/// `Type::Var(id)` in `ty` whose `id` is in `vars` is
+/// "quantified", the rest are free in some broader scope.
+// Scheme drops `Eq` because `Type` derives only `PartialEq`
+// (it carries f64 via FloatLiteral — not `Eq` anyway). Callers
+// that need equality use `PartialEq` (`==`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scheme {
+    pub vars: Vec<u32>,
+    pub ty: Type,
+}
+
+impl Scheme {
+    /// Wrap a concrete (already-generalized) body — `∀∅. ty`.
+    /// Useful when the caller has already computed the var set
+    /// separately.
+    pub fn new(vars: Vec<u32>, ty: Type) -> Self {
+        Self { vars, ty }
+    }
+
+    /// Trivial scheme: no quantifier. Exposed so consumers can
+    /// uniformly treat monomorphic + polymorphic bindings the
+    /// same way.
+    pub fn monotype(ty: Type) -> Self {
+        Self { vars: Vec::new(), ty }
+    }
+}
+
+/// RES-122: collect every `Type::Var(id)` that appears in `ty`.
+/// Recurses through function types + composite types. Returns
+/// the ids (not the full `Type::Var`s) for easy set math.
+pub fn free_type_vars(ty: &Type) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    collect_ftv(ty, &mut out);
+    out
+}
+
+fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
+    match ty {
+        Type::Var(v) => {
+            out.insert(*v);
+        }
+        Type::Function { params, return_type } => {
+            for p in params {
+                collect_ftv(p, out);
+            }
+            collect_ftv(return_type, out);
+        }
+        // Primitive / opaque types have no type variables.
+        Type::Int
+        | Type::Float
+        | Type::String
+        | Type::Bool
+        | Type::Bytes
+        | Type::Array
+        | Type::Result
+        | Type::Struct(_)
+        | Type::Void
+        | Type::Any => {}
+    }
+}
+
+/// RES-122: collect the free type variables across every value
+/// in the env. Helper for `generalize`: the bound set is
+/// `ftv(ty) \ ftv(env)`.
+fn ftv_env(env: &HashMap<String, Type>) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    for ty in env.values() {
+        collect_ftv(ty, &mut out);
+    }
+    out
+}
+
+/// RES-122: generalize `ty` against the surrounding env.
+///
+/// Returns a `Scheme` that quantifies every type variable
+/// appearing in `ty` but NOT in any binding of `env`. Matches
+/// the classical DHM `gen(Γ, τ) = ∀ (ftv(τ) \ ftv(Γ)). τ`.
+///
+/// When `ty` has no free variables beyond the env, the returned
+/// scheme is monomorphic (empty `vars`). No special-case
+/// needed — the empty-quantifier case already covers it.
+///
+/// Monomorphic outputs are still wrapped in a Scheme for
+/// interface uniformity; downstream code treats the empty-vars
+/// case as a plain type.
+pub fn generalize(env: &HashMap<String, Type>, ty: &Type) -> Scheme {
+    let ty_vars = free_type_vars(ty);
+    let env_vars = ftv_env(env);
+    // Diff, sorted for deterministic output.
+    let mut vars: Vec<u32> = ty_vars.difference(&env_vars).copied().collect();
+    vars.sort();
+    Scheme { vars, ty: ty.clone() }
+}
+
+impl Inferer {
+    /// RES-122: instantiate a scheme with fresh type variables.
+    ///
+    /// Every quantified var in the scheme gets mapped to a
+    /// freshly-minted `Type::Var(n)`; the body is then
+    /// substituted through that mapping. The resulting type
+    /// shares structure with `scheme.ty` but with its bound
+    /// variables replaced, ready to unify at a call site.
+    ///
+    /// The inferer's substitution is NOT mutated — `instantiate`
+    /// only allocates fresh variables. Unification at the call
+    /// site is what mutates `subst`.
+    pub fn instantiate(&mut self, scheme: &Scheme) -> Type {
+        // Build a one-shot map from the quantified vars to
+        // fresh vars.
+        let mut mapping: HashMap<u32, Type> = HashMap::new();
+        for &v in &scheme.vars {
+            let fresh = self.fresh();
+            mapping.insert(v, fresh);
+        }
+        substitute_vars(&scheme.ty, &mapping)
+    }
+}
+
+/// Apply a `HashMap<u32, Type>` substitution recursively. Used
+/// by `instantiate`; different shape from the unify module's
+/// `Substitution` (which chains via ids). `instantiate`'s
+/// one-shot map has no chain — each quantified var maps to a
+/// single fresh var.
+fn substitute_vars(ty: &Type, map: &HashMap<u32, Type>) -> Type {
+    match ty {
+        Type::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Function { params, return_type } => Type::Function {
+            params: params.iter().map(|p| substitute_vars(p, map)).collect(),
+            return_type: Box::new(substitute_vars(return_type, map)),
+        },
+        other => other.clone(),
+    }
+}
+
 impl Inferer {
     pub fn new() -> Self {
         Self {
@@ -742,5 +901,180 @@ mod tests {
         // concrete on first visit — that's fine. The accessor
         // just exists.
         let _subst = inf.substitution();
+    }
+
+    // ---------- RES-122: Scheme + generalize + instantiate ----------
+
+    fn int_to_int_fn() -> Type {
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        }
+    }
+
+    #[test]
+    fn free_type_vars_empty_for_primitive() {
+        assert!(free_type_vars(&Type::Int).is_empty());
+        assert!(free_type_vars(&Type::Float).is_empty());
+        assert!(free_type_vars(&Type::Bool).is_empty());
+        assert!(free_type_vars(&Type::String).is_empty());
+        assert!(free_type_vars(&int_to_int_fn()).is_empty());
+    }
+
+    #[test]
+    fn free_type_vars_collects_var_id() {
+        assert_eq!(
+            free_type_vars(&Type::Var(3)),
+            [3].into_iter().collect(),
+        );
+    }
+
+    #[test]
+    fn free_type_vars_descends_into_fn_types() {
+        let fn_ty = Type::Function {
+            params: vec![Type::Var(1), Type::Int],
+            return_type: Box::new(Type::Var(2)),
+        };
+        let ftv = free_type_vars(&fn_ty);
+        assert_eq!(ftv, [1, 2].into_iter().collect());
+    }
+
+    #[test]
+    fn generalize_quantifies_vars_not_in_env() {
+        // Env has no vars; `ty` has Var(0) and Var(1). Both are
+        // quantified.
+        let env = HashMap::new();
+        let ty = Type::Function {
+            params: vec![Type::Var(0)],
+            return_type: Box::new(Type::Var(1)),
+        };
+        let scheme = generalize(&env, &ty);
+        assert_eq!(scheme.vars, vec![0, 1]);
+        assert_eq!(scheme.ty, ty);
+    }
+
+    #[test]
+    fn generalize_skips_vars_already_free_in_env() {
+        // Env binds `x: Var(0)`, so ty's Var(0) is NOT
+        // quantified — it's free in the outer scope.
+        let mut env = HashMap::new();
+        env.insert("x".to_string(), Type::Var(0));
+        let ty = Type::Function {
+            params: vec![Type::Var(0)],
+            return_type: Box::new(Type::Var(1)),
+        };
+        let scheme = generalize(&env, &ty);
+        assert_eq!(scheme.vars, vec![1]);
+    }
+
+    #[test]
+    fn generalize_produces_monomorphic_scheme_when_no_vars() {
+        let env = HashMap::new();
+        let scheme = generalize(&env, &Type::Int);
+        assert!(scheme.vars.is_empty());
+        assert_eq!(scheme.ty, Type::Int);
+    }
+
+    #[test]
+    fn scheme_monotype_constructor() {
+        let s = Scheme::monotype(Type::Bool);
+        assert!(s.vars.is_empty());
+        assert_eq!(s.ty, Type::Bool);
+    }
+
+    #[test]
+    fn scheme_new_preserves_fields() {
+        let s = Scheme::new(vec![0, 2], Type::Var(0));
+        assert_eq!(s.vars, vec![0, 2]);
+        assert_eq!(s.ty, Type::Var(0));
+    }
+
+    #[test]
+    fn instantiate_replaces_quantified_vars_with_fresh_ones() {
+        // Scheme: `∀ 0. Fn([Var(0)]) -> Var(0)` (the classic
+        // `id` type). Instantiating twice should yield two
+        // distinct fresh vars.
+        let scheme = Scheme {
+            vars: vec![0],
+            ty: Type::Function {
+                params: vec![Type::Var(0)],
+                return_type: Box::new(Type::Var(0)),
+            },
+        };
+        let mut inf = Inferer::new();
+        let t1 = inf.instantiate(&scheme);
+        let t2 = inf.instantiate(&scheme);
+        // Both should be Fn types whose param + return are
+        // the same var — but distinct across instantiations.
+        fn unwrap_fn(t: &Type) -> (&Type, &Type) {
+            match t {
+                Type::Function { params, return_type } => (&params[0], return_type),
+                _ => panic!("expected Fn, got {:?}", t),
+            }
+        }
+        let (p1, r1) = unwrap_fn(&t1);
+        let (p2, r2) = unwrap_fn(&t2);
+        // Within one instantiation: param == return (same var).
+        assert_eq!(p1, r1);
+        assert_eq!(p2, r2);
+        // Across instantiations: different vars.
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn instantiate_monotype_is_identity() {
+        // A monomorphic scheme has no quantified vars, so
+        // instantiate just returns a clone.
+        let scheme = Scheme::monotype(Type::Int);
+        let mut inf = Inferer::new();
+        assert_eq!(inf.instantiate(&scheme), Type::Int);
+    }
+
+    #[test]
+    fn instantiate_does_not_touch_unquantified_vars() {
+        // Scheme with vars=[1] but ty references Var(1) AND
+        // Var(2). Var(2) is NOT quantified — it stays as-is.
+        let scheme = Scheme {
+            vars: vec![1],
+            ty: Type::Function {
+                params: vec![Type::Var(1), Type::Var(2)],
+                return_type: Box::new(Type::Var(1)),
+            },
+        };
+        let mut inf = Inferer::new();
+        let t = inf.instantiate(&scheme);
+        if let Type::Function { params, return_type } = t {
+            // Var(2) survives unchanged.
+            assert_eq!(params[1], Type::Var(2));
+            // Var(1) becomes a fresh var (matches
+            // return_type); fresh var is NOT Var(2).
+            assert_ne!(params[0], Type::Var(2));
+            assert_eq!(&params[0], return_type.as_ref());
+        } else {
+            panic!("expected Fn, got {:?}", t);
+        }
+    }
+
+    #[test]
+    fn round_trip_generalize_then_instantiate() {
+        // Inferred type `Fn([Var(0)]) -> Var(0)` against empty
+        // env. generalize → Scheme { vars: [0], ... }.
+        // instantiate → fresh Var, same shape.
+        let env = HashMap::new();
+        let inferred = Type::Function {
+            params: vec![Type::Var(0)],
+            return_type: Box::new(Type::Var(0)),
+        };
+        let scheme = generalize(&env, &inferred);
+        let mut inf = Inferer::new();
+        let inst = inf.instantiate(&scheme);
+        match inst {
+            Type::Function { ref params, ref return_type } => {
+                assert_eq!(params.len(), 1);
+                // Structure preserved.
+                assert_eq!(&params[0], return_type.as_ref());
+            }
+            other => panic!("expected Fn, got {:?}", other),
+        }
     }
 }
