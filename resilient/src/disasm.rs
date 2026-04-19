@@ -170,6 +170,10 @@ fn write_op(
             }
         }
         Op::LoadUpvalue(idx) => write!(out, "LoadUpvalue {}", idx)?,
+        // RES-171a: array-ops disasm.
+        Op::MakeArray { len } => write!(out, "MakeArray {}", len)?,
+        Op::LoadIndex => write!(out, "LoadIndex")?,
+        Op::StoreIndex => write!(out, "StoreIndex")?,
     }
     Ok(())
 }

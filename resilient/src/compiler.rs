@@ -179,6 +179,33 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
+        // RES-171a: `a[i] = v;` where `a` is a bare Identifier.
+        // Lowered as:
+        //   LoadLocal(a), <i>, <v>, StoreIndex, StoreLocal(a)
+        // The Array on top of the stack after StoreIndex IS the
+        // mutated one (the VM dispatch pushes it back), so writing
+        // it through `StoreLocal` commits the update.
+        //
+        // Nested `a[i][j] = v` is RES-171c; here we explicitly
+        // reject non-Identifier targets so the compile error is
+        // descriptive rather than a silent miscompile.
+        Node::IndexAssignment { target, index, value, .. } => {
+            let local_name = match target.as_ref() {
+                Node::Identifier { name, .. } => name.clone(),
+                _ => return Err(CompileError::Unsupported(
+                    "nested index assignment (RES-171c)",
+                )),
+            };
+            let slot = *locals
+                .get(&local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+            chunk.emit(Op::LoadLocal(slot), line);
+            compile_expr(index, chunk, locals, fn_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, line)?;
+            chunk.emit(Op::StoreIndex, line);
+            chunk.emit(Op::StoreLocal(slot), line);
+            Ok(())
+        }
         Node::Function { .. } => {
             // Top-level fn decl already handled in pass 2. Skipping
             // here would be a no-op, but we should never see one —
@@ -298,6 +325,29 @@ fn compile_stmt_in_fn(
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
             chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        // RES-171a: same shape as the main-chunk IndexAssignment
+        // arm. Duplicated on purpose because `compile_stmt` and
+        // `compile_stmt_in_fn` are separate matches (one emits
+        // `Return`, the other `ReturnFromCall`); extracting a
+        // shared helper is overkill for RES-171a but a candidate
+        // cleanup when RES-171c expands this path.
+        Node::IndexAssignment { target, index, value, .. } => {
+            let local_name = match target.as_ref() {
+                Node::Identifier { name, .. } => name.clone(),
+                _ => return Err(CompileError::Unsupported(
+                    "nested index assignment (RES-171c)",
+                )),
+            };
+            let slot = *locals
+                .get(&local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+            chunk.emit(Op::LoadLocal(slot), line);
+            compile_expr(index, chunk, locals, fn_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, line)?;
+            chunk.emit(Op::StoreIndex, line);
+            chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
         other => Err(CompileError::Unsupported(node_kind(other))),
@@ -463,6 +513,30 @@ fn compile_expr(
                 compile_expr(arg, chunk, locals, fn_index, line)?;
             }
             chunk.emit(Op::Call(callee_idx), line);
+            Ok(())
+        }
+        // RES-171a: `[a, b, c]` literal → emit each item's expression
+        // left-to-right, then `Op::MakeArray { len }` which pops them
+        // all into a `Value::Array`.
+        Node::ArrayLiteral { items, .. } => {
+            if items.len() > u16::MAX as usize {
+                return Err(CompileError::Unsupported("array literal with >65535 items"));
+            }
+            for item in items {
+                compile_expr(item, chunk, locals, fn_index, line)?;
+            }
+            chunk.emit(Op::MakeArray { len: items.len() as u16 }, line);
+            Ok(())
+        }
+        // RES-171a: `target[index]` read → push target, push index,
+        // emit `LoadIndex`. Bounds + type checks happen in the VM.
+        // Nested targets (e.g. `a[i][j]`) fall out naturally because
+        // `compile_expr(target)` recurses: each `IndexExpression` at
+        // an inner position pushes a clone of the sub-array.
+        Node::IndexExpression { target, index, .. } => {
+            compile_expr(target, chunk, locals, fn_index, line)?;
+            compile_expr(index, chunk, locals, fn_index, line)?;
+            chunk.emit(Op::LoadIndex, line);
             Ok(())
         }
         other => Err(CompileError::Unsupported(node_kind(other))),

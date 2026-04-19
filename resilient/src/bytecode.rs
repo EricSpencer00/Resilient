@@ -107,6 +107,27 @@ pub enum Op {
     /// wire the actual slab; today the dispatch arm returns
     /// `VmError::Unsupported`.
     LoadUpvalue(u16),
+    /// RES-171a: pop `len` values off the operand stack (rightmost
+    /// first so the source-order `[a, b, c]` literal ends with `a`
+    /// deepest), wrap them in a `Value::Array(Vec<Value>)`, and
+    /// push the array back. Length fits in u16 so a single literal
+    /// caps at 65535 elements — practical programs never hit this.
+    MakeArray { len: u16 },
+    /// RES-171a: pop an i64 index, pop a `Value::Array`, push the
+    /// element at that position. Bounds-checked inline — out-of-
+    /// range triggers `VmError::ArrayIndexOutOfBounds` with the
+    /// failing index + length. Non-Array on the top of the stack
+    /// surfaces as `VmError::TypeMismatch("LoadIndex")`.
+    LoadIndex,
+    /// RES-171a: pop a value `v`, pop an i64 index, pop a
+    /// `Value::Array`, write `arr[idx] = v`, then push the
+    /// modified array back. Compiler follows with a `StoreLocal(a)`
+    /// so the enclosing identifier sees the update. Same
+    /// bounds/type diagnostics as `LoadIndex`.
+    ///
+    /// Nested `a[i][j] = v` is RES-171c — today the compiler only
+    /// lowers `a[i] = v` where `a` is a bare Identifier.
+    StoreIndex,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;

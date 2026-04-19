@@ -48,6 +48,10 @@ pub enum VmError {
     /// `Op::MakeClosure` and `Op::LoadUpvalue` — the compiler never
     /// emits these until RES-169b lands.
     Unsupported(&'static str),
+    /// RES-171a: array indexing ran past the array's length (or
+    /// got a negative index). Carries the offending index and the
+    /// array's length so the Display message is diagnostic-ready.
+    ArrayIndexOutOfBounds { index: i64, len: usize },
 }
 
 impl VmError {
@@ -75,6 +79,11 @@ impl std::fmt::Display for VmError {
             VmError::CallStackOverflow => write!(f, "vm: call stack overflow (>1024 frames)"),
             VmError::JumpOutOfBounds => write!(f, "vm: jump target out of bounds"),
             VmError::Unsupported(what) => write!(f, "vm: unsupported opcode: {}", what),
+            VmError::ArrayIndexOutOfBounds { index, len } => write!(
+                f,
+                "vm: array index {} out of bounds for length {}",
+                index, len
+            ),
             VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
         }
     }
@@ -405,6 +414,62 @@ fn run_inner(
             }
             Op::LoadUpvalue(_) => {
                 return Err(VmError::Unsupported("LoadUpvalue"));
+            }
+            // ---- RES-171a: array ops ----
+            Op::MakeArray { len } => {
+                // Pop `len` values. The source literal `[a, b, c]`
+                // pushes a, b, c in order, so the bottom-most one
+                // on the popped-span is `a`. Use `stack.drain` to
+                // pull a contiguous range without cloning.
+                let n = len as usize;
+                if stack.len() < n {
+                    return Err(VmError::EmptyStack);
+                }
+                let split_at = stack.len() - n;
+                let items: Vec<Value> = stack.drain(split_at..).collect();
+                stack.push(Value::Array(items));
+            }
+            Op::LoadIndex => {
+                let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let arr_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let Value::Int(idx) = idx_val else {
+                    return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
+                };
+                let Value::Array(items) = arr_val else {
+                    return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
+                };
+                if idx < 0 || (idx as usize) >= items.len() {
+                    return Err(VmError::ArrayIndexOutOfBounds {
+                        index: idx,
+                        len: items.len(),
+                    });
+                }
+                stack.push(items[idx as usize].clone());
+            }
+            Op::StoreIndex => {
+                // Stack layout on entry (top → bottom):
+                //   [v, idx, arr, ...]
+                // Pop in reverse-push order.
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let arr_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let Value::Int(idx) = idx_val else {
+                    return Err(VmError::TypeMismatch("StoreIndex (non-int index)"));
+                };
+                let Value::Array(mut items) = arr_val else {
+                    return Err(VmError::TypeMismatch("StoreIndex (non-array target)"));
+                };
+                if idx < 0 || (idx as usize) >= items.len() {
+                    return Err(VmError::ArrayIndexOutOfBounds {
+                        index: idx,
+                        len: items.len(),
+                    });
+                }
+                items[idx as usize] = v;
+                // Push the modified array back so the enclosing
+                // compile pattern (`StoreLocal` after `StoreIndex`)
+                // can write it into the local slot.
+                stack.push(Value::Array(items));
             }
         }
     }
@@ -790,5 +855,239 @@ mod tests {
             &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
         );
         assert_int(run(&p).unwrap(), 42);
+    }
+
+    // ---------- RES-171a: array ops ----------
+
+    fn assert_int_array(actual: Value, expected: &[i64]) {
+        match actual {
+            Value::Array(items) => {
+                let got: Vec<i64> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => *n,
+                        other => panic!("expected Int in array, got {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(got, expected, "array contents mismatch");
+            }
+            other => panic!("expected Array({:?}), got {:?}", expected, other),
+        }
+    }
+
+    #[test]
+    fn res171a_make_array_from_three_constants() {
+        // Push 1, 2, 3 and wrap them with MakeArray(3).
+        let p = const_program(
+            &[Value::Int(1), Value::Int(2), Value::Int(3)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::Const(2),
+                Op::MakeArray { len: 3 },
+                Op::Return,
+            ],
+        );
+        assert_int_array(run(&p).unwrap(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn res171a_make_array_empty_literal_returns_empty_array() {
+        let p = const_program(&[], &[Op::MakeArray { len: 0 }, Op::Return]);
+        assert_int_array(run(&p).unwrap(), &[]);
+    }
+
+    #[test]
+    fn res171a_make_array_stack_underflow_errors() {
+        // Only one item on the stack but MakeArray asks for three.
+        let p = const_program(
+            &[Value::Int(1)],
+            &[Op::Const(0), Op::MakeArray { len: 3 }, Op::Return],
+        );
+        let err = run(&p).unwrap_err();
+        assert!(matches!(err.kind(), VmError::EmptyStack), "{:?}", err);
+    }
+
+    #[test]
+    fn res171a_load_index_reads_element() {
+        // [10, 20, 30][1] == 20
+        let p = const_program(
+            &[Value::Int(10), Value::Int(20), Value::Int(30), Value::Int(1)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::Const(2),
+                Op::MakeArray { len: 3 },
+                Op::Const(3),
+                Op::LoadIndex,
+                Op::Return,
+            ],
+        );
+        assert_int(run(&p).unwrap(), 20);
+    }
+
+    #[test]
+    fn res171a_load_index_out_of_bounds_errors() {
+        let p = const_program(
+            &[Value::Int(1), Value::Int(2), Value::Int(5)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::MakeArray { len: 2 },
+                Op::Const(2),
+                Op::LoadIndex,
+                Op::Return,
+            ],
+        );
+        let err = run(&p).unwrap_err();
+        match err.kind() {
+            VmError::ArrayIndexOutOfBounds { index, len } => {
+                assert_eq!(*index, 5);
+                assert_eq!(*len, 2);
+            }
+            other => panic!("expected OOB, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res171a_load_index_negative_index_errors() {
+        let p = const_program(
+            &[Value::Int(1), Value::Int(2), Value::Int(-1)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::MakeArray { len: 2 },
+                Op::Const(2),
+                Op::LoadIndex,
+                Op::Return,
+            ],
+        );
+        let err = run(&p).unwrap_err();
+        assert!(matches!(err.kind(), VmError::ArrayIndexOutOfBounds { index: -1, len: 2 }));
+    }
+
+    #[test]
+    fn res171a_load_index_non_int_errors() {
+        // Index is a Bool — type mismatch.
+        let p = const_program(
+            &[Value::Int(1), Value::Bool(true)],
+            &[
+                Op::Const(0),
+                Op::MakeArray { len: 1 },
+                Op::Const(1),
+                Op::LoadIndex,
+                Op::Return,
+            ],
+        );
+        let err = run(&p).unwrap_err();
+        assert!(matches!(err.kind(), VmError::TypeMismatch(_)));
+    }
+
+    #[test]
+    fn res171a_store_index_writes_and_pushes_modified_array() {
+        // Build [1, 2, 3], then write 99 to index 1, return the array.
+        let p = const_program(
+            &[
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(1),
+                Value::Int(99),
+            ],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::Const(2),
+                Op::MakeArray { len: 3 },
+                Op::Const(3),
+                Op::Const(4),
+                Op::StoreIndex,
+                Op::Return,
+            ],
+        );
+        assert_int_array(run(&p).unwrap(), &[1, 99, 3]);
+    }
+
+    #[test]
+    fn res171a_store_index_oob_errors_without_modifying() {
+        let p = const_program(
+            &[Value::Int(1), Value::Int(2), Value::Int(5), Value::Int(99)],
+            &[
+                Op::Const(0),
+                Op::Const(1),
+                Op::MakeArray { len: 2 },
+                Op::Const(2),
+                Op::Const(3),
+                Op::StoreIndex,
+                Op::Return,
+            ],
+        );
+        let err = run(&p).unwrap_err();
+        assert!(matches!(err.kind(), VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }));
+    }
+
+    #[test]
+    fn res171a_store_index_display_is_descriptive() {
+        let e = VmError::ArrayIndexOutOfBounds { index: 7, len: 3 };
+        assert_eq!(e.to_string(), "vm: array index 7 out of bounds for length 3");
+    }
+
+    // ---- RES-171a: compile + run roundtrips (integration) ----
+
+    #[test]
+    fn res171a_compile_and_run_array_literal_index() {
+        // let a = [10, 20, 30]; return a[1];  => 20
+        let v = compile_run("let a = [10, 20, 30]; return a[1];").unwrap();
+        assert_int(v, 20);
+    }
+
+    #[test]
+    fn res171a_compile_and_run_index_assign_then_read() {
+        // let a = [1,2,3]; a[1] = 99; return a[1];  => 99
+        let v = compile_run("let a = [1, 2, 3]; a[1] = 99; return a[1];").unwrap();
+        assert_int(v, 99);
+    }
+
+    #[test]
+    fn res171a_compile_and_run_read_all_after_store() {
+        // Store preserves the other elements.
+        let v = compile_run("let a = [10, 20, 30]; a[0] = 100; return a[2];").unwrap();
+        assert_int(v, 30);
+    }
+
+    #[test]
+    fn res171a_compile_rejects_nested_index_assignment() {
+        // a[i][j] = v is RES-171c — today we emit a clean error.
+        let (program, _) = crate::parse(
+            "let a = [[1,2],[3,4]]; a[0][1] = 99; return 0;",
+        );
+        let err = crate::compiler::compile(&program).unwrap_err();
+        match err {
+            crate::bytecode::CompileError::Unsupported(msg) => {
+                assert!(msg.contains("nested"), "unexpected msg: {}", msg);
+            }
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res171a_empty_array_literal_compiles_and_runs() {
+        // An empty array literal produces MakeArray { len: 0 }.
+        let v = compile_run("let a = []; return 0;").unwrap();
+        assert_int(v, 0);
+    }
+
+    #[test]
+    fn res171a_oob_read_from_compiled_program_surfaces_at_line() {
+        // Runtime OOB from a compiled program should come through
+        // the AtLine wrapper so the user sees a line number.
+        let (program, _) = crate::parse("let a = [1, 2]; return a[5];");
+        let prog = crate::compiler::compile(&program).unwrap();
+        let err = run(&prog).unwrap_err();
+        // Line wrapper carries the kind for us.
+        assert!(matches!(
+            err.kind(),
+            VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }
+        ));
     }
 }
