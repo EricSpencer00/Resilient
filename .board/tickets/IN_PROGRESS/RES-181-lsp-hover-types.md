@@ -1,7 +1,7 @@
 ---
 id: RES-181
 title: LSP: hover shows inferred type of the symbol under cursor
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -38,6 +38,7 @@ of the expression/binding there.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked on RES-120 +
   substantial new LSP infra)
+- 2026-04-17 claimed by executor — landing RES-181a scope (literals-only hover per the bail's Option 2)
 
 ## Attempt 1 failed
 
