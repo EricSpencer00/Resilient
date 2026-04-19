@@ -1,7 +1,7 @@
 ---
 id: RES-157
 title: Fixed-size array type `[Int; N]` for stack allocation
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G12
 created: 2026-04-17
@@ -38,6 +38,7 @@ without alloc. Add a fixed-size variant with compile-known length.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized; nominal rule collides with existing code)
+- 2026-04-17 claimed by executor — landing RES-157a scope (parser type annotation only)
 
 ## Attempt 1 failed
 
