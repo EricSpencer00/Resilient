@@ -1,7 +1,7 @@
 ---
 id: RES-169
 title: VM: closure Op + upvalue handling
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -38,6 +38,8 @@ value approach (RES-164) to keep semantics identical.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized VM extension)
+- 2026-04-17 claimed by executor — landing RES-169a scope (skeleton opcodes + Value::Closure)
+  after RES-164a landed the free_vars walker
 
 ## Attempt 1 failed
 
