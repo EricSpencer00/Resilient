@@ -1,7 +1,7 @@
 ---
 id: RES-171
 title: VM: array literal + index load/store + push/pop opcodes
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -42,6 +42,7 @@ interpreter runs.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized; 6 opcodes +
   runtime helpers + compiler lowering + tests)
+- 2026-04-17 claimed by executor — landing RES-171a scope (MakeArray + LoadIndex + StoreIndex)
 
 ## Attempt 1 failed
 
