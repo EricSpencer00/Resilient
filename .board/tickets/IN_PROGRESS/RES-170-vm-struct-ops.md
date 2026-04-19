@@ -1,7 +1,7 @@
 ---
 id: RES-170
 title: VM: struct literal + field load/store opcodes
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -39,6 +39,7 @@ uses a heap-allocated `Vec<Value>` indexed by field position
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (needs compile-time type info)
+- 2026-04-17 claimed by executor — landing RES-170a scope (struct registry only)
 
 ## Attempt 1 failed
 
