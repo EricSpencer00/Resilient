@@ -52,6 +52,12 @@ mod cert_sign;
 // RES-198: starter linter. 5 lints with stable codes; consumed
 // from main() when the `lint <file>` subcommand runs.
 mod lint;
+// RES-164a: pure free-variable analysis on the AST. Phase-K
+// scaffolding for JIT closure capture (RES-164c/d) — returns the
+// set of names referenced inside a subtree that aren't bound
+// by a parameter / let / for-in / match pattern within it.
+// No runtime deps; no Environment touched.
+mod free_vars;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
