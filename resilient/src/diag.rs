@@ -570,3 +570,235 @@ mod tests {
         assert_eq!(d1, d2);
     }
 }
+
+/// RES-206a: central registry of diagnostic codes.
+///
+/// Every code is a `pub const DiagCode` so call sites look like
+/// `diag::codes::E0003`. Using constants (not an enum) keeps the
+/// list append-only without breaking `Diagnostic::with_code`
+/// signatures when codes are added. Constants also match rustc's
+/// own error-code surface, which keeps editor plugins and
+/// downstream diagnostic-rewriting tooling predictable.
+///
+/// ## Numbering policy
+///
+/// - **E-prefixed codes** (`E0001`..) — errors.
+/// - **W-prefixed codes** (`W0001`..) — warnings.
+///
+/// Numbers are **sticky**: once assigned to a specific diagnostic
+/// cause, a code is never reused. If a diagnostic is removed,
+/// its code is retired (kept as a comment line but no longer
+/// exported as a constant) — this preserves the docs-page URL
+/// space and stops external cheat sheets from silently drifting.
+///
+/// ## Scope of this module
+///
+/// RES-206a lands only the initial seed registry (the ~10 codes
+/// below) plus sample docs pages. Auditing every existing
+/// diagnostic call site and assigning them codes is RES-206b;
+/// writing the remaining docs pages is RES-206c.
+///
+/// Until that audit lands, these constants have no in-tree
+/// callers — the module-level `#[allow(dead_code)]` keeps the
+/// build warning-clean. Remove the allow when RES-206b starts
+/// attaching codes to actual error-creation sites.
+#[allow(dead_code)]
+pub mod codes {
+    use super::DiagCode;
+
+    // ---- Parser errors ----
+
+    /// E0001: Generic parse error. Emitted when the parser
+    /// can't reconcile the token stream with any valid grammar
+    /// production and no more-specific code applies.
+    ///
+    /// Docs: `docs/errors/E0001.html`.
+    pub const E0001: DiagCode = DiagCode::new_static("E0001");
+
+    /// E0002: Unexpected `;` / missing `;`. One of the most
+    /// common parser errors; worth a dedicated code so editors
+    /// can flag and fix it.
+    ///
+    /// Docs: `docs/errors/E0002.html`.
+    pub const E0002: DiagCode = DiagCode::new_static("E0002");
+
+    /// E0003: Unclosed delimiter (`(`, `[`, `{`). Reported by the
+    /// parser when a nesting level doesn't close before EOF.
+    ///
+    /// Docs: `docs/errors/E0003.html`.
+    pub const E0003: DiagCode = DiagCode::new_static("E0003");
+
+    // ---- Name resolution ----
+
+    /// E0004: Unknown identifier. Surfaced by the parser's post-
+    /// pass, the interpreter, or the typechecker when a name is
+    /// referenced before binding.
+    ///
+    /// Docs: `docs/errors/E0004.html`.
+    pub const E0004: DiagCode = DiagCode::new_static("E0004");
+
+    /// E0005: Unknown function at a call site.
+    ///
+    /// Docs: `docs/errors/E0005.html`.
+    pub const E0005: DiagCode = DiagCode::new_static("E0005");
+
+    /// E0006: Call arity mismatch — wrong number of arguments.
+    ///
+    /// Docs: `docs/errors/E0006.html`.
+    pub const E0006: DiagCode = DiagCode::new_static("E0006");
+
+    // ---- Type checking ----
+
+    /// E0007: Type mismatch. RHS type doesn't match the declared
+    /// or inferred LHS type.
+    ///
+    /// Docs: `docs/errors/E0007.html`.
+    pub const E0007: DiagCode = DiagCode::new_static("E0007");
+
+    // ---- Runtime ----
+
+    /// E0008: Division by zero.
+    ///
+    /// Docs: `docs/errors/E0008.html`.
+    pub const E0008: DiagCode = DiagCode::new_static("E0008");
+
+    /// E0009: Array index out of bounds.
+    ///
+    /// Docs: `docs/errors/E0009.html`.
+    pub const E0009: DiagCode = DiagCode::new_static("E0009");
+
+    // ---- Contracts (requires / ensures) ----
+
+    /// E0010: Contract violation — a `requires` or `ensures`
+    /// clause evaluated to false at runtime.
+    ///
+    /// Docs: `docs/errors/E0010.html`.
+    pub const E0010: DiagCode = DiagCode::new_static("E0010");
+
+    // ---- Enumeration helper ----
+
+    /// Every code registered in this module, in numeric order.
+    /// Used by the registry tests to guard against drift between
+    /// the module's constants and what the docs site lists. Also
+    /// surfaced for possible future tooling (e.g. a
+    /// `resilient errors list` subcommand).
+    ///
+    /// Returns `Vec<DiagCode>` (owned) rather than a static slice
+    /// because `DiagCode` holds a `Cow<'static, str>` that the
+    /// compiler refuses to stash in a `&'static [&DiagCode]`
+    /// literal — every `&E0001` in an array expression would
+    /// materialize a temporary. The vec is small (10 entries
+    /// today) and allocated at most once per caller, so the cost
+    /// is negligible.
+    pub fn all() -> Vec<DiagCode> {
+        vec![
+            E0001, E0002, E0003, E0004, E0005, E0006, E0007, E0008, E0009, E0010,
+        ]
+    }
+}
+
+impl DiagCode {
+    /// RES-206a: `const`-friendly constructor taking a `&'static str`.
+    /// Named differently from `DiagCode::new` (existing in RES-119)
+    /// to disambiguate from the borrowed-cow form, but both paths
+    /// produce the same shape. `new_static` is the one the registry
+    /// consts below use.
+    pub const fn new_static(code: &'static str) -> Self {
+        DiagCode(std::borrow::Cow::Borrowed(code))
+    }
+}
+
+#[cfg(test)]
+mod codes_tests {
+    use super::*;
+
+    #[test]
+    fn res206a_codes_are_distinct_strings() {
+        // Sanity: no two codes accidentally share a string.
+        let all = codes::all();
+        let mut seen: Vec<String> =
+            all.iter().map(|c| c.as_str().to_string()).collect();
+        let before = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            before,
+            "duplicate code detected in the registry: {:?}",
+            seen
+        );
+    }
+
+    #[test]
+    fn res206a_codes_follow_e_prefix_convention() {
+        // Errors start with `E`, warnings start with `W`. The
+        // initial registry is all errors; if a warning sneaks in,
+        // it must also be named accordingly.
+        for code in codes::all() {
+            let s = code.as_str();
+            assert!(
+                s.starts_with('E') || s.starts_with('W'),
+                "code {:?} doesn't follow the E/W prefix convention",
+                s.to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn res206a_codes_render_inline_in_diagnostic() {
+        // End-to-end: attach `codes::E0007` to a Diagnostic and
+        // verify the terminal renderer puts `[E0007]` inline.
+        let src = "let x = 42;";
+        let diag = Diagnostic::new(
+            Severity::Error,
+            Span::new(
+                crate::span::Pos::new(1, 5, 0),
+                crate::span::Pos::new(1, 6, 1),
+            ),
+            "type mismatch",
+        )
+        .with_code(codes::E0007);
+        let rendered = format_diagnostic_terminal(src, &diag);
+        assert!(
+            rendered.contains("error[E0007]:"),
+            "expected `error[E0007]:` in rendered output:\n{}",
+            rendered,
+        );
+    }
+
+    #[test]
+    fn res206a_initial_codes_cover_core_categories() {
+        // Pin the initial set so accidental removals are caught:
+        // parse / identifier / type / runtime / contract bands
+        // must all remain represented.
+        let all = codes::all();
+        let strs: Vec<String> =
+            all.iter().map(|c| c.as_str().to_string()).collect();
+        for expected in &[
+            "E0001", "E0002", "E0003", // parse
+            "E0004", "E0005", "E0006", // name resolution
+            "E0007",                   // type
+            "E0008", "E0009",          // runtime
+            "E0010",                   // contracts
+        ] {
+            assert!(
+                strs.iter().any(|s| s == expected),
+                "initial code {} missing from registry: {:?}",
+                expected,
+                strs,
+            );
+        }
+    }
+
+    #[test]
+    fn res206a_new_static_is_const_friendly() {
+        const CODE: DiagCode = DiagCode::new_static("E9999");
+        assert_eq!(CODE.as_str(), "E9999");
+    }
+
+    #[test]
+    fn res206a_codes_all_count_matches_vec_len() {
+        // Regression guard: `all()` must not drop entries.
+        assert_eq!(codes::all().len(), 10);
+    }
+}
