@@ -1,7 +1,7 @@
 ---
 id: RES-167
 title: JIT: call builtins through indirect pointer (RES-072 Phase N)
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G15
 created: 2026-04-17
@@ -41,6 +41,8 @@ full builtin table.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked + oversized)
+- 2026-04-17 claimed by executor — landing RES-167a scope (builtin shims + registry only)
+  after RES-166a unblocked the symbol-wiring half
 
 ## Attempt 1 failed
 
