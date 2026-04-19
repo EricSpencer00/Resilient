@@ -210,12 +210,21 @@ for the config snippet. VS Code needs a thin extension that
 points at the binary with `--lsp`.
 
 The server publishes `did_open` + `did_change` diagnostics
-today. Hover, completion, and go-to-definition are planned
-but not shipped.
+plus three cursor-aware features:
+
+- **Hover** — shows the type of any literal under the cursor
+  (`int`, `float`, `string`, `bool`).
+- **Go-to-definition** — jumps from a call site to the
+  top-level function or struct declaration.
+- **Completion** — offers all built-in functions (alphabetical)
+  followed by every top-level declaration in the current file.
+
+See the [LSP guide](lsp) for editor-specific setup.
 
 ## Where next?
 
 - [Design Philosophy](philosophy) — why the language looks the way it does
 - [Syntax Reference](syntax) — the full grammar in one page
 - [Performance](performance) — the bench numbers and methodology
+- [Editor Integration (LSP)](lsp) — hover, completion, and go-to-definition
 - [no_std Runtime](no-std) — embedding on a Cortex-M

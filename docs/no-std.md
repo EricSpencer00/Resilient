@@ -1,6 +1,6 @@
 ---
 title: no_std Runtime
-nav_order: 6
+nav_order: 8
 permalink: /no-std
 ---
 

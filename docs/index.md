@@ -118,4 +118,5 @@ clauses become runtime asserts.
 - **Building something?** → [Syntax Reference](syntax)
 - **Curious about design tradeoffs?** → [Philosophy](philosophy)
 - **Embedding the runtime?** → [no_std runtime](no-std)
+- **Setting up your editor?** → [LSP / Editor Integration](lsp)
 - **Contributing?** → [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board) on GitHub
