@@ -19,6 +19,7 @@ use std::sync::Mutex;
 
 use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
@@ -33,7 +34,7 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::{compute_semantic_tokens, parse, typechecker, Node};
+use crate::{builtin_names, compute_semantic_tokens, parse, typechecker, Node};
 
 /// RES-186: one workspace-level symbol entry. A flat vec of these
 /// is the backend's search index — substring filter at query time,
@@ -394,6 +395,158 @@ pub(crate) fn find_top_level_def<'a>(
     name: &str,
 ) -> Option<&'a TopLevelDef> {
     defs.iter().find(|d| d.name == name)
+}
+
+/// RES-188a: hard cap on the completion list. Large lists hurt
+/// client latency — both rendering and the follow-up filter pass
+/// — and VS Code / most clients truncate at ~200 anyway. 100 is
+/// the ticket's explicit choice.
+pub(crate) const COMPLETION_LIMIT: usize = 100;
+
+/// RES-188a: extract the identifier prefix that ends at `pos`.
+/// Walks backwards through the line's text until it hits a
+/// non-identifier character (anything that isn't alphanumeric or
+/// `_`). Returns the portion already typed — the empty string if
+/// the cursor is on a non-identifier character or at column 0 on
+/// a blank line. Used by `completion` to filter the suggestion
+/// set to entries that start with the user's in-progress name.
+pub(crate) fn prefix_at(src: &str, pos: Position) -> String {
+    let line_no = pos.line as usize;
+    let col = pos.character as usize;
+    let line = match src.lines().nth(line_no) {
+        Some(l) => l,
+        None => return String::new(),
+    };
+    let chars: Vec<char> = line.chars().collect();
+    // Clamp col into the line length — some clients send positions
+    // one past end-of-line, which we treat as "end of line".
+    let end = col.min(chars.len());
+    let mut start = end;
+    while start > 0 {
+        let c = chars[start - 1];
+        if c.is_alphanumeric() || c == '_' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    chars[start..end].iter().collect()
+}
+
+/// RES-188a: one resolved completion candidate, pre-sorting.
+/// Carries enough info to render a `CompletionItem` without
+/// touching the LSP types in pure helpers (so the helpers can be
+/// unit-tested without a tower-lsp dependency in the test body).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Candidate {
+    pub label: String,
+    pub kind: CandidateKind,
+    pub detail: Option<String>,
+}
+
+/// RES-188a: completion-item kind. Maps 1:1 to
+/// `tower_lsp::lsp_types::CompletionItemKind` in the handler —
+/// kept as a local enum here so pure helpers and tests don't pull
+/// in tower-lsp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CandidateKind {
+    Function,
+    Struct,
+    TypeAlias,
+}
+
+impl CandidateKind {
+    fn to_lsp(self) -> CompletionItemKind {
+        match self {
+            CandidateKind::Function => CompletionItemKind::FUNCTION,
+            CandidateKind::Struct => CompletionItemKind::STRUCT,
+            CandidateKind::TypeAlias => CompletionItemKind::TYPE_PARAMETER,
+        }
+    }
+}
+
+/// RES-188a: build the candidate list from the cached AST +
+/// `BUILTINS`, filter by `prefix`, and cap at `COMPLETION_LIMIT`.
+/// Deterministic output: builtins come first (alphabetical), then
+/// top-level decls (source order), so regressions across tests
+/// are easy to spot.
+///
+/// When `prefix` is empty, the full candidate set (up to the cap)
+/// is returned — that's the Ctrl-Space case.
+pub(crate) fn completion_candidates(
+    program: &Node,
+    prefix: &str,
+) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+
+    // Builtins — alphabetically sorted snapshot.
+    let mut names: Vec<&'static str> = builtin_names().collect();
+    names.sort_unstable();
+    for name in names {
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        out.push(Candidate {
+            label: name.to_string(),
+            kind: CandidateKind::Function,
+            detail: Some("builtin".to_string()),
+        });
+        if out.len() >= COMPLETION_LIMIT {
+            return out;
+        }
+    }
+
+    // Top-level decls — source order. Already handles duplicates
+    // via the `seen` set inside `build_top_level_defs`.
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return out,
+    };
+    for spanned in stmts {
+        let (name, kind, detail) = match &spanned.node {
+            Node::Function { name, parameters, .. } => (
+                name.clone(),
+                CandidateKind::Function,
+                Some(format!("fn ({} params)", parameters.len())),
+            ),
+            Node::StructDecl { name, fields, .. } => (
+                name.clone(),
+                CandidateKind::Struct,
+                Some(format!("struct ({} fields)", fields.len())),
+            ),
+            Node::TypeAlias { name, .. } => (
+                name.clone(),
+                CandidateKind::TypeAlias,
+                Some("type".to_string()),
+            ),
+            _ => continue,
+        };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        out.push(Candidate {
+            label: name,
+            kind,
+            detail,
+        });
+        if out.len() >= COMPLETION_LIMIT {
+            return out;
+        }
+    }
+    out
+}
+
+/// RES-188a: convert a `Candidate` into the LSP wire-shape.
+/// Lifted out so the filter / cap / ordering logic can be
+/// unit-tested over pure `Vec<Candidate>`.
+fn candidate_to_completion_item(c: Candidate) -> CompletionItem {
+    CompletionItem {
+        label: c.label.clone(),
+        kind: Some(c.kind.to_lsp()),
+        detail: c.detail,
+        insert_text: Some(c.label),
+        ..Default::default()
+    }
 }
 
 /// RES-185: walk a `Node::Program` and emit one `DocumentSymbol`
@@ -917,6 +1070,22 @@ impl LanguageServer for Backend {
                 // (RES-182b, RES-182c) stay deferred until a scope-
                 // aware resolver + span-carrying-path work lands.
                 definition_provider: Some(OneOf::Left(true)),
+                // RES-188a: advertise identifier completion. The
+                // handler seeds its candidate list from the BUILTINS
+                // table plus top-level decls in the current
+                // document; scope-aware local / parameter completion
+                // (RES-188b) stays deferred on the same scope-walker
+                // that blocks RES-182b. No trigger characters today
+                // — identifier-prefix completion is driven by the
+                // client; post-dot field completion is a separate
+                // ticket (see the Notes section).
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: None,
+                    all_commit_characters: None,
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                    completion_item: None,
+                }),
                 ..Default::default()
             },
         })
@@ -1138,6 +1307,49 @@ impl LanguageServer for Backend {
             uri,
             range: def.range,
         })))
+    }
+
+    /// RES-188a: respond to `textDocument/completion` — return
+    /// builtins + top-level decls whose names start with the
+    /// prefix already typed. Scope-aware local / parameter
+    /// completion (RES-188b) stays deferred.
+    ///
+    /// Pipeline:
+    ///   1. Read cached source + AST.
+    ///   2. `prefix_at(src, pos)` extracts what the user has typed
+    ///      so far (walking back from the cursor to a non-
+    ///      identifier char).
+    ///   3. `completion_candidates(program, prefix)` enumerates
+    ///      matching names from `BUILTINS` + top-level decls and
+    ///      applies the 100-item cap.
+    ///   4. Convert each `Candidate` to `CompletionItem` and wrap
+    ///      as `CompletionResponse::Array`.
+    async fn completion(
+        &self,
+        params: CompletionParams,
+    ) -> JsonResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+        let prefix = prefix_at(&text, pos);
+        let items: Vec<CompletionItem> = completion_candidates(&program, &prefix)
+            .into_iter()
+            .map(candidate_to_completion_item)
+            .collect();
+        Ok(Some(CompletionResponse::Array(items)))
     }
 
     /// RES-187: respond to `textDocument/semanticTokens/full` with
@@ -2066,5 +2278,179 @@ mod tests {
         let defs = build_top_level_defs(&prog);
         let def = find_top_level_def(&defs, "foo").expect("missing foo");
         assert_eq!(def.range.start.line, 1);
+    }
+
+    // ============================================================
+    // RES-188a: completion helpers
+    // ============================================================
+
+    #[test]
+    fn res188a_prefix_at_empty_source_is_empty_string() {
+        assert_eq!(prefix_at("", Position::new(0, 0)), "");
+    }
+
+    #[test]
+    fn res188a_prefix_at_start_of_identifier_is_empty() {
+        // Cursor AT col 0 on "foo" — user hasn't typed anything
+        // yet. Walking backward from col 0 yields the empty string.
+        assert_eq!(prefix_at("foo", Position::new(0, 0)), "");
+    }
+
+    #[test]
+    fn res188a_prefix_at_extracts_partial_identifier() {
+        // Cursor 2 chars into "foo" — user has typed "fo".
+        assert_eq!(prefix_at("foo", Position::new(0, 2)), "fo");
+    }
+
+    #[test]
+    fn res188a_prefix_at_extracts_full_identifier() {
+        // Cursor at end of "foo" — user has typed "foo".
+        assert_eq!(prefix_at("foo", Position::new(0, 3)), "foo");
+    }
+
+    #[test]
+    fn res188a_prefix_at_stops_at_non_identifier_char() {
+        // "let x = fo" — cursor at end. Walking back stops at
+        // the space after `=`. Prefix = "fo".
+        assert_eq!(prefix_at("let x = fo", Position::new(0, 10)), "fo");
+    }
+
+    #[test]
+    fn res188a_prefix_at_handles_underscore_in_identifier() {
+        // Underscores are identifier chars.
+        assert_eq!(prefix_at("my_var", Position::new(0, 6)), "my_var");
+        assert_eq!(prefix_at("my_var", Position::new(0, 3)), "my_");
+    }
+
+    #[test]
+    fn res188a_prefix_at_multiline_respects_line() {
+        let src = "foo\nbar";
+        assert_eq!(prefix_at(src, Position::new(0, 3)), "foo");
+        assert_eq!(prefix_at(src, Position::new(1, 3)), "bar");
+    }
+
+    #[test]
+    fn res188a_prefix_at_cursor_past_eol_clamps() {
+        // Some clients send positions one past EOL; treat as EOL.
+        assert_eq!(prefix_at("abc", Position::new(0, 999)), "abc");
+    }
+
+    #[test]
+    fn res188a_prefix_at_cursor_on_nonexistent_line_empty() {
+        assert_eq!(prefix_at("abc", Position::new(5, 0)), "");
+    }
+
+    #[test]
+    fn res188a_candidates_empty_prefix_returns_many_builtins() {
+        // Empty prefix + empty program still yields the builtin
+        // list.
+        let prog = parse_prog("");
+        let cands = completion_candidates(&prog, "");
+        // BUILTINS has ~50 entries today. Assert a lower bound
+        // that's safe across additions — enough to catch an
+        // accidental empty-return regression.
+        assert!(
+            cands.len() > 10,
+            "expected builtins > 10, got {}",
+            cands.len()
+        );
+        // All-function kind is expected for the builtin slice.
+        for c in cands.iter().take(5) {
+            assert_eq!(c.kind, CandidateKind::Function);
+            assert_eq!(c.detail, Some("builtin".to_string()));
+        }
+    }
+
+    #[test]
+    fn res188a_candidates_prefix_filters_builtins() {
+        // Prefix "prin" should surface only "println" + "print"
+        // (both start with "prin"). BUILTINS won't acquire a
+        // non-print prefix-matching name without the test
+        // noticing.
+        let prog = parse_prog("");
+        let cands = completion_candidates(&prog, "prin");
+        let labels: Vec<&str> = cands.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"println"));
+        assert!(labels.contains(&"print"));
+        // Sanity: nothing unrelated snuck in.
+        for label in &labels {
+            assert!(
+                label.starts_with("prin"),
+                "prefix leak: {} doesn't start with `prin`",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn res188a_candidates_include_top_level_fn() {
+        let prog = parse_prog("fn my_helper() { return 1; }");
+        let cands = completion_candidates(&prog, "my_");
+        let labels: Vec<&str> = cands.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"my_helper"));
+        let c = cands.iter().find(|c| c.label == "my_helper").unwrap();
+        assert_eq!(c.kind, CandidateKind::Function);
+    }
+
+    #[test]
+    fn res188a_candidates_include_top_level_struct() {
+        let prog = parse_prog("struct Point { int x, int y, }");
+        let cands = completion_candidates(&prog, "Po");
+        let c = cands.iter().find(|c| c.label == "Point").unwrap();
+        assert_eq!(c.kind, CandidateKind::Struct);
+        assert!(c.detail.as_deref().unwrap().contains("struct"));
+    }
+
+    #[test]
+    fn res188a_candidates_include_type_alias() {
+        let prog = parse_prog("type Id = int;");
+        let cands = completion_candidates(&prog, "Id");
+        let c = cands.iter().find(|c| c.label == "Id").unwrap();
+        assert_eq!(c.kind, CandidateKind::TypeAlias);
+    }
+
+    #[test]
+    fn res188a_candidates_builtins_before_user_decls() {
+        // Deterministic ordering: builtins first (alphabetical),
+        // then user decls (source order). Useful for snapshot /
+        // regression tests downstream.
+        let prog = parse_prog("fn abc() { return 0; }");
+        let cands = completion_candidates(&prog, "ab");
+        // `abs` (builtin) should come before `abc` (user decl).
+        let abs_idx = cands.iter().position(|c| c.label == "abs");
+        let abc_idx = cands.iter().position(|c| c.label == "abc");
+        assert!(abs_idx.is_some(), "expected `abs` builtin");
+        assert!(abc_idx.is_some(), "expected `abc` user decl");
+        assert!(abs_idx.unwrap() < abc_idx.unwrap());
+    }
+
+    #[test]
+    fn res188a_candidates_respects_completion_limit() {
+        let prog = parse_prog("");
+        // Empty prefix gives every builtin. Ensure we don't blow
+        // past the cap even if BUILTINS is later extended.
+        let cands = completion_candidates(&prog, "");
+        assert!(cands.len() <= COMPLETION_LIMIT);
+    }
+
+    #[test]
+    fn res188a_candidates_unmatched_prefix_returns_empty() {
+        let prog = parse_prog("fn foo() { return 0; }");
+        let cands = completion_candidates(&prog, "zzz_no_match");
+        assert!(cands.is_empty());
+    }
+
+    #[test]
+    fn res188a_candidate_to_completion_item_maps_fields() {
+        let c = Candidate {
+            label: "test".to_string(),
+            kind: CandidateKind::Function,
+            detail: Some("builtin".to_string()),
+        };
+        let item = candidate_to_completion_item(c);
+        assert_eq!(item.label, "test");
+        assert_eq!(item.kind, Some(CompletionItemKind::FUNCTION));
+        assert_eq!(item.detail, Some("builtin".to_string()));
+        assert_eq!(item.insert_text, Some("test".to_string()));
     }
 }

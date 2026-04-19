@@ -4505,6 +4505,18 @@ fn register_builtins(env: &mut Environment) {
     }
 }
 
+/// RES-188a: iterate the canonical builtin names. Used by the
+/// LSP completion handler to seed its suggestion list. Returns
+/// `&'static str` references so the caller doesn't have to
+/// allocate when rendering `CompletionItem.label` entries.
+///
+/// Only reachable from the `lsp` feature today; `#[allow(dead_code)]`
+/// keeps the default / `jit` / `z3` builds warning-clean.
+#[allow(dead_code)]
+pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
+    BUILTINS.iter().map(|(name, _func)| *name)
+}
+
 /// Canonical list of every native function visible in a fresh
 /// Resilient program.
 const BUILTINS: &[(&str, BuiltinFn)] = &[
