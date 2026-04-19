@@ -112,6 +112,20 @@ clauses become runtime asserts.
 | Language Server (LSP) | ✅ opt-in | `--features lsp --lsp` |
 | `#![no_std]` runtime | ✅ stable | sibling `resilient-runtime/` crate |
 
+## Open source
+
+Resilient is free and open source software released under the
+**MIT License**. Contributions from humans and AI agents are
+equally welcome — the ticket system in
+[`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
+is designed to be machine-readable, and `cargo test` is the
+authoritative acceptance gate.
+
+[Contributing guide](contributing){: .btn .btn-outline .mr-2 }
+[Community & Open Source](community){: .btn .btn-outline }
+
+---
+
 ## Where next?
 
 - **New here?** → [Getting Started](getting-started)
@@ -124,4 +138,5 @@ clauses become runtime asserts.
 - **DO-178C / ISO 26262 / IEC 61508 / MISRA?** → [Certification and Safety Standards](certification)
 - **Setting up your editor?** → [LSP / Editor Integration](lsp)
 - **Looking for a tool (fmt, lint, verify-cert, REPL, fuzz, ...)?** → [Tooling Reference](tooling)
-- **Contributing?** → [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board) on GitHub
+- **Contributing?** → [Contributing guide](contributing) and [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board) on GitHub
+- **License, community, open source?** → [Community & Open Source](community)
