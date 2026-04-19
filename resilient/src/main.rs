@@ -52,6 +52,9 @@ mod cert_sign;
 // RES-198: starter linter. 5 lints with stable codes; consumed
 // from main() when the `lint <file>` subcommand runs.
 mod lint;
+// RES-fmt: canonical source-code formatter. Consumed from main()
+// when the `fmt <file>` subcommand runs.
+mod formatter;
 // RES-164a: pure free-variable analysis on the AST. Phase-K
 // scaffolding for JIT closure capture (RES-164c/d) — returns the
 // set of names referenced inside a subtree that aren't bound
@@ -8697,6 +8700,76 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+/// RES-fmt: `resilient fmt <file> [--in-place]` — pretty-print a
+/// Resilient source file in canonical style.
+///
+/// Exit codes:
+/// - 0 = formatted (printed to stdout, or overwrote the file).
+/// - 1 = parse errors (formatter refuses to touch broken input).
+/// - 2 = usage error (missing path, bad flag).
+///
+/// Returns `None` when the first arg isn't `fmt`.
+fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("fmt") {
+        return None;
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut in_place = false;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--in-place" || a == "-i" {
+            in_place = true;
+        } else if a.starts_with("--") {
+            eprintln!("Error: unknown flag `{}` to fmt", a);
+            return Some(2);
+        } else if file.is_none() {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to fmt", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!("Error: `resilient fmt <file> [--in-place]` requires a file path");
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", path.display(), e);
+            return Some(2);
+        }
+    };
+
+    let (program, parse_errs) = parse(&src);
+    if !parse_errs.is_empty() {
+        for e in &parse_errs {
+            eprintln!("{}", e);
+        }
+        eprintln!("Error: fmt aborted due to parse errors");
+        return Some(1);
+    }
+
+    let formatted = formatter::Formatter::format(&program);
+
+    if in_place {
+        if let Err(e) = fs::write(&path, &formatted) {
+            eprintln!("Error: could not write {}: {}", path.display(), e);
+            return Some(1);
+        }
+    } else {
+        // Print to stdout. No extra newline — the formatter already
+        // ends with exactly one.
+        print!("{}", formatted);
+    }
+    Some(0)
+}
+
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
@@ -8705,6 +8778,13 @@ fn main() {
     // Exits directly on handled verbs so the rest of main stays
     // focused on the compiler driver.
     if let Some(code) = dispatch_pkg_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-fmt: `fmt <file> [--in-place]` — canonical source
+    // formatter. Short-circuits before any compilation; returns
+    // before the flag-parsing loop touches subcommand args.
+    if let Some(code) = dispatch_fmt_subcommand(&args) {
         std::process::exit(code);
     }
 

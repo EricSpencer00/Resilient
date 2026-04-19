@@ -6,6 +6,7 @@ A programming language designed for extreme reliability in embedded and safety-c
 &nbsp;·&nbsp; [Onboarding](https://ericspencer00.github.io/Resilient/getting-started)
 &nbsp;·&nbsp; [Design Philosophy](https://ericspencer00.github.io/Resilient/philosophy)
 &nbsp;·&nbsp; [Performance](https://ericspencer00.github.io/Resilient/performance)
+&nbsp;·&nbsp; [Memory Model](https://ericspencer00.github.io/Resilient/memory-model)
 
 ## Core Philosophy
 
@@ -26,6 +27,20 @@ The syntax is designed to be minimal and unambiguous, reducing the cognitive loa
 - **Aerospace**: Flight control systems, drone autopilots.
 - **Industrial Automation**: Robotic arms, safety controllers on manufacturing lines.
 - **Medical Devices**: Infusion pumps, monitoring equipment.
+
+## Safety Standards
+
+Resilient is not a certified tool and does not claim DO-178C,
+ISO 26262, or IEC 61508 conformance — tool qualification is a
+multi-year effort that has not started. What the language does
+provide is a set of features (formal contracts, re-verifiable
+SMT-LIB2 certificates, signed manifests, `static-only` heap
+enforcement, ASCII-only identifiers, deterministic execution)
+that map directly to specific objectives in each standard and
+reduce the evidence burden on the integrator. See the
+[Certification and Safety Standards](https://ericspencer00.github.io/Resilient/certification)
+page for the concrete objective-by-objective mapping and the
+honest list of gaps.
 
 ## Key Features
 
@@ -519,6 +534,24 @@ resilient --dump-chunks examples/hello.rs
 Mutually exclusive with `--dump-tokens` and `--lsp`. The output
 format is stable — external tools are welcome to parse it; the
 disassembler module comment documents the exact column contract.
+
+### Formatter
+
+`resilient fmt <file>` pretty-prints a Resilient source file in
+canonical style (4-space indent, brace-on-same-line, contracts
+indented under the function signature). By default it prints to
+stdout; pass `--in-place` to overwrite the file.
+
+```bash
+resilient fmt examples/hello.rs              # print to stdout
+resilient fmt --in-place src/main.rs         # overwrite
+```
+
+The formatter refuses to touch input with parse errors (exits 1).
+It is a structural round-trip — comments are not preserved today;
+only run it on code you're willing to re-attach comments to by
+hand. See [Tooling Reference](https://ericspencer00.github.io/Resilient/tooling#formatter)
+for the full contract.
 
 ### REPL Commands
 

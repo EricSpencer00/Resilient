@@ -116,7 +116,12 @@ clauses become runtime asserts.
 
 - **New here?** → [Getting Started](getting-started)
 - **Building something?** → [Syntax Reference](syntax)
+- **Writing tooling, static analysis, or safety audits?** → [Language Reference](language-reference) (formal grammar, type rules, semantics)
 - **Curious about design tradeoffs?** → [Philosophy](philosophy)
 - **Embedding the runtime?** → [no_std runtime](no-std)
+- **Auditing memory behaviour?** → [Memory Model](memory-model)
+- **Concurrency, ISRs, and real-time?** → [Concurrency and Real-Time Scheduling](concurrency)
+- **DO-178C / ISO 26262 / IEC 61508 / MISRA?** → [Certification and Safety Standards](certification)
 - **Setting up your editor?** → [LSP / Editor Integration](lsp)
+- **Looking for a tool (fmt, lint, verify-cert, REPL, fuzz, ...)?** → [Tooling Reference](tooling)
 - **Contributing?** → [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board) on GitHub

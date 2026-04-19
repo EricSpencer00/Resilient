@@ -1,5 +1,14 @@
 # Resilient Language Syntax Guide
 
+> **Tool authors, static analysis developers, and safety auditors**:
+> this document is an informal, tutorial-oriented guide. For the
+> formal specification — EBNF grammar, type inference rules,
+> evaluation semantics, and the full runtime-error model — see
+> [`docs/language-reference.md`](docs/language-reference.md). That
+> reference is authoritative for questions about the grammar, the
+> type system, and runtime behaviour; the present document
+> complements it with prose and worked examples.
+
 This document describes the syntax of the Resilient language as of
 the current ticket set. Language features are added per-ticket —
 see `.board/tickets/DONE/` for the full ledger.

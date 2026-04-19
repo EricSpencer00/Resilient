@@ -1,0 +1,783 @@
+// RES-fmt: canonical source-code formatter for Resilient.
+//
+// Walks the AST produced by `parse` and pretty-prints it with the
+// canonical style:
+//
+// - 4-space indentation
+// - one space around binary operators
+// - opening brace on the same line as the introducing construct
+// - no trailing whitespace
+// - blank line between top-level declarations
+// - `requires` / `ensures` clauses indented under the function signature
+// - `live` blocks follow the same brace style
+//
+// Scope (v1): the formatter is best-effort. It handles let bindings,
+// assignment, function / function-literal definitions, if / while /
+// for-in, return, block, assert, prefix / infix / call / field /
+// index / try expressions, struct decls + literals + destructure,
+// impl blocks, type aliases, live blocks (with backoff / within
+// clauses), match expressions, and map / set / array / bytes / string
+// / bool / int / float / identifier literals.
+//
+// Caveats (carried as TODOs, never silently wrong):
+// - Match-arm guards (`if <expr>`) and or-patterns (`p1 | p2`) are
+//   emitted as written, but complex nested match bodies aren't
+//   specially re-wrapped.
+// - The formatter is a structural round-trip: comments are dropped
+//   (the parser doesn't retain them). Users should only run fmt on
+//   code they're willing to have their comments reattached by hand.
+//   This is a known deficiency documented in `docs/tooling.md` and
+//   is the top follow-up for the next formatter ticket.
+
+use crate::Node;
+use crate::Pattern;
+use crate::BackoffConfig;
+
+/// Canonical indent width, in spaces.
+const INDENT: &str = "    ";
+
+pub struct Formatter {
+    out: String,
+    depth: usize,
+    /// Tracks whether we just wrote a newline so we can apply the
+    /// "no trailing whitespace" rule at line boundaries.
+    at_line_start: bool,
+}
+
+impl Formatter {
+    pub fn new() -> Self {
+        Self { out: String::new(), depth: 0, at_line_start: true }
+    }
+
+    /// Entry point. Formats a `Node::Program` (or any top-level
+    /// statement) into a canonical-style string.
+    pub fn format(program: &Node) -> String {
+        let mut f = Self::new();
+        f.fmt_program(program);
+        // Ensure trailing newline; strip any accidental duplicate.
+        while f.out.ends_with("\n\n") {
+            f.out.pop();
+        }
+        if !f.out.ends_with('\n') {
+            f.out.push('\n');
+        }
+        f.out
+    }
+
+    // ------------------------------------------------------------------
+    // low-level write helpers
+    // ------------------------------------------------------------------
+
+    fn write(&mut self, s: &str) {
+        if self.at_line_start && !s.is_empty() {
+            for _ in 0..self.depth {
+                self.out.push_str(INDENT);
+            }
+            self.at_line_start = false;
+        }
+        self.out.push_str(s);
+    }
+
+    fn newline(&mut self) {
+        // Strip trailing spaces from the current line before the
+        // newline so we never emit trailing whitespace.
+        while self.out.ends_with(' ') {
+            self.out.pop();
+        }
+        self.out.push('\n');
+        self.at_line_start = true;
+    }
+
+    fn blank_line(&mut self) {
+        if !self.out.ends_with("\n\n") && !self.out.is_empty() {
+            if !self.out.ends_with('\n') {
+                self.newline();
+            }
+            self.out.push('\n');
+            self.at_line_start = true;
+        }
+    }
+
+    fn indent(&mut self) {
+        self.depth += 1;
+    }
+
+    fn dedent(&mut self) {
+        if self.depth > 0 {
+            self.depth -= 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // top-level program
+    // ------------------------------------------------------------------
+
+    fn fmt_program(&mut self, node: &Node) {
+        match node {
+            Node::Program(stmts) => {
+                for (i, s) in stmts.iter().enumerate() {
+                    if i > 0 {
+                        self.blank_line();
+                    }
+                    self.fmt_stmt(&s.node);
+                    if !self.out.ends_with('\n') {
+                        self.newline();
+                    }
+                }
+            }
+            other => self.fmt_stmt(other),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // statements
+    // ------------------------------------------------------------------
+
+    fn fmt_stmt(&mut self, node: &Node) {
+        match node {
+            Node::Use { path, .. } => {
+                self.write(&format!("use \"{}\";", path));
+                self.newline();
+            }
+            Node::Function {
+                name, parameters, body, requires, ensures, return_type, ..
+            } => {
+                self.fmt_function(
+                    Some(name),
+                    parameters,
+                    return_type.as_deref(),
+                    requires,
+                    ensures,
+                    body,
+                );
+            }
+            Node::StructDecl { name, fields, .. } => {
+                self.write(&format!("struct {} {{", name));
+                self.newline();
+                self.indent();
+                for (ty, fname) in fields {
+                    self.write(&format!("{} {},", ty, fname));
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            Node::ImplBlock { struct_name, methods, .. } => {
+                self.write(&format!("impl {} {{", struct_name));
+                self.newline();
+                self.indent();
+                for (i, m) in methods.iter().enumerate() {
+                    if i > 0 {
+                        self.blank_line();
+                    }
+                    self.fmt_stmt(m);
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            Node::TypeAlias { name, target, .. } => {
+                self.write(&format!("type {} = {};", name, target));
+                self.newline();
+            }
+            Node::LetStatement { name, value, type_annot, .. } => {
+                let ann = match type_annot {
+                    Some(t) => format!(": {}", t),
+                    None => String::new(),
+                };
+                self.write(&format!("let {}{} = ", name, ann));
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
+            Node::StaticLet { name, value, .. } => {
+                self.write(&format!("static let {} = ", name));
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
+            Node::LetDestructureStruct {
+                struct_name, fields, has_rest, value, ..
+            } => {
+                self.write(&format!("let {} {{ ", struct_name));
+                let mut parts: Vec<String> = Vec::new();
+                for (field, local) in fields {
+                    if field == local {
+                        parts.push(field.clone());
+                    } else {
+                        parts.push(format!("{}: {}", field, local));
+                    }
+                }
+                if *has_rest {
+                    parts.push("..".to_string());
+                }
+                self.write(&parts.join(", "));
+                self.write(" } = ");
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
+            Node::Assignment { name, value, .. } => {
+                self.write(&format!("{} = ", name));
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
+            Node::ReturnStatement { value, .. } => match value {
+                Some(v) => {
+                    self.write("return ");
+                    self.fmt_expr(v);
+                    self.write(";");
+                    self.newline();
+                }
+                None => {
+                    self.write("return;");
+                    self.newline();
+                }
+            },
+            Node::IfStatement { condition, consequence, alternative, .. } => {
+                self.write("if ");
+                self.fmt_expr(condition);
+                self.write(" ");
+                self.fmt_block_like(consequence);
+                if let Some(alt) = alternative {
+                    self.write(" else ");
+                    // `else if` flattens; `else { ... }` renders as a block.
+                    match alt.as_ref() {
+                        Node::IfStatement { .. } => self.fmt_stmt(alt),
+                        _ => self.fmt_block_like(alt),
+                    }
+                }
+                if !self.out.ends_with('\n') {
+                    self.newline();
+                }
+            }
+            Node::WhileStatement { condition, body, invariants, .. } => {
+                self.write("while ");
+                self.fmt_expr(condition);
+                if !invariants.is_empty() {
+                    self.newline();
+                    self.indent();
+                    for inv in invariants {
+                        self.write("invariant ");
+                        self.fmt_expr(inv);
+                        self.newline();
+                    }
+                    self.dedent();
+                    self.fmt_block_like(body);
+                } else {
+                    self.write(" ");
+                    self.fmt_block_like(body);
+                }
+                if !self.out.ends_with('\n') {
+                    self.newline();
+                }
+            }
+            Node::ForInStatement { name, iterable, body, invariants, .. } => {
+                self.write(&format!("for {} in ", name));
+                self.fmt_expr(iterable);
+                if !invariants.is_empty() {
+                    self.newline();
+                    self.indent();
+                    for inv in invariants {
+                        self.write("invariant ");
+                        self.fmt_expr(inv);
+                        self.newline();
+                    }
+                    self.dedent();
+                    self.fmt_block_like(body);
+                } else {
+                    self.write(" ");
+                    self.fmt_block_like(body);
+                }
+                if !self.out.ends_with('\n') {
+                    self.newline();
+                }
+            }
+            Node::LiveBlock { body, invariants, backoff, timeout, .. } => {
+                self.write("live");
+                if let Some(bo) = backoff {
+                    self.write(&format!(
+                        " backoff(base_ms={}, factor={}, max_ms={})",
+                        bo.base_ms, bo.factor, bo.max_ms
+                    ));
+                    let _ = BackoffConfig::default_ticket; // keep import live
+                }
+                if let Some(tm) = timeout {
+                    self.write(" within ");
+                    self.fmt_expr(tm);
+                }
+                for inv in invariants {
+                    self.write(" invariant ");
+                    self.fmt_expr(inv);
+                }
+                self.write(" ");
+                self.fmt_block_like(body);
+                if !self.out.ends_with('\n') {
+                    self.newline();
+                }
+            }
+            Node::Assert { condition, message, .. } => {
+                self.write("assert(");
+                self.fmt_expr(condition);
+                if let Some(m) = message {
+                    self.write(", ");
+                    self.fmt_expr(m);
+                }
+                self.write(");");
+                self.newline();
+            }
+            Node::Block { stmts, .. } => {
+                self.write("{");
+                self.newline();
+                self.indent();
+                for s in stmts {
+                    self.fmt_stmt(s);
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            Node::ExpressionStatement { expr, .. } => {
+                self.fmt_expr(expr);
+                self.write(";");
+                self.newline();
+            }
+            // Anything else was an expression; dispatch to fmt_expr
+            // and terminate with a semicolon so a bare expression
+            // statement at top level still looks like a statement.
+            other => {
+                self.fmt_expr(other);
+                self.write(";");
+                self.newline();
+            }
+        }
+    }
+
+    /// Render a `Node::Block` or fall back to wrapping a single
+    /// statement in `{ ... }`.
+    fn fmt_block_like(&mut self, node: &Node) {
+        match node {
+            Node::Block { stmts, .. } => {
+                self.write("{");
+                self.newline();
+                self.indent();
+                for s in stmts {
+                    self.fmt_stmt(s);
+                }
+                self.dedent();
+                self.write("}");
+            }
+            other => {
+                // Synthesize a single-stmt block so the brace style
+                // stays uniform.
+                self.write("{");
+                self.newline();
+                self.indent();
+                self.fmt_stmt(other);
+                self.dedent();
+                self.write("}");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // function definition (shared between named + literal forms)
+    // ------------------------------------------------------------------
+
+    fn fmt_function(
+        &mut self,
+        name: Option<&str>,
+        parameters: &[(String, String)],
+        return_type: Option<&str>,
+        requires: &[Node],
+        ensures: &[Node],
+        body: &Node,
+    ) {
+        self.write("fn");
+        if let Some(n) = name {
+            self.write(&format!(" {}", n));
+        }
+        self.write("(");
+        let params: Vec<String> = parameters
+            .iter()
+            .map(|(ty, pname)| format!("{} {}", ty, pname))
+            .collect();
+        self.write(&params.join(", "));
+        self.write(")");
+        if let Some(rt) = return_type {
+            self.write(&format!(" -> {}", rt));
+        }
+
+        if !requires.is_empty() || !ensures.is_empty() {
+            self.newline();
+            self.indent();
+            for r in requires {
+                self.write("requires ");
+                self.fmt_expr(r);
+                self.newline();
+            }
+            for e in ensures {
+                self.write("ensures ");
+                self.fmt_expr(e);
+                self.newline();
+            }
+            self.dedent();
+            self.fmt_block_like(body);
+        } else {
+            self.write(" ");
+            self.fmt_block_like(body);
+        }
+        if !self.out.ends_with('\n') {
+            self.newline();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // expressions
+    // ------------------------------------------------------------------
+
+    fn fmt_expr(&mut self, node: &Node) {
+        match node {
+            Node::Identifier { name, .. } => self.write(name),
+            Node::IntegerLiteral { value, .. } => self.write(&value.to_string()),
+            Node::FloatLiteral { value, .. } => {
+                // Always include a decimal point so the literal round-
+                // trips as a float, not an int.
+                let s = format!("{}", value);
+                if s.contains('.') || s.contains('e') || s.contains('E') {
+                    self.write(&s);
+                } else {
+                    self.write(&format!("{}.0", s));
+                }
+            }
+            Node::StringLiteral { value, .. } => {
+                self.write(&format!("\"{}\"", escape_string(value)));
+            }
+            Node::BooleanLiteral { value, .. } => {
+                self.write(if *value { "true" } else { "false" });
+            }
+            Node::BytesLiteral { value, .. } => {
+                self.write("b\"");
+                for b in value {
+                    match *b {
+                        b'\\' => self.write("\\\\"),
+                        b'"' => self.write("\\\""),
+                        b'\n' => self.write("\\n"),
+                        b'\t' => self.write("\\t"),
+                        b'\r' => self.write("\\r"),
+                        0 => self.write("\\0"),
+                        x if x.is_ascii_graphic() || x == b' ' => {
+                            let mut buf = [0u8; 1];
+                            buf[0] = x;
+                            self.write(std::str::from_utf8(&buf).unwrap());
+                        }
+                        x => self.write(&format!("\\x{:02x}", x)),
+                    }
+                }
+                self.write("\"");
+            }
+            Node::PrefixExpression { operator, right, .. } => {
+                self.write(operator);
+                self.fmt_expr(right);
+            }
+            Node::InfixExpression { left, operator, right, .. } => {
+                self.fmt_expr(left);
+                self.write(&format!(" {} ", operator));
+                self.fmt_expr(right);
+            }
+            Node::CallExpression { function, arguments, .. } => {
+                self.fmt_expr(function);
+                self.write("(");
+                for (i, a) in arguments.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_expr(a);
+                }
+                self.write(")");
+            }
+            Node::TryExpression { expr, .. } => {
+                self.fmt_expr(expr);
+                self.write("?");
+            }
+            Node::FieldAccess { target, field, .. } => {
+                self.fmt_expr(target);
+                self.write(&format!(".{}", field));
+            }
+            Node::FieldAssignment { target, field, value, .. } => {
+                self.fmt_expr(target);
+                self.write(&format!(".{} = ", field));
+                self.fmt_expr(value);
+            }
+            Node::IndexExpression { target, index, .. } => {
+                self.fmt_expr(target);
+                self.write("[");
+                self.fmt_expr(index);
+                self.write("]");
+            }
+            Node::IndexAssignment { target, index, value, .. } => {
+                self.fmt_expr(target);
+                self.write("[");
+                self.fmt_expr(index);
+                self.write("] = ");
+                self.fmt_expr(value);
+            }
+            Node::ArrayLiteral { items, .. } => {
+                self.write("[");
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_expr(it);
+                }
+                self.write("]");
+            }
+            Node::MapLiteral { entries, .. } => {
+                self.write("{");
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    } else {
+                        self.write(" ");
+                    }
+                    self.fmt_expr(k);
+                    self.write(" -> ");
+                    self.fmt_expr(v);
+                }
+                if !entries.is_empty() {
+                    self.write(" ");
+                }
+                self.write("}");
+            }
+            Node::SetLiteral { items, .. } => {
+                self.write("#{");
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_expr(it);
+                }
+                self.write("}");
+            }
+            Node::StructLiteral { name, fields, .. } => {
+                self.write(&format!("new {} {{", name));
+                for (i, (fname, v)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(",");
+                    }
+                    self.write(&format!(" {}: ", fname));
+                    self.fmt_expr(v);
+                }
+                if !fields.is_empty() {
+                    self.write(" ");
+                }
+                self.write("}");
+            }
+            Node::FunctionLiteral {
+                parameters, body, requires, ensures, return_type, ..
+            } => {
+                // Anonymous fn inside an expression context: reuse the
+                // shared function-renderer with `name = None`.
+                self.fmt_function(
+                    None,
+                    parameters,
+                    return_type.as_deref(),
+                    requires,
+                    ensures,
+                    body,
+                );
+            }
+            Node::Match { scrutinee, arms, .. } => {
+                self.write("match ");
+                self.fmt_expr(scrutinee);
+                self.write(" {");
+                self.newline();
+                self.indent();
+                for (pat, guard, body) in arms {
+                    self.fmt_pattern(pat);
+                    if let Some(g) = guard {
+                        self.write(" if ");
+                        self.fmt_expr(g);
+                    }
+                    self.write(" => ");
+                    self.fmt_expr(body);
+                    self.write(",");
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+            }
+            Node::DurationLiteral { nanos, .. } => {
+                // Collapse back to the smallest whole-unit form we can.
+                // Fall back to `ns` when divisibility fails.
+                if *nanos % 1_000_000_000 == 0 {
+                    self.write(&format!("{}s", nanos / 1_000_000_000));
+                } else if *nanos % 1_000_000 == 0 {
+                    self.write(&format!("{}ms", nanos / 1_000_000));
+                } else if *nanos % 1_000 == 0 {
+                    self.write(&format!("{}us", nanos / 1_000));
+                } else {
+                    self.write(&format!("{}ns", nanos));
+                }
+            }
+            // Statement-shaped nodes that ended up in expression
+            // position: degrade gracefully to their statement form.
+            Node::Block { .. }
+            | Node::IfStatement { .. }
+            | Node::WhileStatement { .. }
+            | Node::ForInStatement { .. }
+            | Node::LiveBlock { .. }
+            | Node::Assert { .. }
+            | Node::LetStatement { .. }
+            | Node::StaticLet { .. }
+            | Node::Assignment { .. }
+            | Node::ReturnStatement { .. }
+            | Node::ExpressionStatement { .. }
+            | Node::Function { .. }
+            | Node::StructDecl { .. }
+            | Node::ImplBlock { .. }
+            | Node::TypeAlias { .. }
+            | Node::Use { .. }
+            | Node::LetDestructureStruct { .. }
+            | Node::Program(_) => {
+                self.fmt_stmt(node);
+            }
+        }
+    }
+
+    fn fmt_pattern(&mut self, pat: &Pattern) {
+        match pat {
+            Pattern::Wildcard => self.write("_"),
+            Pattern::Identifier(name) => self.write(name),
+            Pattern::Literal(node) => self.fmt_expr(node),
+            Pattern::Or(branches) => {
+                for (i, b) in branches.iter().enumerate() {
+                    if i > 0 {
+                        self.write(" | ");
+                    }
+                    self.fmt_pattern(b);
+                }
+            }
+        }
+    }
+}
+
+fn escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    /// Golden: a canonical `hello.rs`-style program round-trips.
+    #[test]
+    fn fmt_hello_world() {
+        let src = "fn main() { println(\"hi\"); } main();";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&program);
+        let expected = "\
+fn main() {
+    println(\"hi\");
+}
+
+main();
+";
+        assert_eq!(out, expected);
+    }
+
+    /// Golden: let binding + if/else + return.
+    #[test]
+    fn fmt_let_if_return() {
+        let src = "fn f(int x) -> int { let y = x + 1; if y > 0 { return y; } else { return 0; } }";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&program);
+        let expected = "\
+fn f(int x) -> int {
+    let y = x + 1;
+    if y > 0 {
+        return y;
+    } else {
+        return 0;
+    }
+}
+";
+        assert_eq!(out, expected);
+    }
+
+    /// Golden: function contracts land indented under the signature.
+    #[test]
+    fn fmt_function_contracts() {
+        let src =
+            "fn safe_div(int a, int b) -> int requires b != 0 ensures result * b == a { return a / b; }";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&program);
+        let expected = "\
+fn safe_div(int a, int b) -> int
+    requires b != 0
+    ensures result * b == a
+{
+    return a / b;
+}
+";
+        assert_eq!(out, expected);
+    }
+
+    /// Golden: struct decl renders one field per line.
+    #[test]
+    fn fmt_struct_decl() {
+        let src = "struct Point { int x, int y, }";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&program);
+        let expected = "\
+struct Point {
+    int x,
+    int y,
+}
+";
+        assert_eq!(out, expected);
+    }
+
+    /// Golden: live blocks keep their brace style.
+    #[test]
+    fn fmt_live_block() {
+        let src = "fn main(int _d) { live { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&program);
+        assert!(out.contains("live {"), "expected brace on same line: {}", out);
+        assert!(out.contains("    live {"), "expected indented live block: {}", out);
+    }
+
+    /// Property: formatting is idempotent — formatting twice yields
+    /// the same output as formatting once.
+    #[test]
+    fn fmt_idempotent() {
+        let src = "fn f(int x) -> int { let y = x + 1; return y; } f(3);";
+        let (p1, errs) = parse(src);
+        assert!(errs.is_empty());
+        let once = Formatter::format(&p1);
+        let (p2, errs2) = parse(&once);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\nsource was:\n{}", errs2, once);
+        let twice = Formatter::format(&p2);
+        assert_eq!(once, twice, "formatter is not idempotent");
+    }
+}
