@@ -1,7 +1,7 @@
 ---
 id: RES-131
 title: Z3 verifier proves array-index bounds in contracts
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G9
 created: 2026-04-17
@@ -43,6 +43,9 @@ precondition context.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized for one iteration)
+- 2026-04-17 re-claimed by executor — landing RES-131a scope
+  (SMT encoding for `len(xs)` + axiom). Obligation generation,
+  elision, audit, integration tests stay as RES-131b/c/d.
 
 ## Attempt 1 failed
 
