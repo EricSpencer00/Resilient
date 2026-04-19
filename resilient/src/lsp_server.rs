@@ -20,15 +20,16 @@ use std::sync::Mutex;
 use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-    InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
-    InlayHintServerCapabilities, Location, MarkedString, MessageType, OneOf, Position, Range,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
-    SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
-    WorkDoneProgressOptions, WorkspaceSymbolParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
+    InlayHintLabel, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location,
+    MarkedString, MessageType, OneOf, Position, Range, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Url, WorkDoneProgressOptions,
+    WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -305,6 +306,94 @@ fn lex_span_contains_lsp_position(span: crate::span::Span, pos: Position) -> boo
         return pos.character < end_col;
     }
     true
+}
+
+/// RES-182a: lex `src` and, if the cursor sits on an
+/// `Identifier` token, return the `(name, span)` pair. Returns
+/// `None` for every other kind of token (keywords, literals,
+/// operators) or when the cursor isn't on any token.
+///
+/// Mirrors `hover_literal_at`'s token-level lookup approach: the
+/// parser's per-leaf spans are unreliable, so we drive the lexer
+/// directly against the cached source and find the containing
+/// `Token::Identifier`. Caller uses the returned name to look up
+/// the definition in a `TopLevelDefMap`.
+pub(crate) fn identifier_at(
+    src: &str,
+    pos: Position,
+) -> Option<(String, Range)> {
+    use crate::{Lexer, Token};
+    let mut lex = Lexer::new(src.to_string());
+    loop {
+        let (tok, span) = lex.next_token_with_span();
+        if matches!(tok, Token::Eof) {
+            return None;
+        }
+        if !lex_span_contains_lsp_position(span, pos) {
+            continue;
+        }
+        if let Token::Identifier(name) = tok {
+            return Some((name, span_to_range(span)));
+        }
+        // Non-identifier token at the cursor — no jump.
+        return None;
+    }
+}
+
+/// RES-182a: one top-level declaration's definition site.
+/// `name_range` is the span of the identifier token on the
+/// declaration line — what the editor highlights as the "goto
+/// target" — while `full_range` covers the whole decl (same
+/// data `document_symbols_for_program` uses). `full_range` is
+/// what we return today; a future refinement could return
+/// `name_range` when RES-088's span work gets an identifier-
+/// specific span on `Node::Function` / friends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TopLevelDef {
+    pub name: String,
+    pub range: Range,
+}
+
+/// RES-182a: build a name → top-level-decl-location map from a
+/// parsed program. Covers `fn` / `struct` / `type` aliases —
+/// the same decl shapes `document_symbols_for_program` already
+/// walks. Duplicate names inside a single program (parser
+/// doesn't reject them yet) resolve to the FIRST occurrence,
+/// since goto-def is deterministic and users most often mean
+/// the original definition.
+pub(crate) fn build_top_level_defs(program: &Node) -> Vec<TopLevelDef> {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return Vec::new(),
+    };
+    let mut out: Vec<TopLevelDef> = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+    for spanned in stmts {
+        let name = match &spanned.node {
+            Node::Function { name, .. } => name.clone(),
+            Node::StructDecl { name, .. } => name.clone(),
+            Node::TypeAlias { name, .. } => name.clone(),
+            _ => continue,
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        out.push(TopLevelDef {
+            name,
+            range: span_to_range(spanned.span),
+        });
+    }
+    out
+}
+
+/// RES-182a: find a top-level decl by name. Linear scan over
+/// the `build_top_level_defs` vec — decl counts are small and
+/// this runs per request (not per keystroke).
+pub(crate) fn find_top_level_def<'a>(
+    defs: &'a [TopLevelDef],
+    name: &str,
+) -> Option<&'a TopLevelDef> {
+    defs.iter().find(|d| d.name == name)
 }
 
 /// RES-185: walk a `Node::Program` and emit one `DocumentSymbol`
@@ -821,6 +910,13 @@ impl LanguageServer for Backend {
                 // form; `HoverOptions` would let us opt into
                 // work-done progress reporting which we don't need.
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                // RES-182a: advertise go-to-definition. The handler
+                // currently resolves only TOP-LEVEL declarations
+                // (fn / struct / type alias) within the same
+                // document; local / parameter / cross-file targets
+                // (RES-182b, RES-182c) stay deferred until a scope-
+                // aware resolver + span-carrying-path work lands.
+                definition_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
         })
@@ -991,6 +1087,57 @@ impl LanguageServer for Backend {
             contents: HoverContents::Scalar(MarkedString::String(type_name.to_string())),
             range: Some(range),
         }))
+    }
+
+    /// RES-182a: respond to `textDocument/definition` — jump to
+    /// the defining span of the symbol under the cursor.
+    /// Currently handles only TOP-LEVEL declarations (fn / struct
+    /// / type alias) within the same document. Local bindings /
+    /// parameters (RES-182b) and cross-file imports (RES-182c)
+    /// return `Ok(None)` so the editor's "no definition found"
+    /// UX kicks in. That's a graceful degradation — picking the
+    /// wrong jump target would be strictly worse than "I don't
+    /// know yet."
+    ///
+    /// Implementation:
+    ///   1. Look up the cursor's identifier token via
+    ///      `identifier_at` (same token-level plumbing as
+    ///      RES-181a's hover).
+    ///   2. Rebuild the top-level def map from the cached AST
+    ///      and look the name up.
+    ///   3. Wrap the result in a `Location` pointing at the same
+    ///      document URI (cross-file is RES-182c).
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> JsonResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+        let Some((name, _range)) = identifier_at(&text, pos) else {
+            return Ok(None);
+        };
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+        let defs = build_top_level_defs(&program);
+        let Some(def) = find_top_level_def(&defs, &name) else {
+            return Ok(None);
+        };
+        Ok(Some(GotoDefinitionResponse::Scalar(Location {
+            uri,
+            range: def.range,
+        })))
     }
 
     /// RES-187: respond to `textDocument/semanticTokens/full` with
@@ -1783,5 +1930,141 @@ mod tests {
         let sp = Span::new(Pos::new(2, 1, 0), Pos::new(2, 5, 4));
         assert!(!lex_span_contains_lsp_position(sp, Position::new(0, 1)));
         assert!(!lex_span_contains_lsp_position(sp, Position::new(5, 1)));
+    }
+
+    // ============================================================
+    // RES-182a: goto-definition helpers
+    // ============================================================
+
+    fn parse_prog(src: &str) -> Node {
+        let (program, _errs) = parse(src);
+        program
+    }
+
+    #[test]
+    fn res182a_identifier_at_returns_name_and_range() {
+        // `let x = 42;` — cursor on `x` at col 5 (1-indexed) =
+        // LSP col 4. The `identifier_at` helper should return
+        // ("x", Range at col 4..5).
+        let r = identifier_at("let x = 42;", Position::new(0, 4));
+        let (name, range) = r.expect("expected identifier hit");
+        assert_eq!(name, "x");
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 4);
+        assert_eq!(range.end.character, 5);
+    }
+
+    #[test]
+    fn res182a_identifier_at_returns_none_for_literal() {
+        // Cursor on `42` → not an identifier → None.
+        let r = identifier_at("let x = 42;", Position::new(0, 8));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res182a_identifier_at_returns_none_for_keyword() {
+        // Cursor on `let` → keyword → None.
+        let r = identifier_at("let x = 42;", Position::new(0, 0));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res182a_identifier_at_finds_mid_identifier() {
+        // Cursor in the middle of `my_fn` (4 chars in) → still
+        // returns "my_fn". Tests the multi-char-token branch.
+        let r = identifier_at("fn my_fn() { return 0; }", Position::new(0, 5));
+        let (name, _) = r.expect("expected identifier hit");
+        assert_eq!(name, "my_fn");
+    }
+
+    #[test]
+    fn res182a_identifier_at_out_of_range_returns_none() {
+        let r = identifier_at("let x = 42;", Position::new(10, 0));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res182a_identifier_at_empty_source_returns_none() {
+        let r = identifier_at("", Position::new(0, 0));
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn res182a_build_top_level_defs_empty_program() {
+        let prog = parse_prog("");
+        let defs = build_top_level_defs(&prog);
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn res182a_build_top_level_defs_collects_fn() {
+        let prog = parse_prog("fn add(int a, int b) -> int { return a + b; }");
+        let defs = build_top_level_defs(&prog);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "add");
+    }
+
+    #[test]
+    fn res182a_build_top_level_defs_collects_struct() {
+        let prog = parse_prog("struct Point { int x, int y, }");
+        let defs = build_top_level_defs(&prog);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "Point");
+    }
+
+    #[test]
+    fn res182a_build_top_level_defs_collects_type_alias() {
+        let prog = parse_prog("type MyInt = int;");
+        let defs = build_top_level_defs(&prog);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "MyInt");
+    }
+
+    #[test]
+    fn res182a_build_top_level_defs_mixed_kinds() {
+        let src = r#"
+            fn foo(int n) { return n; }
+            struct Rec { int x, }
+            type I = int;
+            let top = 42;
+        "#;
+        let prog = parse_prog(src);
+        let defs = build_top_level_defs(&prog);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["foo", "Rec", "I"]);
+    }
+
+    #[test]
+    fn res182a_build_top_level_defs_first_wins_on_duplicates() {
+        // Duplicate names — parser doesn't reject them, but the
+        // goto target should be deterministic. First wins.
+        let src = r#"
+            fn foo(int n) { return 1; }
+            fn foo(int n) { return 2; }
+        "#;
+        let prog = parse_prog(src);
+        let defs = build_top_level_defs(&prog);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "foo");
+    }
+
+    #[test]
+    fn res182a_find_top_level_def_hit_and_miss() {
+        let prog = parse_prog("fn only() { return 0; } struct P { int x, }");
+        let defs = build_top_level_defs(&prog);
+        assert!(find_top_level_def(&defs, "only").is_some());
+        assert!(find_top_level_def(&defs, "P").is_some());
+        assert!(find_top_level_def(&defs, "nope").is_none());
+    }
+
+    #[test]
+    fn res182a_find_top_level_def_returns_range_from_decl() {
+        // Decl at line 2 (1-indexed in source) should surface
+        // range starting at LSP line 1.
+        let src = "\nfn foo() { return 0; }";
+        let prog = parse_prog(src);
+        let defs = build_top_level_defs(&prog);
+        let def = find_top_level_def(&defs, "foo").expect("missing foo");
+        assert_eq!(def.range.start.line, 1);
     }
 }
