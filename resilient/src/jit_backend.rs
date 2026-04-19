@@ -498,8 +498,179 @@ fn make_module() -> Result<JITModule, JitError> {
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| JitError::IsaInit(e.to_string()))?;
-    let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    // RES-166a: register runtime-shim symbols so JIT-lowered code
+    // can `call` the Rust-side helpers by name. Must run BEFORE
+    // the `JITModule::new(builder)` call — once the module is
+    // built, its symbol table is frozen.
+    register_runtime_symbols(&mut builder);
     Ok(JITModule::new(builder))
+}
+
+// ============================================================
+// RES-166a: runtime shims for JIT-lowered array ops
+// ============================================================
+//
+// Resilient arrays aren't native to Cranelift. To lower
+// `Node::IndexExpression` / `Node::IndexAssignment` (RES-166b/c),
+// the JIT emits calls into a small set of `extern "C"` helpers
+// that manage a heap-allocated `Vec<i64>` on the Rust side. This
+// ticket (RES-166a) lays the foundation: the shim functions and
+// their symbol registrations. No AST lowering changes yet — the
+// plumbing is wired so subsequent tickets can land lowering on
+// top without touching the runtime layer again.
+//
+// Calling convention: every shim takes C-ABI i64 args / returns
+// i64 or a pointer-sized integer. `*mut ResArray` is an opaque
+// handle from Cranelift's POV; from Rust's POV it's the owning
+// `Box<ResArray>` raw pointer.
+//
+// We declare the shims as `extern "C-unwind"` rather than plain
+// `extern "C"`. The two ABIs are byte-for-byte identical on
+// every target cranelift emits; the only difference is that
+// `C-unwind` permits panics to propagate across the call
+// boundary. Because `res_array_get` / `res_array_set` panic on
+// bounds violation (matching the ticket's "panics with a clean
+// error" requirement), plain `"C"` would force a non-unwinding
+// abort — correct for the production JIT target, but unusable
+// from Rust-side unit tests that want to `#[should_panic]` the
+// same code path. `C-unwind` gets us both.
+//
+// Safety: the JIT guarantees that every pointer passed into the
+// shims was produced by `res_array_new` on the same thread and
+// hasn't been freed yet. Violations would be undefined behaviour;
+// the shims `assert!` on null as a cheap early-panic for the
+// common mistake. Bounds checks on `res_array_get` / `res_array_set`
+// use the Vec's length and panic cleanly with an i/len message on
+// out-of-bounds.
+//
+// Exposed symbols (registered in `register_runtime_symbols`):
+//   - res_array_new(len: i64) -> *mut ResArray
+//   - res_array_get(arr: *mut ResArray, i: i64) -> i64
+//   - res_array_set(arr: *mut ResArray, i: i64, v: i64)
+//   - res_array_free(arr: *mut ResArray)
+//
+// The free fn is part of 166a even though the caller-side lowering
+// (tying calls to scope exit) is RES-166c/d work. Keeping it here
+// means the surface is complete from day one.
+
+pub(crate) mod runtime_shims {
+    //! RES-166a: C-ABI helpers the JIT calls for array ops.
+    //! `pub(crate)` so tests in the parent module can round-trip
+    //! through the shims without cranelift in the picture.
+
+    /// Heap-allocated backing store for a Resilient array inside
+    /// JIT-compiled code. Opaque from Cranelift's POV; always
+    /// passed as `*mut ResArray`.
+    ///
+    /// `repr(C)` is conservative: the JIT only ever sees the
+    /// pointer, so the layout of the struct's fields doesn't
+    /// affect correctness. We still pin the layout so a future
+    /// ticket that reads `len` inline (for the unchecked perf
+    /// variant — see the ticket's note about RES-131) has a
+    /// stable ABI.
+    #[repr(C)]
+    pub struct ResArray {
+        /// The payload. `Vec<i64>` carries its own (len, cap,
+        /// ptr) tuple. The JIT only ever goes through the shim
+        /// fns, which downgrade this back to a `&[i64]` view.
+        pub items: Vec<i64>,
+    }
+
+    /// Allocate a new `ResArray` with `len` zero-initialized i64
+    /// slots. Returns a raw pointer whose ownership is
+    /// transferred to the caller; reclaim with
+    /// `res_array_free`. Negative `len` is clamped to 0 so the
+    /// JIT doesn't need to validate the argument inline.
+    pub extern "C-unwind" fn res_array_new(len: i64) -> *mut ResArray {
+        let len = len.max(0) as usize;
+        let items = vec![0i64; len];
+        Box::into_raw(Box::new(ResArray { items }))
+    }
+
+    /// Read `arr[i]`. Panics with a clean message on null pointer
+    /// or out-of-bounds index. Panic on the JIT side turns into
+    /// the process's panic handler (abort by default on release),
+    /// matching the ticket's "shim panics with a clean error"
+    /// requirement.
+    ///
+    /// Safety: `arr` must have been produced by `res_array_new`
+    /// and not yet freed.
+    pub extern "C-unwind" fn res_array_get(arr: *mut ResArray, i: i64) -> i64 {
+        assert!(!arr.is_null(), "res_array_get: null array pointer");
+        // SAFETY: the JIT calling convention guarantees the
+        // pointer's validity for the duration of this call.
+        let arr_ref = unsafe { &*arr };
+        if i < 0 || (i as usize) >= arr_ref.items.len() {
+            panic!(
+                "res_array_get: index {} out of bounds for length {}",
+                i,
+                arr_ref.items.len()
+            );
+        }
+        arr_ref.items[i as usize]
+    }
+
+    /// Write `arr[i] = v`. Same null-check + bounds-check as
+    /// `res_array_get`.
+    ///
+    /// Safety: same contract as `res_array_get`.
+    pub extern "C-unwind" fn res_array_set(arr: *mut ResArray, i: i64, v: i64) {
+        assert!(!arr.is_null(), "res_array_set: null array pointer");
+        // SAFETY: same as `res_array_get`.
+        let arr_ref = unsafe { &mut *arr };
+        if i < 0 || (i as usize) >= arr_ref.items.len() {
+            panic!(
+                "res_array_set: index {} out of bounds for length {}",
+                i,
+                arr_ref.items.len()
+            );
+        }
+        arr_ref.items[i as usize] = v;
+    }
+
+    /// Free an array previously produced by `res_array_new`. A
+    /// null pointer is a no-op so the JIT doesn't need to guard
+    /// the call.
+    ///
+    /// Safety: the pointer must not be used after this call.
+    pub extern "C-unwind" fn res_array_free(arr: *mut ResArray) {
+        if arr.is_null() {
+            return;
+        }
+        // SAFETY: ownership was transferred to this call.
+        let _ = unsafe { Box::from_raw(arr) };
+    }
+}
+
+/// RES-166a: register the runtime-shim FFI symbols on a
+/// `JITBuilder` so lowered code can look them up by name. The
+/// JIT expects the C-ABI calling convention documented on each
+/// shim fn above. Symbol registration is absolute-address and
+/// valid only for the lifetime of the running process (we link
+/// directly to the function pointer), which is exactly what
+/// `JITBuilder::symbol` is for.
+///
+/// Extracted into its own fn so tests can exercise the shims
+/// without duplicating wiring, and so RES-167 (builtin calls —
+/// `len`, `push`, etc.) can reuse the same registration seam.
+fn register_runtime_symbols(builder: &mut JITBuilder) {
+    builder.symbol(
+        "res_array_new",
+        runtime_shims::res_array_new as *const u8,
+    );
+    builder.symbol(
+        "res_array_get",
+        runtime_shims::res_array_get as *const u8,
+    );
+    builder.symbol(
+        "res_array_set",
+        runtime_shims::res_array_set as *const u8,
+    );
+    builder.symbol(
+        "res_array_free",
+        runtime_shims::res_array_free as *const u8,
+    );
 }
 
 /// RES-072 + RES-096 + RES-105: compile a Resilient `Program`
@@ -2803,5 +2974,166 @@ mod tests {
         let pt = layouts.get("P").unwrap();
         assert_eq!(pt.fields.len(), 2);
         assert_eq!(pt.total_size, 16);
+    }
+
+    // ============================================================
+    // RES-166a: runtime_shims + JITBuilder::symbol wiring
+    // ============================================================
+    //
+    // The shim fns are plain `extern "C"` so we can unit-test them
+    // directly from Rust — no Cranelift / JITModule involvement
+    // required. Each test owns its array pointer: allocate with
+    // `res_array_new`, round-trip through `get` / `set`, free with
+    // `res_array_free`. Failure to call `res_array_free` leaks, but
+    // that's just a test-side concern; the tests always clean up.
+    //
+    // A separate test exercises the full JIT build path after the
+    // `register_runtime_symbols` wiring to catch a regression where
+    // symbol registration accidentally breaks module construction.
+
+    use super::runtime_shims::{
+        res_array_free, res_array_get, res_array_new, res_array_set,
+    };
+
+    #[test]
+    fn res166a_array_new_returns_nonnull_for_positive_len() {
+        let arr = res_array_new(3);
+        assert!(!arr.is_null(), "res_array_new(3) returned null");
+        res_array_free(arr);
+    }
+
+    #[test]
+    fn res166a_array_new_accepts_zero_len() {
+        // Length 0 is legal — produces an empty-but-valid array.
+        // Every get/set on it will panic (no indices in range),
+        // so we don't touch the payload.
+        let arr = res_array_new(0);
+        assert!(!arr.is_null(), "res_array_new(0) returned null");
+        res_array_free(arr);
+    }
+
+    #[test]
+    fn res166a_array_new_clamps_negative_len_to_zero() {
+        // A negative length must not abort — we clamp to 0 so the
+        // JIT doesn't need to validate the arg inline. The
+        // resulting array is still a valid (empty) handle.
+        let arr = res_array_new(-5);
+        assert!(!arr.is_null(), "res_array_new(-5) returned null");
+        res_array_free(arr);
+    }
+
+    #[test]
+    fn res166a_array_new_zero_initializes_elements() {
+        let arr = res_array_new(4);
+        for i in 0..4 {
+            assert_eq!(res_array_get(arr, i), 0);
+        }
+        res_array_free(arr);
+    }
+
+    #[test]
+    fn res166a_array_set_then_get_roundtrips() {
+        let arr = res_array_new(3);
+        res_array_set(arr, 0, 10);
+        res_array_set(arr, 1, 20);
+        res_array_set(arr, 2, 30);
+        assert_eq!(res_array_get(arr, 0), 10);
+        assert_eq!(res_array_get(arr, 1), 20);
+        assert_eq!(res_array_get(arr, 2), 30);
+        res_array_free(arr);
+    }
+
+    #[test]
+    fn res166a_array_set_overwrites_previous_value() {
+        let arr = res_array_new(1);
+        res_array_set(arr, 0, 1);
+        res_array_set(arr, 0, 99);
+        assert_eq!(res_array_get(arr, 0), 99);
+        res_array_free(arr);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn res166a_array_get_oob_panics() {
+        let arr = res_array_new(3);
+        // Leaking here is OK — the panic aborts the test, and
+        // cargo test runs each test in its own process-ish
+        // sandbox anyway. Freeing after a panic would require a
+        // catch_unwind wrapper which is overkill for a test.
+        let _ = res_array_get(arr, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn res166a_array_get_negative_idx_panics() {
+        let arr = res_array_new(3);
+        let _ = res_array_get(arr, -1);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn res166a_array_set_oob_panics() {
+        let arr = res_array_new(2);
+        res_array_set(arr, 2, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "null array pointer")]
+    fn res166a_array_get_null_ptr_panics_cleanly() {
+        let _ = res_array_get(std::ptr::null_mut(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "null array pointer")]
+    fn res166a_array_set_null_ptr_panics_cleanly() {
+        res_array_set(std::ptr::null_mut(), 0, 1);
+    }
+
+    #[test]
+    fn res166a_array_free_on_null_is_noop() {
+        // Calling free with null must not crash — the JIT calls
+        // it unconditionally on scope exit to keep the lowering
+        // simple.
+        res_array_free(std::ptr::null_mut());
+    }
+
+    #[test]
+    fn res166a_symbol_wiring_does_not_break_module_construction() {
+        // Regression guard: the addition of
+        // `register_runtime_symbols(&mut builder)` inside
+        // `make_module` must not disrupt JIT construction for
+        // programs that don't use arrays. If it did, every
+        // existing JIT test would fail — but a direct assertion
+        // here pins the exact interaction.
+        let m = make_module().expect("make_module failed after RES-166a wiring");
+        drop(m); // free the module immediately — we only care that it built.
+    }
+
+    #[test]
+    fn res166a_existing_jit_path_still_works_after_symbol_wiring() {
+        // A full `run()` roundtrip that doesn't touch arrays must
+        // still return the right result with the shim symbols
+        // registered. This is the behavioural mirror of the
+        // regression guard above — if symbol wiring went wrong
+        // lazily (at call time), the module-construction test
+        // would miss it but this one would catch it.
+        let p = parse_program("return 2 + 3;");
+        assert_eq!(run(&p).unwrap(), 5);
+    }
+
+    #[test]
+    fn res166a_large_array_get_set_across_many_slots() {
+        // Exercise the full Vec<i64> path — not just the first
+        // few slots. Writes the identity `a[i] = i * 2` across
+        // 100 slots and reads them back.
+        let n: i64 = 100;
+        let arr = res_array_new(n);
+        for i in 0..n {
+            res_array_set(arr, i, i * 2);
+        }
+        for i in 0..n {
+            assert_eq!(res_array_get(arr, i), i * 2);
+        }
+        res_array_free(arr);
     }
 }
