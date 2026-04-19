@@ -958,6 +958,16 @@ enum Node {
         /// infers purity for unannotated fns.
         #[allow(dead_code)] // read via pattern destructure in typechecker
         pure: bool,
+        /// RES-124 (scope RES-124a): generic type parameters
+        /// declared on the fn via `fn<T, U> name(...)`. Empty
+        /// when the user wrote a plain monomorphic `fn`. Order
+        /// matches source order so the inferer /
+        /// monomorphization pass (RES-124b/c) can produce
+        /// deterministic mangled names. Payload is the type-
+        /// parameter identifier only (no constraints yet;
+        /// `fn<T: Hashable>` etc. is a future extension).
+        #[allow(dead_code)] // consumed by RES-124b+
+        type_params: Vec<String>,
     },
     LiveBlock {
         body: Box<Node>,
@@ -1606,6 +1616,11 @@ impl Parser {
         let fn_span = self.span_at_current();
         self.next_token(); // Skip 'fn'
 
+        // RES-124 (RES-124a): optional `<T, U, ...>` generic
+        // parameter list between `fn` and the name. Empty when
+        // the fn is monomorphic (classic `fn name(...)`).
+        let type_params = self.parse_optional_type_params();
+
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
             _ => {
@@ -1642,6 +1657,7 @@ impl Parser {
                     return_type: None,
                     span: fn_span,
                     pure,
+                    type_params: type_params.clone(),
                 };
             }
 
@@ -1655,6 +1671,7 @@ impl Parser {
                 return_type: None,
                 span: fn_span,
                 pure,
+                type_params,
             };
         }
 
@@ -1687,6 +1704,7 @@ impl Parser {
                     return_type,
                     span: fn_span,
                     pure,
+                    type_params: type_params.clone(),
                 };
             }
         }
@@ -1702,6 +1720,7 @@ impl Parser {
             return_type,
             span: fn_span,
             pure,
+            type_params,
         }
     }
 
@@ -1849,6 +1868,10 @@ impl Parser {
             // `@pure fn method(...)` is supported inside `impl`
             // blocks, this will take the method-level flag.
             pure: false,
+            // RES-124: impl methods don't support `<T>` today;
+            // always monomorphic. `impl<T>` is a future
+            // extension.
+            type_params: Vec::new(),
         }
     }
 
@@ -1954,6 +1977,59 @@ impl Parser {
         (requires, ensures)
     }
     
+    /// RES-124 (RES-124a): parse an optional `<T, U, ...>`
+    /// type-parameter list. On entry, `current_token` is what
+    /// sits between `fn` and the function name. If it's `<`,
+    /// consume the whole `<T, U>` form and return the comma-
+    /// separated identifiers. Otherwise return an empty vec
+    /// and leave the cursor untouched.
+    ///
+    /// This is parser-level work only — the inferer + monomorph
+    /// pass (RES-124b/c) will build on the AST field this
+    /// populates.
+    fn parse_optional_type_params(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.current_token != Token::Less {
+            return out;
+        }
+        self.next_token(); // consume `<`
+        while self.current_token != Token::Greater {
+            match &self.current_token {
+                Token::Identifier(name) => {
+                    out.push(name.clone());
+                    self.next_token();
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "Expected type parameter name inside `fn<...>`, found {}",
+                        tok
+                    ));
+                    // Stop; don't infinite-loop.
+                    break;
+                }
+            }
+            if self.current_token == Token::Comma {
+                self.next_token();
+            } else if self.current_token != Token::Greater {
+                // Missing comma — emit an error but tolerate,
+                // as long as we either hit `>` or an unexpected
+                // token that breaks the loop.
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected `,` or `>` in type-parameter list, found {}",
+                    tok
+                ));
+                break;
+            }
+        }
+        // Consume the `>`.
+        if self.current_token == Token::Greater {
+            self.next_token();
+        }
+        out
+    }
+
     fn parse_function_parameters(&mut self) -> Vec<(String, String)> {
         let mut parameters = Vec::new();
         
@@ -15157,6 +15233,131 @@ mod tests {
             "UTF-8 inside a string literal must parse, got: {:?}",
             errs
         );
+    }
+
+    // ---------- RES-124 (RES-124a): fn<T> parser ----------
+
+    fn type_params_of(program: &Node, fn_name: &str) -> Vec<String> {
+        let stmts = match program {
+            Node::Program(s) => s,
+            _ => panic!("expected Program"),
+        };
+        for sp in stmts {
+            if let Node::Function { name, type_params, .. } = &sp.node
+                && name == fn_name
+            {
+                return type_params.clone();
+            }
+            // impl-block methods are wrapped; walk inside.
+            if let Node::ImplBlock { methods, .. } = &sp.node {
+                for m in methods {
+                    if let Node::Function { name, type_params, .. } = m
+                        && name == fn_name
+                    {
+                        return type_params.clone();
+                    }
+                }
+            }
+        }
+        panic!("no fn named `{}` in program", fn_name);
+    }
+
+    #[test]
+    fn plain_fn_has_empty_type_params() {
+        let src = "fn foo(int x) { return x; }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert!(type_params_of(&program, "foo").is_empty());
+    }
+
+    #[test]
+    fn single_type_param_parses() {
+        let src = "fn<T> id(T x) { return x; }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert_eq!(type_params_of(&program, "id"), vec!["T".to_string()]);
+    }
+
+    #[test]
+    fn multiple_type_params_preserve_order() {
+        let src = "fn<A, B, C> swap(A a, B b, C c) { return a; }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert_eq!(
+            type_params_of(&program, "swap"),
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
+    }
+
+    #[test]
+    fn type_params_coexist_with_return_type_and_contracts() {
+        // Contract + return type + generics all at once.
+        let src = "\
+            fn<T> identity(T x) -> T\n\
+                requires true\n\
+            { return x; }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert_eq!(
+            type_params_of(&program, "identity"),
+            vec!["T".to_string()]
+        );
+    }
+
+    #[test]
+    fn type_params_coexist_with_pure_annotation() {
+        let src = "@pure\nfn<T> id(T x) { return x; }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match program {
+            Node::Program(s) => s,
+            _ => panic!(),
+        };
+        // The pure flag AND type_params should both land.
+        let f = stmts
+            .iter()
+            .find_map(|s| {
+                if let Node::Function { name, pure, type_params, .. } = &s.node
+                    && name == "id"
+                {
+                    return Some((*pure, type_params.clone()));
+                }
+                None
+            })
+            .expect("fn id not found");
+        assert!(f.0, "expected pure=true");
+        assert_eq!(f.1, vec!["T".to_string()]);
+    }
+
+    #[test]
+    fn type_params_missing_close_angle_errors() {
+        // `fn<T id(T x)` — no closing `>` before the param
+        // list. The parser should emit an error but recover so
+        // the rest of the program still parses.
+        let src = "fn<T id(T x) { return x; }\n";
+        let (_program, errs) = parse(src);
+        assert!(!errs.is_empty(), "expected parse errors");
+    }
+
+    #[test]
+    fn type_params_non_identifier_errors() {
+        let src = "fn<1> bad(int x) { return x; }\n";
+        let (_program, errs) = parse(src);
+        assert!(
+            !errs.is_empty(),
+            "expected parse errors on non-identifier type param"
+        );
+    }
+
+    #[test]
+    fn impl_block_methods_default_to_empty_type_params() {
+        let src = "\
+            struct Point { int x }\n\
+            impl Point { fn get(self) { return self.x; } }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        // The method name is mangled as `Point$get`.
+        assert!(type_params_of(&program, "Point$get").is_empty());
     }
 
     // ---------- RES-187: semantic tokens ----------
