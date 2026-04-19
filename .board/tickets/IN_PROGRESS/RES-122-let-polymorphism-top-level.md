@@ -1,7 +1,7 @@
 ---
 id: RES-122
 title: Let-polymorphism for top-level `fn` declarations
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G7
 created: 2026-04-17
@@ -42,6 +42,11 @@ rabbit hole we don't need yet.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked — see Attempt 1)
+- 2026-04-17 re-claimed by executor — RES-120 is now landed;
+  landing Scheme + generalize + instantiate helpers as
+  scaffolding (ticket's first AC bullet). Integration with
+  call-sites + the `id<T>` end-to-end test require RES-124a
+  (fn<T> parser), which is deferred.
 
 ## Attempt 1 failed
 
