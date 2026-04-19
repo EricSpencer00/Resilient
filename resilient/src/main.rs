@@ -1065,18 +1065,34 @@ enum Node {
         span: span::Span,
     },
     /// RES-023: `while COND { BODY }`. Body re-evaluated until COND is falsy.
+    ///
+    /// RES-132a: optional `invariant EXPR` clauses between the condition
+    /// and the body. These are a proof aid for the SMT verifier (RES-132b
+    /// will thread them into the Hoare-rule encoding) — the interpreter,
+    /// bytecode VM, and JIT ignore the field. `invariants` is empty for
+    /// loops that have no `invariant` annotations, preserving backward
+    /// compatibility with every existing construction site.
     WhileStatement {
         condition: Box<Node>,
         body: Box<Node>,
+        /// RES-132a: zero or more `invariant EXPR` clauses. Verifier-only.
+        #[allow(dead_code)]
+        invariants: Vec<Node>,
         #[allow(dead_code)]
         span: span::Span,
     },
     /// RES-037: `for NAME in EXPR { BODY }`. `EXPR` must evaluate to an
     /// array; `NAME` is bound to each element in order.
+    ///
+    /// RES-132a: same `invariant` extension as `WhileStatement` — the
+    /// field is verifier-only and empty by default.
     ForInStatement {
         name: String,
         iterable: Box<Node>,
         body: Box<Node>,
+        /// RES-132a: zero or more `invariant EXPR` clauses. Verifier-only.
+        #[allow(dead_code)]
+        invariants: Vec<Node>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2103,6 +2119,10 @@ impl Parser {
     /// implementation just reuses parse_let_statement after consuming
     /// the `static` keyword and enforcing that `let` follows.
     /// `for NAME in EXPR { BODY }`
+    ///
+    /// RES-132a: zero or more `invariant EXPR` clauses may appear
+    /// between the iterable and the opening brace. They are a proof
+    /// aid for the SMT verifier and do not affect runtime.
     fn parse_for_in_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'for'
@@ -2122,12 +2142,18 @@ impl Parser {
                 name,
                 iterable: Box::new(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() }),
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                invariants: Vec::new(),
                 span: stmt_span,
             };
         }
         self.next_token(); // skip 'in'
         let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() });
         self.next_token(); // advance past the expression's tail (RES-014 invariant)
+
+        // RES-132a: collect any `invariant EXPR` clauses that sit between
+        // the iterable and `{`. Mirrors the LiveBlock invariant loop
+        // above (RES-036).
+        let invariants = self.parse_loop_invariants();
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -2136,6 +2162,7 @@ impl Parser {
                 name,
                 iterable: Box::new(iterable),
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                invariants,
                 span: stmt_span,
             };
         }
@@ -2144,12 +2171,57 @@ impl Parser {
             name,
             iterable: Box::new(iterable),
             body: Box::new(body),
+            invariants,
             span: stmt_span,
         }
     }
 
+    /// RES-132a: parse zero or more `invariant EXPR` clauses. Used by
+    /// both `while` and `for`-in loops. Each clause is a Resilient
+    /// expression; the verifier (RES-132b) will read them as Hoare
+    /// invariants. Interpreter / VM / JIT ignore the result, so an
+    /// empty `Vec` is the no-op default.
+    fn parse_loop_invariants(&mut self) -> Vec<Node> {
+        let mut invariants = Vec::new();
+        while self.current_token == Token::Invariant {
+            self.next_token(); // skip `invariant`
+            // Accept `invariant (EXPR)` or `invariant EXPR`. The
+            // parenthesized form matches the ticket's acceptance
+            // criteria syntax (`while (c) invariant (p) { ... }`).
+            let expr = if self.current_token == Token::LeftParen {
+                self.next_token(); // skip `(`
+                let inner = self.parse_expression(0).unwrap_or(
+                    Node::BooleanLiteral { value: true, span: span::Span::default() }
+                );
+                self.next_token(); // move past tail of inner expression
+                if self.current_token != Token::RightParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ')' after loop invariant expression, found {}",
+                        tok
+                    ));
+                } else {
+                    self.next_token(); // skip `)`
+                }
+                inner
+            } else {
+                let inner = self.parse_expression(0).unwrap_or(
+                    Node::BooleanLiteral { value: true, span: span::Span::default() }
+                );
+                self.next_token(); // move past tail (RES-014 invariant)
+                inner
+            };
+            invariants.push(expr);
+        }
+        invariants
+    }
+
     /// `while COND { BODY }` — same parsing shape as `if` (both `while (c)`
     /// and `while c` forms), minus the `else` branch.
+    ///
+    /// RES-132a: zero or more `invariant EXPR` clauses may appear
+    /// between the condition and the opening brace. They are a proof
+    /// aid for the SMT verifier and do not affect runtime.
     fn parse_while_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'while'
@@ -2171,12 +2243,17 @@ impl Parser {
             expr
         };
 
+        // RES-132a: collect any `invariant EXPR` clauses that sit between
+        // the condition and `{`. Shared helper with `for`-in.
+        let invariants = self.parse_loop_invariants();
+
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after while condition, found {}", tok));
             return Node::WhileStatement {
                 condition: Box::new(condition),
                 body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                invariants,
                 span: stmt_span,
             };
         }
@@ -2185,6 +2262,7 @@ impl Parser {
         Node::WhileStatement {
             condition: Box::new(condition),
             body: Box::new(body),
+            invariants,
             span: stmt_span,
         }
     }
@@ -3596,6 +3674,9 @@ impl Parser {
             name: binding,
             iterable: Box::new(iterable),
             body: Box::new(inner_block),
+            // RES-132a: map/reduce desugaring doesn't emit invariants;
+            // the original source-level loops carry them.
+            invariants: Vec::new(),
             span: default(),
         };
 
@@ -13284,6 +13365,206 @@ mod tests {
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
         assert!(err.contains("runaway"), "{}", err);
+    }
+
+    // ---------- RES-132a: loop invariant parser (AST-shape asserts) ----------
+    //
+    // These tests exercise only the parser + AST. RES-132b will wire
+    // the field into the SMT verifier; until then, the interpreter /
+    // VM / JIT continue to ignore it, so we check the AST directly
+    // rather than running the program.
+
+    /// Pull the first `WhileStatement` found anywhere in a parsed
+    /// program, walking through `Program` + `Block` wrappers. Returns
+    /// `None` if none was found.
+    fn find_while(node: &Node) -> Option<&Node> {
+        match node {
+            Node::WhileStatement { .. } => Some(node),
+            Node::Program(stmts) => stmts.iter().find_map(|s| find_while(&s.node)),
+            Node::Block { stmts, .. } => stmts.iter().find_map(find_while),
+            _ => None,
+        }
+    }
+
+    /// Mirror of `find_while` for `for`-in loops.
+    fn find_for_in(node: &Node) -> Option<&Node> {
+        match node {
+            Node::ForInStatement { .. } => Some(node),
+            Node::Program(stmts) => stmts.iter().find_map(|s| find_for_in(&s.node)),
+            Node::Block { stmts, .. } => stmts.iter().find_map(find_for_in),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn res132a_plain_while_has_empty_invariants() {
+        // No `invariant` clause → the field is an empty Vec (back-compat).
+        let (p, errors) = parse("let i = 0; while i < 3 { i = i + 1; }");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let w = find_while(&p).expect("expected a WhileStatement");
+        match w {
+            Node::WhileStatement { invariants, .. } => {
+                assert!(invariants.is_empty(), "expected no invariants, got {:?}", invariants);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_plain_for_in_has_empty_invariants() {
+        let (p, errors) = parse("let s = 0; for x in [1,2,3] { s = s + x; }");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let f = find_for_in(&p).expect("expected a ForInStatement");
+        match f {
+            Node::ForInStatement { invariants, .. } => {
+                assert!(invariants.is_empty(), "expected no invariants, got {:?}", invariants);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_while_parses_single_parenthesized_invariant() {
+        // Matches the shape named in the ticket's acceptance criteria:
+        //     while (c) invariant (p) { ... }
+        let src = r#"
+            let i = 0;
+            while (i < 10) invariant (i >= 0) {
+                i = i + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let w = find_while(&p).expect("expected a WhileStatement");
+        match w {
+            Node::WhileStatement { invariants, .. } => {
+                assert_eq!(invariants.len(), 1, "expected 1 invariant");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_while_parses_single_unparenthesized_invariant() {
+        // `invariant EXPR` without parens is also accepted, for
+        // consistency with `requires` / `ensures` / LiveBlock.
+        let src = r#"
+            let i = 0;
+            while i < 10 invariant i >= 0 {
+                i = i + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let w = find_while(&p).expect("expected a WhileStatement");
+        match w {
+            Node::WhileStatement { invariants, .. } => {
+                assert_eq!(invariants.len(), 1);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_for_in_parses_single_invariant() {
+        // Mirrors the acceptance criteria:
+        //     for x in xs invariant (p) { ... }
+        let src = r#"
+            let s = 0;
+            for x in [1,2,3] invariant (s >= 0) {
+                s = s + x;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let f = find_for_in(&p).expect("expected a ForInStatement");
+        match f {
+            Node::ForInStatement { invariants, .. } => {
+                assert_eq!(invariants.len(), 1);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_while_parses_multiple_invariants() {
+        // Multiple `invariant` clauses stack up, mirroring how
+        // `live invariant` handles multiples today.
+        let src = r#"
+            let i = 0;
+            let s = 0;
+            while (i < 10) invariant (i >= 0) invariant (s >= 0) {
+                s = s + i;
+                i = i + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let w = find_while(&p).expect("expected a WhileStatement");
+        match w {
+            Node::WhileStatement { invariants, .. } => {
+                assert_eq!(invariants.len(), 2, "expected 2 invariants");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_for_in_parses_multiple_invariants() {
+        let src = r#"
+            let s = 0;
+            let t = 0;
+            for x in [1,2,3] invariant (s >= 0) invariant (t >= 0) {
+                s = s + x;
+                t = t + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let f = find_for_in(&p).expect("expected a ForInStatement");
+        match f {
+            Node::ForInStatement { invariants, .. } => {
+                assert_eq!(invariants.len(), 2);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn res132a_invariants_do_not_affect_runtime() {
+        // Interpreter must execute a loop with `invariant` clauses
+        // identically to one without — they're verifier-only annotations.
+        let src = r#"
+            let i = 0;
+            let sum = 0;
+            while i < 10 invariant (i >= 0) invariant (sum >= 0) {
+                sum = sum + i;
+                i = i + 1;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("sum").unwrap() {
+            Value::Int(n) => assert_eq!(n, 45),
+            other => panic!("expected Int(45), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res132a_for_in_invariants_do_not_affect_runtime() {
+        let src = r#"
+            let s = 0;
+            for x in [1, 2, 3, 4, 5] invariant (s >= 0) {
+                s = s + x;
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("s").unwrap(), Value::Int(15)));
     }
 
     #[test]
