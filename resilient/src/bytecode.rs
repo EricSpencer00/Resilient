@@ -232,6 +232,18 @@ pub enum CompileError {
     },
     /// RES-083: a jump target is more than `i16::MAX` bytes away.
     JumpOutOfRange,
+    /// RES-170a: two `struct` declarations share the same name.
+    /// The registry keys entries by name, so collisions would
+    /// silently overwrite — we reject them at build time.
+    DuplicateStructName(String),
+    /// RES-170a: program contains more than `u16::MAX + 1` struct
+    /// declarations. `type_id` is a `u16` — this is a hard cap.
+    TooManyStructDecls,
+    /// RES-170a: a single struct has more than `u8::MAX + 1`
+    /// fields. RES-170c's `LoadField { idx: u8 }` caps field
+    /// count per struct at 256, so we refuse to register a decl
+    /// that exceeds that.
+    TooManyFields(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -255,6 +267,15 @@ impl std::fmt::Display for CompileError {
             ),
             CompileError::JumpOutOfRange => {
                 write!(f, "bytecode compile: jump target further than i16::MAX")
+            }
+            CompileError::DuplicateStructName(n) => {
+                write!(f, "bytecode compile: duplicate struct decl: {}", n)
+            }
+            CompileError::TooManyStructDecls => {
+                write!(f, "bytecode compile: > 65535 struct decls")
+            }
+            CompileError::TooManyFields(n) => {
+                write!(f, "bytecode compile: struct {} has > 255 fields", n)
             }
         }
     }

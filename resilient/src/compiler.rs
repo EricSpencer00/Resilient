@@ -580,6 +580,159 @@ fn node_kind(n: &Node) -> &'static str {
     }
 }
 
+// ============================================================
+// RES-170a: struct registry
+// ============================================================
+//
+// The VM's eventual struct-ops lowering (RES-170c) needs to
+// answer two questions at compile time without the runtime ever
+// touching string names:
+//
+//   - "What `type_id` should `Op::MakeStruct` carry for this
+//     struct literal?"
+//   - "What `u8` field index corresponds to `p.x`?"
+//
+// This module builds the registry that answers both. Each
+// `Node::StructDecl` in the program gets a unique `type_id`
+// (assigned in source order so the indices are stable across
+// compile invocations), and each field gets a `u8` slot index
+// matching its declaration order. RES-170b will walk the AST
+// threading local → struct-name info; RES-170c will consume the
+// registry to emit MakeStruct / LoadField / StoreField.
+//
+// ## Why not reuse the JIT's RES-165a StructLayout?
+//
+// Different data. RES-165a computes byte offsets + cranelift
+// `Type`s for the JIT's stack-allocated repr(C) layout. The VM
+// uses a heap-allocated `Vec<Value>` indexed by field position —
+// no byte offsets, no per-field types (each slot is a `Value`).
+// The field-name-to-index map is the only shared piece, and
+// each backend derives its own copy from the same
+// `Node::StructDecl`. When cross-module type-id uniqueness
+// lands (RES-170d), we may pull the registry into a common
+// module and surface it to both backends; for today a
+// compiler-local definition is simpler.
+
+/// RES-170a: per-struct entry in the registry. `name` duplicates
+/// the map key so callers can use an `&StructRegistryEntry` on
+/// its own without lugging around the key. `fields` is sorted by
+/// declaration position, so `fields[i]` is the name at slot `i`
+/// and `field_index(name) -> Some(i as u8)` does the inverse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructRegistryEntry {
+    /// Declared struct name (e.g. `"Point"`).
+    pub name: String,
+    /// Compile-time identifier for the struct. Unique within a
+    /// `StructRegistry` build; assignment order matches the
+    /// source order the decl appeared in the `Program`.
+    pub type_id: u16,
+    /// Field names in declaration order. Slot index inside a
+    /// `Value::Struct { fields, .. }` matches this vector's
+    /// indexing, so `LoadField { idx }` reads `fields[idx]`.
+    pub fields: Vec<String>,
+}
+
+impl StructRegistryEntry {
+    /// Return the `u8` slot index for `field_name`, or `None` if
+    /// the struct has no such field. Linear scan — struct field
+    /// counts are small and this is a compile-time lookup, not a
+    /// per-instruction hot path.
+    pub fn field_index(&self, field_name: &str) -> Option<u8> {
+        self.fields
+            .iter()
+            .position(|f| f == field_name)
+            .map(|i| i as u8)
+    }
+}
+
+/// RES-170a: compile-time registry of every `Node::StructDecl`
+/// in a `Program`. Built by `StructRegistry::from_program`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StructRegistry {
+    /// Keyed by declared name; each entry carries its `type_id`
+    /// and field vector.
+    entries: HashMap<String, StructRegistryEntry>,
+}
+
+impl StructRegistry {
+    /// Walk every top-level `Node::StructDecl` in `program` and
+    /// build a registry. Errors:
+    ///
+    ///   - `DuplicateStructName(name)` — two decls share `name`.
+    ///   - `TooManyStructDecls`        — more than u16::MAX + 1 decls.
+    ///   - `TooManyFields(name)`       — one decl has more than
+    ///     u8::MAX + 1 fields (RES-170c's `LoadField { idx: u8 }`
+    ///     is the hard cap).
+    ///
+    /// Nested declarations (inside `ImplBlock`s or other
+    /// containers) are ignored for today; the parser only places
+    /// `StructDecl`s at `Program` scope.
+    pub fn from_program(program: &Node) -> Result<Self, CompileError> {
+        let stmts = match program {
+            Node::Program(s) => s,
+            _ => {
+                return Err(CompileError::Unsupported(
+                    "struct registry requires a Program root",
+                ))
+            }
+        };
+        let mut entries: HashMap<String, StructRegistryEntry> = HashMap::new();
+        let mut next_type_id: u32 = 0;
+        for spanned in stmts {
+            let Node::StructDecl { name, fields, .. } = &spanned.node else {
+                continue;
+            };
+            if entries.contains_key(name) {
+                return Err(CompileError::DuplicateStructName(name.clone()));
+            }
+            if fields.len() > u8::MAX as usize + 1 {
+                return Err(CompileError::TooManyFields(name.clone()));
+            }
+            if next_type_id > u16::MAX as u32 {
+                return Err(CompileError::TooManyStructDecls);
+            }
+            let field_names: Vec<String> =
+                fields.iter().map(|(_ty, fname)| fname.clone()).collect();
+            entries.insert(
+                name.clone(),
+                StructRegistryEntry {
+                    name: name.clone(),
+                    type_id: next_type_id as u16,
+                    fields: field_names,
+                },
+            );
+            next_type_id += 1;
+        }
+        Ok(Self { entries })
+    }
+
+    /// Number of registered struct decls.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// `true` if no struct decls were registered.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Look up a struct by name. Returns `None` if the program
+    /// has no matching decl.
+    pub fn get(&self, name: &str) -> Option<&StructRegistryEntry> {
+        self.entries.get(name)
+    }
+
+    /// Convenience: resolve `(struct_name, field_name)` to the
+    /// `(type_id, field_index)` pair RES-170c will encode into
+    /// `MakeStruct` / `LoadField` operands. Returns `None` when
+    /// the struct or the field doesn't exist.
+    pub fn resolve(&self, struct_name: &str, field_name: &str) -> Option<(u16, u8)> {
+        let entry = self.entries.get(struct_name)?;
+        let idx = entry.field_index(field_name)?;
+        Some((entry.type_id, idx))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,5 +843,145 @@ mod tests {
         let p = parse_one(&src);
         let err = compile(&p).unwrap_err();
         assert!(matches!(err, CompileError::Unsupported(_)), "{:?}", err);
+    }
+
+    // ---------- RES-170a: struct registry ----------
+
+    #[test]
+    fn res170a_empty_program_has_empty_registry() {
+        let p = parse_one("return 1;");
+        let reg = StructRegistry::from_program(&p).unwrap();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn res170a_single_struct_registers_with_type_id_zero() {
+        let p = parse_one(r#"
+            struct Point {
+                int x,
+                int y,
+            }
+        "#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        let pt = reg.get("Point").expect("Point should be registered");
+        assert_eq!(pt.name, "Point");
+        assert_eq!(pt.type_id, 0);
+        assert_eq!(pt.fields, vec!["x".to_string(), "y".to_string()]);
+    }
+
+    #[test]
+    fn res170a_field_names_preserve_declaration_order() {
+        let p = parse_one(r#"
+            struct Rec {
+                int c,
+                int a,
+                int b,
+            }
+        "#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        let r = reg.get("Rec").unwrap();
+        // Source order is c, a, b — NOT alphabetical.
+        assert_eq!(r.fields, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+        assert_eq!(r.field_index("c"), Some(0));
+        assert_eq!(r.field_index("a"), Some(1));
+        assert_eq!(r.field_index("b"), Some(2));
+    }
+
+    #[test]
+    fn res170a_field_index_missing_returns_none() {
+        let p = parse_one(r#"struct S { int x, }"#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        let s = reg.get("S").unwrap();
+        assert_eq!(s.field_index("x"), Some(0));
+        assert!(s.field_index("nope").is_none());
+    }
+
+    #[test]
+    fn res170a_multiple_structs_get_sequential_type_ids() {
+        let p = parse_one(r#"
+            struct A { int x, }
+            struct B { int y, }
+            struct C { int z, }
+        "#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        assert_eq!(reg.get("A").unwrap().type_id, 0);
+        assert_eq!(reg.get("B").unwrap().type_id, 1);
+        assert_eq!(reg.get("C").unwrap().type_id, 2);
+        assert_eq!(reg.len(), 3);
+    }
+
+    #[test]
+    fn res170a_duplicate_struct_name_errors() {
+        let p = parse_one(r#"
+            struct Dup { int x, }
+            struct Dup { int y, }
+        "#);
+        let err = StructRegistry::from_program(&p).unwrap_err();
+        match err {
+            CompileError::DuplicateStructName(n) => assert_eq!(n, "Dup"),
+            other => panic!("expected DuplicateStructName, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res170a_unknown_struct_lookup_is_none() {
+        let p = parse_one(r#"struct P { int x, }"#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        assert!(reg.get("Q").is_none());
+    }
+
+    #[test]
+    fn res170a_resolve_roundtrips_type_id_and_field_index() {
+        let p = parse_one(r#"
+            struct First  { int a, }
+            struct Second { int x, bool y, int z, }
+        "#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        assert_eq!(reg.resolve("First", "a"), Some((0, 0)));
+        assert_eq!(reg.resolve("Second", "x"), Some((1, 0)));
+        assert_eq!(reg.resolve("Second", "y"), Some((1, 1)));
+        assert_eq!(reg.resolve("Second", "z"), Some((1, 2)));
+        // Unknown struct / unknown field → None.
+        assert!(reg.resolve("Nope", "a").is_none());
+        assert!(reg.resolve("Second", "nope").is_none());
+    }
+
+    #[test]
+    fn res170a_registry_coexists_with_let_and_fn_decls() {
+        // Realistic program: mixed struct / fn / let statements at
+        // top level. The registry must pick up only the structs.
+        let p = parse_one(r#"
+            let start = 0;
+            struct P { int x, int y, }
+            fn add(int a, int b) -> int { return a + b; }
+            struct Q { bool flag, }
+        "#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        assert_eq!(reg.len(), 2);
+        assert_eq!(reg.get("P").unwrap().type_id, 0);
+        assert_eq!(reg.get("Q").unwrap().type_id, 1);
+    }
+
+    #[test]
+    fn res170a_empty_struct_gets_empty_field_vec() {
+        let p = parse_one(r#"struct Empty { }"#);
+        let reg = StructRegistry::from_program(&p).unwrap();
+        let e = reg.get("Empty").unwrap();
+        assert!(e.fields.is_empty());
+        assert!(e.field_index("anything").is_none());
+    }
+
+    #[test]
+    fn res170a_non_program_root_errors() {
+        // The registry requires a Program root — fed a bare node,
+        // it should reject rather than silently produce an empty
+        // registry.
+        let just_int = Node::IntegerLiteral {
+            value: 42,
+            span: crate::span::Span::default(),
+        };
+        let err = StructRegistry::from_program(&just_int).unwrap_err();
+        assert!(matches!(err, CompileError::Unsupported(_)), "got {:?}", err);
     }
 }
