@@ -1,7 +1,7 @@
 ---
 id: RES-124
 title: Generic function declarations `fn<T>`, monomorphized at use sites
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G7
 created: 2026-04-17
@@ -38,6 +38,10 @@ one concrete version per (fn, type-tuple) pair seen at call sites.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked + oversized)
+- 2026-04-17 re-claimed by executor — landing the Attempt-1
+  clarification's RES-124a scope (parser + AST field).
+  Inferer integration, monomorphization, codegen dispatch
+  remain as RES-124b/c/d follow-ups.
 
 ## Attempt 1 failed
 
