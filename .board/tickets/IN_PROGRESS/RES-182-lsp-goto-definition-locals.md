@@ -1,7 +1,7 @@
 ---
 id: RES-182
 title: LSP: go-to-definition for local bindings and top-level fns
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G17
 created: 2026-04-17
@@ -38,6 +38,8 @@ declarations. Struct fields and cross-module refs are follow-ups.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized; wants the
   same LSP infra RES-181 bailed on, plus a scope-aware resolver)
+- 2026-04-17 claimed by executor — landing RES-182a scope (top-level decls only,
+  no locals/params/imports) now that RES-181a unblocked the shared LSP plumbing
 
 ## Attempt 1 failed
 
