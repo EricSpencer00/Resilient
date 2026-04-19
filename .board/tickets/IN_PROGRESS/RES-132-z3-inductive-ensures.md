@@ -1,7 +1,7 @@
 ---
 id: RES-132
 title: Z3 discharges simple inductive `ensures` via loop invariants
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G9
 created: 2026-04-17
@@ -37,6 +37,7 @@ obligations.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (oversized)
+- 2026-04-17 claimed by executor — landing RES-132a scope (parser + AST field only)
 
 ## Attempt 1 failed
 
