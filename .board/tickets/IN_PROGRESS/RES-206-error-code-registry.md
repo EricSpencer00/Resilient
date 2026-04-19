@@ -1,7 +1,7 @@
 ---
 id: RES-206
 title: Error-code registry (E0001..E00NN) + docs page per code
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: docs
 created: 2026-04-17
@@ -38,6 +38,9 @@ cause, a minimal reproducing example, and the standard fix.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked on RES-119)
+- 2026-04-17 claimed by executor — landing RES-206a scope (registry module +
+  initial ~10 codes + sample docs pages + nav entry) now that RES-119 delivered
+  `DiagCode` + `Diagnostic`
 
 ## Attempt 1 failed
 
