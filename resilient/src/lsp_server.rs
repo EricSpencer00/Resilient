@@ -1618,20 +1618,20 @@ mod tests {
     #[test]
     fn walk_resilient_files_finds_rs_files_recursively() {
         let root = tmp_workspace("walk");
-        write_file(&root, "a.rs", "fn a() { return 0; }\n");
+        write_file(&root, "a.res", "fn a() { return 0; }\n");
         std::fs::create_dir_all(root.join("sub")).unwrap();
-        write_file(&root.join("sub"), "b.rs", "fn b() { return 0; }\n");
+        write_file(&root.join("sub"), "b.res", "fn b() { return 0; }\n");
         // Hidden + build dirs should be skipped.
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
         write_file(
             &root.join("target").join("debug"),
-            "c.rs",
+            "c.res",
             "fn c() { return 0; }\n",
         );
         std::fs::create_dir_all(root.join(".cache")).unwrap();
         write_file(
             &root.join(".cache"),
-            "d.rs",
+            "d.res",
             "fn d() { return 0; }\n",
         );
         let found = walk_resilient_files(&root);
@@ -1639,10 +1639,10 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert!(names.contains(&"a.rs".to_string()));
-        assert!(names.contains(&"b.rs".to_string()));
-        assert!(!names.contains(&"c.rs".to_string()), "target/ must be skipped");
-        assert!(!names.contains(&"d.rs".to_string()), "dot-dirs must be skipped");
+        assert!(names.contains(&"a.res".to_string()));
+        assert!(names.contains(&"b.res".to_string()));
+        assert!(!names.contains(&"c.res".to_string()), "target/ must be skipped");
+        assert!(!names.contains(&"d.res".to_string()), "dot-dirs must be skipped");
         // Clean up.
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1961,8 +1961,8 @@ mod tests {
         // Ticket AC: pre-seed two files, invoke the query (via the
         // helper path), assert both files' symbols are returned.
         let root = tmp_workspace("multifile");
-        write_file(&root, "mod_a.rs", "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n");
-        write_file(&root, "mod_b.rs", "fn b_fn() { return 0; }\n");
+        write_file(&root, "mod_a.res", "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n");
+        write_file(&root, "mod_b.res", "fn b_fn() { return 0; }\n");
 
         // Walk + index the whole scratch dir, reproducing what
         // `rebuild_workspace_index` does when the Backend is
@@ -1989,7 +1989,7 @@ mod tests {
         for sym in &r {
             let path_str = sym.location.uri.as_str();
             assert!(
-                path_str.ends_with("/mod_a.rs") || path_str.ends_with("/mod_b.rs"),
+                path_str.ends_with("/mod_a.res") || path_str.ends_with("/mod_b.res"),
                 "unexpected URI: {}",
                 path_str
             );

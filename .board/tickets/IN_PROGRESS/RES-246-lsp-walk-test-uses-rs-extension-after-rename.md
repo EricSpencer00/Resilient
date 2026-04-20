@@ -1,11 +1,12 @@
 ---
 id: RES-246
 title: "LSP: two walk_resilient_files tests fail after .rs→.res rename"
-state: OPEN
+state: IN_PROGRESS
 priority: P2
 goalpost: G17
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
