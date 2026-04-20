@@ -10,7 +10,7 @@
 // Phase 1 skeleton: public types/functions here are wired up in later
 // tasks (tree-walker dispatch, trampoline layer). Suppress dead-code and
 // unused-import lints so the build stays warning-clean as a stub.
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code)]
 
 use crate::ExternDecl;
 
@@ -47,8 +47,7 @@ impl ForeignSignature {
         let mut params = Vec::with_capacity(decl.parameters.len());
         for (ty, _) in &decl.parameters {
             params.push(
-                FfiType::from_resilient(ty)
-                    .ok_or_else(|| FfiError::UnsupportedType(ty.clone()))?,
+                FfiType::from_resilient(ty).ok_or_else(|| FfiError::UnsupportedType(ty.clone()))?,
             );
         }
         let ret = FfiType::from_resilient(&decl.return_type)
@@ -65,22 +64,36 @@ impl ForeignSignature {
 
 #[derive(Debug)]
 pub enum FfiError {
-    LibNotFound { library: String, underlying: String },
-    SymbolNotFound { library: String, symbol: String },
+    LibNotFound {
+        library: String,
+        underlying: String,
+    },
+    SymbolNotFound {
+        library: String,
+        symbol: String,
+    },
     UnsupportedType(String),
-    ArityTooLarge { name: String, got: usize },
+    ArityTooLarge {
+        name: String,
+        got: usize,
+    },
     /// `--no-default-features` build asked to load a dynamic library.
     FfiDisabled,
     /// `@static` descriptor used on an `std` host without a registered
     /// backend. (v1 treats this as an error; a future ticket may let
     /// the std build register static fns too.)
-    StaticOnlyUnavailable { library: String },
+    StaticOnlyUnavailable {
+        library: String,
+    },
 }
 
 impl std::fmt::Display for FfiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FfiError::LibNotFound { library, underlying } => {
+            FfiError::LibNotFound {
+                library,
+                underlying,
+            } => {
                 write!(f, "FFI: cannot open library `{}`: {}", library, underlying)
             }
             FfiError::SymbolNotFound { library, symbol } => {
@@ -90,7 +103,11 @@ impl std::fmt::Display for FfiError {
                 write!(f, "FFI: type `{}` is not supported in v1", ty)
             }
             FfiError::ArityTooLarge { name, got } => {
-                write!(f, "FFI: extern fn `{}` has {} params; v1 supports up to 8", name, got)
+                write!(
+                    f,
+                    "FFI: extern fn `{}` has {} params; v1 supports up to 8",
+                    name, got
+                )
             }
             FfiError::FfiDisabled => {
                 write!(f, "FFI: this build was compiled without --features ffi")
@@ -124,9 +141,11 @@ unsafe impl Send for ForeignSymbol {}
 unsafe impl Sync for ForeignSymbol {}
 
 #[cfg(feature = "ffi")]
+#[allow(unused_imports)]
 pub use dynamic::ForeignLoader;
 
 #[cfg(not(feature = "ffi"))]
+#[allow(unused_imports)]
 pub use disabled::ForeignLoader;
 
 #[cfg(feature = "ffi")]
@@ -141,7 +160,10 @@ mod dynamic {
 
     impl ForeignLoader {
         pub fn new() -> Self {
-            Self { libs: HashMap::new(), syms: HashMap::new() }
+            Self {
+                libs: HashMap::new(),
+                syms: HashMap::new(),
+            }
         }
 
         pub fn resolve_block(
@@ -175,12 +197,10 @@ mod dynamic {
                 // the raw pointer out so the Symbol borrow is released before
                 // we return. The `lib` itself stays alive in `self.libs` so the
                 // pointed-to code is never unmapped while the ForeignLoader lives.
-                let raw: libloading::Symbol<*const ()> =
-                    unsafe { lib.get(d.c_name.as_bytes()) }.map_err(|_| {
-                        FfiError::SymbolNotFound {
-                            library: library.to_string(),
-                            symbol: d.c_name.clone(),
-                        }
+                let raw: libloading::Symbol<*const ()> = unsafe { lib.get(d.c_name.as_bytes()) }
+                    .map_err(|_| FfiError::SymbolNotFound {
+                        library: library.to_string(),
+                        symbol: d.c_name.clone(),
                     })?;
                 let sym = ForeignSymbol {
                     name: d.resilient_name.clone(),
@@ -199,7 +219,9 @@ mod dynamic {
     }
 
     impl Default for ForeignLoader {
-        fn default() -> Self { Self::new() }
+        fn default() -> Self {
+            Self::new()
+        }
     }
 }
 
@@ -210,7 +232,9 @@ mod disabled {
     pub struct ForeignLoader;
 
     impl ForeignLoader {
-        pub fn new() -> Self { Self }
+        pub fn new() -> Self {
+            Self
+        }
 
         pub fn resolve_block(
             &mut self,
@@ -226,7 +250,9 @@ mod disabled {
     }
 
     impl Default for ForeignLoader {
-        fn default() -> Self { Self::new() }
+        fn default() -> Self {
+            Self::new()
+        }
     }
 }
 
@@ -234,7 +260,7 @@ mod disabled {
 #[cfg(feature = "ffi")]
 mod tests {
     use super::*;
-    use crate::{span::Span, ExternDecl};
+    use crate::{ExternDecl, span::Span};
 
     fn decl(name: &str, c: &str, params: Vec<(&str, &str)>, ret: &str) -> ExternDecl {
         ExternDecl {
@@ -270,5 +296,68 @@ mod tests {
             "got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn signature_rejects_more_than_eight_params() {
+        let params: Vec<(&str, &str)> = (0..9)
+            .map(|i| {
+                (
+                    "Int",
+                    match i {
+                        0 => "a",
+                        1 => "b",
+                        2 => "c",
+                        3 => "d",
+                        4 => "e",
+                        5 => "f",
+                        6 => "g",
+                        7 => "h",
+                        _ => "i",
+                    },
+                )
+            })
+            .collect();
+        let d = decl("big", "big", params, "Int");
+        let err = ForeignSignature::from_decl(&d).expect_err("must reject 9 params");
+        assert!(
+            matches!(err, FfiError::ArityTooLarge { ref name, got: 9 } if name == "big"),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_block_rejects_static_library_descriptor() {
+        let mut loader = ForeignLoader::new();
+        let err = loader
+            .resolve_block("@static", &[])
+            .expect_err("@static should error on std host");
+        assert!(
+            matches!(err, FfiError::StaticOnlyUnavailable { ref library } if library == "@static"),
+            "got {:?}",
+            err
+        );
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(feature = "ffi"))]
+mod disabled_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_loader_reports_ffi_disabled() {
+        let mut loader = ForeignLoader::new();
+        let err = loader
+            .resolve_block("libanything", &[])
+            .expect_err("disabled loader must error");
+        assert!(matches!(err, FfiError::FfiDisabled), "got {:?}", err);
+    }
+
+    #[test]
+    fn disabled_loader_lookup_returns_none() {
+        let loader = ForeignLoader::new();
+        assert!(loader.lookup("anything").is_none());
     }
 }
