@@ -64,6 +64,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0003", // self-comparison `x == x`
     "L0004", // mixing `&&` and `||` without parens
     "L0005", // redundant trailing bare `return;`
+    "L0006", // assume(false) vacuously discharges all verification obligations
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -76,6 +77,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0003_self_comparison(program, &mut out);
     run_l0004_mixed_and_or(program, &mut out);
     run_l0005_redundant_return(program, &mut out);
+    run_l0006_assume_false(program, &mut out);
 
     // Filter via allow-comments.
     let allows = collect_allow_comments(source);
@@ -579,7 +581,8 @@ fn span_of(node: &Node) -> Option<Span> {
         | Node::ExpressionStatement { span, .. }
         | Node::Function { span, .. }
         | Node::LiveBlock { span, .. }
-        | Node::Assert { span, .. } => Some(*span),
+        | Node::Assert { span, .. }
+        | Node::Assume { span, .. } => Some(*span),
         _ => None,
     }
 }
@@ -614,6 +617,44 @@ fn run_l0005_redundant_return(program: &Node, out: &mut Vec<Lint>) {
             });
         }
     }
+}
+
+// ============================================================
+// L0006: assume(false) — vacuously true hypothesis
+// ============================================================
+//
+// `assume(false)` causes the SMT verifier to treat `false` as a
+// precondition, making every subsequent obligation trivially satisfied
+// (ex-falso). At runtime the call halts unconditionally. This is
+// almost always a mistake; flag it as a warning.
+//
+// Only `assume(false)` with a literal `false` argument is flagged.
+// `assume(true)` and `assume(x > 0)` are silent.
+
+fn run_l0006_assume_false(program: &Node, out: &mut Vec<Lint>) {
+    walk_assume_false(program, out);
+}
+
+fn walk_assume_false(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Assume {
+        condition, span, ..
+    } = node
+        && matches!(
+            condition.as_ref(),
+            Node::BooleanLiteral { value: false, .. }
+        )
+    {
+        out.push(Lint {
+            code: "L0006".into(),
+            severity: Severity::Warning,
+            message: "assume(false): all subsequent verification obligations in this block \
+                are vacuously discharged; code after this point is unreachable at runtime"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_assume_false(child, out));
 }
 
 // ============================================================
@@ -738,6 +779,14 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             }
         }
         Node::Assert { condition, .. } => f(condition),
+        Node::Assume {
+            condition, message, ..
+        } => {
+            f(condition);
+            if let Some(msg) = message {
+                f(msg);
+            }
+        }
         _ => {}
     }
 }
@@ -1007,5 +1056,39 @@ mod tests {
     #[test]
     fn empty_program_produces_no_lints() {
         assert!(lint("").is_empty());
+    }
+
+    // ---------- L0006: assume(false) vacuous discharge ----------
+
+    #[test]
+    fn l0006_fires_on_assume_false() {
+        let src = "fn f() {\n    assume(false);\n}\n";
+        assert!(codes(src).contains(&"L0006".to_string()));
+    }
+
+    #[test]
+    fn l0006_silent_on_assume_true() {
+        let src = "fn f() {\n    assume(true);\n}\n";
+        assert!(!codes(src).contains(&"L0006".to_string()));
+    }
+
+    #[test]
+    fn l0006_silent_on_assume_expr() {
+        let src = "fn f(int x) {\n    assume(x > 0);\n}\n";
+        assert!(!codes(src).contains(&"L0006".to_string()));
+    }
+
+    #[test]
+    fn l0006_suppressed_by_allow_comment() {
+        let src = "fn f() {\n    // resilient: allow L0006\n    assume(false);\n}\n";
+        assert!(!codes(src).contains(&"L0006".to_string()));
+    }
+
+    #[test]
+    fn known_codes_contains_l0006() {
+        assert!(
+            KNOWN_CODES.contains(&"L0006"),
+            "L0006 missing from KNOWN_CODES"
+        );
     }
 }
