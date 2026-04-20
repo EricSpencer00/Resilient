@@ -1,12 +1,16 @@
 // Enhanced REPL for Resilient language
-use crate::{Lexer, Parser, Value};
 use crate::typechecker;
+use crate::{Lexer, Parser, Value};
+use rustyline::config::Config;
 use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, Result as RustylineResult};
+use rustyline::{Editor, Result as RustylineResult};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+/// RES-224: Maximum number of history entries persisted across REPL sessions.
+const HISTORY_MAX_ENTRIES: usize = 1000;
 
 // ANSI color codes for syntax highlighting
 const RESET: &str = "\x1B[0m";
@@ -28,7 +32,7 @@ pub struct EnhancedREPL {
 }
 
 impl EnhancedREPL {
-    /// Legacy constructor — preserved for callers that don't care about
+    /// Legacy constructor --- preserved for callers that don't care about
     /// `--examples-dir`. The driver now uses `with_examples_dir`.
     #[allow(dead_code)]
     pub fn new() -> Self {
@@ -39,10 +43,15 @@ impl EnhancedREPL {
     /// Pass `Some(dir)` to wire `--examples-dir <DIR>` from the driver;
     /// pass `None` to keep the original hardcoded-snippet behavior.
     pub fn with_examples_dir(examples_dir: Option<PathBuf>) -> Self {
-        // Load history path from environment
-        let history_path = match env::var("HOME") {
-            Ok(home) => Path::new(&home).join(".resilient_history"),
-            Err(_) => Path::new(".resilient_history").to_path_buf(),
+        // RES-224: Resolve history file path.
+        // Priority: $RESILIENT_HISTORY > $HOME/.resilient_history > .resilient_history (cwd)
+        let history_path = if let Ok(custom) = env::var("RESILIENT_HISTORY") {
+            PathBuf::from(custom)
+        } else {
+            match env::var("HOME") {
+                Ok(home) => Path::new(&home).join(".resilient_history"),
+                Err(_) => Path::new(".resilient_history").to_path_buf(),
+            }
         };
 
         EnhancedREPL {
@@ -54,19 +63,30 @@ impl EnhancedREPL {
     }
 
     pub fn run(&mut self) -> RustylineResult<()> {
-        let mut rl = DefaultEditor::new()?;
+        // RES-224: configure the editor with the desired history limit.
+        let config = Config::builder()
+            .max_history_size(HISTORY_MAX_ENTRIES)?
+            .build();
+        let mut rl = Editor::<(), rustyline::history::DefaultHistory>::with_history(
+            config,
+            rustyline::history::DefaultHistory::new(),
+        )?;
 
-        // Load command history
+        // RES-224: Load persisted history; silently skip if file is absent.
         if self.history_path.exists()
             && let Err(err) = rl.load_history(&self.history_path)
         {
-            eprintln!("Error loading history: {}", err);
+            eprintln!("Warning: could not load history: {}", err);
         }
 
-        println!("{}Resilient Programming Language REPL (v0.1.0){}",
-                 CYAN, RESET);
-        println!("Type '{}help{}' for command list, '{}exit{}' to quit",
-                 GREEN, RESET, RED, RESET);
+        println!(
+            "{}Resilient Programming Language REPL (v0.1.0){}",
+            CYAN, RESET
+        );
+        println!(
+            "Type '{}help{}' for command list, '{}exit{}' to quit",
+            GREEN, RESET, RED, RESET
+        );
 
         loop {
             // Create prompt with type checking indicator
@@ -93,15 +113,15 @@ impl EnhancedREPL {
 
                     // Process the input
                     self.process_input(input);
-                },
+                }
                 Err(ReadlineError::Interrupted) => {
                     println!("CTRL-C");
                     break;
-                },
+                }
                 Err(ReadlineError::Eof) => {
                     println!("CTRL-D");
                     break;
-                },
+                }
                 Err(err) => {
                     eprintln!("Error: {}", err);
                     break;
@@ -109,9 +129,13 @@ impl EnhancedREPL {
             }
         }
 
-        // Save history
+        // RES-224: Persist history; emit a warning on failure but do not crash.
         if let Err(err) = rl.save_history(&self.history_path) {
-            eprintln!("Error saving history: {}", err);
+            eprintln!(
+                "Warning: could not save history to {}: {}",
+                self.history_path.display(),
+                err
+            );
         }
 
         Ok(())
@@ -123,35 +147,37 @@ impl EnhancedREPL {
             "exit" | "quit" => {
                 println!("Exiting Resilient REPL");
                 std::process::exit(0);
-            },
+            }
             "help" => {
                 self.show_help();
                 return;
-            },
+            }
             "clear" => {
                 print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
                 io::stdout().flush().unwrap();
                 return;
-            },
+            }
             "typecheck" => {
                 self.type_check_enabled = !self.type_check_enabled;
-                println!("Type checking {}",
-                         if self.type_check_enabled {
-                             format!("{}enabled{}", GREEN, RESET)
-                         } else {
-                             format!("{}disabled{}", YELLOW, RESET)
-                         });
+                println!(
+                    "Type checking {}",
+                    if self.type_check_enabled {
+                        format!("{}enabled{}", GREEN, RESET)
+                    } else {
+                        format!("{}disabled{}", YELLOW, RESET)
+                    }
+                );
                 return;
-            },
+            }
             "examples" => {
                 self.show_examples();
                 return;
-            },
+            }
             _ => {}
         }
 
         // RES-026: `examples <name>` subcommand. Falls through to
-        // regular code evaluation only when the dir mode isn't set —
+        // regular code evaluation only when the dir mode isn't set ---
         // otherwise it's a typo and we say so.
         if let Some(rest) = input.strip_prefix("examples ") {
             self.show_named_example(rest.trim());
@@ -188,7 +214,7 @@ impl EnhancedREPL {
                 if !matches!(value, Value::Void) {
                     println!("{}{}{}", CYAN, value, RESET);
                 }
-            },
+            }
             Err(error) => {
                 eprintln!("{}Error: {}{}", RED, error, RESET);
             }
@@ -210,21 +236,39 @@ impl EnhancedREPL {
                 GREEN, RESET
             );
         } else {
-            println!("  {}examples{}   - Show example code snippets", GREEN, RESET);
+            println!(
+                "  {}examples{}   - Show example code snippets",
+                GREEN, RESET
+            );
         }
-        println!("  {}typecheck{}  - Toggle type checking (currently {})",
-                 GREEN, RESET,
-                 if self.type_check_enabled {
-                     format!("{}enabled{}", GREEN, RESET)
-                 } else {
-                     format!("{}disabled{}", YELLOW, RESET)
-                 });
+        println!(
+            "  {}typecheck{}  - Toggle type checking (currently {})",
+            GREEN,
+            RESET,
+            if self.type_check_enabled {
+                format!("{}enabled{}", GREEN, RESET)
+            } else {
+                format!("{}disabled{}", YELLOW, RESET)
+            }
+        );
 
         println!("\n{}Resilient Language Syntax:{}", CYAN, RESET);
-        println!("  {}fn name(type param) {{ ... }}{}  - Define a function", YELLOW, RESET);
-        println!("  {}let name = value;{}       - Declare a variable", YELLOW, RESET);
-        println!("  {}live {{ ... }}{}             - Define a live block", YELLOW, RESET);
-        println!("  {}assert(condition, \"msg\");{}  - Add an assertion", YELLOW, RESET);
+        println!(
+            "  {}fn name(type param) {{ ... }}{}  - Define a function",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}let name = value;{}       - Declare a variable",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}live {{ ... }}{}             - Define a live block",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}assert(condition, \"msg\");{}  - Add an assertion",
+            YELLOW, RESET
+        );
     }
 
     fn show_examples(&self) {
@@ -263,7 +307,7 @@ impl EnhancedREPL {
         println!("println(\"Access granted\");{}", RESET);
     }
 
-    /// RES-026: handle `examples <name>` — print the contents of a
+    /// RES-026: handle `examples <name>` --- print the contents of a
     /// single example file. `name` is treated as a basename only;
     /// any '/' or '..' is rejected up front.
     fn show_named_example(&self, name: &str) {
@@ -297,26 +341,25 @@ impl EnhancedREPL {
             Err(_) => {
                 eprintln!(
                     "{}examples: no such file '{}' in {}{}",
-                    RED, name, dir.display(), RESET
+                    RED,
+                    name,
+                    dir.display(),
+                    RESET
                 );
             }
         }
     }
 
-    /// RES-026: pure helper — returns the example listing as a String
+    /// RES-026: pure helper --- returns the example listing as a String
     /// so unit tests can assert on it without fighting stdout capture.
     /// Sorted alphabetically; one basename per line.
     pub(crate) fn list_examples_in(dir: &Path) -> Result<String, String> {
-        let entries = fs::read_dir(dir)
-            .map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
         let mut names: Vec<String> = entries
             .flatten()
-            .filter(|e| {
-                e.path().extension().and_then(|s| s.to_str()) == Some("res")
-            })
-            .filter_map(|e| {
-                e.file_name().into_string().ok()
-            })
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("res"))
+            .filter_map(|e| e.file_name().into_string().ok())
             .collect();
         names.sort();
         let mut out = String::new();
@@ -334,11 +377,7 @@ mod tests {
     use super::*;
 
     fn make_tmp(label: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "res_026_{}_{}",
-            label,
-            std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("res_026_{}_{}", label, std::process::id()));
         // Wipe any leftover from a prior run so each test starts clean.
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).expect("create tmp dir");
@@ -358,11 +397,7 @@ mod tests {
             "missing alpha.res:\n{}",
             listing
         );
-        assert!(
-            listing.contains("foo.res"),
-            "missing foo.res:\n{}",
-            listing
-        );
+        assert!(listing.contains("foo.res"), "missing foo.res:\n{}", listing);
         assert!(
             !listing.contains("ignored.txt"),
             "non-.res file should be filtered:\n{}",
@@ -380,8 +415,7 @@ mod tests {
     fn list_examples_in_errors_cleanly_on_missing_dir() {
         let bogus = std::env::temp_dir().join("res_026_definitely_not_here");
         let _ = fs::remove_dir_all(&bogus);
-        let err = EnhancedREPL::list_examples_in(&bogus)
-            .expect_err("missing dir must error");
+        let err = EnhancedREPL::list_examples_in(&bogus).expect_err("missing dir must error");
         assert!(err.contains("could not read"), "got: {}", err);
     }
 
@@ -397,5 +431,52 @@ mod tests {
     fn default_constructor_leaves_examples_dir_unset() {
         let repl = EnhancedREPL::new();
         assert!(repl.examples_dir.is_none());
+    }
+
+    // -- RES-224: history persistence --------------------------------------
+
+    /// RESILIENT_HISTORY env var overrides the default ~/.resilient_history path.
+    #[test]
+    fn history_path_uses_resilient_history_env_var() {
+        let tmp =
+            std::env::temp_dir().join(format!("res_224_custom_history_{}", std::process::id()));
+        // Set env var, build REPL, then restore environment state.
+        // SAFETY: test binary is single-threaded in this test; env mutation is acceptable.
+        unsafe {
+            std::env::set_var("RESILIENT_HISTORY", tmp.to_str().unwrap());
+        }
+        let repl = EnhancedREPL::with_examples_dir(None);
+        unsafe {
+            std::env::remove_var("RESILIENT_HISTORY");
+        }
+        assert_eq!(
+            repl.history_path, tmp,
+            "history_path should match RESILIENT_HISTORY env var"
+        );
+    }
+
+    /// When RESILIENT_HISTORY is absent the history filename defaults to
+    /// `.resilient_history` (regardless of the parent directory).
+    #[test]
+    fn history_path_defaults_to_home_dir() {
+        unsafe {
+            std::env::remove_var("RESILIENT_HISTORY");
+        }
+        let repl = EnhancedREPL::with_examples_dir(None);
+        let filename = repl
+            .history_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        assert_eq!(
+            filename, ".resilient_history",
+            "default history file should be named .resilient_history"
+        );
+    }
+
+    /// HISTORY_MAX_ENTRIES constant must be exactly 1000.
+    #[test]
+    fn history_max_entries_constant_is_1000() {
+        assert_eq!(HISTORY_MAX_ENTRIES, 1000);
     }
 }
