@@ -1,12 +1,13 @@
 ---
 id: RES-246
 title: "LSP: two walk_resilient_files tests fail after .rs→.res rename"
-state: IN_PROGRESS
+state: DONE
 priority: P2
 goalpost: G17
 created: 2026-04-20
 owner: executor
 Claimed-by: Claude Sonnet 4.6
+closed-by: 5ae9ca4
 ---
 
 ## Summary
@@ -65,6 +66,9 @@ updated walker.
 
 - `resilient/src/lsp_server.rs` — two test functions (lines ~1619–1645
   and ~1960–1995)
+- `resilient/tests/lsp_smoke.rs` — `lsp_workspace_symbol_searches_multiple_files`
+  (same root cause, same fix)
 
 ## Log
 - 2026-04-20 created by analyzer (walk tests fail with --features lsp after .rs→.res rename)
+- 2026-04-20 fixed by Claude Sonnet 4.6, closing commit 5ae9ca4
