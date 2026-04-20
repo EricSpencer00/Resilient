@@ -471,6 +471,81 @@ No other `_` synonyms (`otherwise`, `else`, ...) are planned
 | `floor(x)` | number → float | toward -∞ |
 | `ceil(x)` | number → float | toward +∞ |
 
+## Foreign Function Interface
+
+Resilient programs call into C libraries through `extern` blocks. Only
+primitive types are supported in v1: `Int`, `Float`, `Bool`, `String`, and
+`Void`.
+
+```
+extern "libm.so.6" {
+    fn sqrt(x: Float) -> Float requires _0 >= 0.0 ensures result >= 0.0;
+}
+```
+
+### Block form
+
+```
+extern "LIBRARY_PATH" {
+    fn NAME(PARAM: TYPE, ...) -> RETURN_TYPE [contracts];
+    fn NAME(PARAM: TYPE, ...) -> RETURN_TYPE = "C_SYMBOL_NAME" [contracts];
+    ...
+}
+```
+
+- `LIBRARY_PATH` — passed verbatim to the OS dynamic linker (`dlopen`).
+  On Linux use `libm.so.6`; on macOS use `libm.dylib`.
+- `= "C_SYMBOL_NAME"` — optional alias when the Resilient name differs
+  from the C symbol (e.g. `fn c_abs(x: Int) -> Int = "abs";`).
+
+### Type map
+
+| Resilient | C ABI |
+|-----------|-------|
+| `Int`     | `int64_t` |
+| `Float`   | `double` |
+| `Bool`    | `bool` (i8) |
+| `String`  | not yet supported |
+| `Void`    | `void` / no return |
+
+At most 8 parameters per extern function (v1 limit).
+
+### Contracts on extern fns
+
+```
+fn sqrt(x: Float) -> Float
+    requires _0 >= 0.0
+    ensures  result >= 0.0;
+```
+
+- `requires` — pre-condition checked **before** the C call.
+  Arguments are bound positionally as `_0`, `_1`, … (not by parameter name).
+- `ensures` — post-condition checked **after** the C call returns.
+  The return value is bound as `result`.
+- Both clauses are evaluated by the tree-walker interpreter; violations
+  produce a runtime error.
+
+### `@trusted` extern fns
+
+```
+@trusted
+fn fast_log(x: Float) -> Float requires _0 > 0.0 ensures result == result;
+```
+
+Mark a function `@trusted` to treat its `ensures` clauses as SMT axioms
+(fed to Z3 at verification sites) rather than runtime assertions. Use this
+when you have a proof or vendor guarantee and want to avoid the overhead of
+a runtime check.
+
+### Feature flags
+
+| Feature | Effect |
+|---------|--------|
+| `ffi` *(default)* | Enables the `extern` block, dynamic linker, trampolines |
+| `ffi-static` | `resilient-runtime` static registry for `no_std` hosts |
+
+Compile without the `ffi` feature to get a compile-time error on any program that uses `extern` blocks (`FfiError::FfiDisabled`).
+
 ## Diagnostics
 
 Parser errors carry `line:col:` prefixes. Neither the parser nor the
