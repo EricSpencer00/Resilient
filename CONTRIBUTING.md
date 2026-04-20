@@ -284,9 +284,97 @@ Keep PRs small and focused — one ticket per PR is ideal.
 
 ---
 
+## Releases
+
+Releases are cut by pushing a semver tag (`vMAJOR.MINOR.PATCH`) to `main`:
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+This triggers two workflows automatically:
+- **release** — builds native binaries for Linux (amd64 + arm64) and macOS (amd64 + arm64), creates a GitHub Release with auto-generated notes and attached archives.
+- **release-image** — builds and pushes a multi-arch Docker image to `ghcr.io/ericspencer00/resilient`.
+
+Pre-releases use a tag like `v0.3.0-alpha.1` — the Docker image gets tagged but not promoted to `latest`.
+
+---
+
 ## For AI Agent Contributors
 
-AI agents are first-class contributors. The same rules apply as for humans:
+AI agents (Claude Code, OpenHands, Codex, Devin, and others) are first-class
+contributors. The same rules apply as for humans, plus a few agent-specific
+notes to help you orient quickly.
+
+### Quick Start for agents
+
+1. **Find work** — Browse `.board/tickets/OPEN/` in the repo or GitHub Issues
+   filtered by `agent-ready`:
+   <https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready>
+   Each `agent-ready` issue was filed with the *Agent-Ready Ticket* template
+   and includes a Goal, explicit Acceptance Criteria, and a list of files to
+   touch — everything you need to start without further clarification.
+
+2. **Claim it** — Move the ticket file and add your agent ID:
+   ```bash
+   git mv .board/tickets/OPEN/RES-NNN-*.md .board/tickets/IN_PROGRESS/
+   # edit the file: add  Claimed-by: <agent-id>  to the header
+   git commit -m "RES-NNN: claim ticket"
+   ```
+
+3. **Branch** — Work on a branch named after the ticket:
+   ```bash
+   git checkout -b res-NNN-short-title
+   ```
+
+4. **Implement** — Read the ticket's "Files / modules to touch" list. Run the
+   acceptance criteria commands as you go.
+
+5. **Verify before pushing**:
+   ```bash
+   cargo fmt --all
+   cargo clippy --all-targets -- -D warnings
+   cargo test --manifest-path resilient/Cargo.toml
+   cargo test --manifest-path resilient-runtime/Cargo.toml
+   ```
+
+6. **Open a PR** — Target `main`. Use `Closes #N` in the body to auto-close
+   the GitHub Issue. Move the ticket to `DONE/` in the same PR.
+
+7. **Trailer** — Include a `Co-Authored-By:` line so authorship is transparent:
+   ```
+   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+   ```
+
+### Filing new work
+
+If you identify a gap or improvement not already tracked, file a GitHub Issue
+using the **Agent-Ready Ticket** template. Assign the next `RES-NNN` number
+(check `.board/tickets/` for the current max), fill in Goal and Acceptance
+Criteria precisely, and add the `agent-ready` label so other agents can pick
+it up.
+
+### Ticket file format
+
+Each ticket in `.board/tickets/` is a Markdown file with at least:
+
+```
+# RES-NNN: Short title
+Status: OPEN | IN_PROGRESS | DONE
+Claimed-by: <github-handle or agent-id>   # set when moving to IN_PROGRESS
+
+## Goal
+...
+
+## Acceptance Criteria
+- [ ] ...
+
+## Files to Touch
+- path/to/file.rs — why
+```
+
+### Core rules (same as humans)
 
 - Follow the commit format (`RES-NNN: short description` for ticket work).
 - Open PRs against `main`; never force-push.
