@@ -21,6 +21,13 @@ pub enum FfiType {
     Bool,
     Str,
     Void,
+    /// RES-215: an opaque C pointer (`*mut c_void`). Resilient code
+    /// cannot dereference or inspect it; the language only passes it
+    /// through — received from one extern call, handed back to
+    /// another. Lets bindings model "handle" types like `FILE*`,
+    /// `sqlite3*`, etc. without teaching the language about their
+    /// layout.
+    OpaquePtr,
 }
 
 impl FfiType {
@@ -31,10 +38,35 @@ impl FfiType {
             "Bool" => Some(FfiType::Bool),
             "String" => Some(FfiType::Str),
             "Void" => Some(FfiType::Void),
+            "OpaquePtr" => Some(FfiType::OpaquePtr),
             _ => None,
         }
     }
 }
+
+/// RES-215: opaque-pointer handle carried in `Value::OpaquePtr`.
+///
+/// Wraps a `*mut c_void` so the language has a typed container for
+/// the raw address. The pointer is never dereferenced by Resilient
+/// code — trampolines accept it as an input argument and return it
+/// as an output value, and that's the entire surface area. We
+/// derive `Copy`/`Clone` because the pointer itself is trivially
+/// copyable and the Resilient VM's `Value` is `Clone`.
+///
+/// SAFETY: the raw pointer is opaque. Holding an `OpaquePtrHandle`
+/// confers no permission to read/write the pointee; only the C
+/// library that produced it may dereference it. Lifetime is the
+/// responsibility of the foreign code — Resilient will never free
+/// or validate it.
+#[derive(Copy, Clone, Debug)]
+pub struct OpaquePtrHandle(pub *mut core::ffi::c_void);
+
+// SAFETY: the pointer is opaque to Resilient and never dereferenced
+// by interpreter code. Crossing thread boundaries does not invoke
+// any load/store on the pointee; only passing the address along to
+// a subsequent FFI call (which is the C library's responsibility).
+unsafe impl Send for OpaquePtrHandle {}
+unsafe impl Sync for OpaquePtrHandle {}
 
 #[derive(Clone, Debug)]
 pub struct ForeignSignature {
@@ -325,6 +357,29 @@ mod tests {
             "got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn signature_accepts_opaque_ptr() {
+        // RES-215: OpaquePtr is a real FFI type in signatures.
+        let d = decl(
+            "alloc_point",
+            "alloc_point",
+            vec![],
+            "OpaquePtr",
+        );
+        let sig = ForeignSignature::from_decl(&d).expect("OpaquePtr must parse");
+        assert_eq!(sig.ret, FfiType::OpaquePtr);
+
+        let d = decl(
+            "free_point",
+            "free_point",
+            vec![("OpaquePtr", "p")],
+            "Void",
+        );
+        let sig = ForeignSignature::from_decl(&d).expect("OpaquePtr arg must parse");
+        assert_eq!(sig.params, vec![FfiType::OpaquePtr]);
+        assert_eq!(sig.ret, FfiType::Void);
     }
 
     #[test]

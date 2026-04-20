@@ -55,6 +55,7 @@ fn ffi_type_of_value(v: &Value) -> Option<FfiType> {
         Value::Float(_) => Some(FfiType::Float),
         Value::Bool(_) => Some(FfiType::Bool),
         Value::String(_) => Some(FfiType::Str),
+        Value::OpaquePtr(_) => Some(FfiType::OpaquePtr),
         _ => None,
     }
 }
@@ -73,6 +74,9 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
         ptr: std::ptr::null(),
         len: 0,
     }; 8];
+    // RES-215: opaque pointers are pass-through — no allocation, no
+    // marshalling. We just ferry the address across the ABI.
+    let mut ptrs: [*mut core::ffi::c_void; 8] = [core::ptr::null_mut(); 8];
     // Keep string byte borrows live for the call.
     let mut live_strs: Vec<&[u8]> = Vec::with_capacity(args.len());
     for (i, (arg, want)) in args.iter().zip(params.iter()).enumerate() {
@@ -88,6 +92,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                     len: bytes.len(),
                 };
             }
+            (Value::OpaquePtr(h), OpaquePtr) => ptrs[i] = h.0,
             _ => {
                 return Err(format!(
                     "FFI internal: arg #{} type {:?} / ffi {:?} mismatch",
@@ -165,6 +170,37 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                 Value::Void
             }
 
+            // ---- RES-215: OpaquePtr arms (arity 0 and 1) ----
+            (&[], OpaquePtr) => Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
+                std::mem::transmute::<*const (), extern "C" fn() -> *mut core::ffi::c_void>(
+                    sym.ptr,
+                )(),
+            )),
+            (&[OpaquePtr], OpaquePtr) => Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
+                std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(*mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                >(sym.ptr)(ptrs[0]),
+            )),
+            (&[OpaquePtr], Int) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(*mut core::ffi::c_void) -> i64,
+            >(sym.ptr)(ptrs[0])),
+            (&[OpaquePtr], Float) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(*mut core::ffi::c_void) -> f64,
+            >(sym.ptr)(ptrs[0])),
+            (&[OpaquePtr], Bool) => Value::Bool(std::mem::transmute::<
+                *const (),
+                extern "C" fn(*mut core::ffi::c_void) -> bool,
+            >(sym.ptr)(ptrs[0])),
+            (&[OpaquePtr], Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void)>(sym.ptr)(
+                    ptrs[0],
+                );
+                Value::Void
+            }
+
             // ---- Arity 2 (minimal — extend when examples need more) ----
             (&[Float, Float], Float) => Value::Float(std::mem::transmute::<
                 *const (),
@@ -190,6 +226,7 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     // shuffle the drop earlier than the call.
     drop(live_strs);
     let _ = strs;
+    let _ = ptrs;
 
     Ok(out)
 }
@@ -252,6 +289,79 @@ mod tests {
         };
         let err = call_foreign(&sym, &[Value::Int(1)]).expect_err("should fail");
         assert!(err.contains("type mismatch"), "got {}", err);
+    }
+
+    // RES-215: extern "C" helpers for OpaquePtr round-trip.
+    extern "C" fn id_ptr(p: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+        p
+    }
+
+    extern "C" fn ptr_addr(p: *mut core::ffi::c_void) -> i64 {
+        p as usize as i64
+    }
+
+    extern "C" fn make_ptr() -> *mut core::ffi::c_void {
+        // Arbitrary non-null sentinel — the language never deref's it.
+        0xDEAD_BEEF_usize as *mut core::ffi::c_void
+    }
+
+    #[test]
+    fn call_foreign_opaque_ptr_round_trip() {
+        use crate::ffi::OpaquePtrHandle;
+        // (OpaquePtr) -> OpaquePtr: hand the pointer in, get it back.
+        let sig = ForeignSignature {
+            params: vec![FfiType::OpaquePtr],
+            ret: FfiType::OpaquePtr,
+        };
+        let sym = ForeignSymbol {
+            name: "id_ptr".to_string(),
+            ptr: id_ptr as *const (),
+            sig,
+        };
+        let sentinel = 0x1234_5678_usize as *mut core::ffi::c_void;
+        let out =
+            call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
+        match out {
+            Value::OpaquePtr(h) => assert_eq!(h.0, sentinel),
+            other => panic!("expected OpaquePtr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_foreign_opaque_ptr_to_int() {
+        use crate::ffi::OpaquePtrHandle;
+        // (OpaquePtr) -> Int: inspect address via the C side.
+        let sig = ForeignSignature {
+            params: vec![FfiType::OpaquePtr],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "ptr_addr".to_string(),
+            ptr: ptr_addr as *const (),
+            sig,
+        };
+        let sentinel = 0x42_usize as *mut core::ffi::c_void;
+        let out =
+            call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
+        assert!(matches!(out, Value::Int(0x42)), "got {:?}", out);
+    }
+
+    #[test]
+    fn call_foreign_zero_arg_returns_opaque_ptr() {
+        let sig = ForeignSignature {
+            params: vec![],
+            ret: FfiType::OpaquePtr,
+        };
+        let sym = ForeignSymbol {
+            name: "make_ptr".to_string(),
+            ptr: make_ptr as *const (),
+            sig,
+        };
+        let out = call_foreign(&sym, &[]).expect("ok");
+        match out {
+            Value::OpaquePtr(h) => assert_eq!(h.0 as usize, 0xDEAD_BEEF),
+            other => panic!("expected OpaquePtr, got {:?}", other),
+        }
     }
 
     #[test]

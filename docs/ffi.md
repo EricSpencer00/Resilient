@@ -51,15 +51,58 @@ extern "LIBRARY_PATH" {
 
 Only primitive types are supported in FFI Phase 1:
 
-| Resilient | C ABI     |
-|-----------|-----------|
-| `Int`     | `int64_t` |
-| `Float`   | `double`  |
-| `Bool`    | `bool`    |
-| `String`  | not yet supported |
-| `Void`    | `void`    |
+| Resilient   | C ABI            |
+|-------------|------------------|
+| `Int`       | `int64_t`        |
+| `Float`     | `double`         |
+| `Bool`      | `bool`           |
+| `String`    | not yet supported |
+| `Void`      | `void`           |
+| `OpaquePtr` | `void*` (opaque) |
 
 At most 8 parameters per extern function.
+
+### `OpaquePtr` — opaque C handles
+
+An `OpaquePtr` is a `void*` the language can **receive, store, and
+pass back** but never dereference. Use it to model C "handle" types
+like `FILE*`, `sqlite3*`, or an allocator-owned struct pointer:
+
+```
+extern "libfoo.so" {
+    fn alloc_point() -> OpaquePtr;
+    fn free_point(p: OpaquePtr) -> Void;
+    fn get_x(p: OpaquePtr) -> Int;
+}
+
+let p = alloc_point();
+let x = get_x(p);
+free_point(p);
+```
+
+Semantics:
+
+- Resilient code cannot dereference, compare, or inspect the
+  pointer — only pass it along to another FFI call.
+- Lifetime is the C library's responsibility. If you leak a
+  handle or use it after the C side freed it, that is a **use
+  after free** on the C side; the language provides no safety net.
+- Pass-through is zero-copy: the trampoline ferries the raw
+  address across the ABI unchanged.
+
+Trampoline coverage today:
+
+| Signature | Supported |
+|-----------|-----------|
+| `() -> OpaquePtr` | yes |
+| `(OpaquePtr) -> OpaquePtr` | yes |
+| `(OpaquePtr) -> Int` | yes |
+| `(OpaquePtr) -> Float` | yes |
+| `(OpaquePtr) -> Bool` | yes |
+| `(OpaquePtr) -> Void` | yes |
+
+Higher arities extend mechanically by adding an arm to
+`dispatch_explicit` in `ffi_trampolines.rs`.
 
 ## Contracts
 

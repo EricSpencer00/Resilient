@@ -4423,6 +4423,19 @@ enum Value {
         ensures: Vec<Node>,
         trusted: bool,
     },
+    /// RES-215: an opaque C pointer received from (or bound for) an
+    /// FFI call. Resilient source cannot dereference or inspect it;
+    /// it is only passed through. The raw pointer is `Copy`, so the
+    /// derived `Clone` on `Value` copies the address — consistent
+    /// with the pass-through semantics (the language never owns the
+    /// pointee; the C library does).
+    ///
+    /// Constructed only through FFI trampolines (requires the `ffi`
+    /// feature to actually fire at runtime); the variant itself is
+    /// always present so the `Value` enum's shape matches across
+    /// feature gates.
+    #[allow(dead_code)]
+    OpaquePtr(crate::ffi::OpaquePtrHandle),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -4505,6 +4518,9 @@ impl std::fmt::Debug for Value {
             Value::Foreign { name, symbol, .. } => {
                 write!(f, "Foreign({}, {} params)", name, symbol.sig.params.len())
             }
+            // RES-215: opaque-pointer handle — print the address, not
+            // the pointee. Resilient never dereferences it.
+            Value::OpaquePtr(h) => write!(f, "OpaquePtr({:p})", h.0),
         }
     }
 }
@@ -4621,6 +4637,9 @@ impl std::fmt::Display for Value {
             Value::Closure { .. } => write!(f, "<closure>"),
             #[cfg(feature = "ffi")]
             Value::Foreign { name, .. } => write!(f, "<foreign {}>", name),
+            // RES-215: opaque-pointer handle Display — show the
+            // address in the conventional `<opaque-ptr 0x…>` form.
+            Value::OpaquePtr(h) => write!(f, "<opaque-ptr {:p}>", h.0),
         }
     }
 }
@@ -16849,6 +16868,34 @@ mod ffi_integration_tests {
         assert!(
             err.contains("FFI") || err.contains("libnotreal"),
             "expected FFI error, got: {}",
+            err
+        );
+    }
+
+    /// RES-215: `OpaquePtr` parses cleanly as both a parameter type
+    /// and a return type in `extern` declarations. We deliberately
+    /// point at a non-existent library so the test passes on any
+    /// platform — all that matters is that parsing and loader
+    /// resolution reach the "library not found" error (not a
+    /// "type `OpaquePtr` is not supported" error).
+    #[test]
+    fn extern_decl_accepts_opaque_ptr_type() {
+        let src = r#"
+            extern "libnotreal_opaqueptr_xyz.so" {
+                fn alloc_point() -> OpaquePtr;
+                fn free_point(p: OpaquePtr) -> Void;
+                fn get_x(p: OpaquePtr) -> Int;
+            };
+            fn main(int _d) { return 0; }
+            main(0);
+        "#;
+        // With --features ffi we expect LibNotFound, not UnsupportedType.
+        // Without the feature we'd get FfiDisabled — also fine; the point
+        // of this test is that the parser accepts the `OpaquePtr` type.
+        let err = run_with_ffi(src).expect_err("library does not exist");
+        assert!(
+            !err.contains("OpaquePtr") || !err.contains("not supported"),
+            "OpaquePtr must be a recognised FFI type, got: {}",
             err
         );
     }
