@@ -2700,7 +2700,7 @@ impl Parser {
             }
             _ => {
                 self.record_error(format!(
-                    "expected string literal after `extern`, got {:?}",
+                    "expected string literal after `extern`, got {}",
                     self.current_token
                 ));
                 return None;
@@ -2710,7 +2710,7 @@ impl Parser {
         // `{`
         if !matches!(self.current_token, Token::LeftBrace) {
             self.record_error(format!(
-                "expected `{{` after `extern \"{}\"`, got {:?}",
+                "expected `{{` after `extern \"{}\"`, got {}",
                 library,
                 self.current_token
             ));
