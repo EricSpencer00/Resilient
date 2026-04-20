@@ -8476,8 +8476,10 @@ fn execute_file(
                     }
                     for d in decls {
                         if let Some(sym) = loader.lookup(&d.resilient_name) {
-                            let name: &'static str =
-                                Box::leak(d.resilient_name.clone().into_boxed_str());
+                            // SAFETY: intentional one-time-per-extern-decl leak to obtain a &'static str
+                            // for Value::Foreign.name. The leaked memory is bounded by the number of
+                            // extern decls in the program and is reclaimed when the process exits.
+                            let name: &'static str = Box::leak(d.resilient_name.clone().into_boxed_str());
                             interpreter.env.set(
                                 d.resilient_name.clone(),
                                 Value::Foreign {
@@ -16795,8 +16797,10 @@ mod ffi_integration_tests {
                         .map_err(|e| format!("{}", e))?;
                     for d in decls {
                         if let Some(sym) = loader.lookup(&d.resilient_name) {
-                            let name: &'static str =
-                                Box::leak(d.resilient_name.clone().into_boxed_str());
+                            // SAFETY: intentional one-time-per-extern-decl leak to obtain a &'static str
+                            // for Value::Foreign.name. The leaked memory is bounded by the number of
+                            // extern decls in the program and is reclaimed when the process exits.
+                            let name: &'static str = Box::leak(d.resilient_name.clone().into_boxed_str());
                             interpreter.env.set(
                                 d.resilient_name.clone(),
                                 Value::Foreign {
