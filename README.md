@@ -533,7 +533,7 @@ resilient --dump-chunks examples/hello.rs
 
 Mutually exclusive with `--dump-tokens` and `--lsp`. The output
 format is stable — external tools are welcome to parse it; the
-disassembler module comment documents the exact column contract.
+disassembler module commentt documents the exact column contract.
 
 ### Formatter
 
@@ -548,8 +548,8 @@ resilient fmt --in-place src/main.rs         # overwrite
 ```
 
 The formatter refuses to touch input with parse errors (exits 1).
-It is a structural round-trip — comments are not preserved today;
-only run it on code you're willing to re-attach comments to by
+It is a structural round-trip — commentts are not preserved today;
+only run it on code you're willing to re-attach commentts to by
 hand. See [Tooling Reference](https://ericspencer00.github.io/Resilient/tooling#formatter)
 for the full contract.
 
@@ -606,7 +606,7 @@ the full ledger. Each commit of the form `RES-NNN: summary` closes one ticket.
 - Arithmetic, comparison, logical, bitwise, and shift operators
 - Prefix `!` and `-`
 - Hex (`0xFF`) and binary (`0b1010`) integer literals with `_` separators
-- Block `/* */` and line `//` comments
+- Block `/* */` and line `//` commentts
 - `if` / `else`, `while` (with runaway guard)
 - `live { }` self-healing blocks with retry
 - `assert(cond, msg)` with operand values in the error
@@ -658,7 +658,7 @@ that can lex Resilient source.
   literals, the `fn` / `let` / `return` / `if` / `else` / `while` /
   `true` / `false` keywords, single-char punctuation,
   single-char operators, the two-char comparison / logical
-  operators, and `//` line comments. Whitespace-skipping with
+  operators, and `//` line commentts. Whitespace-skipping with
   line / column tracking.
 
   Run it: `./self-host/run.sh` (diffs output against
@@ -666,6 +666,6 @@ that can lex Resilient source.
 
   Not in CI — informative only until the self-hosted toolchain
   becomes load-bearing. See the source file's top-comment for
-  the feature gaps (multiline strings, block comments, `live`
+  the feature gaps (multiline strings, block commentts, `live`
   contracts, float / bytes literals) and the parser workarounds
   the prototype needed to land today.
