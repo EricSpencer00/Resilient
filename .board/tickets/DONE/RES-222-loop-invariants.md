@@ -26,6 +26,6 @@ Add an `invariant` statement inside `while` loop bodies. The invariant is checke
 
 ## Log
 - 2026-04-20 created by manager
-- 2026-04-20 implemented by Claude; runtime check + golden test shipping
+- 2026-04-20 implemented by Claude; runtime check + golden test shipping (commit ce48179)
 </content>
 </invoke>
