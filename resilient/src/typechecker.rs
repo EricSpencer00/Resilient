@@ -1171,7 +1171,7 @@ impl TypeChecker {
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!("Assert condition must be a boolean, got {}", condition_type));
                 }
-                
+
                 // Message, if present, should be a string
                 if let Some(msg) = message {
                     let msg_type = self.check_node(msg)?;
@@ -1179,7 +1179,22 @@ impl TypeChecker {
                         return Err(format!("Assert message must be a string, got {}", msg_type));
                     }
                 }
-                
+
+                Ok(Type::Void)
+            },
+
+            // RES-133a: assume has the same type rules as assert
+            Node::Assume { condition, message, .. } => {
+                let condition_type = self.check_node(condition)?;
+                if condition_type != Type::Bool && condition_type != Type::Any {
+                    return Err(format!("Assume condition must be a boolean, got {}", condition_type));
+                }
+                if let Some(msg) = message {
+                    let msg_type = self.check_node(msg)?;
+                    if msg_type != Type::String && msg_type != Type::Any {
+                        return Err(format!("Assume message must be a string, got {}", msg_type));
+                    }
+                }
                 Ok(Type::Void)
             },
             
@@ -2115,6 +2130,9 @@ fn check_body_purity(
         Node::Assert { condition, .. } => {
             check_body_purity(condition, fn_name, pure_fns)?;
         }
+        Node::Assume { condition, .. } => {
+            check_body_purity(condition, fn_name, pure_fns)?;
+        }
         Node::LiveBlock { .. } => {
             // live-blocks retry on failure — that's observable,
             // non-pure behaviour by construction.
@@ -2368,6 +2386,7 @@ fn body_reaches_io(
             body_reaches_io(iterable, effects) || body_reaches_io(body, effects)
         }
         Node::Assert { condition, .. } => body_reaches_io(condition, effects),
+        Node::Assume { condition, .. } => body_reaches_io(condition, effects),
         Node::LiveBlock { body, invariants, .. } => {
             // A `live` block is NOT intrinsically IO (retries on
             // failure observe error state, but not IO per the

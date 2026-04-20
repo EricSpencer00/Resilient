@@ -604,6 +604,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::Extern { span, .. }
         | Node::LiveBlock { span, .. }
         | Node::Assert { span, .. }
+        | Node::Assume { span, .. }
         | Node::Match { span, .. }
         | Node::StructDecl { span, .. }
         | Node::StructLiteral { span, .. }
@@ -631,6 +632,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::Function { .. } => "Function",
         Node::LiveBlock { .. } => "LiveBlock",
         Node::Assert { .. } => "Assert",
+        Node::Assume { .. } => "Assume",
         Node::Block { .. } => "Block",
         Node::LetStatement { .. } => "LetStatement",
         Node::StaticLet { .. } => "StaticLet",

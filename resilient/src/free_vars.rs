@@ -253,6 +253,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             }
         }
         Node::Assert { condition, .. } => walk(condition, bound, free),
+        Node::Assume { condition, .. } => walk(condition, bound, free),
 
         // ---- Expressions ----
         Node::PrefixExpression { right, .. } => walk(right, bound, free),

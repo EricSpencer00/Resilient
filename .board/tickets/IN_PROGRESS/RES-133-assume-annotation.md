@@ -1,11 +1,12 @@
 ---
 id: RES-133
 title: `assume(p);` annotation surfaces facts to the SMT context
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G9
 created: 2026-04-17
 owner: executor
+Claimed-by: Claude Sonnet 4.6 (RES-133a scope: parser + AST + runtime only)
 ---
 
 ## Summary

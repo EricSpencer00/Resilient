@@ -328,6 +328,16 @@ impl Formatter {
                 self.write(");");
                 self.newline();
             }
+            Node::Assume { condition, message, .. } => {
+                self.write("assume(");
+                self.fmt_expr(condition);
+                if let Some(m) = message {
+                    self.write(", ");
+                    self.fmt_expr(m);
+                }
+                self.write(");");
+                self.newline();
+            }
             Node::Block { stmts, .. } => {
                 self.write("{");
                 self.newline();
@@ -632,6 +642,7 @@ impl Formatter {
             | Node::ForInStatement { .. }
             | Node::LiveBlock { .. }
             | Node::Assert { .. }
+            | Node::Assume { .. }
             | Node::LetStatement { .. }
             | Node::StaticLet { .. }
             | Node::Assignment { .. }

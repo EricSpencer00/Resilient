@@ -83,6 +83,7 @@ enum Token {
     Let,
     Live,
     Assert,
+    Assume,
     If,
     Else,
     Return,
@@ -211,6 +212,7 @@ impl Token {
             Token::Let => "`let`".to_string(),
             Token::Live => "`live`".to_string(),
             Token::Assert => "`assert`".to_string(),
+            Token::Assume => "`assume`".to_string(),
             Token::If => "`if`".to_string(),
             Token::Else => "`else`".to_string(),
             Token::Return => "`return`".to_string(),
@@ -594,6 +596,7 @@ impl Lexer {
                         "let" => Token::Let,
                         "live" => Token::Live,
                         "assert" => Token::Assert,
+                        "assume" => Token::Assume,
                         "if" => Token::If,
                         "else" => Token::Else,
                         "return" => Token::Return,
@@ -1055,6 +1058,15 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-133a: `assume(expr);` — like assert at runtime but signals
+    /// verifier intent ("trust me, this holds"). Runtime halts with
+    /// "assume violated at line:col" when the predicate is false.
+    Assume {
+        condition: Box<Node>,
+        message: Option<Box<Node>>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-087: converted from tuple form so it can carry the span
     /// of the opening `{` (consumed in follow-ups).
     Block {
@@ -1508,6 +1520,7 @@ impl Parser {
             Token::Return => Some(self.parse_return_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
+            Token::Assume => Some(self.parse_assume()),
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
@@ -3276,7 +3289,47 @@ impl Parser {
             span: self.span_at_current()
         }
     }
-    
+
+    /// RES-133a: `assume(expr[, msg]);` — same grammar as assert.
+    fn parse_assume(&mut self) -> Node {
+        self.next_token(); // skip 'assume'
+
+        if self.current_token != Token::LeftParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '(' after 'assume', found {}", tok));
+            return Node::Assume {
+                condition: Box::new(Node::BooleanLiteral { value: true, span: span::Span::default() }),
+                message: None,
+                span: self.span_at_current(),
+            };
+        }
+
+        self.next_token(); // skip '('
+
+        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
+        self.next_token(); // advance past last token of expression
+
+        let message = if self.current_token == Token::Comma {
+            self.next_token(); // skip ','
+            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral { value: String::new(), span: span::Span::default() });
+            self.next_token();
+            Some(Box::new(msg))
+        } else {
+            None
+        };
+
+        if self.current_token != Token::RightParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected ')' after assume condition, found {}", tok));
+        }
+
+        Node::Assume {
+            condition: Box::new(condition),
+            message,
+            span: self.span_at_current(),
+        }
+    }
+
     fn parse_if_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'if'
@@ -6628,6 +6681,7 @@ impl Interpreter {
                     .to_string(),
             ),
             Node::Assert { condition, message, .. } => self.eval_assert(condition, message),
+            Node::Assume { condition, message, .. } => self.eval_assume(condition, message),
             Node::Block { stmts: statements, .. } => self.eval_block_statement(statements),
             Node::LetStatement { name, value, .. } => {
                 let val = self.eval(value)?;
@@ -7354,6 +7408,32 @@ impl Interpreter {
 
             return Err(format!(
                 "ASSERTION ERROR: {}\n  - {}",
+                error_message, detail
+            ));
+        }
+
+        Ok(Value::Void)
+    }
+
+    /// RES-133a: runtime evaluation of `assume(expr[, msg])`.
+    /// Semantics identical to assert — halts with "assume violated" when false.
+    fn eval_assume(&mut self, condition: &Node, message: &Option<Box<Node>>) -> RResult<Value> {
+        let condition_value = self.eval(condition)?;
+
+        if !self.is_truthy(&condition_value) {
+            let error_message = if let Some(msg) = message {
+                match self.eval(msg)? {
+                    Value::String(s) => s,
+                    other => format!("Assumption failed with message: {}", other),
+                }
+            } else {
+                "Assumption failed".to_string()
+            };
+
+            let detail = self.format_assert_detail(condition, &condition_value);
+
+            return Err(format!(
+                "ASSUME VIOLATED: {}\n  - {}",
                 error_message, detail
             ));
         }
@@ -8168,7 +8248,7 @@ fn classify_lex_token(
 
     let (ty, modifiers) = match tok {
         // Keywords.
-        Token::Function | Token::Let | Token::Live | Token::Assert
+        Token::Function | Token::Let | Token::Live | Token::Assert | Token::Assume
         | Token::If | Token::Else | Token::Return | Token::Static
         | Token::While | Token::For | Token::In
         | Token::Requires | Token::Ensures | Token::Invariant
@@ -14825,6 +14905,44 @@ mod tests {
             "expected both operands in error, got: {}",
             err
         );
+    }
+
+    // --- RES-133a: assume() tests ---
+
+    #[test]
+    fn assume_passes_when_true() {
+        let src = "let x = 5; assume(x > 0); assume(x > 0, \"x must be positive\");";
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+    }
+
+    #[test]
+    fn assume_halts_when_false() {
+        let src = "let x = -1; assume(x > 0);";
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("ASSUME VIOLATED"), "expected ASSUME VIOLATED, got: {}", err);
+    }
+
+    #[test]
+    fn assume_halts_with_custom_message() {
+        let src = "assume(false, \"sensor offline\");";
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("ASSUME VIOLATED"), "{}", err);
+        assert!(err.contains("sensor offline"), "{}", err);
+    }
+
+    #[test]
+    fn assume_before_assert_composes() {
+        // assume establishes a fact; subsequent code can use it normally
+        let src = "let x = 10; assume(x > 0); assert(x > 0);";
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
     }
 
     #[test]
