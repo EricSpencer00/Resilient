@@ -1,9 +1,10 @@
 ---
 id: RES-219
 title: GitHub release workflow — native binary builds for Linux + macOS
-status: OPEN
+status: DONE
 labels: [infra, release]
 roadmap: G20
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Goal
@@ -29,15 +30,20 @@ notes.
 
 ## Acceptance criteria
 
-- [ ] `release.yml` triggers on `v*` tag pushes
-- [ ] All four platform binaries build successfully
-- [ ] A GitHub Release is created with the tag name as the title
-- [ ] Each `.tar.gz` is attached to the release as a downloadable asset
-- [ ] `CONTRIBUTING.md` explains the tag → release workflow
-- [ ] The workflow does NOT fail for `workflow_dispatch` dry-runs
+- [x] `release.yml` triggers on `v*` tag pushes
+- [x] All four platform binaries build successfully
+- [x] A GitHub Release is created with the tag name as the title
+- [x] Each `.tar.gz` is attached to the release as a downloadable asset
+- [x] `CONTRIBUTING.md` explains the tag → release workflow
+- [x] The workflow does NOT fail for `workflow_dispatch` dry-runs
 
 ## Out of scope
 
 - crates.io publishing
 - Windows binaries
 - Code signing
+
+## Closing notes
+
+Implemented in commit f5668fe (branch `main`). Ticket closed by this PR.
+Closing commit: to be filled by merge SHA.
