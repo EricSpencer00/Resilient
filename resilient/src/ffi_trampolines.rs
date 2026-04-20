@@ -12,7 +12,7 @@
 //! Unsupported signatures return a clean error referencing the
 //! `(params, ret)` tuple that was missing, so extending the table
 //! is mechanical when new call shapes appear.
-use crate::ffi::{FfiType, ForeignSymbol};
+use crate::ffi::{FfiError, FfiType, ForeignSymbol};
 use crate::{RResult, Value};
 
 #[allow(dead_code)]
@@ -33,6 +33,16 @@ pub fn call_foreign(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
             sym.sig.params.len(),
             args.len()
         ));
+    }
+
+    // RES-216: reject Callback arguments with a clean, discoverable error.
+    // Phase 1 recognises the type in extern signatures but cannot yet
+    // construct a stable C function pointer from a Resilient closure.
+    if sym.sig.params.contains(&FfiType::Callback) || sym.sig.ret == FfiType::Callback {
+        return Err(FfiError::CallbackNotYetSupported {
+            name: sym.name.clone(),
+        }
+        .to_string());
     }
 
     for (i, (arg, want)) in args.iter().zip(sym.sig.params.iter()).enumerate() {
@@ -362,6 +372,33 @@ mod tests {
             Value::OpaquePtr(h) => assert_eq!(h.0 as usize, 0xDEAD_BEEF),
             other => panic!("expected OpaquePtr, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn call_foreign_rejects_callback_argument_as_phase_1_stub() {
+        // RES-216: calling an extern fn that declared a `Callback`
+        // parameter must return a clean, documented error — not
+        // silently do nothing and not panic.
+        let sig = ForeignSignature {
+            params: vec![FfiType::Callback],
+            ret: FfiType::Void,
+        };
+        let sym = ForeignSymbol {
+            name: "register_handler".to_string(),
+            // Pointer value is irrelevant; we must short-circuit before dispatch.
+            ptr: sum_two_ints as *const (),
+            sig,
+        };
+        // Pass a Resilient Int as a placeholder for the callback value;
+        // the Callback branch must fire before type-matching happens.
+        let err =
+            call_foreign(&sym, &[Value::Int(0)]).expect_err("Callback arg must be rejected in v1");
+        assert!(
+            err.contains("Callback") && err.contains("Phase 2"),
+            "got {}",
+            err
+        );
+        assert!(err.contains("register_handler"), "got {}", err);
     }
 
     #[test]

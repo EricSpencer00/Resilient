@@ -51,14 +51,15 @@ extern "LIBRARY_PATH" {
 
 Only primitive types are supported in FFI Phase 1:
 
-| Resilient   | C ABI            |
-|-------------|------------------|
-| `Int`       | `int64_t`        |
-| `Float`     | `double`         |
-| `Bool`      | `bool`           |
-| `String`    | not yet supported |
-| `Void`      | `void`           |
-| `OpaquePtr` | `void*` (opaque) |
+| Resilient   | C ABI                                          |
+|-------------|------------------------------------------------|
+| `Int`       | `int64_t`                                      |
+| `Float`     | `double`                                       |
+| `Bool`      | `bool`                                         |
+| `String`    | not yet supported                              |
+| `Void`      | `void`                                         |
+| `OpaquePtr` | `void*` (opaque)                               |
+| `Callback`  | C function pointer (Phase 1 stub — see below)  |
 
 At most 8 parameters per extern function.
 
@@ -103,6 +104,26 @@ Trampoline coverage today:
 
 Higher arities extend mechanically by adding an arm to
 `dispatch_explicit` in `ffi_trampolines.rs`.
+
+### `Callback` — Phase 1 stub
+
+Callback types are recognised in FFI declarations:
+
+```
+extern "libfoo.so" {
+    fn register_handler(cb: Callback) -> Void;
+}
+```
+
+Passing a Resilient function as `Callback` is stubbed in Phase 1 and returns
+a clean error:
+
+```
+FFI: extern fn `register_handler` uses a Callback parameter; callbacks
+require the trampoline feature (planned for Phase 2)
+```
+
+Real trampoline support is planned for Phase 2 (bytecode VM).
 
 ## Contracts
 
