@@ -7,6 +7,7 @@ Claimed-by: Claude Sonnet 4.6
 goalpost: G18
 created: 2026-04-18
 owner: executor
+closed-commit: 2d17ed5
 ---
 
 ## Summary
