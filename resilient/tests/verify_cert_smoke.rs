@@ -29,12 +29,7 @@ fn bin() -> &'static str {
 fn tmp_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let p = std::env::temp_dir().join(format!(
-        "res_194_{}_{}_{}",
-        tag,
-        std::process::id(),
-        n
-    ));
+    let p = std::env::temp_dir().join(format!("res_194_{}_{}_{}", tag, std::process::id(), n));
     std::fs::create_dir_all(&p).expect("mkdir tmp");
     p
 }
@@ -104,12 +99,7 @@ fn sign_cert_and_verify_round_trip() {
 
     // --emit-certificate + --sign-cert
     let emit = Command::new(bin())
-        .args([
-            "-t",
-            "--seed",
-            "0",
-            "--emit-certificate",
-        ])
+        .args(["-t", "--seed", "0", "--emit-certificate"])
         .arg(&cert_dir)
         .arg("--sign-cert")
         .arg(&priv_pem)
@@ -177,8 +167,7 @@ fn verify_cert_fails_against_mismatched_key() {
     );
     let stderr = String::from_utf8_lossy(&mismatch.stderr);
     assert!(
-        stderr.to_uppercase().contains("MISMATCH")
-            || stderr.to_lowercase().contains("tampered"),
+        stderr.to_uppercase().contains("MISMATCH") || stderr.to_lowercase().contains("tampered"),
         "unexpected stderr: {stderr}"
     );
 
@@ -204,8 +193,7 @@ fn verify_cert_detects_payload_tamper() {
 
     // Append a fake .smt2 file to the cert dir — the payload
     // changes, so the signature should no longer verify.
-    std::fs::write(cert_dir.join("tamper__fake__99.smt2"), b"(assert wrong)\n")
-        .unwrap();
+    std::fs::write(cert_dir.join("tamper__fake__99.smt2"), b"(assert wrong)\n").unwrap();
 
     let verify = Command::new(bin())
         .args(["verify-cert"])
@@ -214,10 +202,7 @@ fn verify_cert_detects_payload_tamper() {
         .arg(&pub_pem)
         .output()
         .expect("spawn verify");
-    assert!(
-        !verify.status.success(),
-        "tamper must fail verification"
-    );
+    assert!(!verify.status.success(), "tamper must fail verification");
 
     let _ = std::fs::remove_dir_all(&scratch);
 }

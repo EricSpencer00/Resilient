@@ -1,12 +1,12 @@
 // Enhanced REPL for Resilient language
-use crate::{Lexer, Parser, Value};
 use crate::typechecker;
+use crate::{Lexer, Parser, Value};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 // ANSI color codes for syntax highlighting
 const RESET: &str = "\x1B[0m";
@@ -63,10 +63,14 @@ impl EnhancedREPL {
             eprintln!("Error loading history: {}", err);
         }
 
-        println!("{}Resilient Programming Language REPL (v0.1.0){}",
-                 CYAN, RESET);
-        println!("Type '{}help{}' for command list, '{}exit{}' to quit",
-                 GREEN, RESET, RED, RESET);
+        println!(
+            "{}Resilient Programming Language REPL (v0.1.0){}",
+            CYAN, RESET
+        );
+        println!(
+            "Type '{}help{}' for command list, '{}exit{}' to quit",
+            GREEN, RESET, RED, RESET
+        );
 
         loop {
             // Create prompt with type checking indicator
@@ -93,15 +97,15 @@ impl EnhancedREPL {
 
                     // Process the input
                     self.process_input(input);
-                },
+                }
                 Err(ReadlineError::Interrupted) => {
                     println!("CTRL-C");
                     break;
-                },
+                }
                 Err(ReadlineError::Eof) => {
                     println!("CTRL-D");
                     break;
-                },
+                }
                 Err(err) => {
                     eprintln!("Error: {}", err);
                     break;
@@ -123,30 +127,32 @@ impl EnhancedREPL {
             "exit" | "quit" => {
                 println!("Exiting Resilient REPL");
                 std::process::exit(0);
-            },
+            }
             "help" => {
                 self.show_help();
                 return;
-            },
+            }
             "clear" => {
                 print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
                 io::stdout().flush().unwrap();
                 return;
-            },
+            }
             "typecheck" => {
                 self.type_check_enabled = !self.type_check_enabled;
-                println!("Type checking {}",
-                         if self.type_check_enabled {
-                             format!("{}enabled{}", GREEN, RESET)
-                         } else {
-                             format!("{}disabled{}", YELLOW, RESET)
-                         });
+                println!(
+                    "Type checking {}",
+                    if self.type_check_enabled {
+                        format!("{}enabled{}", GREEN, RESET)
+                    } else {
+                        format!("{}disabled{}", YELLOW, RESET)
+                    }
+                );
                 return;
-            },
+            }
             "examples" => {
                 self.show_examples();
                 return;
-            },
+            }
             _ => {}
         }
 
@@ -188,7 +194,7 @@ impl EnhancedREPL {
                 if !matches!(value, Value::Void) {
                     println!("{}{}{}", CYAN, value, RESET);
                 }
-            },
+            }
             Err(error) => {
                 eprintln!("{}Error: {}{}", RED, error, RESET);
             }
@@ -210,21 +216,39 @@ impl EnhancedREPL {
                 GREEN, RESET
             );
         } else {
-            println!("  {}examples{}   - Show example code snippets", GREEN, RESET);
+            println!(
+                "  {}examples{}   - Show example code snippets",
+                GREEN, RESET
+            );
         }
-        println!("  {}typecheck{}  - Toggle type checking (currently {})",
-                 GREEN, RESET,
-                 if self.type_check_enabled {
-                     format!("{}enabled{}", GREEN, RESET)
-                 } else {
-                     format!("{}disabled{}", YELLOW, RESET)
-                 });
+        println!(
+            "  {}typecheck{}  - Toggle type checking (currently {})",
+            GREEN,
+            RESET,
+            if self.type_check_enabled {
+                format!("{}enabled{}", GREEN, RESET)
+            } else {
+                format!("{}disabled{}", YELLOW, RESET)
+            }
+        );
 
         println!("\n{}Resilient Language Syntax:{}", CYAN, RESET);
-        println!("  {}fn name(type param) {{ ... }}{}  - Define a function", YELLOW, RESET);
-        println!("  {}let name = value;{}       - Declare a variable", YELLOW, RESET);
-        println!("  {}live {{ ... }}{}             - Define a live block", YELLOW, RESET);
-        println!("  {}assert(condition, \"msg\");{}  - Add an assertion", YELLOW, RESET);
+        println!(
+            "  {}fn name(type param) {{ ... }}{}  - Define a function",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}let name = value;{}       - Declare a variable",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}live {{ ... }}{}             - Define a live block",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}assert(condition, \"msg\");{}  - Add an assertion",
+            YELLOW, RESET
+        );
     }
 
     fn show_examples(&self) {
@@ -297,7 +321,10 @@ impl EnhancedREPL {
             Err(_) => {
                 eprintln!(
                     "{}examples: no such file '{}' in {}{}",
-                    RED, name, dir.display(), RESET
+                    RED,
+                    name,
+                    dir.display(),
+                    RESET
                 );
             }
         }
@@ -307,16 +334,12 @@ impl EnhancedREPL {
     /// so unit tests can assert on it without fighting stdout capture.
     /// Sorted alphabetically; one basename per line.
     pub(crate) fn list_examples_in(dir: &Path) -> Result<String, String> {
-        let entries = fs::read_dir(dir)
-            .map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
         let mut names: Vec<String> = entries
             .flatten()
-            .filter(|e| {
-                e.path().extension().and_then(|s| s.to_str()) == Some("res")
-            })
-            .filter_map(|e| {
-                e.file_name().into_string().ok()
-            })
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("res"))
+            .filter_map(|e| e.file_name().into_string().ok())
             .collect();
         names.sort();
         let mut out = String::new();
@@ -334,11 +357,7 @@ mod tests {
     use super::*;
 
     fn make_tmp(label: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "res_026_{}_{}",
-            label,
-            std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("res_026_{}_{}", label, std::process::id()));
         // Wipe any leftover from a prior run so each test starts clean.
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).expect("create tmp dir");
@@ -358,11 +377,7 @@ mod tests {
             "missing alpha.res:\n{}",
             listing
         );
-        assert!(
-            listing.contains("foo.res"),
-            "missing foo.res:\n{}",
-            listing
-        );
+        assert!(listing.contains("foo.res"), "missing foo.res:\n{}", listing);
         assert!(
             !listing.contains("ignored.txt"),
             "non-.res file should be filtered:\n{}",
@@ -380,8 +395,7 @@ mod tests {
     fn list_examples_in_errors_cleanly_on_missing_dir() {
         let bogus = std::env::temp_dir().join("res_026_definitely_not_here");
         let _ = fs::remove_dir_all(&bogus);
-        let err = EnhancedREPL::list_examples_in(&bogus)
-            .expect_err("missing dir must error");
+        let err = EnhancedREPL::list_examples_in(&bogus).expect_err("missing dir must error");
         assert!(err.contains("could not read"), "got: {}", err);
     }
 
