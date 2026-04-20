@@ -470,6 +470,11 @@ No other `_` synonyms (`otherwise`, `else`, ...) are planned
 | `pow(a, b)` | two numbers → float | `a^b` |
 | `floor(x)` | number → float | toward -∞ |
 | `ceil(x)` | number → float | toward +∞ |
+| `split(s, sep)` | (string, string) → array of string | empty `sep` splits into Unicode scalars |
+| `trim(s)` | string → string | strips leading/trailing ASCII whitespace |
+| `starts_with(s, prefix)` | (string, string) → bool | empty prefix always matches |
+| `ends_with(s, suffix)` | (string, string) → bool | empty suffix always matches |
+| `repeat(s, n)` | (string, int) → string | `n >= 0`; negative `n` is a hard error |
 
 ## Diagnostics
 
