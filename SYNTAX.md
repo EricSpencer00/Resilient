@@ -478,6 +478,30 @@ lexer panic on any input — everything surfaces as a recoverable
 error. A program that fails to parse or evaluate exits non-zero, so
 CI and shell pipelines can branch on success.
 
+### Partial proofs (Z3 `Unknown`) — RES-217
+
+When a `requires` or `ensures` clause falls to the Z3 backend and the
+solver answers `Unknown` (either hitting the per-query timeout set by
+`--verifier-timeout-ms` or legitimately failing to decide the
+obligation — typical for nonlinear integer arithmetic), the
+typechecker emits a structured warning and keeps the runtime check:
+
+```
+warning[partial-proof]: Z3 returned Unknown for assertion at foo.rs:12:18 — proof is incomplete
+```
+
+Compilation still succeeds — the obligation downgrades silently to a
+runtime assertion — but the warning gives CI and review tooling a
+stable `[partial-proof]` tag to grep for, plus a precise
+`<file>:<line>:<col>` pointer to the offending clause.
+
+The warning is **on by default**. Pass `--no-warn-unverified` to
+suppress it (useful for CI pipelines that already gate on separate
+verification signals); pass `--warn-unverified` to opt in explicitly
+even though that matches the default. The pre-existing per-function
+`hint: proof timed out after <N>ms …` line is independent and
+unaffected by this flag.
+
 ## Compiling and Running
 
 ```bash

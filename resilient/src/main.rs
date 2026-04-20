@@ -7914,6 +7914,7 @@ fn execute_file(
     use_vm: bool,
     use_jit: bool,
     verifier_timeout_ms: u32,
+    warn_unverified: bool,
 ) -> RResult<()> {
     let contents = fs::read_to_string(filename)
         .map_err(|e| format!("Error reading file: {}", e))?;
@@ -7963,7 +7964,11 @@ fn execute_file(
             // value. A fresh `TypeChecker::new()` defaults to 5000;
             // passing the CLI value through keeps the flag
             // meaningful on the `--typecheck` / `--audit` paths.
-            .with_verifier_timeout_ms(verifier_timeout_ms);
+            .with_verifier_timeout_ms(verifier_timeout_ms)
+            // RES-217: `--no-warn-unverified` flips this off; the
+            // default (on) surfaces `warning[partial-proof]`
+            // diagnostics whenever Z3 returns Unknown.
+            .with_warn_unverified(warn_unverified);
         // RES-080: pass the source filename so per-statement errors
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
@@ -8833,6 +8838,11 @@ fn main() {
     // RES-137: per-query Z3 solver timeout in milliseconds. 0 means
     // "no timeout". Default 5000 matches the ticket's recommendation.
     let mut verifier_timeout_ms: u32 = 5000;
+    // RES-217: emit `warning[partial-proof]` when Z3 returns Unknown
+    // (timeout or genuine unknown). Default ON so partial proofs are
+    // never silent; `--no-warn-unverified` suppresses them for CI
+    // pipelines that deliberately accept best-effort verification.
+    let mut warn_unverified: bool = true;
     // RES-150: `--seed <u64>` pins the RNG seed for determinism.
     // `None` → fall back to clock-derived seed at startup.
     let mut seed_override: Option<u64> = None;
@@ -8924,6 +8934,17 @@ fn main() {
                     );
                     std::process::exit(2);
                 });
+            } else if arg == "--warn-unverified" {
+                // RES-217: explicit opt-in (also the default). Keeps
+                // the flag discoverable in `--help` and in scripts
+                // that want to be explicit about relying on the
+                // partial-proof diagnostic.
+                warn_unverified = true;
+            } else if arg == "--no-warn-unverified" {
+                // RES-217: suppress `warning[partial-proof]` output.
+                // Intended for CI pipelines that already gate on
+                // verification signals and don't want the noise.
+                warn_unverified = false;
             } else if arg == "--seed" {
                 // RES-150: `--seed <u64>` pins the SplitMix64 PRNG.
                 // Reproducible runs: same seed → same sequence.
@@ -9082,6 +9103,7 @@ fn main() {
                 use_vm,
                 use_jit,
                 verifier_timeout_ms,
+                warn_unverified,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run
