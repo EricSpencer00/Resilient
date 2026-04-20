@@ -41,47 +41,82 @@ use crate::span::{Pos, Span};
 enum Tok {
     // --- two-char operators (must precede their single-char prefixes
     // at the logos level via longer-match priority) ---
-    #[token("==")] EqEq,
-    #[token("!=")] NotEq,
-    #[token("<=")] LessEq,
-    #[token(">=")] GreaterEq,
-    #[token("&&")] AndAnd,
-    #[token("||")] OrOr,
-    #[token("<<")] ShlShl,
-    #[token(">>")] ShrShr,
-    #[token("=>")] FatArrow,
-    #[token("->")] Arrow,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    NotEq,
+    #[token("<=")]
+    LessEq,
+    #[token(">=")]
+    GreaterEq,
+    #[token("&&")]
+    AndAnd,
+    #[token("||")]
+    OrOr,
+    #[token("<<")]
+    ShlShl,
+    #[token(">>")]
+    ShrShr,
+    #[token("=>")]
+    FatArrow,
+    #[token("->")]
+    Arrow,
     // RES-149: set-literal opener `#{`. Must precede any lone-`#`
     // handling so logos prefers the longer match.
-    #[token("#{")] HashLBrace,
+    #[token("#{")]
+    HashLBrace,
 
     // --- single-char operators & punctuation ---
-    #[token("+")] Plus,
-    #[token("-")] Minus,
-    #[token("*")] Star,
-    #[token("/")] Slash,
-    #[token("%")] Percent,
-    #[token("=")] Assign,
-    #[token("&")] Amp,
-    #[token("|")] Pipe,
-    #[token("^")] Caret,
-    #[token(">")] Gt,
-    #[token("<")] Lt,
-    #[token("!")] Bang,
-    #[token("(")] LParen,
-    #[token(")")] RParen,
-    #[token("{")] LBrace,
-    #[token("}")] RBrace,
-    #[token("[")] LBracket,
-    #[token("]")] RBracket,
-    #[token(",")] Comma,
-    #[token(";")] Semi,
-    #[token(":")] Colon,
-    #[token(".")] Dot,
-    #[token("?")] Question,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Star,
+    #[token("/")]
+    Slash,
+    #[token("%")]
+    Percent,
+    #[token("=")]
+    Assign,
+    #[token("&")]
+    Amp,
+    #[token("|")]
+    Pipe,
+    #[token("^")]
+    Caret,
+    #[token(">")]
+    Gt,
+    #[token("<")]
+    Lt,
+    #[token("!")]
+    Bang,
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
+    #[token(",")]
+    Comma,
+    #[token(";")]
+    Semi,
+    #[token(":")]
+    Colon,
+    #[token(".")]
+    Dot,
+    #[token("?")]
+    Question,
     // RES-191: attribute prefix (`@pure`, etc.). Emitted as a bare
     // `@`; the parser reads the following identifier.
-    #[token("@")] At,
+    #[token("@")]
+    At,
 
     // --- block comments: skip via callback ---
     #[regex(r"/\*", block_comment)]
@@ -114,38 +149,62 @@ enum Tok {
     BytesLit(Vec<u8>),
 
     // --- keywords ---
-    #[token("fn")] Fn,
-    #[token("let")] Let,
-    #[token("live")] Live,
-    #[token("assert")] Assert,
-    #[token("if")] If,
-    #[token("else")] Else,
-    #[token("return")] Return,
-    #[token("static")] Static,
-    #[token("while")] While,
-    #[token("for")] For,
-    #[token("in")] In,
-    #[token("requires")] Requires,
-    #[token("ensures")] Ensures,
-    #[token("invariant")] Invariant,
-    #[token("struct")] Struct,
-    #[token("new")] New,
-    #[token("match")] Match,
-    #[token("use")] Use,
+    #[token("fn")]
+    Fn,
+    #[token("let")]
+    Let,
+    #[token("live")]
+    Live,
+    #[token("assert")]
+    Assert,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("return")]
+    Return,
+    #[token("static")]
+    Static,
+    #[token("while")]
+    While,
+    #[token("for")]
+    For,
+    #[token("in")]
+    In,
+    #[token("requires")]
+    Requires,
+    #[token("ensures")]
+    Ensures,
+    #[token("invariant")]
+    Invariant,
+    #[token("struct")]
+    Struct,
+    #[token("new")]
+    New,
+    #[token("match")]
+    Match,
+    #[token("use")]
+    Use,
     // RES-158: `impl <Struct> { ... }` keyword. Added alongside the
     // hand-rolled lexer's `"impl" => Token::Impl` kw arm so feature
     // parity is preserved.
-    #[token("impl")] Impl,
+    #[token("impl")]
+    Impl,
     // RES-128: `type <Name> = <Target>;` alias keyword. Same parity
     // requirement as above.
-    #[token("type")] Type,
-    #[token("true")] True,
-    #[token("false")] False,
-    #[token("_")] Underscore,
+    #[token("type")]
+    Type,
+    #[token("true")]
+    True,
+    #[token("false")]
+    False,
+    #[token("_")]
+    Underscore,
     // RES-163: `default` is a reserved alias for `_` at the top of
     // a match arm. Must precede the `Ident` regex so logos picks
     // the keyword arm over the identifier arm.
-    #[token("default")] Default,
+    #[token("default")]
+    Default,
 
     // --- identifiers ---
     // Split into two arms so bare `_` is handled by the `#[token]`

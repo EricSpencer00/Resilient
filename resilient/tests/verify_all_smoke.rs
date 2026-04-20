@@ -29,12 +29,7 @@ fn bin() -> &'static str {
 fn tmp_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let p = std::env::temp_dir().join(format!(
-        "res_195_{}_{}_{}",
-        tag,
-        std::process::id(),
-        n
-    ));
+    let p = std::env::temp_dir().join(format!("res_195_{}_{}_{}", tag, std::process::id(), n));
     std::fs::create_dir_all(&p).expect("mkdir tmp");
     p
 }

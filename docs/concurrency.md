@@ -311,6 +311,38 @@ Things this sketch is deliberately noncommittal about:
 The point of the sketch is to show the shape, not to promise
 the shape. Expect changes once the real design work starts.
 
+**Preview flag (RES-208).** The `actor`, `spawn`, `send`, and
+`recv` keywords are available as a **parse-only preview** when
+you build the compiler with `--features concurrency-preview`:
+
+```bash
+cargo build --features concurrency-preview
+```
+
+With that flag the keywords are reserved and the parser accepts
+the four forms above. The runtime rejects any attempt to execute
+them with a clear diagnostic:
+
+```
+Runtime error: concurrency preview: `actor Counter` cannot be
+executed — the Resilient scheduler has not landed yet (RES-208).
+```
+
+The typechecker also emits:
+
+```
+warning[W0001]: concurrency-preview feature used — actor/spawn/send/recv
+syntax is not stable and cannot be executed yet (RES-208)
+```
+
+**Without the flag**, these keywords parse as ordinary identifiers
+so existing code is unaffected.
+
+The syntax shown in the sketch above is the current state of the
+preview. It will change — the design note at
+`.board/designs/concurrency.md` lists the open questions.
+Subscribe to RES-208 follow-on tickets for scheduler progress.
+
 **How live blocks compose with actors.** A live block inside
 an actor retries local work. If the live block's budget is
 exhausted, it raises to the actor. If the actor can't handle

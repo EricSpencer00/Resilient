@@ -57,8 +57,7 @@ use crate::bytecode::{Chunk, Op, Program};
 pub fn disassemble(program: &Program, out: &mut String) -> std::fmt::Result {
     // Build a function-index → name map so `Call(i)` operands can
     // include a readable comment.
-    let fn_names: Vec<&str> =
-        program.functions.iter().map(|f| f.name.as_str()).collect();
+    let fn_names: Vec<&str> = program.functions.iter().map(|f| f.name.as_str()).collect();
 
     // Main chunk first.
     writeln!(out, "=== main ===")?;
@@ -66,8 +65,11 @@ pub fn disassemble(program: &Program, out: &mut String) -> std::fmt::Result {
 
     // Each user function, in declaration order.
     for func in &program.functions {
-        writeln!(out, "=== fn {} (arity={}, locals={}) ===",
-            func.name, func.arity, func.local_count)?;
+        writeln!(
+            out,
+            "=== fn {} (arity={}, locals={}) ===",
+            func.name, func.arity, func.local_count
+        )?;
         disassemble_chunk(&func.chunk, &fn_names, out)?;
     }
     Ok(())
@@ -75,11 +77,7 @@ pub fn disassemble(program: &Program, out: &mut String) -> std::fmt::Result {
 
 /// Disassemble a single chunk: constants block, then code block.
 /// Chunk-scoped — `fn_names` passed in for `Call` comment rendering.
-fn disassemble_chunk(
-    chunk: &Chunk,
-    fn_names: &[&str],
-    out: &mut String,
-) -> std::fmt::Result {
+fn disassemble_chunk(chunk: &Chunk, fn_names: &[&str], out: &mut String) -> std::fmt::Result {
     // Constants section.
     if chunk.constants.is_empty() {
         writeln!(out, "constants: (none)")?;
@@ -163,7 +161,10 @@ fn write_op(
         // closure opcodes. RES-169b/c will make these emittable
         // and executable; the format mirrors how the VM will
         // ultimately interpret the operands.
-        Op::MakeClosure { fn_idx, upvalue_count } => {
+        Op::MakeClosure {
+            fn_idx,
+            upvalue_count,
+        } => {
             write!(out, "MakeClosure {} {}", fn_idx, upvalue_count)?;
             if let Some(name) = fn_names.get(fn_idx as usize) {
                 write!(out, "  ; -> {}", name)?;
@@ -181,16 +182,23 @@ fn write_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytecode::{Chunk, Function, Op, Program};
     use crate::Value;
+    use crate::bytecode::{Chunk, Function, Op, Program};
 
     fn mk_chunk(code: Vec<Op>, constants: Vec<Value>, lines: Vec<u32>) -> Chunk {
-        Chunk { code, constants, line_info: lines }
+        Chunk {
+            code,
+            constants,
+            line_info: lines,
+        }
     }
 
     /// Build a Program with the given main chunk and no user fns.
     fn prog_main_only(main: Chunk) -> Program {
-        Program { main, functions: Vec::new() }
+        Program {
+            main,
+            functions: Vec::new(),
+        }
     }
 
     #[test]
@@ -245,11 +253,7 @@ mod tests {
     #[test]
     fn disassemble_renders_call_with_function_name() {
         let program = Program {
-            main: mk_chunk(
-                vec![Op::Call(0), Op::Return],
-                vec![],
-                vec![5, 5],
-            ),
+            main: mk_chunk(vec![Op::Call(0), Op::Return], vec![], vec![5, 5]),
             functions: vec![Function {
                 name: "my_fn".to_string(),
                 arity: 0,
@@ -325,7 +329,10 @@ mod tests {
     fn res169a_make_closure_renders_with_operands() {
         let program = prog_main_only(mk_chunk(
             vec![
-                Op::MakeClosure { fn_idx: 0, upvalue_count: 2 },
+                Op::MakeClosure {
+                    fn_idx: 0,
+                    upvalue_count: 2,
+                },
                 Op::Return,
             ],
             vec![],
@@ -360,7 +367,13 @@ mod tests {
     fn res169a_make_closure_with_named_fn_renders_pointer() {
         let program = Program {
             main: mk_chunk(
-                vec![Op::MakeClosure { fn_idx: 0, upvalue_count: 1 }, Op::Return],
+                vec![
+                    Op::MakeClosure {
+                        fn_idx: 0,
+                        upvalue_count: 1,
+                    },
+                    Op::Return,
+                ],
                 vec![],
                 vec![1, 1],
             ),

@@ -1,8 +1,9 @@
 ---
 id: RES-208
 title: Concurrency model — actor/supervisor design on top of effects (G18)
-state: OPEN
+state: DONE
 priority: P3
+Claimed-by: Claude Sonnet 4.6
 goalpost: G18
 created: 2026-04-18
 owner: executor

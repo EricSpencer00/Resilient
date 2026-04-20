@@ -59,6 +59,15 @@ infer = []
 # The `ffi` module provides `ForeignLoader` which resolves extern-block
 # symbols at evaluation time so the tree-walker can dispatch in O(1).
 ffi = ["dep:libloading"]
+# RES-208: opt-in concurrency preview — actor/spawn/send/recv syntax.
+# Parse-only scaffolding; the runtime rejects these nodes with a clear
+# error until a scheduler is wired up. Enable with:
+#
+#   cargo build --features concurrency-preview
+#
+# and use `actor`, `spawn`, `send`, `recv` keywords in source. The
+# typechecker emits a warning diagnostic that the feature is unstable.
+concurrency-preview = []
 
 [dependencies]
 # RES-115: source-position types live in their own crate so
