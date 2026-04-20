@@ -109,19 +109,16 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
                 .map(pattern_bindings)
                 .unwrap_or_default()
         }
+        // RES-161a: outer name + whatever the inner pattern binds.
+        Pattern::Bind(outer, inner) => {
+            let mut bs = vec![outer.clone()];
+            bs.extend(pattern_bindings(inner));
+            bs
+        }
     }
 }
 
-/// RES-160: if a pattern introduces exactly one identifier binding
-/// (directly or through every branch of an or-pattern), return it;
-/// otherwise `None`. Used to hook the match-arm scope.
-fn pattern_single_binding(p: &Pattern) -> Option<String> {
-    let bs = pattern_bindings(p);
-    match bs.len() {
-        1 => Some(bs.into_iter().next().unwrap()),
-        _ => None,
-    }
-}
+
 
 /// RES-160: does the pattern match every value (i.e. a
 /// wildcard / identifier, or an or-pattern with at least one
@@ -132,6 +129,8 @@ fn pattern_is_default(p: &Pattern) -> bool {
         Pattern::Wildcard | Pattern::Identifier(_) => true,
         Pattern::Literal(_) => false,
         Pattern::Or(branches) => branches.iter().any(pattern_is_default),
+        // `x @ inner` is default iff the inner pattern is default.
+        Pattern::Bind(_, inner) => pattern_is_default(inner),
     }
 }
 
@@ -1399,22 +1398,21 @@ impl TypeChecker {
                         }
                     }
 
-                    // RES-159 + RES-160: if the arm's pattern binds
-                    // an identifier — either directly or through
-                    // every branch of an Or — register that binding
-                    // (as the scrutinee's type) so guards and bodies
-                    // can reference it. Rolled back after the arm so
-                    // it doesn't leak. Mirrors the interpreter's
-                    // scoping behaviour.
-                    let binding_name = pattern_single_binding(pattern);
-                    let rollback_ident: Option<(String, Option<Type>)> =
-                        if let Some(n) = binding_name {
-                            let prev = self.env.get(&n);
+                    // RES-159 + RES-160 + RES-161a: register every
+                    // name the pattern binds (as the scrutinee's type)
+                    // so guards and bodies can reference them. Rolled
+                    // back after the arm so bindings don't leak.
+                    // `pattern_bindings` returns [] for Wildcard/Literal,
+                    // [n] for Identifier, [outer, ..inner] for Bind.
+                    let binding_names = pattern_bindings(pattern);
+                    let rollback_bindings: Vec<(String, Option<Type>)> = binding_names
+                        .iter()
+                        .map(|n| {
+                            let prev = self.env.get(n);
                             self.env.set(n.clone(), scrutinee_type.clone());
-                            Some((n, prev))
-                        } else {
-                            None
-                        };
+                            (n.clone(), prev)
+                        })
+                        .collect();
 
                     if let Some(g) = guard {
                         // RES-159: guards must be boolean-ish. Accept
@@ -1422,8 +1420,7 @@ impl TypeChecker {
                         // stays compatible.
                         let gt = self.check_node(g)?;
                         if gt != Type::Bool && gt != Type::Any {
-                            // Restore env before propagating.
-                            if let Some((n, prev)) = &rollback_ident {
+                            for (n, prev) in &rollback_bindings {
                                 match prev {
                                     Some(t) => self.env.set(n.clone(), t.clone()),
                                     None => { self.env.remove(n); }
@@ -1436,8 +1433,8 @@ impl TypeChecker {
                         }
                     }
                     let body_res = self.check_node(body);
-                    // Roll back the pattern-binding entry.
-                    if let Some((n, prev)) = rollback_ident {
+                    // Roll back all pattern-binding entries.
+                    for (n, prev) in rollback_bindings {
                         match prev {
                             Some(t) => self.env.set(n, t),
                             None => { self.env.remove(&n); }

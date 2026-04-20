@@ -1,11 +1,12 @@
 ---
 id: RES-161
 title: Bind-subpattern `case p @ Point { x, y } if x > 0 => ...`
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G13
 created: 2026-04-17
 owner: executor
+Claimed-by: Claude Sonnet 4.6 (RES-161a scope: Pattern::Bind with existing pattern atoms only)
 ---
 
 ## Summary

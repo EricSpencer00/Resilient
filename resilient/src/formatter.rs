@@ -663,6 +663,12 @@ impl Formatter {
                     self.fmt_pattern(b);
                 }
             }
+            // RES-161a: `name @ inner`
+            Pattern::Bind(name, inner) => {
+                self.write(name);
+                self.write(" @ ");
+                self.fmt_pattern(inner);
+            }
         }
     }
 }
