@@ -281,10 +281,10 @@ impl EnhancedREPL {
             );
             return;
         }
-        let candidate = if name.ends_with(".rs") {
+        let candidate = if name.ends_with(".res") {
             dir.join(name)
         } else {
-            dir.join(format!("{}.rs", name))
+            dir.join(format!("{}.res", name))
         };
         match fs::read_to_string(&candidate) {
             Ok(body) => {
@@ -312,7 +312,7 @@ impl EnhancedREPL {
         let mut names: Vec<String> = entries
             .flatten()
             .filter(|e| {
-                e.path().extension().and_then(|s| s.to_str()) == Some("rs")
+                e.path().extension().and_then(|s| s.to_str()) == Some("res")
             })
             .filter_map(|e| {
                 e.file_name().into_string().ok()
@@ -348,29 +348,29 @@ mod tests {
     #[test]
     fn list_examples_in_returns_sorted_basenames() {
         let dir = make_tmp("listing");
-        fs::write(dir.join("foo.rs"), "fn main() {}\n").unwrap();
-        fs::write(dir.join("alpha.rs"), "fn main() {}\n").unwrap();
-        fs::write(dir.join("ignored.txt"), "not rust\n").unwrap();
+        fs::write(dir.join("foo.res"), "fn main() {}\n").unwrap();
+        fs::write(dir.join("alpha.res"), "fn main() {}\n").unwrap();
+        fs::write(dir.join("ignored.txt"), "not resilient\n").unwrap();
 
         let listing = EnhancedREPL::list_examples_in(&dir).unwrap();
         assert!(
-            listing.contains("alpha.rs"),
-            "missing alpha.rs:\n{}",
+            listing.contains("alpha.res"),
+            "missing alpha.res:\n{}",
             listing
         );
         assert!(
-            listing.contains("foo.rs"),
-            "missing foo.rs:\n{}",
+            listing.contains("foo.res"),
+            "missing foo.res:\n{}",
             listing
         );
         assert!(
             !listing.contains("ignored.txt"),
-            "non-.rs file should be filtered:\n{}",
+            "non-.res file should be filtered:\n{}",
             listing
         );
         // Alphabetical: alpha must precede foo.
-        let a = listing.find("alpha.rs").unwrap();
-        let f = listing.find("foo.rs").unwrap();
+        let a = listing.find("alpha.res").unwrap();
+        let f = listing.find("foo.res").unwrap();
         assert!(a < f, "expected alpha before foo:\n{}", listing);
 
         let _ = fs::remove_dir_all(&dir);

@@ -50,7 +50,7 @@ fn pkg_init_creates_project_skeleton() {
     let root = parent.join("hello_res");
     assert!(root.is_dir(), "project root {} missing", root.display());
     assert!(root.join("resilient.toml").is_file(), "manifest missing");
-    assert!(root.join("src/main.rs").is_file(), "entry point missing");
+    assert!(root.join("src/main.res").is_file(), "entry point missing");
     assert!(root.join(".gitignore").is_file(), "gitignore missing");
 
     // Manifest content — pin [package] + name + [dependencies] to
@@ -80,8 +80,8 @@ fn pkg_init_creates_project_skeleton() {
     );
 
     // Entry point has the hello-world greeting.
-    let main_src = std::fs::read_to_string(root.join("src/main.rs"))
-        .expect("read main.rs");
+    let main_src = std::fs::read_to_string(root.join("src/main.res"))
+        .expect("read main.res");
     assert!(
         main_src.contains("Hello, world!"),
         "missing greeting in: {main_src}"
@@ -326,7 +326,7 @@ fn run_prefixes_errors_with_package_name() {
     )
     .unwrap();
     // Reference an undefined identifier so runtime / compile bails.
-    let src_path = proj.join("src/main.rs");
+    let src_path = proj.join("src/main.res");
     std::fs::write(
         &src_path,
         "fn main(int _d) {\n    println(not_a_real_thing);\n    return 0;\n}\nmain(0);\n",

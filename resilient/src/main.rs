@@ -904,6 +904,12 @@ enum Pattern {
     /// reliably reference bindings regardless of which branch
     /// fired.
     Or(Vec<Pattern>),
+    /// RES-161a: `name @ inner` — bind the whole scrutinee to `name`
+    /// AND apply `inner` pattern. Both bindings are in scope in the
+    /// guard and arm body. Inner pattern is restricted to atoms that
+    /// exist today (Literal / Identifier / Wildcard / Or); struct and
+    /// tuple patterns follow in RES-161b / RES-161c.
+    Bind(String, Box<Pattern>),
 }
 
 /// RES-139: exponential-backoff policy for a `live` block. Sleep
@@ -3887,7 +3893,21 @@ impl Parser {
             Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral { value: *f, span: tok_span }),
             Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral { value: s.clone(), span: tok_span }),
             Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral { value: *b, span: tok_span }),
-            Token::Identifier(name) => Pattern::Identifier(name.clone()),
+            Token::Identifier(name) => {
+                let name = name.clone();
+                // RES-161a: `name @ inner` bind-subpattern.
+                // peek_token tells us whether `@` follows. If so, consume
+                // it and parse the inner atom (not a full or-pattern — the
+                // `|` binds more loosely than `@`).
+                if self.peek_token == Token::At {
+                    self.next_token(); // current = `@`
+                    self.next_token(); // current = start of inner pattern
+                    let inner = self.parse_pattern_atom();
+                    Pattern::Bind(name, Box::new(inner))
+                } else {
+                    Pattern::Identifier(name)
+                }
+            }
             other => {
                 let tok = other.clone();
                 self.record_error(format!(
@@ -6866,21 +6886,20 @@ impl Interpreter {
             Node::Match { scrutinee, arms, .. } => {
                 let sval = self.eval(scrutinee)?;
                 for (pattern, guard, body) in arms {
-                    if let Some(binding) = self.match_pattern(pattern, &sval)? {
-                        // RES-159: evaluate the arm with any pattern
-                        // binding in scope first, then check the
-                        // guard (so the guard can reference the
-                        // binding). A `false` guard falls through to
-                        // the next arm; a true / absent guard fires
-                        // the body in the same scope. Either way,
-                        // the scoped env is restored on exit so the
-                        // binding doesn't leak.
+                    if let Some(bindings) = self.match_pattern(pattern, &sval)? {
+                        // RES-159 / RES-161a: push all pattern bindings into
+                        // a new enclosed scope. Wildcard/Literal produce an
+                        // empty list; Identifier produces one; Bind produces
+                        // two (outer name + inner pattern bindings). The
+                        // enclosed scope is restored on arm exit so bindings
+                        // don't leak into subsequent arms or outer scope.
                         let saved = self.env.clone();
-                        let mut had_scope = false;
-                        if let Some((name, value)) = binding {
+                        let had_scope = !bindings.is_empty();
+                        if had_scope {
                             self.env = Environment::new_enclosed(saved.clone());
-                            self.env.set(name, value);
-                            had_scope = true;
+                            for (name, value) in bindings {
+                                self.env.set(name, value);
+                            }
                         }
                         let guard_pass = match guard {
                             Some(g) => {
@@ -7668,10 +7687,10 @@ impl Interpreter {
         &mut self,
         pattern: &Pattern,
         value: &Value,
-    ) -> RResult<Option<Option<(String, Value)>>> {
+    ) -> RResult<Option<Vec<(String, Value)>>> {
         match pattern {
-            Pattern::Wildcard => Ok(Some(None)),
-            Pattern::Identifier(name) => Ok(Some(Some((name.clone(), value.clone())))),
+            Pattern::Wildcard => Ok(Some(vec![])),
+            Pattern::Identifier(name) => Ok(Some(vec![(name.clone(), value.clone())])),
             Pattern::Literal(node) => {
                 let pat_val = self.eval(node)?;
                 // RES-130: no int ↔ float coercion for literal-
@@ -7684,20 +7703,27 @@ impl Interpreter {
                     (Value::Bool(a), Value::Bool(b)) => a == b,
                     _ => false,
                 };
-                Ok(if is_equal { Some(None) } else { None })
+                Ok(if is_equal { Some(vec![]) } else { None })
             }
-            // RES-160: first-match wins. The typechecker's
-            // same-bindings-across-branches check (see
-            // `pattern_bindings` in typechecker.rs) guarantees
-            // the returned binding shape is consistent, so the
-            // caller doesn't need to reconcile.
+            // RES-160: first-match wins.
             Pattern::Or(branches) => {
                 for b in branches {
-                    if let Some(binding) = self.match_pattern(b, value)? {
-                        return Ok(Some(binding));
+                    if let Some(bindings) = self.match_pattern(b, value)? {
+                        return Ok(Some(bindings));
                     }
                 }
                 Ok(None)
+            }
+            // RES-161a: `name @ inner` — bind the scrutinee to `name`
+            // and then run the inner pattern. Both bindings are returned.
+            Pattern::Bind(name, inner) => {
+                match self.match_pattern(inner, value)? {
+                    None => Ok(None), // inner pattern didn't match
+                    Some(mut inner_bindings) => {
+                        inner_bindings.push((name.clone(), value.clone()));
+                        Ok(Some(inner_bindings))
+                    }
+                }
             }
         }
     }
@@ -10026,7 +10052,7 @@ mod tests {
         for entry in fs::read_dir(&examples_dir).expect("read examples/") {
             let entry = entry.expect("readable dir entry");
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            if path.extension().and_then(|s| s.to_str()) != Some("res") {
                 continue;
             }
             base.push_str(&fs::read_to_string(&path).expect("read example"));
@@ -10194,7 +10220,7 @@ mod tests {
         for entry in entries {
             let entry = entry.expect("readable dir entry");
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            if path.extension().and_then(|s| s.to_str()) != Some("res") {
                 continue;
             }
             let src = fs::read_to_string(&path)
@@ -10238,7 +10264,7 @@ mod tests {
 
         assert!(
             checked > 0,
-            "no .rs examples found under {}",
+            "no .res examples found under {}",
             examples_dir.display(),
         );
     }
@@ -14336,6 +14362,76 @@ mod tests {
         // `n` should NOT be visible outside the match arm.
         assert!(interp.env.get("n").is_none());
         assert!(matches!(interp.env.get("m").unwrap(), Value::Int(2)));
+    }
+
+    // --- RES-161a: bind-subpattern @ ---
+
+    #[test]
+    fn bind_pattern_wildcard_binds_outer() {
+        // `x @ _` always matches; `x` is bound to the scrutinee.
+        let src = "let r = match 42 { x @ _ => x + 1, };";
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(43)));
+    }
+
+    #[test]
+    fn bind_pattern_literal_binds_outer_on_match() {
+        // `x @ 5` matches only when scrutinee == 5; `x` is bound.
+        let src = r#"
+            let r = match 5 {
+                x @ 5 => x * 2,
+                _ => 0,
+            };
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(10)));
+    }
+
+    #[test]
+    fn bind_pattern_literal_falls_through_on_mismatch() {
+        let src = r#"
+            let r = match 7 {
+                x @ 5 => x * 2,
+                _ => 99,
+            };
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(99)));
+    }
+
+    #[test]
+    fn bind_pattern_outer_accessible_in_guard() {
+        // Guard can reference the outer binding.
+        let src = r#"
+            let r = match 10 {
+                x @ _ if x > 5 => x,
+                _ => 0,
+            };
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(10)));
+    }
+
+    #[test]
+    fn bind_pattern_does_not_leak_outside_arm() {
+        let src = r#"
+            let r = match 3 { x @ _ => x, };
+            let outer = 99;
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        // `x` must not leak out of the match arm.
+        assert!(interp.env.get("x").is_none());
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(3)));
     }
 
     // ---------- Structs (RES-038) ----------

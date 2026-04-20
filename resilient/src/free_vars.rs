@@ -332,6 +332,11 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
                 bind_pattern(b, bound);
             }
         }
+        // RES-161a: outer name + whatever the inner pattern binds.
+        Pattern::Bind(outer, inner) => {
+            bound.insert(outer.clone());
+            bind_pattern(inner, bound);
+        }
     }
 }
 
