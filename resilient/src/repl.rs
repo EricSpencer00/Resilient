@@ -1,12 +1,16 @@
 // Enhanced REPL for Resilient language
-use crate::{Lexer, Parser, Value};
 use crate::typechecker;
+use crate::{Lexer, Parser, Value};
+use rustyline::config::Configurer as _;
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+/// Maximum number of history entries retained across sessions.
+const HISTORY_LIMIT: usize = 1000;
 
 // ANSI color codes for syntax highlighting
 const RESET: &str = "\x1B[0m";
@@ -39,10 +43,16 @@ impl EnhancedREPL {
     /// Pass `Some(dir)` to wire `--examples-dir <DIR>` from the driver;
     /// pass `None` to keep the original hardcoded-snippet behavior.
     pub fn with_examples_dir(examples_dir: Option<PathBuf>) -> Self {
-        // Load history path from environment
-        let history_path = match env::var("HOME") {
-            Ok(home) => Path::new(&home).join(".resilient_history"),
-            Err(_) => Path::new(".resilient_history").to_path_buf(),
+        // Resolve history file path: RESILIENT_HISTORY overrides the default
+        // ~/.resilient_history location.  HOME expansion is done explicitly —
+        // no shell glob expansion is performed.
+        let history_path = if let Ok(explicit) = env::var("RESILIENT_HISTORY") {
+            PathBuf::from(explicit)
+        } else {
+            match env::var("HOME") {
+                Ok(home) => Path::new(&home).join(".resilient_history"),
+                Err(_) => Path::new(".resilient_history").to_path_buf(),
+            }
         };
 
         EnhancedREPL {
@@ -55,18 +65,29 @@ impl EnhancedREPL {
 
     pub fn run(&mut self) -> RustylineResult<()> {
         let mut rl = DefaultEditor::new()?;
+        // Cap the in-memory ring buffer at HISTORY_LIMIT entries.
+        rl.set_max_history_size(HISTORY_LIMIT)?;
 
-        // Load command history
+        // Load persisted history.  A missing file is expected on first run —
+        // skip silently.  Any other read error is surfaced as a warning.
         if self.history_path.exists()
             && let Err(err) = rl.load_history(&self.history_path)
         {
-            eprintln!("Error loading history: {}", err);
+            eprintln!(
+                "warning: could not load REPL history from {}: {}",
+                self.history_path.display(),
+                err
+            );
         }
 
-        println!("{}Resilient Programming Language REPL (v0.1.0){}",
-                 CYAN, RESET);
-        println!("Type '{}help{}' for command list, '{}exit{}' to quit",
-                 GREEN, RESET, RED, RESET);
+        println!(
+            "{}Resilient Programming Language REPL (v0.1.0){}",
+            CYAN, RESET
+        );
+        println!(
+            "Type '{}help{}' for command list, '{}exit{}' to quit",
+            GREEN, RESET, RED, RESET
+        );
 
         loop {
             // Create prompt with type checking indicator
@@ -93,15 +114,15 @@ impl EnhancedREPL {
 
                     // Process the input
                     self.process_input(input);
-                },
+                }
                 Err(ReadlineError::Interrupted) => {
                     println!("CTRL-C");
                     break;
-                },
+                }
                 Err(ReadlineError::Eof) => {
                     println!("CTRL-D");
                     break;
-                },
+                }
                 Err(err) => {
                     eprintln!("Error: {}", err);
                     break;
@@ -109,9 +130,13 @@ impl EnhancedREPL {
             }
         }
 
-        // Save history
+        // Persist history — a write failure is non-fatal.
         if let Err(err) = rl.save_history(&self.history_path) {
-            eprintln!("Error saving history: {}", err);
+            eprintln!(
+                "warning: could not save REPL history to {}: {}",
+                self.history_path.display(),
+                err
+            );
         }
 
         Ok(())
@@ -123,30 +148,32 @@ impl EnhancedREPL {
             "exit" | "quit" => {
                 println!("Exiting Resilient REPL");
                 std::process::exit(0);
-            },
+            }
             "help" => {
                 self.show_help();
                 return;
-            },
+            }
             "clear" => {
                 print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
                 io::stdout().flush().unwrap();
                 return;
-            },
+            }
             "typecheck" => {
                 self.type_check_enabled = !self.type_check_enabled;
-                println!("Type checking {}",
-                         if self.type_check_enabled {
-                             format!("{}enabled{}", GREEN, RESET)
-                         } else {
-                             format!("{}disabled{}", YELLOW, RESET)
-                         });
+                println!(
+                    "Type checking {}",
+                    if self.type_check_enabled {
+                        format!("{}enabled{}", GREEN, RESET)
+                    } else {
+                        format!("{}disabled{}", YELLOW, RESET)
+                    }
+                );
                 return;
-            },
+            }
             "examples" => {
                 self.show_examples();
                 return;
-            },
+            }
             _ => {}
         }
 
@@ -188,7 +215,7 @@ impl EnhancedREPL {
                 if !matches!(value, Value::Void) {
                     println!("{}{}{}", CYAN, value, RESET);
                 }
-            },
+            }
             Err(error) => {
                 eprintln!("{}Error: {}{}", RED, error, RESET);
             }
@@ -210,21 +237,39 @@ impl EnhancedREPL {
                 GREEN, RESET
             );
         } else {
-            println!("  {}examples{}   - Show example code snippets", GREEN, RESET);
+            println!(
+                "  {}examples{}   - Show example code snippets",
+                GREEN, RESET
+            );
         }
-        println!("  {}typecheck{}  - Toggle type checking (currently {})",
-                 GREEN, RESET,
-                 if self.type_check_enabled {
-                     format!("{}enabled{}", GREEN, RESET)
-                 } else {
-                     format!("{}disabled{}", YELLOW, RESET)
-                 });
+        println!(
+            "  {}typecheck{}  - Toggle type checking (currently {})",
+            GREEN,
+            RESET,
+            if self.type_check_enabled {
+                format!("{}enabled{}", GREEN, RESET)
+            } else {
+                format!("{}disabled{}", YELLOW, RESET)
+            }
+        );
 
         println!("\n{}Resilient Language Syntax:{}", CYAN, RESET);
-        println!("  {}fn name(type param) {{ ... }}{}  - Define a function", YELLOW, RESET);
-        println!("  {}let name = value;{}       - Declare a variable", YELLOW, RESET);
-        println!("  {}live {{ ... }}{}             - Define a live block", YELLOW, RESET);
-        println!("  {}assert(condition, \"msg\");{}  - Add an assertion", YELLOW, RESET);
+        println!(
+            "  {}fn name(type param) {{ ... }}{}  - Define a function",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}let name = value;{}       - Declare a variable",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}live {{ ... }}{}             - Define a live block",
+            YELLOW, RESET
+        );
+        println!(
+            "  {}assert(condition, \"msg\");{}  - Add an assertion",
+            YELLOW, RESET
+        );
     }
 
     fn show_examples(&self) {
@@ -297,7 +342,10 @@ impl EnhancedREPL {
             Err(_) => {
                 eprintln!(
                     "{}examples: no such file '{}' in {}{}",
-                    RED, name, dir.display(), RESET
+                    RED,
+                    name,
+                    dir.display(),
+                    RESET
                 );
             }
         }
@@ -307,16 +355,12 @@ impl EnhancedREPL {
     /// so unit tests can assert on it without fighting stdout capture.
     /// Sorted alphabetically; one basename per line.
     pub(crate) fn list_examples_in(dir: &Path) -> Result<String, String> {
-        let entries = fs::read_dir(dir)
-            .map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
         let mut names: Vec<String> = entries
             .flatten()
-            .filter(|e| {
-                e.path().extension().and_then(|s| s.to_str()) == Some("res")
-            })
-            .filter_map(|e| {
-                e.file_name().into_string().ok()
-            })
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("res"))
+            .filter_map(|e| e.file_name().into_string().ok())
             .collect();
         names.sort();
         let mut out = String::new();
@@ -334,11 +378,7 @@ mod tests {
     use super::*;
 
     fn make_tmp(label: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "res_026_{}_{}",
-            label,
-            std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("res_026_{}_{}", label, std::process::id()));
         // Wipe any leftover from a prior run so each test starts clean.
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).expect("create tmp dir");
@@ -358,11 +398,7 @@ mod tests {
             "missing alpha.res:\n{}",
             listing
         );
-        assert!(
-            listing.contains("foo.res"),
-            "missing foo.res:\n{}",
-            listing
-        );
+        assert!(listing.contains("foo.res"), "missing foo.res:\n{}", listing);
         assert!(
             !listing.contains("ignored.txt"),
             "non-.res file should be filtered:\n{}",
@@ -380,8 +416,7 @@ mod tests {
     fn list_examples_in_errors_cleanly_on_missing_dir() {
         let bogus = std::env::temp_dir().join("res_026_definitely_not_here");
         let _ = fs::remove_dir_all(&bogus);
-        let err = EnhancedREPL::list_examples_in(&bogus)
-            .expect_err("missing dir must error");
+        let err = EnhancedREPL::list_examples_in(&bogus).expect_err("missing dir must error");
         assert!(err.contains("could not read"), "got: {}", err);
     }
 
@@ -397,5 +432,48 @@ mod tests {
     fn default_constructor_leaves_examples_dir_unset() {
         let repl = EnhancedREPL::new();
         assert!(repl.examples_dir.is_none());
+    }
+
+    #[test]
+    fn history_limit_constant_is_1000() {
+        assert_eq!(HISTORY_LIMIT, 1000);
+    }
+
+    #[test]
+    fn resilient_history_env_overrides_default_path() {
+        // Safety: env mutation is process-global; test is single-threaded by
+        // default within this module.  The override is removed before the
+        // function returns so other tests see the original environment.
+        let custom = std::env::temp_dir().join("res_224_custom_history");
+        // SAFETY: test-only env mutation; no other threads read this var.
+        unsafe {
+            std::env::set_var("RESILIENT_HISTORY", custom.to_str().unwrap());
+        }
+        let repl = EnhancedREPL::new();
+        let result = repl.history_path.clone();
+        // SAFETY: test-only env mutation; undoing the set above.
+        unsafe {
+            std::env::remove_var("RESILIENT_HISTORY");
+        }
+        assert_eq!(
+            result, custom,
+            "RESILIENT_HISTORY env var must override default path"
+        );
+    }
+
+    #[test]
+    fn default_history_path_uses_home() {
+        // Ensure RESILIENT_HISTORY is absent for this test.
+        // SAFETY: test-only env mutation; no other threads read this var.
+        unsafe {
+            std::env::remove_var("RESILIENT_HISTORY");
+        }
+        let repl = EnhancedREPL::new();
+        let path_str = repl.history_path.to_string_lossy().to_string();
+        assert!(
+            path_str.ends_with(".resilient_history"),
+            "default path must end with .resilient_history, got: {}",
+            path_str
+        );
     }
 }

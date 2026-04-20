@@ -1,11 +1,12 @@
 ---
 id: RES-224
 title: REPL history persistence — save/load ~/.resilient_history
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G11
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude
 ---
 
 ## Summary
