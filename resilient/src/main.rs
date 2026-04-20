@@ -2747,10 +2747,217 @@ impl Parser {
         })
     }
 
-    /// Stub — real implementation lands in Task 3.
+    /// FFI v1: parse one `extern fn` declaration.
+    ///
+    /// Grammar:
+    /// ```text
+    /// extern_decl = `@trusted`?
+    ///               `fn` NAME `(` params `)` `->` TYPE
+    ///               (`=` STRING_LIT)?
+    ///               requires_clause* ensures_clause*
+    ///               `;`
+    /// ```
     fn parse_extern_decl(&mut self) -> Option<ExternDecl> {
-        self.record_error("FFI: extern fn declarations not yet implemented".to_string());
-        None
+        // Optional `@trusted` prefix.
+        let mut trusted = false;
+        if matches!(self.current_token, Token::At) {
+            self.next_token(); // skip `@`
+            match &self.current_token {
+                Token::Identifier(id) if id == "trusted" => {
+                    trusted = true;
+                    self.next_token(); // skip `trusted`
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "unknown attribute in extern block: @{}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        }
+
+        // `fn`
+        let decl_span = self.span_at_current();
+        if !matches!(self.current_token, Token::Function) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `fn` inside extern block, got {}",
+                tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `fn`
+
+        // Function name.
+        let resilient_name = match &self.current_token {
+            Token::Identifier(n) => {
+                let n = n.clone();
+                self.next_token();
+                n
+            }
+            other => {
+                let tok = other.clone();
+                self.record_error(format!("expected fn name, got {}", tok));
+                return None;
+            }
+        };
+
+        // `(` — required.
+        if !matches!(self.current_token, Token::LeftParen) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `(` after extern fn name `{}`, got {}",
+                resilient_name, tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `(`
+
+        // Parameter list — extern fn uses `name: Type` (not `Type name`).
+        let parameters = self.parse_extern_fn_parameters();
+
+        // Return type `-> T`. Required for extern fns.
+        if !matches!(self.current_token, Token::Arrow) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "extern fn `{}` requires an explicit `-> TYPE` return annotation, got {}",
+                resilient_name, tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `->`
+        let return_type = match self.parse_type_annotation("after '->' in extern fn") {
+            Some(t) => t,
+            None => return None,
+        };
+
+        // Optional `= "c_name"` alias.
+        let c_name = if matches!(self.current_token, Token::Assign) {
+            self.next_token(); // skip `=`
+            match &self.current_token {
+                Token::StringLiteral(s) => {
+                    let s = s.clone();
+                    self.next_token();
+                    s
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "expected string literal after `=` (C symbol name), got {}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        } else {
+            resilient_name.clone()
+        };
+
+        // Optional `requires(...)` / `ensures(...)` clauses.
+        let (requires, ensures) = self.parse_function_contracts();
+
+        // Terminator `;`.
+        if !matches!(self.current_token, Token::Semicolon) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `;` at end of extern fn declaration, got {}",
+                tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `;`
+
+        Some(ExternDecl {
+            resilient_name,
+            c_name,
+            parameters,
+            return_type,
+            requires,
+            ensures,
+            trusted,
+            span: decl_span,
+        })
+    }
+
+    /// FFI v1: parse `name: Type` parameter list for extern fn declarations.
+    ///
+    /// This differs from `parse_function_parameters` (which uses `Type name`
+    /// order). Extern fn declarations use the `name: Type` convention to match
+    /// conventional FFI binding style. Result tuple is `(type, name)` to stay
+    /// consistent with `Node::Function::parameters`.
+    ///
+    /// On entry `current_token` is the first token after `(` (i.e., the `(`
+    /// has already been consumed by the caller). On exit `current_token` is
+    /// the token after `)`.
+    fn parse_extern_fn_parameters(&mut self) -> Vec<(String, String)> {
+        let mut parameters = Vec::new();
+
+        // Empty param list: `()`.
+        if matches!(self.current_token, Token::RightParen) {
+            self.next_token(); // skip `)`
+            return parameters;
+        }
+
+        loop {
+            // Param name.
+            let param_name = match &self.current_token {
+                Token::Identifier(n) => {
+                    let n = n.clone();
+                    self.next_token();
+                    n
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "expected parameter name in extern fn, got {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+
+            // `:`.
+            if !matches!(self.current_token, Token::Colon) {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "expected `:` after parameter name `{}` in extern fn, got {}",
+                    param_name, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip `:`
+
+            // Type.
+            let param_type = match self.parse_type_annotation("in extern fn parameter") {
+                Some(t) => t,
+                None => break,
+            };
+
+            parameters.push((param_type, param_name));
+
+            match &self.current_token {
+                Token::Comma => {
+                    self.next_token(); // skip `,`
+                }
+                Token::RightParen => break,
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "expected `,` or `)` in extern fn parameters, got {}",
+                        tok
+                    ));
+                    break;
+                }
+            }
+        }
+
+        // Consume `)`.
+        if matches!(self.current_token, Token::RightParen) {
+            self.next_token();
+        }
+        parameters
     }
 
     fn parse_return_statement(&mut self) -> Node {
@@ -9273,6 +9480,78 @@ mod tests {
             }
             other => panic!("expected Node::Extern, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parses_extern_fn_with_primitive_types() {
+        let src = r#"extern "libm.so.6" { fn sqrt(x: Float) -> Float; }"#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].resilient_name, "sqrt");
+        assert_eq!(decls[0].c_name, "sqrt");
+        assert_eq!(decls[0].parameters, vec![("Float".into(), "x".into())]);
+        assert_eq!(decls[0].return_type, "Float");
+    }
+
+    #[test]
+    fn parses_extern_fn_with_c_name_alias() {
+        let src = r#"extern "libm.so.6" { fn sine(x: Float) -> Float = "sin"; }"#;
+        let (program, _) = crate::parse(src);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(decls[0].resilient_name, "sine");
+        assert_eq!(decls[0].c_name, "sin");
+    }
+
+    #[test]
+    fn parses_extern_fn_with_contracts() {
+        let src = r#"
+            extern "libm.so.6" {
+                fn sqrt(x: Float) -> Float
+                    requires x >= 0.0
+                    ensures result >= 0.0;
+            }
+        "#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(decls[0].requires.len(), 1);
+        assert_eq!(decls[0].ensures.len(), 1);
+        assert!(!decls[0].trusted);
+    }
+
+    #[test]
+    fn parses_trusted_extern_fn() {
+        let src = r#"extern "libfoo" { @trusted fn f() -> Int; }"#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert!(decls[0].trusted);
     }
 
     /// Lex the entire input into a Vec<Token>, stopping at (and including) Eof.
