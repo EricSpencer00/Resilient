@@ -8,21 +8,21 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 // Import modules
-mod typechecker;
-mod repl;
-mod span;
-mod imports;
 mod bytecode;
 mod compiler;
 mod disasm;
-mod peephole;
-mod vm;
-#[cfg(feature = "z3")]
-mod verifier_z3;
-#[cfg(feature = "lsp")]
-mod lsp_server;
+mod imports;
 #[cfg(feature = "jit")]
 mod jit_backend;
+#[cfg(feature = "lsp")]
+mod lsp_server;
+mod peephole;
+mod repl;
+mod span;
+mod typechecker;
+#[cfg(feature = "z3")]
+mod verifier_z3;
+mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
 // authoritative until RES-109 benchmarks land.
@@ -117,7 +117,7 @@ enum Token {
     Impl,
     /// RES-128: `type <Name> = <Target>;` non-nominal alias.
     Type,
-    
+
     // Literals
     Identifier(String),
     IntLiteral(i64),
@@ -132,7 +132,7 @@ enum Token {
     /// Unicode code-point at the bytes level) pass through as the
     /// literal two bytes `\` + char — see ticket Notes.
     BytesLiteral(Vec<u8>),
-    
+
     // Operators
     Plus,
     Minus,
@@ -153,7 +153,7 @@ enum Token {
     Less,
     GreaterEqual,
     LessEqual,
-    
+
     // Delimiters
     LeftParen,
     RightParen,
@@ -169,7 +169,7 @@ enum Token {
     Comma,
     Semicolon,
     Colon,
-    
+
     /// Prefix logical-not.
     Bang,
     /// RES-191: attribute prefix — `@pure`, `@inline`, etc. Only
@@ -406,7 +406,7 @@ impl Lexer {
         self.position = self.read_position;
         self.read_position += 1;
     }
-    
+
     fn peek_char(&self) -> char {
         if self.read_position >= self.input.len() {
             '\0'
@@ -414,7 +414,7 @@ impl Lexer {
             self.input[self.read_position]
         }
     }
-    
+
     fn next_token(&mut self) -> Token {
         // RES-108: under the `logos-lexer` feature, drain the pre-
         // scanned stream. Each pop also updates the legacy line/col
@@ -440,7 +440,7 @@ impl Lexer {
         self.last_token_line = self.line;
         self.last_token_column = self.column;
         self.last_token_offset = self.position;
-        
+
         let token = match self.ch {
             '=' => {
                 if self.peek_char() == '=' {
@@ -452,7 +452,7 @@ impl Lexer {
                 } else {
                     Token::Assign
                 }
-            },
+            }
             '+' => Token::Plus,
             '-' => {
                 if self.peek_char() == '>' {
@@ -461,7 +461,7 @@ impl Lexer {
                 } else {
                     Token::Minus
                 }
-            },
+            }
             '*' => Token::Multiply,
             '%' => Token::Modulo,
             '&' => {
@@ -471,7 +471,7 @@ impl Lexer {
                 } else {
                     Token::BitAnd
                 }
-            },
+            }
             '|' => {
                 if self.peek_char() == '|' {
                     self.read_char();
@@ -479,7 +479,7 @@ impl Lexer {
                 } else {
                     Token::BitOr
                 }
-            },
+            }
             '^' => Token::BitXor,
             '/' => {
                 if self.peek_char() == '/' {
@@ -509,7 +509,7 @@ impl Lexer {
                 } else {
                     Token::Divide
                 }
-            },
+            }
             '>' => {
                 if self.peek_char() == '=' {
                     self.read_char();
@@ -520,7 +520,7 @@ impl Lexer {
                 } else {
                     Token::Greater
                 }
-            },
+            }
             '<' => {
                 if self.peek_char() == '=' {
                     self.read_char();
@@ -531,7 +531,7 @@ impl Lexer {
                 } else {
                     Token::Less
                 }
-            },
+            }
             '!' => {
                 if self.peek_char() == '=' {
                     self.read_char();
@@ -539,7 +539,7 @@ impl Lexer {
                 } else {
                     Token::Bang
                 }
-            },
+            }
             '(' => Token::LeftParen,
             ')' => Token::RightParen,
             '{' => Token::LeftBrace,
@@ -555,7 +555,7 @@ impl Lexer {
                 // `self.read_char()` at the end of `next_token`
                 // advances past it naturally.
                 Token::HashLeftBrace
-            },
+            }
             // RES-038: `.` is now a real token (field access). Numeric
             // literals are still fine because read_number consumes `.`
             // before the tokenizer can dispatch here — digit check
@@ -573,7 +573,7 @@ impl Lexer {
                 self.read_char();
                 let str_value = self.read_string();
                 Token::StringLiteral(str_value)
-            },
+            }
             // RES-152: `b"..."` byte-string literal. The guard on
             // the next char distinguishes from a bare identifier
             // that starts with `b` — ASCII letters still fall
@@ -583,7 +583,7 @@ impl Lexer {
                 self.read_char(); // consume `"`; self.ch is first content byte or closing `"`
                 let bytes = self.read_bytes();
                 Token::BytesLiteral(bytes)
-            },
+            }
             '\0' => Token::Eof,
             _ => {
                 if self.is_letter(self.ch) {
@@ -683,7 +683,7 @@ impl Lexer {
         }
         self.input[position..self.position].iter().collect()
     }
-    
+
     fn read_number(&mut self) -> Token {
         // Hex (0x...) and binary (0b...) integer literals first.
         if self.ch == '0' && (self.peek_char() == 'x' || self.peek_char() == 'X') {
@@ -745,7 +745,7 @@ impl Lexer {
             }
         }
     }
-    
+
     fn read_string(&mut self) -> String {
         let _position = self.position;
         let mut result = String::new();
@@ -762,6 +762,9 @@ impl Lexer {
                     'r' => result.push('\r'),
                     '\\' => result.push('\\'),
                     '"' => result.push('"'),
+                    // RES-221: `\{` escapes a literal `{` so it is not
+                    // treated as an interpolation hole opener.
+                    '{' => result.push('{'),
                     _ => {
                         // Invalid escape sequence, treat as literal
                         result.push('\\');
@@ -861,7 +864,7 @@ impl Lexer {
         }
         out
     }
-    
+
     fn is_letter(&self, ch: char) -> bool {
         // RES-114: ASCII-only identifier policy. Restrict to
         // `[A-Za-z_]` so homoglyph attacks (Cyrillic `kafa` vs
@@ -876,11 +879,11 @@ impl Lexer {
         // "identifier contains non-ASCII character".
         ch.is_ascii_alphabetic() || ch == '_'
     }
-    
+
     fn is_digit(&self, ch: char) -> bool {
         ch.is_ascii_digit()
     }
-    
+
     fn skip_whitespace(&mut self) {
         while self.ch.is_whitespace() {
             self.read_char();
@@ -934,7 +937,11 @@ pub struct BackoffConfig {
 impl BackoffConfig {
     /// Ticket defaults: `base_ms=1`, `factor=2`, `max_ms=100`.
     pub const fn default_ticket() -> Self {
-        Self { base_ms: 1, factor: 2, max_ms: 100 }
+        Self {
+            base_ms: 1,
+            factor: 2,
+            max_ms: 100,
+        }
     }
 
     /// Sleep duration for `retries` completed (retries=0 → first
@@ -1074,6 +1081,13 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-222: `invariant <expr>;` inside a `while` body. Checked at
+    /// loop entry (before the first iteration) and after each iteration.
+    /// A false result halts with "loop invariant violated at line:col".
+    InvariantStatement {
+        condition: Box<Node>,
+        span: span::Span,
+    },
     LetStatement {
         name: String,
         value: Box<Node>,
@@ -1160,10 +1174,7 @@ enum Node {
     },
     /// RES-078: identifiers carry source span so diagnostics can
     /// point at the referenced name.
-    Identifier {
-        name: String,
-        span: span::Span,
-    },
+    Identifier { name: String, span: span::Span },
     /// RES-078: literal nodes carry source span so diagnostics
     /// (typechecker, verifier, VM runtime errors) can point at the
     /// offending value. The fields are unused today — RES-079 and
@@ -1385,6 +1396,28 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-221: `"Hello, {name}!"` — string interpolation. `parts`
+    /// is an alternating sequence of literal string segments and
+    /// sub-expression nodes. Evaluates to a `Value::String` by
+    /// concatenating all parts in order (sub-expressions are
+    /// converted to string via the same coercion `println!` uses).
+    /// Escape `\{` in source to produce a literal `{` without
+    /// triggering interpolation.
+    StringInterpolation {
+        /// Alternating literal segments and interpolated expressions.
+        parts: Vec<StringPart>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+}
+
+/// RES-221: one segment of a `Node::StringInterpolation`.
+#[derive(Debug, Clone)]
+pub(crate) enum StringPart {
+    /// A run of literal characters (already escape-processed).
+    Literal(String),
+    /// An interpolated sub-expression: `{expr}`.
+    Expr(Box<Node>),
 }
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
@@ -1454,10 +1487,7 @@ impl Parser {
     /// Record an error, prefixing with the start of `current_token`
     /// so users see `line:col: Parser error: ...`.
     fn record_error(&mut self, msg: String) {
-        let full = format!(
-            "{}:{}: {}",
-            self.current_line, self.current_column, msg
-        );
+        let full = format!("{}:{}: {}", self.current_line, self.current_column, msg);
         eprintln!("\x1B[31mParser error: {}\x1B[0m", full);
         self.errors.push(full);
     }
@@ -1470,7 +1500,7 @@ impl Parser {
         self.peek_line = self.lexer.last_token_line;
         self.peek_column = self.lexer.last_token_column;
     }
-    
+
     fn parse_program(&mut self) -> Node {
         let mut program: Vec<span::Spanned<Node>> = Vec::new();
 
@@ -1481,28 +1511,18 @@ impl Parser {
             // the lexer's cursor at the moment the statement-recognizer
             // returned, which is close enough to the true end-of-stmt
             // for diagnostics (off by at most one whitespace token).
-            let start = span::Pos::new(
-                self.lexer.last_token_line,
-                self.lexer.last_token_column,
-                0,
-            );
+            let start = span::Pos::new(self.lexer.last_token_line, self.lexer.last_token_column, 0);
             if let Some(statement) = self.parse_statement() {
-                let end = span::Pos::new(
-                    self.lexer.last_token_line,
-                    self.lexer.last_token_column,
-                    0,
-                );
-                program.push(span::Spanned::new(
-                    statement,
-                    span::Span::new(start, end),
-                ));
+                let end =
+                    span::Pos::new(self.lexer.last_token_line, self.lexer.last_token_column, 0);
+                program.push(span::Spanned::new(statement, span::Span::new(start, end)));
             }
             self.next_token();
         }
 
         Node::Program(program)
     }
-    
+
     fn parse_statement(&mut self) -> Option<Node> {
         match self.current_token {
             // RES-191: `@pure` (and future attributes) prefix a
@@ -1521,6 +1541,8 @@ impl Parser {
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
             Token::Assume => Some(self.parse_assume()),
+            // RES-222: `invariant <expr>;` — loop invariant statement.
+            Token::Invariant => Some(self.parse_invariant_statement()),
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
@@ -1552,8 +1574,7 @@ impl Parser {
             // `IDENT.field.more = EXPR;`. We let the expression parser
             // build the full LHS, then disambiguate at the `=`.
             Token::Identifier(_)
-                if self.peek_token == Token::LeftBracket
-                    || self.peek_token == Token::Dot =>
+                if self.peek_token == Token::LeftBracket || self.peek_token == Token::Dot =>
             {
                 Some(self.parse_maybe_index_assignment())
             }
@@ -1566,14 +1587,18 @@ impl Parser {
     /// index. Entered with current_token = the leading Identifier.
     fn parse_maybe_index_assignment(&mut self) -> Node {
         // Parse the index expression (which consumes IDENT, [, index, ]).
-        let lhs = self
-            .parse_expression(0)
-            .unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
+        let lhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
         // If this is an assignment, peek should be `=`.
         if self.peek_token == Token::Assign {
             self.next_token(); // move onto '='
             self.next_token(); // skip '=' to first token of RHS
-            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
             if self.peek_token == Token::Semicolon {
                 self.next_token();
             }
@@ -1581,13 +1606,21 @@ impl Parser {
             // RES-085: pull span through so the Assignment node
             // inherits the LHS expression's span.
             match lhs {
-                Node::IndexExpression { target, index, span } => Node::IndexAssignment {
+                Node::IndexExpression {
+                    target,
+                    index,
+                    span,
+                } => Node::IndexAssignment {
                     target,
                     index,
                     value: Box::new(value),
                     span,
                 },
-                Node::FieldAccess { target, field, span } => Node::FieldAssignment {
+                Node::FieldAccess {
+                    target,
+                    field,
+                    span,
+                } => Node::FieldAssignment {
                     target,
                     field,
                     value: Box::new(value),
@@ -1617,7 +1650,10 @@ impl Parser {
         };
         self.next_token(); // move onto '='
         self.next_token(); // skip '=' to first token of RHS
-        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
@@ -1654,18 +1690,13 @@ impl Parser {
             Token::Identifier(n) => n.clone(),
             other => {
                 let tok = other.clone();
-                self.record_error(format!(
-                    "Expected attribute name after '@', found {}",
-                    tok
-                ));
+                self.record_error(format!("Expected attribute name after '@', found {}", tok));
                 // Best-effort: ignore the broken attribute, try to
                 // parse whatever follows as a normal statement.
-                return self
-                    .parse_statement()
-                    .unwrap_or(Node::IntegerLiteral {
-                        value: 0,
-                        span: span::Span::default(),
-                    });
+                return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                });
             }
         };
         self.next_token(); // skip attribute name
@@ -1673,10 +1704,7 @@ impl Parser {
         let pure_flag = match attr_name.as_str() {
             "pure" => true,
             other => {
-                self.record_error(format!(
-                    "Unknown attribute `@{}`. Known: @pure",
-                    other
-                ));
+                self.record_error(format!("Unknown attribute `@{}`. Known: @pure", other));
                 // Fall through — treat as if no attribute was
                 // present; the fn still parses.
                 false
@@ -1693,12 +1721,10 @@ impl Parser {
             ));
             // Best-effort recovery: parse whatever's next so the
             // rest of the file still parses.
-            return self
-                .parse_statement()
-                .unwrap_or(Node::IntegerLiteral {
-                    value: 0,
-                    span: span::Span::default(),
-                });
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
         }
 
         self.parse_function_with_pure(pure_flag)
@@ -1725,7 +1751,7 @@ impl Parser {
                 self.record_error(format!("Expected identifier after 'fn', found {}", tok));
                 // Return a placeholder to allow parsing to continue
                 String::from("error_function")
-            },
+            }
         };
 
         self.next_token(); // Skip name
@@ -1748,7 +1774,10 @@ impl Parser {
                 return Node::Function {
                     name,
                     parameters: Vec::new(),
-                    body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                    body: Box::new(Node::Block {
+                        stmts: Vec::new(),
+                        span: span::Span::default(),
+                    }),
                     requires: Vec::new(),
                     ensures: Vec::new(),
                     return_type: None,
@@ -1785,7 +1814,10 @@ impl Parser {
         let (requires, ensures) = self.parse_function_contracts();
 
         if self.current_token != Token::LeftBrace {
-            self.record_error(format!("Expected '{{' after function parameters for '{}'", name));
+            self.record_error(format!(
+                "Expected '{{' after function parameters for '{}'",
+                name
+            ));
             // Try to recover by skipping to the opening brace
             while self.current_token != Token::LeftBrace && self.current_token != Token::Eof {
                 self.next_token();
@@ -1795,7 +1827,10 @@ impl Parser {
                 return Node::Function {
                     name,
                     parameters,
-                    body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                    body: Box::new(Node::Block {
+                        stmts: Vec::new(),
+                        span: span::Span::default(),
+                    }),
                     requires,
                     ensures,
                     return_type,
@@ -1855,20 +1890,13 @@ impl Parser {
         }
 
         let mut methods: Vec<Node> = Vec::new();
-        while self.current_token != Token::RightBrace
-            && self.current_token != Token::Eof
-        {
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             if self.current_token != Token::Function {
                 let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected 'fn' inside impl block, found {}",
-                    tok
-                ));
+                self.record_error(format!("Expected 'fn' inside impl block, found {}", tok));
                 // Best-effort recovery: skip ahead to the closing brace
                 // so the whole parse doesn't cascade.
-                while self.current_token != Token::RightBrace
-                    && self.current_token != Token::Eof
-                {
+                while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
                     self.next_token();
                 }
                 break;
@@ -1887,7 +1915,11 @@ impl Parser {
         // `parse_program` loop advances past each statement's final
         // token, same as with `fn` / `struct` decls.
 
-        Node::ImplBlock { struct_name, methods, span: impl_span }
+        Node::ImplBlock {
+            struct_name,
+            methods,
+            span: impl_span,
+        }
     }
 
     /// RES-158: parse a single method inside an `impl` block. Returns
@@ -1912,10 +1944,7 @@ impl Parser {
         self.next_token(); // skip name
 
         if self.current_token != Token::LeftParen {
-            self.record_error(format!(
-                "Expected '(' after method name '{}'",
-                method_name
-            ));
+            self.record_error(format!("Expected '(' after method name '{}'", method_name));
         } else {
             self.next_token(); // skip '('
         }
@@ -1986,10 +2015,7 @@ impl Parser {
         let name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             other => {
-                self.record_error(format!(
-                    "Expected alias name after 'type', found {}",
-                    other
-                ));
+                self.record_error(format!("Expected alias name after 'type', found {}", other));
                 String::new()
             }
         };
@@ -1997,10 +2023,7 @@ impl Parser {
 
         if self.current_token != Token::Assign {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '=' after 'type {}', found {}",
-                name, tok
-            ));
+            self.record_error(format!("Expected '=' after 'type {}', found {}", name, tok));
         } else {
             self.next_token(); // skip '='
         }
@@ -2025,7 +2048,11 @@ impl Parser {
             self.next_token();
         }
 
-        Node::TypeAlias { name, target, span: kw_span }
+        Node::TypeAlias {
+            name,
+            target,
+            span: kw_span,
+        }
     }
 
     /// Parse an optional `-> TYPE`. If present, current_token advances
@@ -2037,7 +2064,7 @@ impl Parser {
         self.next_token(); // skip '->'
         // `parse_type_annotation` leaves current_token on the token
         // after the type. Nothing more to do here.
-        self.parse_type_annotation("after '->'") 
+        self.parse_type_annotation("after '->'")
     }
 
     /// RES-157a: parse a single type annotation starting at
@@ -2161,13 +2188,19 @@ impl Parser {
             match self.current_token {
                 Token::Requires => {
                     self.next_token(); // skip `requires`
-                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
                     self.next_token(); // move past last token of expression
                     requires.push(expr);
                 }
                 Token::Ensures => {
                     self.next_token();
-                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
                     self.next_token();
                     ensures.push(expr);
                 }
@@ -2176,7 +2209,7 @@ impl Parser {
         }
         (requires, ensures)
     }
-    
+
     /// RES-124 (RES-124a): parse an optional `<T, U, ...>`
     /// type-parameter list. On entry, `current_token` is what
     /// sits between `fn` and the function name. If it's `<`,
@@ -2232,12 +2265,12 @@ impl Parser {
 
     fn parse_function_parameters(&mut self) -> Vec<(String, String)> {
         let mut parameters = Vec::new();
-        
+
         if self.current_token == Token::RightParen {
             self.next_token(); // Skip ')'
             return parameters;
         }
-        
+
         while self.current_token != Token::RightParen {
             // RES-157a: accept `[T; N]` as well as bare identifiers.
             // `parse_type_annotation` advances past the whole type on
@@ -2272,11 +2305,11 @@ impl Parser {
                 break;
             }
         }
-        
+
         self.next_token(); // Skip ')'
         parameters
     }
-    
+
     fn parse_block_statement(&mut self) -> Node {
         // RES-087: capture the `{` token's span before advancing.
         let brace_span = self.span_at_current();
@@ -2291,9 +2324,12 @@ impl Parser {
             self.next_token();
         }
 
-        Node::Block { stmts: statements, span: brace_span }
+        Node::Block {
+            stmts: statements,
+            span: brace_span,
+        }
     }
-    
+
     /// `static let NAME = EXPR;` — parsed into a StaticLet node. The
     /// implementation just reuses parse_let_statement after consuming
     /// the `static` keyword and enforcing that `let` follows.
@@ -2319,14 +2355,23 @@ impl Parser {
             self.record_error(format!("Expected 'in' after 'for {}', found {}", name, tok));
             return Node::ForInStatement {
                 name,
-                iterable: Box::new(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() }),
-                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                iterable: Box::new(Node::ArrayLiteral {
+                    items: Vec::new(),
+                    span: span::Span::default(),
+                }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 invariants: Vec::new(),
                 span: stmt_span,
             };
         }
         self.next_token(); // skip 'in'
-        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral { items: Vec::new(), span: span::Span::default() });
+        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral {
+            items: Vec::new(),
+            span: span::Span::default(),
+        });
         self.next_token(); // advance past the expression's tail (RES-014 invariant)
 
         // RES-132a: collect any `invariant EXPR` clauses that sit between
@@ -2340,7 +2385,10 @@ impl Parser {
             return Node::ForInStatement {
                 name,
                 iterable: Box::new(iterable),
-                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 invariants,
                 span: stmt_span,
             };
@@ -2369,9 +2417,10 @@ impl Parser {
             // criteria syntax (`while (c) invariant (p) { ... }`).
             let expr = if self.current_token == Token::LeftParen {
                 self.next_token(); // skip `(`
-                let inner = self.parse_expression(0).unwrap_or(
-                    Node::BooleanLiteral { value: true, span: span::Span::default() }
-                );
+                let inner = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                });
                 self.next_token(); // move past tail of inner expression
                 if self.current_token != Token::RightParen {
                     let tok = self.current_token.clone();
@@ -2384,9 +2433,10 @@ impl Parser {
                 }
                 inner
             } else {
-                let inner = self.parse_expression(0).unwrap_or(
-                    Node::BooleanLiteral { value: true, span: span::Span::default() }
-                );
+                let inner = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                });
                 self.next_token(); // move past tail (RES-014 invariant)
                 inner
             };
@@ -2407,7 +2457,10 @@ impl Parser {
 
         let condition = if self.current_token == Token::LeftParen {
             self.next_token();
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                value: false,
+                span: span::Span::default(),
+            });
             self.next_token();
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
@@ -2417,7 +2470,10 @@ impl Parser {
             }
             expr
         } else {
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                value: false,
+                span: span::Span::default(),
+            });
             self.next_token();
             expr
         };
@@ -2428,10 +2484,16 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after while condition, found {}", tok));
+            self.record_error(format!(
+                "Expected '{{' after while condition, found {}",
+                tok
+            ));
             return Node::WhileStatement {
                 condition: Box::new(condition),
-                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 invariants,
                 span: stmt_span,
             };
@@ -2454,7 +2516,10 @@ impl Parser {
             self.record_error(format!("Expected 'let' after 'static', found {}", tok));
             return Node::StaticLet {
                 name: String::new(),
-                value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
+                value: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
                 span: stmt_span,
             };
         }
@@ -2462,7 +2527,9 @@ impl Parser {
         // returns a Node::LetStatement.
         let inner = self.parse_let_statement();
         match inner {
-            Node::LetStatement { name, value, span, .. } => Node::StaticLet { name, value, span },
+            Node::LetStatement {
+                name, value, span, ..
+            } => Node::StaticLet { name, value, span },
             other => other, // error paths return a degenerate LetStatement
         }
     }
@@ -2482,7 +2549,10 @@ impl Parser {
                 self.record_error(format!("Expected identifier after 'let', found {}", tok));
                 return Node::LetStatement {
                     name: String::new(),
-                    value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
+                    value: Box::new(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    }),
                     type_annot: None,
                     span: stmt_span,
                 };
@@ -2518,7 +2588,10 @@ impl Parser {
             ));
             return Node::LetStatement {
                 name,
-                value: Box::new(Node::IntegerLiteral { value: 0, span: span::Span::default() }),
+                value: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
                 type_annot,
                 span: stmt_span,
             };
@@ -2546,11 +2619,7 @@ impl Parser {
     /// consumed `let` and the `StructName` identifier). On exit,
     /// `current_token` sits on the last token of the value
     /// expression; `parse_statement` handles the trailing `;`.
-    fn parse_let_destructure_struct(
-        &mut self,
-        struct_name: String,
-        stmt_span: span::Span,
-    ) -> Node {
+    fn parse_let_destructure_struct(&mut self, struct_name: String, stmt_span: span::Span) -> Node {
         self.next_token(); // skip `{`
         let mut fields: Vec<(String, String)> = Vec::new();
         let mut has_rest = false;
@@ -2581,8 +2650,7 @@ impl Parser {
                     break;
                 } else {
                     self.record_error(
-                        "Expected `..` (two dots) for rest pattern, found single `.`"
-                            .to_string(),
+                        "Expected `..` (two dots) for rest pattern, found single `.`".to_string(),
                     );
                     break;
                 }
@@ -2671,12 +2739,10 @@ impl Parser {
             };
         }
         self.next_token(); // skip `=`
-        let value = self
-            .parse_expression(0)
-            .unwrap_or(Node::IntegerLiteral {
-                value: 0,
-                span: span::Span::default(),
-            });
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
 
         if self.peek_token == Token::Semicolon {
             self.next_token();
@@ -2700,8 +2766,7 @@ impl Parser {
             Token::StringLiteral(s) => s.clone(),
             _ => {
                 self.record_error(
-                    "Expected string literal after 'use' (e.g. `use \"helpers.res\";`)"
-                        .to_string(),
+                    "Expected string literal after 'use' (e.g. `use \"helpers.res\";`)".to_string(),
                 );
                 return None;
             }
@@ -2709,8 +2774,10 @@ impl Parser {
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
-        Some(Node::Use { path,
-            span: self.span_at_current() })
+        Some(Node::Use {
+            path,
+            span: self.span_at_current(),
+        })
     }
 
     /// FFI v1: `extern "lib" { decl; decl; ... }`.
@@ -2739,8 +2806,7 @@ impl Parser {
         if !matches!(self.current_token, Token::LeftBrace) {
             self.record_error(format!(
                 "expected `{{` after `extern \"{}\"`, got {}",
-                library,
-                self.current_token
+                library, self.current_token
             ));
             return None;
         }
@@ -2799,10 +2865,7 @@ impl Parser {
                 }
                 other => {
                     let tok = other.clone();
-                    self.record_error(format!(
-                        "unknown attribute in extern block: @{}",
-                        tok
-                    ));
+                    self.record_error(format!("unknown attribute in extern block: @{}", tok));
                     return None;
                 }
             }
@@ -2811,10 +2874,7 @@ impl Parser {
         // `fn`
         if !matches!(self.current_token, Token::Function) {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "expected `fn` inside extern block, got {}",
-                tok
-            ));
+            self.record_error(format!("expected `fn` inside extern block, got {}", tok));
             return None;
         }
         self.next_token(); // skip `fn`
@@ -2937,10 +2997,7 @@ impl Parser {
                 }
                 other => {
                     let tok = other.clone();
-                    self.record_error(format!(
-                        "expected parameter name in extern fn, got {}",
-                        tok
-                    ));
+                    self.record_error(format!("expected parameter name in extern fn, got {}", tok));
                     break;
                 }
             };
@@ -2996,14 +3053,18 @@ impl Parser {
             self.current_token,
             Token::Semicolon | Token::RightBrace | Token::Eof
         ) {
-            return Node::ReturnStatement { value: None, span: stmt_span };
+            return Node::ReturnStatement {
+                value: None,
+                span: stmt_span,
+            };
         }
 
         let value = match self.parse_expression(0) {
             Some(expr) => Some(Box::new(expr)),
             None => {
                 self.record_error(
-                    "Expected expression after 'return' (or write 'return;' for no value)".to_string()
+                    "Expected expression after 'return' (or write 'return;' for no value)"
+                        .to_string(),
                 );
                 None
             }
@@ -3013,9 +3074,12 @@ impl Parser {
             self.next_token(); // Skip to semicolon
         }
 
-        Node::ReturnStatement { value, span: stmt_span }
+        Node::ReturnStatement {
+            value,
+            span: stmt_span,
+        }
     }
-    
+
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
 
@@ -3031,8 +3095,7 @@ impl Parser {
                 Token::Identifier(n) if n == "backoff" => {
                     if backoff.is_some() {
                         self.record_error(
-                            "duplicate `backoff(...)` clause in live block"
-                                .to_string(),
+                            "duplicate `backoff(...)` clause in live block".to_string(),
                         );
                     }
                     let cfg = self.parse_backoff_kwargs();
@@ -3043,8 +3106,7 @@ impl Parser {
                 Token::Identifier(n) if n == "within" => {
                     if timeout.is_some() {
                         self.record_error(
-                            "duplicate `within <duration>` clause in live block"
-                                .to_string(),
+                            "duplicate `within <duration>` clause in live block".to_string(),
                         );
                     }
                     let dl = self.parse_within_clause();
@@ -3061,7 +3123,10 @@ impl Parser {
         let mut invariants = Vec::new();
         while self.current_token == Token::Invariant {
             self.next_token(); // skip `invariant`
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                value: true,
+                span: span::Span::default(),
+            });
             self.next_token(); // move past last token of the expression
             invariants.push(expr);
         }
@@ -3070,7 +3135,10 @@ impl Parser {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after 'live', found {}", tok));
             return Node::LiveBlock {
-                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 invariants,
                 backoff,
                 timeout,
@@ -3085,7 +3153,7 @@ impl Parser {
             invariants,
             backoff,
             timeout,
-            span: self.span_at_current()
+            span: self.span_at_current(),
         }
     }
 
@@ -3127,7 +3195,7 @@ impl Parser {
             "ns" => 1,
             "us" => 1_000,
             "ms" => 1_000_000,
-            "s"  => 1_000_000_000,
+            "s" => 1_000_000_000,
             other => {
                 self.record_error(format!(
                     "Unknown duration unit `{}` — expected one of `ns`, `us`, `ms`, `s`",
@@ -3144,7 +3212,10 @@ impl Parser {
         // trip).
         let nanos = raw.saturating_mul(per_unit_ns);
 
-        Some(Node::DurationLiteral { nanos, span: start_span })
+        Some(Node::DurationLiteral {
+            nanos,
+            span: start_span,
+        })
     }
 
     /// RES-139: parse `backoff(base_ms=N, factor=K, max_ms=M)` —
@@ -3161,10 +3232,7 @@ impl Parser {
         self.next_token(); // skip `backoff`
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '(' after 'backoff', found {}",
-                tok
-            ));
+            self.record_error(format!("Expected '(' after 'backoff', found {}", tok));
             return cfg;
         }
         self.next_token(); // skip '('
@@ -3247,15 +3315,18 @@ impl Parser {
         }
         cfg
     }
-    
+
     fn parse_assert(&mut self) -> Node {
         self.next_token(); // Skip 'assert'
-        
+
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '(' after 'assert', found {}", tok));
             return Node::Assert {
-                condition: Box::new(Node::BooleanLiteral { value: true, span: span::Span::default() }),
+                condition: Box::new(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                }),
                 message: None,
                 span: self.span_at_current(),
             };
@@ -3263,12 +3334,18 @@ impl Parser {
 
         self.next_token(); // Skip '('
 
-        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
+        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+            value: true,
+            span: span::Span::default(),
+        });
         self.next_token(); // RES-014: advance past last token of expression
 
         let message = if self.current_token == Token::Comma {
             self.next_token(); // Skip ','
-            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral { value: String::new(), span: span::Span::default() });
+            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral {
+                value: String::new(),
+                span: span::Span::default(),
+            });
             self.next_token(); // advance past last token of message expression
             Some(Box::new(msg))
         } else {
@@ -3282,11 +3359,11 @@ impl Parser {
                 tok
             ));
         }
-        
+
         Node::Assert {
             condition: Box::new(condition),
             message,
-            span: self.span_at_current()
+            span: self.span_at_current(),
         }
     }
 
@@ -3298,7 +3375,10 @@ impl Parser {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '(' after 'assume', found {}", tok));
             return Node::Assume {
-                condition: Box::new(Node::BooleanLiteral { value: true, span: span::Span::default() }),
+                condition: Box::new(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                }),
                 message: None,
                 span: self.span_at_current(),
             };
@@ -3306,12 +3386,18 @@ impl Parser {
 
         self.next_token(); // skip '('
 
-        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: true, span: span::Span::default() });
+        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+            value: true,
+            span: span::Span::default(),
+        });
         self.next_token(); // advance past last token of expression
 
         let message = if self.current_token == Token::Comma {
             self.next_token(); // skip ','
-            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral { value: String::new(), span: span::Span::default() });
+            let msg = self.parse_expression(0).unwrap_or(Node::StringLiteral {
+                value: String::new(),
+                span: span::Span::default(),
+            });
             self.next_token();
             Some(Box::new(msg))
         } else {
@@ -3320,13 +3406,43 @@ impl Parser {
 
         if self.current_token != Token::RightParen {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected ')' after assume condition, found {}", tok));
+            self.record_error(format!(
+                "Expected ')' after assume condition, found {}",
+                tok
+            ));
         }
 
         Node::Assume {
             condition: Box::new(condition),
             message,
             span: self.span_at_current(),
+        }
+    }
+
+    /// RES-222: `invariant <expr>;` — a loop invariant statement.
+    ///
+    /// After this function returns, `current_token` is pointing at the
+    /// last consumed token (the `;` if present, otherwise the last token
+    /// of the condition expression) — matching the convention for all
+    /// other `parse_*_statement` methods so the outer
+    /// `parse_block_statement` / `parse_program` loops' trailing
+    /// `next_token()` advances cleanly.
+    fn parse_invariant_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip 'invariant'
+
+        let condition = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+            value: true,
+            span: span::Span::default(),
+        });
+        // Advance past the last token of the expression (RES-014 convention).
+        // If the next token is `;`, we land on it and leave it for the
+        // outer loop's trailing `next_token()` to consume.
+        self.next_token();
+
+        Node::InvariantStatement {
+            condition: Box::new(condition),
+            span: stmt_span,
         }
     }
 
@@ -3341,36 +3457,39 @@ impl Parser {
         // must advance once to move past the expression's tail.
         let condition = if self.current_token == Token::LeftParen {
             self.next_token(); // Skip '('
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                value: false,
+                span: span::Span::default(),
+            });
             self.next_token(); // Advance past last-token-of-expression
 
             if self.current_token != Token::RightParen {
                 let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected ')' after if condition, found {}",
-                    tok
-                ));
+                self.record_error(format!("Expected ')' after if condition, found {}", tok));
             } else {
                 self.next_token(); // Skip ')'
             }
             expr
         } else {
-            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
+            let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                value: false,
+                span: span::Span::default(),
+            });
             self.next_token(); // Advance past last-token-of-expression
             expr
         };
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '{{' after if condition, found {}",
-                tok
-            ));
+            self.record_error(format!("Expected '{{' after if condition, found {}", tok));
             // Recover by returning a skeleton `if` with an empty body so
             // the rest of the file can still be parsed.
             return Node::IfStatement {
                 condition: Box::new(condition),
-                consequence: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                consequence: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 alternative: None,
                 span: stmt_span,
             };
@@ -3411,18 +3530,17 @@ impl Parser {
             self.next_token(); // Skip to semicolon
         }
 
-        Some(Node::ExpressionStatement { expr: Box::new(expr), span: stmt_span })
+        Some(Node::ExpressionStatement {
+            expr: Box::new(expr),
+            span: stmt_span,
+        })
     }
-    
+
     /// RES-078: build a single-position `Span` from the lexer's
     /// current `last_token_*` state — good enough for leaf nodes
     /// where the "source range" is just wherever the token starts.
     fn span_at_current(&self) -> span::Span {
-        let pos = span::Pos::new(
-            self.lexer.last_token_line,
-            self.lexer.last_token_column,
-            0,
-        );
+        let pos = span::Pos::new(self.lexer.last_token_line, self.lexer.last_token_column, 0);
         span::Span::new(pos, pos)
     }
 
@@ -3430,18 +3548,49 @@ impl Parser {
         // Parse prefix expressions
         let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
-            Token::Identifier(name) => Some(Node::Identifier { name: name.clone(), span: tok_span }),
-            Token::IntLiteral(value) => Some(Node::IntegerLiteral { value: *value, span: tok_span }),
-            Token::FloatLiteral(value) => Some(Node::FloatLiteral { value: *value, span: tok_span }),
-            Token::StringLiteral(value) => Some(Node::StringLiteral { value: value.clone(), span: tok_span }),
+            Token::Identifier(name) => Some(Node::Identifier {
+                name: name.clone(),
+                span: tok_span,
+            }),
+            Token::IntLiteral(value) => Some(Node::IntegerLiteral {
+                value: *value,
+                span: tok_span,
+            }),
+            Token::FloatLiteral(value) => Some(Node::FloatLiteral {
+                value: *value,
+                span: tok_span,
+            }),
+            // RES-221: if the string contains `{`, parse it as an
+            // interpolated string; otherwise it's a plain literal.
+            Token::StringLiteral(value) => {
+                let value = value.clone();
+                if value.contains('{') {
+                    self.parse_string_interpolation(&value, tok_span)
+                } else {
+                    Some(Node::StringLiteral {
+                        value,
+                        span: tok_span,
+                    })
+                }
+            }
             // RES-152: byte-string literal, lexed to Vec<u8>.
-            Token::BytesLiteral(value) => Some(Node::BytesLiteral { value: value.clone(), span: tok_span }),
-            Token::BoolLiteral(value) => Some(Node::BooleanLiteral { value: *value, span: tok_span }),
+            Token::BytesLiteral(value) => Some(Node::BytesLiteral {
+                value: value.clone(),
+                span: tok_span,
+            }),
+            Token::BoolLiteral(value) => Some(Node::BooleanLiteral {
+                value: *value,
+                span: tok_span,
+            }),
             // RES-012: prefix operators `!` and `-`. Precedence is higher
             // than any infix operator, so the operand consumes only the
             // tightest-binding next expression.
             Token::Bang | Token::Minus => {
-                let op = if self.current_token == Token::Bang { "!" } else { "-" };
+                let op = if self.current_token == Token::Bang {
+                    "!"
+                } else {
+                    "-"
+                };
                 // RES-084: capture the operator's span before
                 // advancing past it.
                 let op_span = self.span_at_current();
@@ -3466,7 +3615,7 @@ impl Parser {
                     ));
                 }
                 expr
-            },
+            }
             Token::LeftBracket => Some(self.parse_array_literal()),
             // RES-148: `{"k" -> v, ...}` in expression position parses
             // as a Map literal. Map literals are only valid in
@@ -3484,7 +3633,7 @@ impl Parser {
             Token::Function => Some(self.parse_function_literal()),
             _ => None,
         };
-        
+
         // Parse infix expressions
         while self.peek_token != Token::Semicolon && precedence < self.peek_precedence() {
             let Some(current_left) = left_expr else {
@@ -3493,26 +3642,39 @@ impl Parser {
                 return None;
             };
             left_expr = match &self.peek_token {
-                Token::Plus | Token::Minus | Token::Multiply | Token::Divide | Token::Modulo |
-                Token::Equal | Token::NotEqual | Token::Less | Token::Greater |
-                Token::LessEqual | Token::GreaterEqual | Token::And | Token::Or |
-                Token::BitAnd | Token::BitOr | Token::BitXor |
-                Token::ShiftLeft | Token::ShiftRight => {
+                Token::Plus
+                | Token::Minus
+                | Token::Multiply
+                | Token::Divide
+                | Token::Modulo
+                | Token::Equal
+                | Token::NotEqual
+                | Token::Less
+                | Token::Greater
+                | Token::LessEqual
+                | Token::GreaterEqual
+                | Token::And
+                | Token::Or
+                | Token::BitAnd
+                | Token::BitOr
+                | Token::BitXor
+                | Token::ShiftLeft
+                | Token::ShiftRight => {
                     self.next_token();
                     self.parse_infix_expression(current_left)
-                },
+                }
                 Token::LeftParen => {
                     self.next_token();
                     self.parse_call_expression(current_left)
-                },
+                }
                 Token::LeftBracket => {
                     self.next_token(); // move onto '['
                     self.parse_index_expression(current_left)
-                },
+                }
                 Token::Dot => {
                     self.next_token(); // move onto '.'
                     self.parse_field_access(current_left)
-                },
+                }
                 Token::Question => {
                     // Postfix `?` — consume it and wrap.
                     // RES-086: capture the `?` token's span before
@@ -3523,14 +3685,14 @@ impl Parser {
                         expr: Box::new(current_left),
                         span: q_span,
                     })
-                },
+                }
                 _ => Some(current_left),
             };
         }
-        
+
         left_expr
     }
-    
+
     fn parse_infix_expression(&mut self, left: Node) -> Option<Node> {
         let operator = match &self.current_token {
             Token::Plus => "+".to_string(),
@@ -3559,7 +3721,7 @@ impl Parser {
                 return None;
             }
         };
-        
+
         let precedence = self.current_precedence();
         // RES-084: capture the operator's span before advancing.
         let op_span = self.span_at_current();
@@ -3587,30 +3749,27 @@ impl Parser {
             span: call_span,
         })
     }
-    
+
     fn parse_call_arguments(&mut self) -> Vec<Node> {
         let mut args = Vec::new();
-        
+
         if self.peek_token == Token::RightParen {
             self.next_token();
             return args;
         }
-        
+
         self.next_token();
         args.push(self.parse_expression(0).unwrap());
-        
+
         while self.peek_token == Token::Comma {
             self.next_token(); // Skip current
             self.next_token(); // Skip comma
             args.push(self.parse_expression(0).unwrap());
         }
-        
+
         if self.peek_token != Token::RightParen {
             let tok = self.peek_token.clone();
-            self.record_error(format!(
-                "Expected ')' after call arguments, found {}",
-                tok
-            ));
+            self.record_error(format!("Expected ')' after call arguments, found {}", tok));
         } else {
             self.next_token(); // Skip to ')'
         }
@@ -3634,8 +3793,11 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after struct name, found {}", tok));
-            return Node::StructDecl { name, fields: Vec::new(),
-            span: self.span_at_current() };
+            return Node::StructDecl {
+                name,
+                fields: Vec::new(),
+                span: self.span_at_current(),
+            };
         }
         self.next_token(); // skip '{'
 
@@ -3651,7 +3813,10 @@ impl Parser {
                 Token::Identifier(n) => n.clone(),
                 _ => {
                     let tok = self.current_token.clone();
-                    self.record_error(format!("Expected field name after type '{}', found {}", ty, tok));
+                    self.record_error(format!(
+                        "Expected field name after type '{}', found {}",
+                        ty, tok
+                    ));
                     break;
                 }
             };
@@ -3669,8 +3834,11 @@ impl Parser {
                 break;
             }
         }
-        Node::StructDecl { name, fields,
-            span: self.span_at_current() }
+        Node::StructDecl {
+            name,
+            fields,
+            span: self.span_at_current(),
+        }
     }
 
     /// Parse `new NAME { field: expr, ... }`. current_token is `new`
@@ -3689,16 +3857,22 @@ impl Parser {
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after struct name, found {}", tok));
-            return Node::StructLiteral { name, fields: Vec::new(),
-            span: self.span_at_current() };
+            return Node::StructLiteral {
+                name,
+                fields: Vec::new(),
+                span: self.span_at_current(),
+            };
         }
 
         let mut fields: Vec<(String, Node)> = Vec::new();
 
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
-            return Node::StructLiteral { name, fields,
-            span: self.span_at_current() };
+            return Node::StructLiteral {
+                name,
+                fields,
+                span: self.span_at_current(),
+            };
         }
 
         self.next_token(); // skip '{'
@@ -3727,9 +3901,7 @@ impl Parser {
             // same name. The typechecker / interpreter stay
             // ignorant of the sugar; unknown-identifier diagnostics
             // surface naturally if the name isn't bound in scope.
-            if self.current_token == Token::Comma
-                || self.current_token == Token::RightBrace
-            {
+            if self.current_token == Token::Comma || self.current_token == Token::RightBrace {
                 let value = Node::Identifier {
                     name: fname.clone(),
                     span: fname_span,
@@ -3754,7 +3926,10 @@ impl Parser {
                 break;
             }
             self.next_token(); // skip ':'
-            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
             fields.push((fname, value));
             // parse_expression leaves current on the last token of the
             // expression; advance to move past it.
@@ -3777,8 +3952,11 @@ impl Parser {
                 break;
             }
         }
-        Node::StructLiteral { name, fields,
-            span: self.span_at_current() }
+        Node::StructLiteral {
+            name,
+            fields,
+            span: self.span_at_current(),
+        }
     }
 
     /// Parse an anonymous `fn(params) -> TYPE? requires/ensures? { body }`.
@@ -3786,13 +3964,13 @@ impl Parser {
         self.next_token(); // skip 'fn'
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '(' after anonymous 'fn', found {}",
-                tok
-            ));
+            self.record_error(format!("Expected '(' after anonymous 'fn', found {}", tok));
             return Node::FunctionLiteral {
                 parameters: Vec::new(),
-                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 return_type: None,
@@ -3805,13 +3983,13 @@ impl Parser {
         let (requires, ensures) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '{{' in anonymous fn, found {}",
-                tok
-            ));
+            self.record_error(format!("Expected '{{' in anonymous fn, found {}", tok));
             return Node::FunctionLiteral {
                 parameters,
-                body: Box::new(Node::Block { stmts: Vec::new(), span: span::Span::default() }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
                 requires,
                 ensures,
                 return_type,
@@ -3825,7 +4003,7 @@ impl Parser {
             requires,
             ensures,
             return_type,
-            span: self.span_at_current()
+            span: self.span_at_current(),
         }
     }
 
@@ -3833,16 +4011,22 @@ impl Parser {
     /// is `match` on entry; on exit it's `}`.
     fn parse_match_expression(&mut self) -> Node {
         self.next_token(); // skip 'match'
-        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral { value: false, span: span::Span::default() });
+        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+            value: false,
+            span: span::Span::default(),
+        });
         self.next_token(); // past last token of scrutinee
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after match scrutinee, found {}", tok));
+            self.record_error(format!(
+                "Expected '{{' after match scrutinee, found {}",
+                tok
+            ));
             return Node::Match {
                 scrutinee: Box::new(scrutinee),
                 arms: Vec::new(),
-            span: self.span_at_current()
+                span: self.span_at_current(),
             };
         }
 
@@ -3852,7 +4036,7 @@ impl Parser {
             return Node::Match {
                 scrutinee: Box::new(scrutinee),
                 arms,
-            span: self.span_at_current()
+                span: self.span_at_current(),
             };
         }
 
@@ -3866,9 +4050,10 @@ impl Parser {
             // a `false` guard falls through to the next arm.
             let guard = if self.current_token == Token::If {
                 self.next_token(); // past `if`
-                let g = self.parse_expression(0).unwrap_or(
-                    Node::BooleanLiteral { value: true, span: span::Span::default() }
-                );
+                let g = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                });
                 self.next_token(); // past last token of guard
                 Some(g)
             } else {
@@ -3877,14 +4062,14 @@ impl Parser {
 
             if self.current_token != Token::FatArrow {
                 let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected '=>' after match pattern, found {}",
-                    tok
-                ));
+                self.record_error(format!("Expected '=>' after match pattern, found {}", tok));
                 break;
             }
             self.next_token(); // skip '=>'
-            let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral { value: 0, span: span::Span::default() });
+            let body = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
             arms.push((pattern, guard, body));
             self.next_token(); // past last token of body
             if self.current_token == Token::Comma {
@@ -3902,7 +4087,7 @@ impl Parser {
         Node::Match {
             scrutinee: Box::new(scrutinee),
             arms,
-            span: self.span_at_current()
+            span: self.span_at_current(),
         }
     }
 
@@ -3942,10 +4127,22 @@ impl Parser {
             // unexpected-token error since `Token::Default` isn't
             // accepted anywhere else in the grammar.
             Token::Default => Pattern::Wildcard,
-            Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral { value: *n, span: tok_span }),
-            Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral { value: *f, span: tok_span }),
-            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral { value: s.clone(), span: tok_span }),
-            Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral { value: *b, span: tok_span }),
+            Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral {
+                value: *n,
+                span: tok_span,
+            }),
+            Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral {
+                value: *f,
+                span: tok_span,
+            }),
+            Token::StringLiteral(s) => Pattern::Literal(Node::StringLiteral {
+                value: s.clone(),
+                span: tok_span,
+            }),
+            Token::BoolLiteral(b) => Pattern::Literal(Node::BooleanLiteral {
+                value: *b,
+                span: tok_span,
+            }),
             Token::Identifier(name) => {
                 let name = name.clone();
                 // RES-161a: `name @ inner` bind-subpattern.
@@ -3963,10 +4160,7 @@ impl Parser {
             }
             other => {
                 let tok = other.clone();
-                self.record_error(format!(
-                    "Unsupported match pattern starting with {:?}",
-                    tok
-                ));
+                self.record_error(format!("Unsupported match pattern starting with {:?}", tok));
                 Pattern::Wildcard
             }
         }
@@ -4000,7 +4194,10 @@ impl Parser {
         let mut items = Vec::new();
         if self.peek_token == Token::RightBracket {
             self.next_token(); // to ]
-            return Node::ArrayLiteral { items, span: bracket_span };
+            return Node::ArrayLiteral {
+                items,
+                span: bracket_span,
+            };
         }
         self.next_token(); // skip '['
         if let Some(first) = self.parse_expression(0) {
@@ -4033,7 +4230,10 @@ impl Parser {
         } else {
             self.next_token(); // to ]
         }
-        Node::ArrayLiteral { items, span: bracket_span }
+        Node::ArrayLiteral {
+            items,
+            span: bracket_span,
+        }
     }
 
     /// RES-156: desugar `[<expr> for <binding> in <iterable> (if
@@ -4054,11 +4254,7 @@ impl Parser {
     /// the closing `]` so `parse_expression`'s tail handling works
     /// unchanged. `first_expr` is the already-parsed result
     /// expression.
-    fn parse_array_comprehension(
-        &mut self,
-        first_expr: Node,
-        bracket_span: span::Span,
-    ) -> Node {
+    fn parse_array_comprehension(&mut self, first_expr: Node, bracket_span: span::Span) -> Node {
         // Advance from the end of <expr> to `for`.
         self.next_token(); // current_token == Token::For
         self.next_token(); // past `for` to the binding identifier
@@ -4089,12 +4285,10 @@ impl Parser {
             self.next_token(); // past `in`
         }
 
-        let iterable = self
-            .parse_expression(0)
-            .unwrap_or(Node::ArrayLiteral {
-                items: Vec::new(),
-                span: span::Span::default(),
-            });
+        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral {
+            items: Vec::new(),
+            span: span::Span::default(),
+        });
 
         // Optional guard: `if <expr>`.
         let guard = if self.peek_token == Token::If {
@@ -4234,7 +4428,10 @@ impl Parser {
         // Empty map: `{}`.
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
-            return Node::MapLiteral { entries, span: brace_span };
+            return Node::MapLiteral {
+                entries,
+                span: brace_span,
+            };
         }
         self.next_token(); // step past '{'
         // First entry.
@@ -4253,14 +4450,14 @@ impl Parser {
         }
         if self.peek_token != Token::RightBrace {
             let tok = self.peek_token.clone();
-            self.record_error(format!(
-                "Expected '}}' to close map literal, found {}",
-                tok
-            ));
+            self.record_error(format!("Expected '}}' to close map literal, found {}", tok));
         } else {
             self.next_token(); // to '}'
         }
-        Node::MapLiteral { entries, span: brace_span }
+        Node::MapLiteral {
+            entries,
+            span: brace_span,
+        }
     }
 
     /// RES-149: parse a set literal — `#{1, 2, 3}`. `current_token`
@@ -4273,7 +4470,10 @@ impl Parser {
         // Empty: `#{}`.
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to `}`
-            return Node::SetLiteral { items, span: brace_span };
+            return Node::SetLiteral {
+                items,
+                span: brace_span,
+            };
         }
         self.next_token(); // step past `#{`
         // First item.
@@ -4292,14 +4492,14 @@ impl Parser {
         }
         if self.peek_token != Token::RightBrace {
             let tok = self.peek_token.clone();
-            self.record_error(format!(
-                "Expected '}}' to close set literal, found {}",
-                tok
-            ));
+            self.record_error(format!("Expected '}}' to close set literal, found {}", tok));
         } else {
             self.next_token(); // to `}`
         }
-        Node::SetLiteral { items, span: brace_span }
+        Node::SetLiteral {
+            items,
+            span: brace_span,
+        }
     }
 
     /// RES-148: parse a single `key -> value` pair. `current_token`
@@ -4367,7 +4567,7 @@ impl Parser {
             _ => 0,
         }
     }
-    
+
     fn peek_precedence(&self) -> u8 {
         match &self.peek_token {
             Token::Or => 1,
@@ -4386,6 +4586,147 @@ impl Parser {
             Token::Question => 12,
             _ => 0,
         }
+    }
+
+    /// RES-221: parse a string literal that contains `{expr}` holes.
+    ///
+    /// `raw` is the already-escape-processed string content (i.e. what
+    /// the lexer stored inside `Token::StringLiteral`). We split it on
+    /// unescaped `{` / `}` pairs, then spin up a fresh `Parser` for each
+    /// hole's content to produce the sub-expression AST.
+    ///
+    /// Literal `{` in the string is produced by writing `\{` in source,
+    /// which the lexer already converted to `{` — but to distinguish
+    /// from hole openers we need a sentinel. After `\{` → `{` in the
+    /// lexer, a plain `{` in the string IS an interpolation opener.
+    /// Therefore: any `{` in `raw` starts a hole; there is no way to
+    /// have a literal `{` after lexing (the lexer would have removed the
+    /// backslash). This is a deliberate design: `\{` → literal `{` and
+    /// unescaped `{` → hole opener.
+    fn parse_string_interpolation(&mut self, raw: &str, span: span::Span) -> Option<Node> {
+        let mut parts: Vec<StringPart> = Vec::new();
+        let mut chars = raw.chars().peekable();
+        let mut literal = String::new();
+
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                // Flush any accumulated literal segment.
+                if !literal.is_empty() {
+                    parts.push(StringPart::Literal(std::mem::take(&mut literal)));
+                }
+
+                // Collect the hole's source text up to the matching `}`.
+                let mut hole = String::new();
+                let mut depth = 0usize;
+                let mut found_close = false;
+                for inner in chars.by_ref() {
+                    match inner {
+                        '{' => {
+                            // Nested `{` is a parse error per ticket spec.
+                            self.record_error(
+                                "nested braces are not allowed inside a string \
+                                 interpolation hole; escape literal `{` as `\\{`"
+                                    .to_string(),
+                            );
+                            depth += 1;
+                            hole.push(inner);
+                        }
+                        '}' if depth > 0 => {
+                            depth -= 1;
+                            hole.push(inner);
+                        }
+                        '}' => {
+                            found_close = true;
+                            break;
+                        }
+                        _ => hole.push(inner),
+                    }
+                }
+
+                if !found_close {
+                    self.record_error(
+                        "unterminated string interpolation hole: missing `}`".to_string(),
+                    );
+                    return None;
+                }
+
+                // Parse the hole content as a Resilient expression.
+                let hole_src = hole.trim().to_string();
+                if hole_src.is_empty() {
+                    self.record_error(
+                        "empty interpolation hole `{}` — write an expression inside".to_string(),
+                    );
+                    return None;
+                }
+
+                let mut inner_lexer = Lexer::new(hole_src.clone());
+                let inner_tok = inner_lexer.next_token();
+                let inner_peek = inner_lexer.next_token();
+                let mut inner_parser = Parser {
+                    lexer: inner_lexer,
+                    current_token: inner_tok,
+                    peek_token: inner_peek,
+                    current_line: 0,
+                    current_column: 0,
+                    peek_line: 0,
+                    peek_column: 0,
+                    errors: Vec::new(),
+                    comprehension_counter: 0,
+                };
+                match inner_parser.parse_expression(0) {
+                    Some(expr) => {
+                        for e in inner_parser.errors {
+                            self.record_error(format!(
+                                "in string interpolation `{{{}}}`  : {}",
+                                hole_src, e
+                            ));
+                        }
+                        parts.push(StringPart::Expr(Box::new(expr)));
+                    }
+                    None => {
+                        for e in inner_parser.errors {
+                            self.record_error(format!(
+                                "in string interpolation `{{{}}}`  : {}",
+                                hole_src, e
+                            ));
+                        }
+                        self.record_error(format!(
+                            "failed to parse expression inside interpolation `{{{}}}`",
+                            hole_src
+                        ));
+                        return None;
+                    }
+                }
+            } else {
+                literal.push(c);
+            }
+        }
+
+        // Flush any trailing literal segment.
+        if !literal.is_empty() {
+            parts.push(StringPart::Literal(literal));
+        }
+
+        // Collapse all-literal interpolations to a plain StringLiteral
+        // (e.g. if the string had only escaped braces and no holes).
+        if parts.iter().all(|p| matches!(p, StringPart::Literal(_))) {
+            let combined: String = parts
+                .into_iter()
+                .map(|p| {
+                    if let StringPart::Literal(s) = p {
+                        s
+                    } else {
+                        unreachable!()
+                    }
+                })
+                .collect();
+            return Some(Node::StringLiteral {
+                value: combined,
+                span,
+            });
+        }
+
+        Some(Node::StringInterpolation { parts, span })
     }
 }
 
@@ -4833,11 +5174,15 @@ fn flatten_field_target(target: &Node, last_field: &str) -> (Option<String>, Vec
     let mut node = target;
     loop {
         match node {
-            Node::Identifier { name, .. } => return (Some(name.clone()), {
-                path.reverse();
-                path
-            }),
-            Node::FieldAccess { target: t, field, .. } => {
+            Node::Identifier { name, .. } => {
+                return (Some(name.clone()), {
+                    path.reverse();
+                    path
+                });
+            }
+            Node::FieldAccess {
+                target: t, field, ..
+            } => {
                 path.push(field.clone());
                 node = t;
             }
@@ -4857,9 +5202,10 @@ fn set_nested_field(root: Value, path: &[String], new_val: Value) -> RResult<Val
         Value::Struct { name, mut fields } => {
             let head = &path[0];
             let tail = &path[1..];
-            let idx = fields.iter().position(|(n, _)| n == head).ok_or_else(|| {
-                format!("Struct {} has no field '{}'", name, head)
-            })?;
+            let idx = fields
+                .iter()
+                .position(|(n, _)| n == head)
+                .ok_or_else(|| format!("Struct {} has no field '{}'", name, head))?;
             let old = std::mem::replace(&mut fields[idx].1, Value::Void);
             let updated = set_nested_field(old, tail, new_val)?;
             fields[idx].1 = updated;
@@ -4882,10 +5228,17 @@ fn format_contract_expr(node: &Node) -> String {
         Node::FloatLiteral { value, .. } => value.to_string(),
         Node::StringLiteral { value, .. } => format!("{:?}", value),
         Node::BooleanLiteral { value, .. } => value.to_string(),
-        Node::PrefixExpression { operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
             format!("{}{}", operator, format_contract_expr(right))
         }
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             format!(
                 "{} {} {}",
                 format_contract_expr(left),
@@ -4893,7 +5246,11 @@ fn format_contract_expr(node: &Node) -> String {
                 format_contract_expr(right)
             )
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             let args: Vec<String> = arguments.iter().map(format_contract_expr).collect();
             format!("{}({})", format_contract_expr(function), args.join(", "))
         }
@@ -4932,13 +5289,7 @@ fn stringify_for_concat(v: &Value) -> Option<String> {
 // `&Environment`, but `&mut` is harmless and signals "we're populating".
 fn register_builtins(env: &mut Environment) {
     for (name, func) in BUILTINS {
-        env.set(
-            (*name).to_string(),
-            Value::Builtin {
-                name,
-                func: *func,
-            },
-        );
+        env.set((*name).to_string(), Value::Builtin { name, func: *func });
     }
 }
 
@@ -5099,17 +5450,12 @@ fn builtin_print(args: &[Value]) -> RResult<Value> {
 fn builtin_input(args: &[Value]) -> RResult<Value> {
     let prompt = match args {
         [Value::String(s)] => s.clone(),
-        [other] => {
-            return Err(format!(
-                "input: expected String prompt, got {}",
-                other
-            ))
-        }
+        [other] => return Err(format!("input: expected String prompt, got {}", other)),
         many => {
             return Err(format!(
                 "input: expected 1 argument (prompt), got {}",
                 many.len()
-            ))
+            ));
         }
     };
     let stdin = std::io::stdin();
@@ -5169,12 +5515,12 @@ fn builtin_pow(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(base), Value::Int(exp)] => {
             // Negative exponent isn't representable as Int.
-            let exp_u32: u32 = (*exp).try_into().map_err(|_| {
-                format!("pow: negative exponent {} undefined for int base", exp)
-            })?;
-            base.checked_pow(exp_u32).map(Value::Int).ok_or_else(|| {
-                format!("pow: integer overflow ({} ^ {})", base, exp)
-            })
+            let exp_u32: u32 = (*exp)
+                .try_into()
+                .map_err(|_| format!("pow: negative exponent {} undefined for int base", exp))?;
+            base.checked_pow(exp_u32)
+                .map(Value::Int)
+                .ok_or_else(|| format!("pow: integer overflow ({} ^ {})", base, exp))
         }
         [a, b] => {
             let to_f = |v: &Value| match v {
@@ -5183,7 +5529,10 @@ fn builtin_pow(args: &[Value]) -> RResult<Value> {
                 _ => None,
             };
             let (Some(base), Some(exp)) = (to_f(a), to_f(b)) else {
-                return Err(format!("pow: expected numeric args, got {:?} and {:?}", a, b));
+                return Err(format!(
+                    "pow: expected numeric args, got {:?} and {:?}",
+                    a, b
+                ));
             };
             Ok(Value::Float(base.powf(exp)))
         }
@@ -5271,10 +5620,7 @@ fn builtin_ln(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Float(f)] => {
             if *f <= 0.0 {
-                return Err(format!(
-                    "ln: argument must be > 0, got {}",
-                    f
-                ));
+                return Err(format!("ln: argument must be > 0, got {}", f));
             }
             Ok(Value::Float(f.ln()))
         }
@@ -5298,22 +5644,13 @@ fn builtin_log(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Float(base), Value::Float(x)] => {
             if *base <= 0.0 {
-                return Err(format!(
-                    "log: base must be > 0, got {}",
-                    base
-                ));
+                return Err(format!("log: base must be > 0, got {}", base));
             }
             if (*base - 1.0).abs() < f64::EPSILON {
-                return Err(
-                    "log: base must not be 1 (log_1(x) is undefined)"
-                        .to_string(),
-                );
+                return Err("log: base must not be 1 (log_1(x) is undefined)".to_string());
             }
             if *x <= 0.0 {
-                return Err(format!(
-                    "log: value must be > 0, got {}",
-                    x
-                ));
+                return Err(format!("log: value must be > 0, got {}", x));
             }
             Ok(Value::Float(x.log(*base)))
         }
@@ -5347,8 +5684,7 @@ fn builtin_exp(args: &[Value]) -> RResult<Value> {
 /// pay only the atomic-load cost plus an `Instant::now()` sample.
 /// The epoch is deliberately unspecified and unobservable except
 /// through `clock_ms()`: users get deltas, not absolute times.
-static CLOCK_EPOCH: std::sync::OnceLock<std::time::Instant> =
-    std::sync::OnceLock::new();
+static CLOCK_EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// RES-150: SplitMix64 — tiny, deterministic, dependency-free PRNG.
 ///
@@ -5384,9 +5720,7 @@ fn seed_rng(seed: u64) {
 /// so the user can pin it via `--seed <N>` on the next run.
 fn seed_rng_from_clock() -> u64 {
     let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
-    let ns = std::time::Instant::now()
-        .duration_since(*epoch)
-        .as_nanos() as u64;
+    let ns = std::time::Instant::now().duration_since(*epoch).as_nanos() as u64;
     // XOR with a process-id and a fixed constant so two processes
     // launched at the "same" epoch still differ.
     let pid = std::process::id() as u64;
@@ -5426,10 +5760,7 @@ fn builtin_random_int(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Int(lo), Value::Int(hi)] => {
             if hi <= lo {
-                return Err(format!(
-                    "random_int: hi must be > lo ({} <= {})",
-                    hi, lo
-                ));
+                return Err(format!("random_int: hi must be > lo ({} <= {})", hi, lo));
             }
             let span = (*hi - *lo) as u64;
             let r = splitmix64_next() % span;
@@ -5539,9 +5870,7 @@ fn builtin_is_err(args: &[Value]) -> RResult<Value> {
 fn builtin_unwrap(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Result { ok: true, payload }] => Ok((**payload).clone()),
-        [Value::Result { ok: false, payload }] => {
-            Err(format!("unwrap called on Err({})", payload))
-        }
+        [Value::Result { ok: false, payload }] => Err(format!("unwrap called on Err({})", payload)),
         [other] => Err(format!("unwrap: expected Result, got {}", other)),
         _ => Err(format!("unwrap: expected 1 argument, got {}", args.len())),
     }
@@ -5570,7 +5899,9 @@ fn builtin_split(args: &[Value]) -> RResult<Value> {
             let parts: Vec<Value> = if sep.is_empty() {
                 s.chars().map(|c| Value::String(c.to_string())).collect()
             } else {
-                s.split(sep.as_str()).map(|p| Value::String(p.to_string())).collect()
+                s.split(sep.as_str())
+                    .map(|p| Value::String(p.to_string()))
+                    .collect()
             };
             Ok(Value::Array(parts))
         }
@@ -5599,7 +5930,10 @@ fn builtin_contains(args: &[Value]) -> RResult<Value> {
             "contains: expected (string, string), got ({:?}, {:?})",
             a, b
         )),
-        _ => Err(format!("contains: expected 2 arguments, got {}", args.len())),
+        _ => Err(format!(
+            "contains: expected 2 arguments, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -5637,9 +5971,7 @@ fn builtin_replace(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::String(s), Value::String(from), Value::String(to)] => {
             if from.is_empty() {
-                return Err(
-                    "replace: `from` must be non-empty".to_string(),
-                );
+                return Err("replace: `from` must be non-empty".to_string());
             }
             Ok(Value::String(s.replace(from.as_str(), to)))
         }
@@ -5647,10 +5979,7 @@ fn builtin_replace(args: &[Value]) -> RResult<Value> {
             "replace: expected (string, string, string), got ({:?}, {:?}, {:?})",
             a, b, c
         )),
-        _ => Err(format!(
-            "replace: expected 3 arguments, got {}",
-            args.len()
-        )),
+        _ => Err(format!("replace: expected 3 arguments, got {}", args.len())),
     }
 }
 
@@ -5677,9 +6006,7 @@ fn builtin_starts_with(args: &[Value]) -> RResult<Value> {
 /// An empty suffix is always a match.
 fn builtin_ends_with(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(s), Value::String(suffix)] => {
-            Ok(Value::Bool(s.ends_with(suffix.as_str())))
-        }
+        [Value::String(s), Value::String(suffix)] => Ok(Value::Bool(s.ends_with(suffix.as_str()))),
         [a, b] => Err(format!(
             "ends_with: expected (string, string), got ({:?}, {:?})",
             a, b
@@ -5703,8 +6030,8 @@ fn builtin_repeat(args: &[Value]) -> RResult<Value> {
             }
             // `usize::try_from` guards against the (theoretical) case
             // where i64 > usize::MAX on exotic targets.
-            let count = usize::try_from(*n)
-                .map_err(|_| format!("repeat: count {} out of range", n))?;
+            let count =
+                usize::try_from(*n).map_err(|_| format!("repeat: count {} out of range", n))?;
             Ok(Value::String(s.repeat(count)))
         }
         [a, b] => Err(format!(
@@ -5735,13 +6062,13 @@ fn builtin_format(args: &[Value]) -> RResult<Value> {
             return Err(format!(
                 "format: expected (string, array), got ({:?}, {:?})",
                 a, b
-            ))
+            ));
         }
         many => {
             return Err(format!(
                 "format: expected 2 arguments (fmt, args), got {}",
                 many.len()
-            ))
+            ));
         }
     };
 
@@ -5888,17 +6215,8 @@ fn builtin_len(args: &[Value]) -> RResult<Value> {
 /// index targets the leaf cell that gets replaced. Bounds errors
 /// name the depth (1-indexed) where the out-of-range access occurred
 /// so users can tell `m[2][0]` (outer) from `m[0][5]` (inner).
-fn replace_at_path(
-    items: &mut [Value],
-    indices: &[i64],
-    value: Value,
-) -> RResult<()> {
-    fn recurse(
-        items: &mut [Value],
-        indices: &[i64],
-        value: Value,
-        depth: usize,
-    ) -> RResult<()> {
+fn replace_at_path(items: &mut [Value], indices: &[i64], value: Value) -> RResult<()> {
+    fn recurse(items: &mut [Value], indices: &[i64], value: Value, depth: usize) -> RResult<()> {
         let (i, rest) = match indices.split_first() {
             Some(pair) => pair,
             None => unreachable!("replace_at_path called with zero indices"),
@@ -5951,7 +6269,10 @@ fn builtin_min(args: &[Value]) -> RResult<Value> {
         [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a.min(*b))),
         [Value::Int(a), Value::Float(b)] => Ok(Value::Float((*a as f64).min(*b))),
         [Value::Float(a), Value::Int(b)] => Ok(Value::Float(a.min(*b as f64))),
-        [a, b] => Err(format!("min: expected numeric args, got {:?} and {:?}", a, b)),
+        [a, b] => Err(format!(
+            "min: expected numeric args, got {:?} and {:?}",
+            a, b
+        )),
         _ => Err(format!("min: expected 2 arguments, got {}", args.len())),
     }
 }
@@ -5963,7 +6284,10 @@ fn builtin_max(args: &[Value]) -> RResult<Value> {
         [Value::Float(a), Value::Float(b)] => Ok(Value::Float(a.max(*b))),
         [Value::Int(a), Value::Float(b)] => Ok(Value::Float((*a as f64).max(*b))),
         [Value::Float(a), Value::Int(b)] => Ok(Value::Float(a.max(*b as f64))),
-        [a, b] => Err(format!("max: expected numeric args, got {:?} and {:?}", a, b)),
+        [a, b] => Err(format!(
+            "max: expected numeric args, got {:?} and {:?}",
+            a, b
+        )),
         _ => Err(format!("max: expected 2 arguments, got {}", args.len())),
     }
 }
@@ -5977,10 +6301,7 @@ fn builtin_to_float(args: &[Value]) -> RResult<Value> {
             "to_float: expected Int or Float argument, got {:?}",
             other
         )),
-        _ => Err(format!(
-            "to_float: expected 1 argument, got {}",
-            args.len()
-        )),
+        _ => Err(format!("to_float: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6007,10 +6328,7 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
             // Rust — that silent saturation is exactly the invisible
             // bug we're trying to avoid, so reject it too.
             if *f < (i64::MIN as f64) || *f > (i64::MAX as f64) {
-                return Err(format!(
-                    "to_int: value {} is out of i64 range",
-                    f
-                ));
+                return Err(format!("to_int: value {} is out of i64 range", f));
             }
             Ok(Value::Int(*f as i64))
         }
@@ -6018,10 +6336,7 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
             "to_int: expected Int or Float argument, got {:?}",
             other
         )),
-        _ => Err(format!(
-            "to_int: expected 1 argument, got {}",
-            args.len()
-        )),
+        _ => Err(format!("to_int: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6071,28 +6386,21 @@ fn builtin_file_read(args: &[Value]) -> RResult<Value> {
 /// the ticket's spirit that absence isn't a runtime error.
 fn builtin_env(args: &[Value]) -> RResult<Value> {
     match args {
-        [Value::String(key)] => {
-            match std::env::var(key) {
-                Ok(val) => Ok(Value::Result {
-                    ok: true,
-                    payload: Box::new(Value::String(val)),
-                }),
-                Err(std::env::VarError::NotPresent) => Ok(Value::Result {
-                    ok: false,
-                    payload: Box::new(Value::String("not set".to_string())),
-                }),
-                Err(std::env::VarError::NotUnicode(_)) => Ok(Value::Result {
-                    ok: false,
-                    payload: Box::new(Value::String(
-                        "invalid utf-8".to_string(),
-                    )),
-                }),
-            }
-        }
-        [other] => Err(format!(
-            "env: expected String argument, got {}",
-            other
-        )),
+        [Value::String(key)] => match std::env::var(key) {
+            Ok(val) => Ok(Value::Result {
+                ok: true,
+                payload: Box::new(Value::String(val)),
+            }),
+            Err(std::env::VarError::NotPresent) => Ok(Value::Result {
+                ok: false,
+                payload: Box::new(Value::String("not set".to_string())),
+            }),
+            Err(std::env::VarError::NotUnicode(_)) => Ok(Value::Result {
+                ok: false,
+                payload: Box::new(Value::String("invalid utf-8".to_string())),
+            }),
+        },
+        [other] => Err(format!("env: expected String argument, got {}", other)),
         _ => Err(format!(
             "env: expected 1 argument (key), got {}",
             args.len()
@@ -6125,10 +6433,7 @@ fn builtin_file_write(args: &[Value]) -> RResult<Value> {
 /// `map_new()` — produce an empty map.
 fn builtin_map_new(args: &[Value]) -> RResult<Value> {
     if !args.is_empty() {
-        return Err(format!(
-            "map_new: expected 0 arguments, got {}",
-            args.len()
-        ));
+        return Err(format!("map_new: expected 0 arguments, got {}", args.len()));
     }
     Ok(Value::Map(std::collections::HashMap::new()))
 }
@@ -6173,10 +6478,7 @@ fn builtin_map_get(args: &[Value]) -> RResult<Value> {
                 }),
             }
         }
-        [a, _] => Err(format!(
-            "map_get: first argument must be a Map, got {}",
-            a
-        )),
+        [a, _] => Err(format!("map_get: first argument must be a Map, got {}", a)),
         _ => Err(format!(
             "map_get: expected 2 arguments (map, key), got {}",
             args.len()
@@ -6226,14 +6528,8 @@ fn builtin_map_keys(args: &[Value]) -> RResult<Value> {
             let out: Vec<Value> = keys.iter().map(|k| k.to_value()).collect();
             Ok(Value::Array(out))
         }
-        [a] => Err(format!(
-            "map_keys: expected a Map, got {}",
-            a
-        )),
-        _ => Err(format!(
-            "map_keys: expected 1 argument, got {}",
-            args.len()
-        )),
+        [a] => Err(format!("map_keys: expected a Map, got {}", a)),
+        _ => Err(format!("map_keys: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6241,14 +6537,8 @@ fn builtin_map_keys(args: &[Value]) -> RResult<Value> {
 fn builtin_map_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
-        [a] => Err(format!(
-            "map_len: expected a Map, got {}",
-            a
-        )),
-        _ => Err(format!(
-            "map_len: expected 1 argument, got {}",
-            args.len()
-        )),
+        [a] => Err(format!("map_len: expected a Map, got {}", a)),
+        _ => Err(format!("map_len: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6265,10 +6555,7 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
 fn builtin_bytes_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Bytes(b)] => Ok(Value::Int(b.len() as i64)),
-        [other] => Err(format!(
-            "bytes_len: expected Bytes, got {}",
-            other
-        )),
+        [other] => Err(format!("bytes_len: expected Bytes, got {}", other)),
         _ => Err(format!(
             "bytes_len: expected 1 argument, got {}",
             args.len()
@@ -6350,10 +6637,7 @@ fn builtin_byte_at(args: &[Value]) -> RResult<Value> {
 /// `set_new()` — produce an empty set.
 fn builtin_set_new(args: &[Value]) -> RResult<Value> {
     if !args.is_empty() {
-        return Err(format!(
-            "set_new: expected 0 arguments, got {}",
-            args.len()
-        ));
+        return Err(format!("set_new: expected 0 arguments, got {}", args.len()));
     }
     Ok(Value::Set(std::collections::HashSet::new()))
 }
@@ -6364,9 +6648,7 @@ fn builtin_set_new(args: &[Value]) -> RResult<Value> {
 fn builtin_set_insert(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Set(s), x] => {
-            let k = MapKey::from_value(x).map_err(|e| {
-                e.replace("Map key", "Set element")
-            })?;
+            let k = MapKey::from_value(x).map_err(|e| e.replace("Map key", "Set element"))?;
             let mut out = s.clone();
             out.insert(k);
             Ok(Value::Set(out))
@@ -6387,9 +6669,7 @@ fn builtin_set_insert(args: &[Value]) -> RResult<Value> {
 fn builtin_set_remove(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Set(s), x] => {
-            let k = MapKey::from_value(x).map_err(|e| {
-                e.replace("Map key", "Set element")
-            })?;
+            let k = MapKey::from_value(x).map_err(|e| e.replace("Map key", "Set element"))?;
             let mut out = s.clone();
             out.remove(&k);
             Ok(Value::Set(out))
@@ -6409,15 +6689,10 @@ fn builtin_set_remove(args: &[Value]) -> RResult<Value> {
 fn builtin_set_has(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Set(s), x] => {
-            let k = MapKey::from_value(x).map_err(|e| {
-                e.replace("Map key", "Set element")
-            })?;
+            let k = MapKey::from_value(x).map_err(|e| e.replace("Map key", "Set element"))?;
             Ok(Value::Bool(s.contains(&k)))
         }
-        [a, _] => Err(format!(
-            "set_has: first argument must be a Set, got {}",
-            a
-        )),
+        [a, _] => Err(format!("set_has: first argument must be a Set, got {}", a)),
         _ => Err(format!(
             "set_has: expected 2 arguments (set, element), got {}",
             args.len()
@@ -6429,14 +6704,8 @@ fn builtin_set_has(args: &[Value]) -> RResult<Value> {
 fn builtin_set_len(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Set(s)] => Ok(Value::Int(s.len() as i64)),
-        [a] => Err(format!(
-            "set_len: expected a Set, got {}",
-            a
-        )),
-        _ => Err(format!(
-            "set_len: expected 1 argument, got {}",
-            args.len()
-        )),
+        [a] => Err(format!("set_len: expected a Set, got {}", a)),
+        _ => Err(format!("set_len: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6460,10 +6729,7 @@ fn builtin_set_items(args: &[Value]) -> RResult<Value> {
             let out: Vec<Value> = items.iter().map(|k| k.to_value()).collect();
             Ok(Value::Array(out))
         }
-        [a] => Err(format!(
-            "set_items: expected a Set, got {}",
-            a
-        )),
+        [a] => Err(format!("set_items: expected a Set, got {}", a)),
         _ => Err(format!(
             "set_items: expected 1 argument, got {}",
             args.len()
@@ -6545,10 +6811,8 @@ impl Drop for LiveRetryGuard {
 // Cortex-M where only 32-bit atomics are native. 2^32 retries is
 // plenty of headroom for diagnostic runs.
 
-static LIVE_TOTAL_RETRIES: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
-static LIVE_TOTAL_EXHAUSTIONS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+static LIVE_TOTAL_RETRIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static LIVE_TOTAL_EXHAUSTIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// RES-141: `live_total_retries() -> Int` — cumulative count of
 /// live-block retries since the process started.
@@ -6628,7 +6892,7 @@ impl Interpreter {
         self.proven_fns = Rc::new(proven);
         self
     }
-    
+
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
@@ -6640,7 +6904,14 @@ impl Interpreter {
             // expand_uses. Stubs here so the interpreter is silent if
             // any slip through; real dispatch lands in Tasks 4-8.
             Node::Extern { .. } => Ok(Value::Void),
-            Node::Function { name, parameters, body, requires, ensures, .. } => {
+            Node::Function {
+                name,
+                parameters,
+                body,
+                requires,
+                ensures,
+                ..
+            } => {
                 // RES-068: if every observed call site for this fn was
                 // statically proven, the runtime requires check is
                 // provably redundant. Strip it.
@@ -6659,8 +6930,14 @@ impl Interpreter {
                 };
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
-            },
-            Node::LiveBlock { body, invariants, backoff, timeout, .. } => {
+            }
+            Node::LiveBlock {
+                body,
+                invariants,
+                backoff,
+                timeout,
+                ..
+            } => {
                 // RES-142: unpack the `within <duration>` clause
                 // (if any) into a flat `u64 ns` so the runtime loop
                 // doesn't re-match the boxed node every retry.
@@ -6680,9 +6957,18 @@ impl Interpreter {
                 "duration literals are only valid inside `live within ...` clauses (RES-142)"
                     .to_string(),
             ),
-            Node::Assert { condition, message, .. } => self.eval_assert(condition, message),
-            Node::Assume { condition, message, .. } => self.eval_assume(condition, message),
-            Node::Block { stmts: statements, .. } => self.eval_block_statement(statements),
+            Node::Assert {
+                condition, message, ..
+            } => self.eval_assert(condition, message),
+            Node::Assume {
+                condition, message, ..
+            } => self.eval_assume(condition, message),
+            // RES-222: evaluate the invariant condition; halt with a
+            // "loop invariant violated" diagnostic if it is false.
+            Node::InvariantStatement { condition, span } => self.eval_invariant(condition, span),
+            Node::Block {
+                stmts: statements, ..
+            } => self.eval_block_statement(statements),
             Node::LetStatement { name, value, .. } => {
                 let val = self.eval(value)?;
                 // RES-041: if the RHS short-circuited (e.g. via `?`),
@@ -6692,7 +6978,7 @@ impl Interpreter {
                 }
                 self.env.set(name.clone(), val);
                 Ok(Value::Void)
-            },
+            }
             Node::LetDestructureStruct {
                 struct_name,
                 fields,
@@ -6720,8 +7006,7 @@ impl Interpreter {
                 }
                 // Bind each requested field into the environment.
                 for (field_name, local_name) in fields {
-                    let Some((_, field_val)) =
-                        obs_fields.iter().find(|(n, _)| n == field_name)
+                    let Some((_, field_val)) = obs_fields.iter().find(|(n, _)| n == field_name)
                     else {
                         return Err(format!(
                             "Struct {} has no field `{}`",
@@ -6741,7 +7026,7 @@ impl Interpreter {
                     self.statics.borrow_mut().insert(name.clone(), val);
                 }
                 Ok(Value::Void)
-            },
+            }
             Node::Assignment { name, value, .. } => {
                 let val = self.eval(value)?;
                 if matches!(val, Value::Return(_)) {
@@ -6755,22 +7040,24 @@ impl Interpreter {
                 } else {
                     Err(format!("Cannot assign to undeclared variable '{}'", name))
                 }
-            },
+            }
             Node::ReturnStatement { value, .. } => {
                 let val = match value {
                     Some(expr) => self.eval(expr)?,
                     None => Value::Void,
                 };
                 Ok(Value::Return(Box::new(val)))
-            },
-            Node::ForInStatement { name, iterable, body, .. } => {
+            }
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                ..
+            } => {
                 let iter_val = self.eval(iterable)?;
                 let items = match iter_val {
                     Value::Array(v) => v,
-                    other => return Err(format!(
-                        "`for` iterable must be an array, got {}",
-                        other
-                    )),
+                    other => return Err(format!("`for` iterable must be an array, got {}", other)),
                 };
                 for item in items {
                     self.env.set(name.clone(), item);
@@ -6780,12 +7067,36 @@ impl Interpreter {
                     }
                 }
                 Ok(Value::Void)
-            },
-            Node::WhileStatement { condition, body, .. } => {
+            }
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
                 // Cap iterations as a safety net so a buggy loop can't
                 // freeze the interpreter. 1M is big enough for
                 // realistic work and small enough to catch runaways.
                 const MAX_ITERS: usize = 1_000_000;
+
+                // RES-222: collect `invariant` statements from the body's
+                // top-level block so we can check them before the first
+                // iteration (initial-state check) and after each iteration
+                // (inductive check). They also fire inline when the block
+                // evaluates them normally, so the invariant is checked on
+                // every pass regardless.
+                let body_invariants: Vec<&Node> = if let Node::Block { stmts, .. } = body.as_ref() {
+                    stmts
+                        .iter()
+                        .filter(|s| matches!(s, Node::InvariantStatement { .. }))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                // Pre-loop check — verify all invariants hold for the
+                // initial state before the first iteration begins.
+                for inv in &body_invariants {
+                    self.eval(inv)?;
+                }
+
                 let mut iters = 0usize;
                 loop {
                     iters += 1;
@@ -6802,10 +7113,20 @@ impl Interpreter {
                     if let Value::Return(_) = result {
                         return Ok(result);
                     }
+                    // Post-iteration check — verify invariants still hold
+                    // after the body completed this iteration.
+                    for inv in &body_invariants {
+                        self.eval(inv)?;
+                    }
                 }
                 Ok(Value::Void)
-            },
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            }
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 let condition_value = self.eval(condition)?;
                 if self.is_truthy(&condition_value) {
                     self.eval(consequence)
@@ -6814,7 +7135,7 @@ impl Interpreter {
                 } else {
                     Ok(Value::Void)
                 }
-            },
+            }
             Node::ExpressionStatement { expr, .. } => self.eval(expr),
             Node::Identifier { name, .. } => {
                 if let Some(value) = self.env.get(name) {
@@ -6824,22 +7145,50 @@ impl Interpreter {
                 } else {
                     Err(format!("Identifier not found: {}", name))
                 }
-            },
+            }
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
             Node::BytesLiteral { value, .. } => Ok(Value::Bytes(value.clone())),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
-            Node::PrefixExpression { operator, right, .. } => {
+            // RES-221: evaluate each segment and concatenate.
+            Node::StringInterpolation { parts, .. } => {
+                let mut out = String::new();
+                for part in parts {
+                    match part {
+                        StringPart::Literal(s) => out.push_str(s),
+                        StringPart::Expr(expr) => {
+                            let val = self.eval(expr)?;
+                            match val {
+                                Value::String(s) => out.push_str(&s),
+                                other => out.push_str(&format!("{}", other)),
+                            }
+                        }
+                    }
+                }
+                Ok(Value::String(out))
+            }
+            Node::PrefixExpression {
+                operator, right, ..
+            } => {
                 let right_val = self.eval(right)?;
                 self.eval_prefix_expression(operator, right_val)
-            },
-            Node::InfixExpression { left, operator, right, .. } => {
+            }
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } => {
                 let left_val = self.eval(left)?;
                 let right_val = self.eval(right)?;
                 self.eval_infix_expression(operator, left_val, right_val)
-            },
-            Node::CallExpression { function, arguments, .. } => {
+            }
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
                 // RES-158: method call desugar.
                 //
                 // If the callee is `TARGET.NAME`, evaluate `TARGET`
@@ -6866,14 +7215,14 @@ impl Interpreter {
                 let func = self.eval(function)?;
                 let args = self.eval_expressions(arguments)?;
                 self.apply_function(func, args)
-            },
+            }
             Node::ArrayLiteral { items, .. } => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
                     out.push(self.eval(item)?);
                 }
                 Ok(Value::Array(out))
-            },
+            }
             // RES-148: `{k -> v, ...}` — evaluate each key / value and
             // coerce keys to `MapKey` (errors if a key isn't one of
             // the hashable primitives). Later insertions on the same
@@ -6908,16 +7257,20 @@ impl Interpreter {
                 }
                 Ok(Value::Set(set))
             }
-            Node::FunctionLiteral { parameters, body, requires, ensures, .. } => {
-                Ok(Value::Function {
-                    parameters: parameters.clone(),
-                    body: body.clone(),
-                    env: self.env.clone(),
-                    requires: requires.clone(),
-                    ensures: ensures.clone(),
-                    name: "<anon>".to_string(),
-                })
-            },
+            Node::FunctionLiteral {
+                parameters,
+                body,
+                requires,
+                ensures,
+                ..
+            } => Ok(Value::Function {
+                parameters: parameters.clone(),
+                body: body.clone(),
+                env: self.env.clone(),
+                requires: requires.clone(),
+                ensures: ensures.clone(),
+                name: "<anon>".to_string(),
+            }),
             Node::TryExpression { expr: inner, .. } => {
                 let v = self.eval(inner)?;
                 match v {
@@ -6931,13 +7284,12 @@ impl Interpreter {
                             payload,
                         })))
                     }
-                    other => Err(format!(
-                        "? operator expects a Result, got {}",
-                        other
-                    )),
+                    other => Err(format!("? operator expects a Result, got {}", other)),
                 }
-            },
-            Node::Match { scrutinee, arms, .. } => {
+            }
+            Node::Match {
+                scrutinee, arms, ..
+            } => {
                 let sval = self.eval(scrutinee)?;
                 for (pattern, guard, body) in arms {
                     if let Some(bindings) = self.match_pattern(pattern, &sval)? {
@@ -6961,7 +7313,9 @@ impl Interpreter {
                                 match gv {
                                     Ok(v) => self.is_truthy(&v),
                                     Err(e) => {
-                                        if had_scope { self.env = saved.clone(); }
+                                        if had_scope {
+                                            self.env = saved.clone();
+                                        }
                                         return Err(e);
                                     }
                                 }
@@ -6969,24 +7323,28 @@ impl Interpreter {
                             None => true,
                         };
                         if !guard_pass {
-                            if had_scope { self.env = saved; }
+                            if had_scope {
+                                self.env = saved;
+                            }
                             continue; // try next arm
                         }
                         let result = self.eval(body);
-                        if had_scope { self.env = saved; }
+                        if had_scope {
+                            self.env = saved;
+                        }
                         return result;
                     }
                 }
                 // No arm matched → void.
                 Ok(Value::Void)
-            },
+            }
             Node::StructDecl { .. } => {
                 // Declarations are pure compile-time metadata today.
                 // The typechecker (G7) will register them in a struct
                 // table; for now they're a runtime no-op, and Value
                 // construction trusts the literal.
                 Ok(Value::Void)
-            },
+            }
             // RES-128: `type NAME = TARGET;` is purely a
             // typechecker / documentation concern. Runtime never
             // sees aliases — by the time `eval` runs, every use
@@ -6995,7 +7353,11 @@ impl Interpreter {
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
-            Node::ImplBlock { methods, struct_name, .. } => {
+            Node::ImplBlock {
+                methods,
+                struct_name,
+                ..
+            } => {
                 for method in methods {
                     // Detect duplicate-method-across-blocks: if the
                     // mangled name already resolves to a user Function
@@ -7007,13 +7369,15 @@ impl Interpreter {
                         return Err(format!(
                             "duplicate method: `{}::{}` defined more than once across impl blocks",
                             struct_name,
-                            mangled.strip_prefix(&format!("{}$", struct_name)).unwrap_or(mangled),
+                            mangled
+                                .strip_prefix(&format!("{}$", struct_name))
+                                .unwrap_or(mangled),
                         ));
                     }
                     self.eval(method)?;
                 }
                 Ok(Value::Void)
-            },
+            }
             Node::StructLiteral { name, fields, .. } => {
                 let mut out = Vec::with_capacity(fields.len());
                 for (fname, fexpr) in fields {
@@ -7023,26 +7387,27 @@ impl Interpreter {
                     name: name.clone(),
                     fields: out,
                 })
-            },
+            }
             Node::FieldAccess { target, field, .. } => {
                 let tval = self.eval(target)?;
                 match tval {
-                    Value::Struct { name, fields } => {
-                        fields
-                            .into_iter()
-                            .find(|(n, _)| n == field)
-                            .map(|(_, v)| v)
-                            .ok_or_else(|| {
-                                format!("Struct {} has no field '{}'", name, field)
-                            })
-                    }
+                    Value::Struct { name, fields } => fields
+                        .into_iter()
+                        .find(|(n, _)| n == field)
+                        .map(|(_, v)| v)
+                        .ok_or_else(|| format!("Struct {} has no field '{}'", name, field)),
                     other => Err(format!(
                         "Cannot access field '{}' on non-struct {:?}",
                         field, other
                     )),
                 }
-            },
-            Node::FieldAssignment { target, field, value, .. } => {
+            }
+            Node::FieldAssignment {
+                target,
+                field,
+                value,
+                ..
+            } => {
                 // Only support `IDENT.field = v` and `IDENT.f1.f2 = v`
                 // for MVP. The target tree is a chain of Identifier and
                 // FieldAccess nodes; we walk it to find the root binding,
@@ -7050,10 +7415,7 @@ impl Interpreter {
                 let new_val = self.eval(value)?;
                 let (root_name, path) = flatten_field_target(target, field);
                 let Some(root_name) = root_name else {
-                    return Err(
-                        "Field assignment target must start with an identifier"
-                            .to_string(),
-                    );
+                    return Err("Field assignment target must start with an identifier".to_string());
                 };
                 let current = self
                     .env
@@ -7062,7 +7424,7 @@ impl Interpreter {
                 let updated = set_nested_field(current, &path, new_val)?;
                 let _ = self.env.reassign(&root_name, updated);
                 Ok(Value::Void)
-            },
+            }
             Node::IndexExpression { target, index, .. } => {
                 let target_val = self.eval(target)?;
                 let index_val = self.eval(index)?;
@@ -7078,14 +7440,18 @@ impl Interpreter {
                             Ok(items[i as usize].clone())
                         }
                     }
-                    (Value::Array(_), other) => Err(format!(
-                        "Array index must be int, got {}",
-                        other
-                    )),
+                    (Value::Array(_), other) => {
+                        Err(format!("Array index must be int, got {}", other))
+                    }
                     (other, _) => Err(format!("Cannot index {:?}", other)),
                 }
-            },
-            Node::IndexAssignment { target, index, value, .. } => {
+            }
+            Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
                 // RES-034: walk the LHS chain to support a[i][j]...[k] = v.
                 // The parser builds nested IndexExpression nodes; descend
                 // through them collecting each index (root-to-leaf order)
@@ -7095,14 +7461,16 @@ impl Interpreter {
                 let root_name = loop {
                     match cursor {
                         Node::Identifier { name, .. } => break name.clone(),
-                        Node::IndexExpression { target: inner_t, index: inner_i, .. } => {
+                        Node::IndexExpression {
+                            target: inner_t,
+                            index: inner_i,
+                            ..
+                        } => {
                             indices_rev.push(inner_i);
                             cursor = inner_t;
                         }
                         _ => {
-                            return Err(
-                                "Index assignment target must be an identifier".to_string()
-                            );
+                            return Err("Index assignment target must be an identifier".to_string());
                         }
                     }
                 };
@@ -7141,10 +7509,10 @@ impl Interpreter {
                 replace_at_path(&mut items, &path_indices, new_val)?;
                 let _ = self.env.reassign(&root_name, Value::Array(items));
                 Ok(Value::Void)
-            },
+            }
         }
     }
-    
+
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
@@ -7177,7 +7545,8 @@ impl Interpreter {
             // source span so `execute_file` can reformat them as
             // `filename:line:col: Runtime error: <msg>` — matching the
             // VM's RES-091/092 output shape.
-            result = self.eval(&statement.node)
+            result = self
+                .eval(&statement.node)
                 .map_err(|e| decorate_runtime_error(e, &statement.span))?;
             if let Value::Return(value) = result {
                 return Ok(*value);
@@ -7186,21 +7555,21 @@ impl Interpreter {
 
         Ok(result)
     }
-    
+
     fn eval_block_statement(&mut self, statements: &[Node]) -> RResult<Value> {
         let mut result = Value::Void;
-        
+
         for statement in statements {
             result = self.eval(statement)?;
-            
+
             if let Value::Return(_) = result {
                 return Ok(result);
             }
         }
-        
+
         Ok(result)
     }
-    
+
     fn eval_live_block(
         &mut self,
         body: &Node,
@@ -7265,10 +7634,7 @@ impl Interpreter {
                     // being silently healed. Process exits 1 with
                     // a diagnostic pointing at the override flag.
                     if panic_on_fault_enabled() {
-                        eprintln!(
-                            "\x1B[31m[LIVE BLOCK] fault: {}\x1B[0m",
-                            error
-                        );
+                        eprintln!("\x1B[31m[LIVE BLOCK] fault: {}\x1B[0m", error);
                         eprintln!(
                             "[fault] --panic-on-fault: aborting (disable with --no-panic-on-fault)"
                         );
@@ -7287,8 +7653,7 @@ impl Interpreter {
                     // Relaxed is fine; counters are diagnostic-
                     // quality, not a synchronization primitive.
                     if retry_count < MAX_RETRIES {
-                        LIVE_TOTAL_RETRIES
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        LIVE_TOTAL_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
 
                     eprintln!(
@@ -7319,16 +7684,12 @@ impl Interpreter {
                         } else {
                             "Maximum retry attempts reached"
                         };
-                        eprintln!(
-                            "\x1B[31m[LIVE BLOCK] {}, propagating error\x1B[0m",
-                            reason
-                        );
+                        eprintln!("\x1B[31m[LIVE BLOCK] {}, propagating error\x1B[0m", reason);
                         // RES-141: bump the exhaustion counter
                         // before returning — tracks how many
                         // times any live block gave up across the
                         // whole run. Timeout counts as exhaustion.
-                        LIVE_TOTAL_EXHAUSTIONS
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        LIVE_TOTAL_EXHAUSTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         // RES-140: footer note recording the
                         // nesting depth at which exhaustion fired.
                         // `LIVE_RETRY_STACK.len()` at this point
@@ -7387,7 +7748,7 @@ impl Interpreter {
             }
         }
     }
-    
+
     fn eval_assert(&mut self, condition: &Node, message: &Option<Box<Node>>) -> RResult<Value> {
         let condition_value = self.eval(condition)?;
 
@@ -7441,22 +7802,45 @@ impl Interpreter {
         Ok(Value::Void)
     }
 
+    /// RES-222: runtime evaluation of `invariant <expr>;`.
+    ///
+    /// If the condition is false, halts with a diagnostic that includes
+    /// the source position of the invariant keyword.
+    fn eval_invariant(&mut self, condition: &Node, span: &span::Span) -> RResult<Value> {
+        let condition_value = self.eval(condition)?;
+
+        if !self.is_truthy(&condition_value) {
+            let detail = self.format_assert_detail(condition, &condition_value);
+            return Err(format!(
+                "loop invariant violated at {}:{}: {}\n  - {}",
+                span.start.line,
+                span.start.column,
+                format_contract_expr(condition),
+                detail
+            ));
+        }
+
+        Ok(Value::Void)
+    }
+
     /// Produce the "why did this assertion fail" line. For infix
     /// comparisons we re-evaluate the operands to show their values;
     /// for anything else we just show the final value.
     fn format_assert_detail(&mut self, condition: &Node, final_value: &Value) -> String {
-        if let Node::InfixExpression { left, operator, right, .. } = condition
+        if let Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } = condition
             && matches!(operator.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=")
             && let (Ok(lv), Ok(rv)) = (self.eval(left), self.eval(right))
         {
-            return format!(
-                "condition {} {} {} was {}",
-                lv, operator, rv, final_value
-            );
+            return format!("condition {} {} {} was {}", lv, operator, rv, final_value);
         }
         format!("Condition evaluated to: {}", final_value)
     }
-    
+
     fn eval_prefix_expression(&mut self, operator: &str, right: Value) -> RResult<Value> {
         match operator {
             "!" => self.eval_bang_operator_expression(right),
@@ -7464,7 +7848,7 @@ impl Interpreter {
             _ => Err(format!("Unknown operator: {}{}", operator, right)),
         }
     }
-    
+
     fn eval_bang_operator_expression(&mut self, right: Value) -> RResult<Value> {
         match right {
             Value::Bool(b) => Ok(Value::Bool(!b)),
@@ -7477,7 +7861,7 @@ impl Interpreter {
             _ => Ok(Value::Bool(false)),
         }
     }
-    
+
     fn eval_minus_prefix_operator_expression(&mut self, right: Value) -> RResult<Value> {
         match right {
             Value::Int(i) => Ok(Value::Int(-i)),
@@ -7485,18 +7869,21 @@ impl Interpreter {
             _ => Err(format!("Unknown operator: -{}", right)),
         }
     }
-    
-    fn eval_infix_expression(&mut self, operator: &str, left: Value, right: Value) -> RResult<Value> {
+
+    fn eval_infix_expression(
+        &mut self,
+        operator: &str,
+        left: Value,
+        right: Value,
+    ) -> RResult<Value> {
         // String + <primitive> coercion (RES-008): when `+` has a string on
         // either side and the other side is a primitive (int / float / bool),
         // coerce the primitive to its textual form and concatenate. This only
         // applies to `+` — other operators keep their strict behavior.
         if operator == "+"
             && (matches!(left, Value::String(_)) || matches!(right, Value::String(_)))
-            && let (Some(ls), Some(rs)) = (
-                stringify_for_concat(&left),
-                stringify_for_concat(&right),
-            )
+            && let (Some(ls), Some(rs)) =
+                (stringify_for_concat(&left), stringify_for_concat(&right))
         {
             return Ok(Value::String(format!("{ls}{rs}")));
         }
@@ -7517,19 +7904,24 @@ impl Interpreter {
             // program is typechecked; the runtime guard below
             // catches the same shape for programs bypassing
             // `--typecheck`.
-            (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => {
-                Err(format!(
-                    "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
-                    operator
-                ))
+            (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => Err(format!(
+                "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
+                operator
+            )),
+            (Value::String(l), Value::String(r)) => {
+                self.eval_string_infix_expression(operator, l, r)
             }
-            (Value::String(l), Value::String(r)) => self.eval_string_infix_expression(operator, l, r),
             (Value::Bool(l), Value::Bool(r)) => self.eval_boolean_infix_expression(operator, l, r),
             _ => Err(format!("Type mismatch: {} {} {}", left, operator, right)),
         }
     }
-    
-    fn eval_integer_infix_expression(&mut self, operator: &str, left: i64, right: i64) -> RResult<Value> {
+
+    fn eval_integer_infix_expression(
+        &mut self,
+        operator: &str,
+        left: i64,
+        right: i64,
+    ) -> RResult<Value> {
         match operator {
             "+" => Ok(Value::Int(left + right)),
             "-" => Ok(Value::Int(left - right)),
@@ -7540,14 +7932,14 @@ impl Interpreter {
                 } else {
                     Ok(Value::Int(left / right))
                 }
-            },
+            }
             "%" => {
                 if right == 0 {
                     Err("Modulo by zero".to_string())
                 } else {
                     Ok(Value::Int(left % right))
                 }
-            },
+            }
             "&" => Ok(Value::Int(left & right)),
             "|" => Ok(Value::Int(left | right)),
             "^" => Ok(Value::Int(left ^ right)),
@@ -7557,14 +7949,14 @@ impl Interpreter {
                 } else {
                     Ok(Value::Int(left << right))
                 }
-            },
+            }
             ">>" => {
                 if !(0..64).contains(&right) {
                     Err(format!("shift amount out of range: {}", right))
                 } else {
                     Ok(Value::Int(left >> right))
                 }
-            },
+            }
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
             "<" => Ok(Value::Bool(left < right)),
@@ -7574,8 +7966,13 @@ impl Interpreter {
             _ => Err(format!("Unknown operator: {} {} {}", left, operator, right)),
         }
     }
-    
-    fn eval_float_infix_expression(&mut self, operator: &str, left: f64, right: f64) -> RResult<Value> {
+
+    fn eval_float_infix_expression(
+        &mut self,
+        operator: &str,
+        left: f64,
+        right: f64,
+    ) -> RResult<Value> {
         match operator {
             "+" => Ok(Value::Float(left + right)),
             "-" => Ok(Value::Float(left - right)),
@@ -7586,14 +7983,14 @@ impl Interpreter {
                 } else {
                     Ok(Value::Float(left / right))
                 }
-            },
+            }
             "%" => {
                 if right == 0.0 {
                     Err("Modulo by zero".to_string())
                 } else {
                     Ok(Value::Float(left % right))
                 }
-            },
+            }
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
             "<" => Ok(Value::Bool(left < right)),
@@ -7603,8 +8000,13 @@ impl Interpreter {
             _ => Err(format!("Unknown operator: {} {} {}", left, operator, right)),
         }
     }
-    
-    fn eval_string_infix_expression(&mut self, operator: &str, left: String, right: String) -> RResult<Value> {
+
+    fn eval_string_infix_expression(
+        &mut self,
+        operator: &str,
+        left: String,
+        right: String,
+    ) -> RResult<Value> {
         // Lexicographic comparison for <, >, <=, >= matches the standard
         // behavior users expect from strings in most languages.
         match operator {
@@ -7618,8 +8020,13 @@ impl Interpreter {
             _ => Err(format!("Unknown operator: {} {} {}", left, operator, right)),
         }
     }
-    
-    fn eval_boolean_infix_expression(&mut self, operator: &str, left: bool, right: bool) -> RResult<Value> {
+
+    fn eval_boolean_infix_expression(
+        &mut self,
+        operator: &str,
+        left: bool,
+        right: bool,
+    ) -> RResult<Value> {
         match operator {
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
@@ -7628,21 +8035,28 @@ impl Interpreter {
             _ => Err(format!("Unknown operator: {} {} {}", left, operator, right)),
         }
     }
-    
+
     fn eval_expressions(&mut self, expressions: &[Node]) -> RResult<Vec<Value>> {
         let mut result = Vec::new();
-        
+
         for expr in expressions {
             let value = self.eval(expr)?;
             result.push(value);
         }
-        
+
         Ok(result)
     }
-    
+
     fn apply_function(&mut self, func: Value, args: Vec<Value>) -> RResult<Value> {
         match func {
-            Value::Function { parameters, body, env, requires, ensures, name } => {
+            Value::Function {
+                parameters,
+                body,
+                env,
+                requires,
+                ensures,
+                name,
+            } => {
                 // RES-050: env.clone() is now an Rc bump, not a deep
                 // copy. The self-bind hack from c58c4b1 is gone — the
                 // captured env IS the same RefCell that gets the
@@ -7707,7 +8121,13 @@ impl Interpreter {
             }
             Value::Builtin { func, .. } => func(&args),
             #[cfg(feature = "ffi")]
-            Value::Foreign { name: _, symbol, requires, ensures, trusted } => {
+            Value::Foreign {
+                name: _,
+                symbol,
+                requires,
+                ensures,
+                trusted,
+            } => {
                 // Bind params positionally as `_0`, `_1`, ... for contract eval.
                 let contract_env = Environment::new_enclosed(self.env.clone());
                 for (i, v) in args.iter().enumerate() {
@@ -7726,7 +8146,7 @@ impl Interpreter {
                     };
                     if !ok {
                         return Err(
-                            "contract violation: `requires` failed entering foreign fn".to_string(),
+                            "contract violation: `requires` failed entering foreign fn".to_string()
                         );
                     }
                 }
@@ -7746,10 +8166,8 @@ impl Interpreter {
                             _ => false,
                         };
                         if !ok && !trusted {
-                            return Err(
-                                "contract violation: `ensures` failed leaving foreign fn"
-                                    .to_string(),
-                            );
+                            return Err("contract violation: `ensures` failed leaving foreign fn"
+                                .to_string());
                         }
                     }
                 }
@@ -7758,7 +8176,7 @@ impl Interpreter {
             _ => Err(format!("Not a function: {}", func)),
         }
     }
-    
+
     /// RES-039: test a pattern against a value. On match, returns
     /// `Some(binding)` where binding is `Some((name, value))` for an
     /// identifier pattern or `None` otherwise. On no match, returns `None`.
@@ -7826,13 +8244,13 @@ fn start_repl() -> RustylineResult<()> {
     let mut interpreter = Interpreter::new();
     let mut rl = DefaultEditor::new()?;
     let mut type_check_enabled = false;
-    
+
     // Load history if available
     let history_path = match env::var("HOME") {
         Ok(home) => Path::new(&home).join(".resilient_history"),
         Err(_) => Path::new(".resilient_history").to_path_buf(),
     };
-    
+
     if history_path.exists()
         && let Err(err) = rl.load_history(&history_path)
     {
@@ -7841,28 +8259,28 @@ fn start_repl() -> RustylineResult<()> {
 
     println!("Resilient Programming Language REPL (v0.1.0)");
     println!("Type 'exit' to quit, 'help' for command list");
-    
+
     loop {
         let prompt = if type_check_enabled {
             ">> [typecheck] "
         } else {
             ">> "
         };
-        
+
         let readline = rl.readline(prompt);
-        
+
         match readline {
             Ok(line) => {
                 let input = line.trim();
-                
+
                 // Skip empty lines
                 if input.is_empty() {
                     continue;
                 }
-                
+
                 // Add to history
                 rl.add_history_entry(input)?;
-                
+
                 // Handle special commands
                 match input {
                     "exit" | "quit" => break,
@@ -7872,53 +8290,65 @@ fn start_repl() -> RustylineResult<()> {
                         println!("  exit       - Exit the REPL");
                         println!("  clear      - Clear the screen");
                         println!("  examples   - Show example code snippets");
-                        println!("  typecheck  - Toggle type checking (currently {})", 
-                                 if type_check_enabled { "enabled" } else { "disabled" });
+                        println!(
+                            "  typecheck  - Toggle type checking (currently {})",
+                            if type_check_enabled {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        );
                         continue;
-                    },
+                    }
                     "clear" => {
                         print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
                         io::stdout().flush().unwrap();
                         continue;
-                    },
+                    }
                     "typecheck" => {
                         type_check_enabled = !type_check_enabled;
-                        println!("Type checking {}", 
-                                 if type_check_enabled { "enabled" } else { "disabled" });
+                        println!(
+                            "Type checking {}",
+                            if type_check_enabled {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        );
                         continue;
-                    },
+                    }
                     "examples" => {
                         println!("Example code snippets:");
                         println!("\n1. Basic variable and function:");
                         println!("let x = 42;");
                         println!("fn add(int a, int b) {{ return a + b; }}");
                         println!("add(x, 10);");
-                        
+
                         println!("\n2. Live block example:");
                         println!("live {{");
                         println!("  let result = 100 / 0; // This would normally crash");
                         println!("  println(\"Result: \" + result);");
                         println!("}}");
-                        
+
                         println!("\n3. Assertion example:");
                         println!("let age = 25;");
                         println!("assert(age >= 18, \"Must be an adult\");");
                         println!("println(\"Access granted\");");
                         continue;
-                    },
+                    }
                     _ => {}
                 }
-                
+
                 // Parse the input
                 let lexer = Lexer::new(input.to_string());
                 let mut parser = Parser::new(lexer);
                 let program = parser.parse_program();
-                
+
                 // Skip evaluation if any parser errors were recorded
                 if !parser.errors.is_empty() {
                     continue;
                 }
-                
+
                 // Run type checker if enabled
                 if type_check_enabled {
                     match typechecker::TypeChecker::new().check_program(&program) {
@@ -7929,39 +8359,39 @@ fn start_repl() -> RustylineResult<()> {
                         }
                     }
                 }
-                
+
                 // Evaluate the input
                 match interpreter.eval(&program) {
                     Ok(value) => {
                         if !matches!(value, Value::Void) {
                             println!("{}", value);
                         }
-                    },
+                    }
                     Err(error) => {
                         eprintln!("\x1B[31mError: {}\x1B[0m", error); // Red error text
                     }
                 }
-            },
+            }
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");
                 break;
-            },
+            }
             Err(ReadlineError::Eof) => {
                 println!("CTRL-D");
                 break;
-            },
+            }
             Err(err) => {
                 eprintln!("Error: {}", err);
                 break;
             }
         }
     }
-    
+
     // Save history
     if let Err(err) = rl.save_history(&history_path) {
         eprintln!("Error saving history: {}", err);
     }
-    
+
     Ok(())
 }
 
@@ -8022,7 +8452,11 @@ fn has_line_col_prefix(msg: &str) -> bool {
 /// the offending source position is visually underlined.
 fn format_interpreter_error(filename: &str, err: &str) -> String {
     if has_line_col_prefix(err) {
-        let header = format!("{}:{}", filename, err.replacen(": ", ": Runtime error: ", 1));
+        let header = format!(
+            "{}:{}",
+            filename,
+            err.replacen(": ", ": Runtime error: ", 1)
+        );
         header
     } else {
         format!("Runtime error: {}", err)
@@ -8057,7 +8491,10 @@ fn render_with_caret(src: &str, err: &str, level: &str) -> String {
     // Try the bare `<line>:<col>: <msg>` form first.
     let mut it = err.splitn(3, ':');
     if let (Some(line_s), Some(col_s), Some(rest)) = (it.next(), it.next(), it.next())
-        && let (Ok(line), Ok(col)) = (line_s.trim().parse::<usize>(), col_s.trim().parse::<usize>())
+        && let (Ok(line), Ok(col)) = (
+            line_s.trim().parse::<usize>(),
+            col_s.trim().parse::<usize>(),
+        )
     {
         return format!(
             "{}\n{}",
@@ -8103,16 +8540,18 @@ fn dump_tokens_to_stdout(src: &str) {
     loop {
         let (tok, span) = lex.next_token_with_span();
         let is_eof = matches!(tok, Token::Eof);
-        let lexeme: String = if span.end.offset > span.start.offset
-            && span.end.offset <= chars.len()
-        {
-            chars[span.start.offset..span.end.offset].iter().collect()
-        } else {
-            String::new()
-        };
+        let lexeme: String =
+            if span.end.offset > span.start.offset && span.end.offset <= chars.len() {
+                chars[span.start.offset..span.end.offset].iter().collect()
+            } else {
+                String::new()
+            };
         // Escape newlines / quotes in the lexeme so block comments
         // and multi-line string literals stay readable.
-        let lexeme = lexeme.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        let lexeme = lexeme
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
         println!(
             "{}:{}  {:?}(\"{}\")",
             span.start.line, span.start.column, tok, lexeme
@@ -8248,12 +8687,28 @@ fn classify_lex_token(
 
     let (ty, modifiers) = match tok {
         // Keywords.
-        Token::Function | Token::Let | Token::Live | Token::Assert | Token::Assume
-        | Token::If | Token::Else | Token::Return | Token::Static
-        | Token::While | Token::For | Token::In
-        | Token::Requires | Token::Ensures | Token::Invariant
-        | Token::Struct | Token::New | Token::Match | Token::Use
-        | Token::Impl | Token::Type | Token::Default
+        Token::Function
+        | Token::Let
+        | Token::Live
+        | Token::Assert
+        | Token::Assume
+        | Token::If
+        | Token::Else
+        | Token::Return
+        | Token::Static
+        | Token::While
+        | Token::For
+        | Token::In
+        | Token::Requires
+        | Token::Ensures
+        | Token::Invariant
+        | Token::Struct
+        | Token::New
+        | Token::Match
+        | Token::Use
+        | Token::Impl
+        | Token::Type
+        | Token::Default
         | Token::BoolLiteral(_) => (sem_tok::KEYWORD, 0),
 
         // Numeric / string / bytes literals.
@@ -8263,13 +8718,9 @@ fn classify_lex_token(
         // Identifiers: context-dependent.
         Token::Identifier(_) => match prev_kw {
             Some(Token::Function) => (sem_tok::FUNCTION, sem_tok::MOD_DECLARATION),
-            Some(Token::Struct) | Some(Token::Type) => {
-                (sem_tok::TYPE, sem_tok::MOD_DECLARATION)
-            }
+            Some(Token::Struct) | Some(Token::Type) => (sem_tok::TYPE, sem_tok::MOD_DECLARATION),
             Some(Token::New) => (sem_tok::TYPE, 0),
-            Some(Token::Let) | Some(Token::Static) => {
-                (sem_tok::VARIABLE, sem_tok::MOD_DECLARATION)
-            }
+            Some(Token::Let) | Some(Token::Static) => (sem_tok::VARIABLE, sem_tok::MOD_DECLARATION),
             _ => (sem_tok::VARIABLE, 0),
         },
 
@@ -8278,12 +8729,29 @@ fn classify_lex_token(
         // forms. Brackets / braces / parens / semicolons /
         // commas are delimiters not highlighted as operators in
         // any standard LSP legend, so they get no token.
-        Token::Plus | Token::Minus | Token::Multiply | Token::Divide
-        | Token::Modulo | Token::Assign | Token::Equal | Token::NotEqual
-        | Token::And | Token::Or | Token::BitAnd | Token::BitOr
-        | Token::BitXor | Token::ShiftLeft | Token::ShiftRight
-        | Token::Greater | Token::Less | Token::GreaterEqual | Token::LessEqual
-        | Token::Bang | Token::Dot | Token::FatArrow | Token::Arrow
+        Token::Plus
+        | Token::Minus
+        | Token::Multiply
+        | Token::Divide
+        | Token::Modulo
+        | Token::Assign
+        | Token::Equal
+        | Token::NotEqual
+        | Token::And
+        | Token::Or
+        | Token::BitAnd
+        | Token::BitOr
+        | Token::BitXor
+        | Token::ShiftLeft
+        | Token::ShiftRight
+        | Token::Greater
+        | Token::Less
+        | Token::GreaterEqual
+        | Token::LessEqual
+        | Token::Bang
+        | Token::Dot
+        | Token::FatArrow
+        | Token::Arrow
         | Token::Question => (sem_tok::OPERATOR, 0),
 
         // Delimiters + internal tokens: no semantic highlight.
@@ -8294,7 +8762,13 @@ fn classify_lex_token(
     if length == 0 {
         return None;
     }
-    Some(AbsSemToken { line, col, length, ty, modifiers })
+    Some(AbsSemToken {
+        line,
+        col,
+        length,
+        ty,
+        modifiers,
+    })
 }
 
 /// RES-187: scan `src` for `// ... \n` line comments and
@@ -8450,21 +8924,25 @@ fn emit_certificates(
     sign_key_path: Option<&Path>,
 ) -> RResult<usize> {
     fs::create_dir_all(dir).map_err(|e| {
-        format!("could not create certificate directory {}: {}", dir.display(), e)
+        format!(
+            "could not create certificate directory {}: {}",
+            dir.display(),
+            e
+        )
     })?;
 
     // RES-195: optionally load the signing key once so the write
     // loop can compute per-obligation sigs as it goes.
-    let priv_b: Option<[u8; 32]> = if let Some(key_path) = sign_key_path {
-        let pem = fs::read_to_string(key_path).map_err(|e| {
-            format!("could not read signing key {}: {}", key_path.display(), e)
-        })?;
-        Some(cert_sign::parse_private_key_pem(&pem).map_err(|e| {
-            format!("could not parse signing key {}: {}", key_path.display(), e)
-        })?)
-    } else {
-        None
-    };
+    let priv_b: Option<[u8; 32]> =
+        if let Some(key_path) = sign_key_path {
+            let pem = fs::read_to_string(key_path)
+                .map_err(|e| format!("could not read signing key {}: {}", key_path.display(), e))?;
+            Some(cert_sign::parse_private_key_pem(&pem).map_err(|e| {
+                format!("could not parse signing key {}: {}", key_path.display(), e)
+            })?)
+        } else {
+            None
+        };
 
     // Walk the certificates, write each one, and build the
     // manifest as we go.
@@ -8472,9 +8950,16 @@ fn emit_certificates(
         Vec::with_capacity(certificates.len());
     for cert in certificates {
         // Sanitize fn_name: only [A-Za-z0-9_] survives, others become '_'.
-        let safe: String = cert.fn_name
+        let safe: String = cert
+            .fn_name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let filename = format!("{}__{}__{}.smt2", safe, cert.kind, cert.idx);
         let path = dir.join(&filename);
@@ -8536,8 +9021,8 @@ fn execute_file(
     verifier_timeout_ms: u32,
     warn_unverified: bool,
 ) -> RResult<()> {
-    let contents = fs::read_to_string(filename)
-        .map_err(|e| format!("Error reading file: {}", e))?;
+    let contents =
+        fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
 
     let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
@@ -8555,7 +9040,10 @@ fn execute_file(
         for e in &parser.errors {
             eprintln!("{}", render_with_caret(&contents, e, "Parser error"));
         }
-        return Err(format!("Failed to parse program: {} parser error(s)", parser.errors.len()));
+        return Err(format!(
+            "Failed to parse program: {} parser error(s)",
+            parser.errors.len()
+        ));
     }
 
     // RES-073: resolve `use` imports before typecheck / interpret.
@@ -8636,18 +9124,15 @@ fn execute_file(
         // a panic or opaque message.
         #[cfg(feature = "jit")]
         {
-            let result = jit_backend::run(&program)
-                .map_err(|e| format!("{}: {}", filename, e))?;
+            let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
             return Ok(());
         }
         #[cfg(not(feature = "jit"))]
         {
-            return Err(
-                "--jit requires the `jit` feature. Rebuild with:\n  \
+            return Err("--jit requires the `jit` feature. Rebuild with:\n  \
                  cargo build --features jit"
-                    .to_string(),
-            );
+                .to_string());
         }
     }
 
@@ -8656,8 +9141,7 @@ fn execute_file(
         // a Program (main chunk + function table), run it, print the
         // resulting value (mirroring the tree walker's behavior for
         // non-Void results).
-        let prog = compiler::compile(&program)
-            .map_err(|e| format!("VM compile error: {}", e))?;
+        let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
         let result = vm::run(&prog).map_err(|e| {
             // RES-095: mirror the typechecker's `<file>:<line>:` shape
             // so VM runtime errors are editor-clickable when the
@@ -8707,7 +9191,8 @@ fn execute_file(
                             // SAFETY: intentional one-time-per-extern-decl leak to obtain a &'static str
                             // for Value::Foreign.name. The leaked memory is bounded by the number of
                             // extern decls in the program and is reclaimed when the process exits.
-                            let name: &'static str = Box::leak(d.resilient_name.clone().into_boxed_str());
+                            let name: &'static str =
+                                Box::leak(d.resilient_name.clone().into_boxed_str());
                             interpreter.env.set(
                                 d.resilient_name.clone(),
                                 Value::Foreign {
@@ -8751,8 +9236,7 @@ fn execute_file(
 /// typecheck. Tells the user exactly what the static verifier
 /// discharged vs deferred to runtime.
 fn print_verification_audit(stats: &typechecker::VerificationStats) {
-    let total_callsite =
-        stats.requires_discharged_at_compile + stats.requires_left_for_runtime;
+    let total_callsite = stats.requires_discharged_at_compile + stats.requires_left_for_runtime;
     println!();
     println!("\x1B[36m--- Verification Audit ---\x1B[0m");
     println!(
@@ -8788,7 +9272,10 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
     );
     if total_callsite > 0 {
         let pct = (stats.requires_discharged_at_compile as f64 / total_callsite as f64) * 100.0;
-        println!("  static coverage:                          \x1B[36m{:.0}%\x1B[0m", pct);
+        println!(
+            "  static coverage:                          \x1B[36m{:.0}%\x1B[0m",
+            pct
+        );
     }
 
     // RES-192: per-fn inferred effect set. Sorted so the output
@@ -8867,10 +9354,7 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                     // preserves the RES-205 invocation shape.
                     name = Some(a.clone());
                 } else {
-                    eprintln!(
-                        "Error: unexpected extra argument `{}` to `pkg init`",
-                        a
-                    );
+                    eprintln!("Error: unexpected extra argument `{}` to `pkg init`", a);
                     return Some(2);
                 }
                 i += 1;
@@ -9018,9 +9502,7 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     }
 
     let Some(dir) = dir_path else {
-        eprintln!(
-            "Error: `resilient verify-cert <dir> [--pubkey <path>]` requires a directory"
-        );
+        eprintln!("Error: `resilient verify-cert <dir> [--pubkey <path>]` requires a directory");
         return Some(2);
     };
 
@@ -9042,7 +9524,10 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
         None => match cert_sign::parse_public_key_pem(cert_sign::EMBEDDED_PUBLIC_KEY_PEM) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Error: embedded public key failed to parse: {} (this is a bug)", e);
+                eprintln!(
+                    "Error: embedded public key failed to parse: {} (this is a bug)",
+                    e
+                );
                 return Some(1);
             }
         },
@@ -9075,7 +9560,10 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     };
     match cert_sign::verify_payload(&pub_b, &payload, &sig) {
         Ok(true) => {
-            println!("\x1B[32mcert: signature verified\x1B[0m for {}", dir.display());
+            println!(
+                "\x1B[32mcert: signature verified\x1B[0m for {}",
+                dir.display()
+            );
             Some(0)
         }
         Ok(false) => {
@@ -9232,14 +9720,19 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
         // Step 2: signature (if present).
         let sig_ok = match (&o.sig, pub_b) {
             (Some(sig_hex), Some(pk)) => match cert_sign::parse_signature_hex(sig_hex) {
-                Ok(sig) => cert_sign::verify_payload(&pk, &cert_bytes, &sig)
-                    .unwrap_or(false),
+                Ok(sig) => cert_sign::verify_payload(&pk, &cert_bytes, &sig).unwrap_or(false),
                 Err(_) => false,
             },
             (Some(_), None) => false, // signed manifest but no key we could load
             (None, _) => true,        // no sig → vacuously passes
         };
-        let sig_label = if o.sig.is_none() { "-" } else if sig_ok { "ok" } else { "FAIL" };
+        let sig_label = if o.sig.is_none() {
+            "-"
+        } else if sig_ok {
+            "ok"
+        } else {
+            "FAIL"
+        };
 
         // Step 3: Z3.
         let z3_label = if !z3_ok {
@@ -9283,7 +9776,9 @@ fn short_label(fn_name: &str, kind: &str, idx: usize) -> String {
 /// Check whether `z3` is on PATH without shelling out at this
 /// point. Uses `which`-equivalent by walking `PATH`.
 fn which_z3() -> bool {
-    let Some(path_env) = env::var_os("PATH") else { return false };
+    let Some(path_env) = env::var_os("PATH") else {
+        return false;
+    };
     for p in env::split_paths(&path_env) {
         let candidate = p.join("z3");
         if candidate.is_file() {
@@ -9446,6 +9941,210 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
         Some(1)
     } else {
         Some(0)
+    }
+}
+
+/// RES-228: `resilient run [--watch] <file>` subcommand.
+///
+/// Without `--watch`, equivalent to the plain `resilient <file>` path but
+/// accessed via the explicit `run` verb. With `--watch`, enters a loop: run
+/// immediately, then watch every file `use`d by the program and re-run on any
+/// change. A 200 ms debounce prevents double-fires from editors that write in
+/// two steps. If `--watch` is passed but stdin is not a TTY (piped / CI use),
+/// the flag is silently ignored and the program runs once.
+///
+/// Exit codes:
+/// - 0 = ran (or ran + watched) successfully.
+/// - 1 = runtime error.
+/// - 2 = usage error (missing path, bad flag).
+///
+/// Returns `None` when the first arg is not `run`.
+fn dispatch_run_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("run") {
+        return None;
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut watch = false;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--watch" || a == "-w" {
+            watch = true;
+        } else if a.starts_with("--") {
+            eprintln!("Error: unknown flag `{}` to run", a);
+            return Some(2);
+        } else if file.is_none() {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to run", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!("Error: `resilient run [--watch] <file>` requires a file path");
+        return Some(2);
+    };
+
+    if !watch {
+        // Plain `resilient run <file>` — delegate to the normal execute path.
+        let filename = path.to_string_lossy().into_owned();
+        match execute_file(
+            &filename, false, false, None, None, false, false, 5000, true,
+        ) {
+            Ok(_) => {
+                println!("Program executed successfully");
+                return Some(0);
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return Some(1);
+            }
+        }
+    }
+
+    // --watch requested. Silently degrade to one-shot when not a TTY.
+    if !stdin_is_tty() {
+        let filename = path.to_string_lossy().into_owned();
+        match execute_file(
+            &filename, false, false, None, None, false, false, 5000, true,
+        ) {
+            Ok(_) => {
+                println!("Program executed successfully");
+                return Some(0);
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return Some(1);
+            }
+        }
+    }
+
+    // Watch mode — run indefinitely until Ctrl-C.
+    use notify::{EventKind, Watcher};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+
+    let mut watcher = match notify::RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        notify::Config::default(),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Error: could not create file watcher: {}", e);
+            return Some(1);
+        }
+    };
+
+    // Register all currently `use`d files for watching.
+    register_watch_paths(&mut watcher, &path);
+
+    // First run immediately.
+    run_and_print_watch(&path, true);
+
+    // Re-run on changes with a 200 ms debounce.
+    let debounce = Duration::from_millis(200);
+    let mut last_fire: Option<Instant> = None;
+
+    while let Ok(event) = rx.recv() {
+        let event = match event {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("watch error: {}", e);
+                continue;
+            }
+        };
+
+        // Only react to write/create/remove events.
+        let relevant = matches!(
+            event.kind,
+            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+        );
+        if !relevant {
+            continue;
+        }
+
+        // Debounce: ignore events within 200 ms of the last fire.
+        let now = Instant::now();
+        if let Some(last) = last_fire
+            && now.duration_since(last) < debounce
+        {
+            while rx.try_recv().is_ok() {}
+            continue;
+        }
+        last_fire = Some(now);
+        // Drain burst before running.
+        std::thread::sleep(debounce);
+        while rx.try_recv().is_ok() {}
+
+        // Re-register watched paths (imports may have changed).
+        register_watch_paths(&mut watcher, &path);
+
+        run_and_print_watch(&path, false);
+    }
+
+    Some(0)
+}
+
+/// (Re-)register all files transitively `use`d by `src` with `watcher`.
+fn register_watch_paths(watcher: &mut notify::RecommendedWatcher, src: &Path) {
+    use notify::{RecursiveMode, Watcher as _};
+    let paths = imports::collect_watched_paths(src);
+    for p in &paths {
+        let _ = watcher.watch(p, RecursiveMode::NonRecursive);
+    }
+}
+
+/// Run `path` and print a timestamped re-run header.
+/// On the first invocation (`initial = true`) no header is printed.
+fn run_and_print_watch(path: &Path, initial: bool) {
+    if !initial {
+        println!("--- [re-run at {}] ---", watch_timestamp());
+    }
+    let filename = path.to_string_lossy().into_owned();
+    match execute_file(
+        &filename, false, false, None, None, false, false, 5000, true,
+    ) {
+        Ok(_) => println!("Program executed successfully"),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}
+
+/// Return the current UTC time as `HH:MM:SS` using only `std::time`.
+fn watch_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let day_secs = secs % 86400;
+    let h = day_secs / 3600;
+    let m = (day_secs % 3600) / 60;
+    let s = day_secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+/// Returns `true` when stdin (fd 0) is connected to a terminal.
+/// Used to silently degrade `--watch` to a one-shot run in CI.
+fn stdin_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `isatty` is a read-only query on a file-descriptor integer.
+        // It cannot cause undefined behaviour; the only observable effect is
+        // the returned integer (1 = TTY, 0 = not-a-TTY).
+        unsafe extern "C" {
+            fn isatty(fd: i32) -> i32;
+        }
+        unsafe { isatty(0) != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
     }
 }
 
@@ -9661,12 +10360,13 @@ COMMON FLAGS:\n\
         --lsp                    Run the LSP server on stdio\n\
 \n\
 SUBCOMMANDS:\n\
-    check <file>        Type-check without running (RES-225)\n\
-    pkg <verb>          Package manager operations (RES-205)\n\
-    fmt <file>          Canonical source formatter\n\
-    lint <file>         Run the starter lints\n\
-    verify-cert <dir>   Verify an RES-071 certificate directory\n\
-    verify-all <dir>    Re-check every obligation in a manifest\n\
+    run [--watch] <file> Run a file; --watch re-runs on save (RES-228)\n\
+    check <file>         Type-check without running (RES-225)\n\
+    pkg <verb>           Package manager operations (RES-205)\n\
+    fmt <file>           Canonical source formatter\n\
+    lint <file>          Run the starter lints\n\
+    verify-cert <dir>    Verify an RES-071 certificate directory\n\
+    verify-all <dir>     Re-check every obligation in a manifest\n\
 \n\
 See SYNTAX.md for the language reference."
     );
@@ -9736,6 +10436,11 @@ fn main() {
         std::process::exit(code);
     }
 
+    // RES-228: `run [--watch] <file>` — explicit run verb with optional watch mode.
+    if let Some(code) = dispatch_run_subcommand(&args) {
+        std::process::exit(code);
+    }
+
     let mut type_check = false;
     let mut audit = false;
     let mut emit_cert_dir: Option<PathBuf> = None;
@@ -9801,9 +10506,7 @@ fn main() {
                 // Only meaningful when paired with --emit-certificate.
                 i += 1;
                 if i >= args.len() {
-                    eprintln!(
-                        "Error: --sign-cert requires a path to the Ed25519 private key PEM"
-                    );
+                    eprintln!("Error: --sign-cert requires a path to the Ed25519 private key PEM");
                     std::process::exit(2);
                 }
                 sign_cert_key = Some(PathBuf::from(&args[i]));
@@ -9857,10 +10560,7 @@ fn main() {
                 });
             } else if let Some(val) = arg.strip_prefix("--verifier-timeout-ms=") {
                 verifier_timeout_ms = val.parse().unwrap_or_else(|_| {
-                    eprintln!(
-                        "Error: --verifier-timeout-ms expects a u32, got {:?}",
-                        val
-                    );
+                    eprintln!("Error: --verifier-timeout-ms expects a u32, got {:?}", val);
                     std::process::exit(2);
                 });
             } else if arg == "--warn-unverified" {
@@ -9883,18 +10583,12 @@ fn main() {
                     std::process::exit(2);
                 }
                 seed_override = Some(args[i].parse().unwrap_or_else(|_| {
-                    eprintln!(
-                        "Error: --seed expects a u64, got {:?}",
-                        args[i]
-                    );
+                    eprintln!("Error: --seed expects a u64, got {:?}", args[i]);
                     std::process::exit(2);
                 }));
             } else if let Some(val) = arg.strip_prefix("--seed=") {
                 seed_override = Some(val.parse().unwrap_or_else(|_| {
-                    eprintln!(
-                        "Error: --seed expects a u64, got {:?}",
-                        val
-                    );
+                    eprintln!("Error: --seed expects a u64, got {:?}", val);
                     std::process::exit(2);
                 }));
             } else if arg == "--panic-on-fault" {
@@ -10058,16 +10752,11 @@ fn main() {
             #[cfg(feature = "jit")]
             if jit_cache_stats {
                 let (h, m, c) = jit_backend::cache_stats();
-                eprintln!(
-                    "jit-cache: hits={} misses={} compiles={}",
-                    h, m, c
-                );
+                eprintln!("jit-cache: hits={} misses={} compiles={}", h, m, c);
             }
             #[cfg(not(feature = "jit"))]
             if jit_cache_stats {
-                eprintln!(
-                    "jit-cache: unavailable (built without `--features jit`)"
-                );
+                eprintln!("jit-cache: unavailable (built without `--features jit`)");
             }
             match run_result {
                 Ok(_) => {
@@ -10293,7 +10982,11 @@ mod tests {
     fn lex_bench_100kloc() {
         use std::time::Instant;
 
-        fn time_runs<F: FnMut() -> usize>(mut f: F, warmup: usize, runs: usize) -> (u128, u128, u128, usize) {
+        fn time_runs<F: FnMut() -> usize>(
+            mut f: F,
+            warmup: usize,
+            runs: usize,
+        ) -> (u128, u128, u128, usize) {
             for _ in 0..warmup {
                 let _ = f();
             }
@@ -10313,7 +11006,11 @@ mod tests {
 
         let input = build_100kloc_input();
         let line_count = input.lines().count();
-        println!("RES-109: lex-bench input = {} lines, {} bytes", line_count, input.len());
+        println!(
+            "RES-109: lex-bench input = {} lines, {} bytes",
+            line_count,
+            input.len()
+        );
 
         // Warm up 2, time 10 — the legacy lexer is char-by-char
         // over a large Vec<char>, on the order of ~10 s per pass
@@ -10337,12 +11034,8 @@ mod tests {
         let ratio_p50 = legacy_p50 as f64 / logos_p50.max(1) as f64;
         let ratio_mean = legacy_mean as f64 / logos_mean.max(1) as f64;
 
-        println!(
-            "| lexer   | p50 (us) | p99 (us) | mean (us) | tokens |"
-        );
-        println!(
-            "|---------|----------|----------|-----------|--------|"
-        );
+        println!("| lexer   | p50 (us) | p99 (us) | mean (us) | tokens |");
+        println!("|---------|----------|----------|-----------|--------|");
         println!(
             "| legacy  | {:>8} | {:>8} | {:>9} | {:>6} |",
             legacy_p50, legacy_p99, legacy_mean, legacy_n,
@@ -10351,14 +11044,8 @@ mod tests {
             "| logos   | {:>8} | {:>8} | {:>9} | {:>6} |",
             logos_p50, logos_p99, logos_mean, logos_n,
         );
-        println!(
-            "ratio p50:  legacy / logos = {:.2}×",
-            ratio_p50
-        );
-        println!(
-            "ratio mean: legacy / logos = {:.2}×",
-            ratio_mean
-        );
+        println!("ratio p50:  legacy / logos = {:.2}×", ratio_p50);
+        println!("ratio mean: legacy / logos = {:.2}×", ratio_mean);
     }
 
     #[cfg(feature = "logos-lexer")]
@@ -10608,7 +11295,11 @@ mod tests {
         let has_string = tokens
             .iter()
             .any(|t| matches!(t, Token::StringLiteral(s) if s == "hi\n"));
-        assert!(has_string, "expected StringLiteral(\"hi\\n\") in {:?}", tokens);
+        assert!(
+            has_string,
+            "expected StringLiteral(\"hi\\n\") in {:?}",
+            tokens
+        );
     }
 
     // ---------- Parser ----------
@@ -10649,9 +11340,15 @@ mod tests {
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
         match program {
             Node::Program(stmts) => match &stmts[0].node {
-                Node::Function { name, parameters, .. } => {
+                Node::Function {
+                    name, parameters, ..
+                } => {
                     assert_eq!(name, "main");
-                    assert!(parameters.is_empty(), "expected no params, got {:?}", parameters);
+                    assert!(
+                        parameters.is_empty(),
+                        "expected no params, got {:?}",
+                        parameters
+                    );
                 }
                 other => panic!("expected Function, got {:?}", other),
             },
@@ -10665,7 +11362,9 @@ mod tests {
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
         match program {
             Node::Program(stmts) => match &stmts[0].node {
-                Node::Function { name, parameters, .. } => {
+                Node::Function {
+                    name, parameters, ..
+                } => {
                     assert_eq!(name, "add");
                     assert_eq!(
                         parameters,
@@ -10785,7 +11484,10 @@ mod tests {
         // `Token::Default` isn't a prefix operator / atom.
         let src = "fn f() { return default; } f();";
         let (_program, errs) = parse(src);
-        assert!(!errs.is_empty(), "expected parse errors for `default` as expr, got none");
+        assert!(
+            !errs.is_empty(),
+            "expected parse errors for `default` as expr, got none"
+        );
     }
 
     #[test]
@@ -11249,11 +11951,7 @@ mod tests {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let mut tc = typechecker::TypeChecker::new();
         let err = tc.check_program(&program).unwrap_err();
-        assert!(
-            err.contains("Non-exhaustive match"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("Non-exhaustive match"), "err was: {}", err);
     }
 
     #[test]
@@ -11275,11 +11973,7 @@ mod tests {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let mut tc = typechecker::TypeChecker::new();
         let err = tc.check_program(&program).unwrap_err();
-        assert!(
-            err.contains("missing `true`"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("missing `true`"), "err was: {}", err);
     }
 
     #[test]
@@ -11322,11 +12016,7 @@ mod tests {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let mut tc = typechecker::TypeChecker::new();
         let err = tc.check_program(&program).unwrap_err();
-        assert!(
-            err.contains("guard must be a boolean"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("guard must be a boolean"), "err was: {}", err);
     }
 
     // --- RES-156: array comprehensions ---
@@ -11703,9 +12393,11 @@ mod tests {
                 Node::Function { body, .. } => walk(body),
                 Node::Block { stmts, .. } => stmts.iter().find_map(walk),
                 Node::LetStatement { value, .. } => walk(value),
-                Node::IfStatement { consequence, alternative, .. } => {
-                    walk(consequence).or_else(|| alternative.as_ref().and_then(|a| walk(a)))
-                }
+                Node::IfStatement {
+                    consequence,
+                    alternative,
+                    ..
+                } => walk(consequence).or_else(|| alternative.as_ref().and_then(|a| walk(a))),
                 _ => None,
             }
         }
@@ -11797,9 +12489,7 @@ mod tests {
             fields[0].1
         );
         // Second is shorthand Identifier(y)
-        assert!(
-            matches!(&fields[1].1, Node::Identifier { name, .. } if name == "y")
-        );
+        assert!(matches!(&fields[1].1, Node::Identifier { name, .. } if name == "y"));
     }
 
     #[test]
@@ -11925,15 +12615,11 @@ mod tests {
     #[test]
     fn bytes_slice_rejects_out_of_range() {
         let b = Value::Bytes(vec![1, 2, 3]);
-        let err = builtin_bytes_slice(&[b.clone(), Value::Int(0), Value::Int(10)])
-            .unwrap_err();
+        let err = builtin_bytes_slice(&[b.clone(), Value::Int(0), Value::Int(10)]).unwrap_err();
         assert!(err.contains("out of range"), "err was: {}", err);
-        let err =
-            builtin_bytes_slice(&[b.clone(), Value::Int(-1), Value::Int(1)])
-                .unwrap_err();
+        let err = builtin_bytes_slice(&[b.clone(), Value::Int(-1), Value::Int(1)]).unwrap_err();
         assert!(err.contains("negative index"), "err was: {}", err);
-        let err = builtin_bytes_slice(&[b, Value::Int(2), Value::Int(1)])
-            .unwrap_err();
+        let err = builtin_bytes_slice(&[b, Value::Int(2), Value::Int(1)]).unwrap_err();
         assert!(err.contains("start must be <= end"), "err was: {}", err);
     }
 
@@ -11964,11 +12650,7 @@ mod tests {
     #[test]
     fn byte_at_rejects_non_bytes_first_arg() {
         let err = builtin_byte_at(&[Value::Int(1), Value::Int(0)]).unwrap_err();
-        assert!(
-            err.contains("expected (Bytes, Int)"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("expected (Bytes, Int)"), "err was: {}", err);
     }
 
     #[test]
@@ -12010,7 +12692,9 @@ mod tests {
         // and the key is unique per call via `env_name`, so
         // the race window this API guards against doesn't
         // exist here.
-        unsafe { std::env::set_var(&key, "hello"); }
+        unsafe {
+            std::env::set_var(&key, "hello");
+        }
         let got = builtin_env(&[Value::String(key.clone())]).unwrap();
         match got {
             Value::Result { ok: true, payload } => match *payload {
@@ -12021,7 +12705,9 @@ mod tests {
         }
         // SAFETY: same rationale as the set_var above —
         // serialized by ENV_TEST_LOCK, unique key.
-        unsafe { std::env::remove_var(&key); }
+        unsafe {
+            std::env::remove_var(&key);
+        }
     }
 
     #[test]
@@ -12033,7 +12719,9 @@ mod tests {
         // still have collisions.
         // SAFETY: same rationale as the set_var above — serialized
         // by ENV_TEST_LOCK, unique key.
-        unsafe { std::env::remove_var(&key); }
+        unsafe {
+            std::env::remove_var(&key);
+        }
         let got = builtin_env(&[Value::String(key)]).unwrap();
         match got {
             Value::Result { ok: false, payload } => match *payload {
@@ -12054,11 +12742,7 @@ mod tests {
     fn env_rejects_wrong_arity() {
         let err = builtin_env(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
-        let err = builtin_env(&[
-            Value::String("A".into()),
-            Value::String("B".into()),
-        ])
-        .unwrap_err();
+        let err = builtin_env(&[Value::String("A".into()), Value::String("B".into())]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
@@ -12110,25 +12794,21 @@ mod tests {
         let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(42);
         let a: Vec<i64> = (0..10)
-            .map(|_| {
-                match builtin_random_int(&[Value::Int(0), Value::Int(1_000_000)])
-                    .unwrap()
-                {
+            .map(
+                |_| match builtin_random_int(&[Value::Int(0), Value::Int(1_000_000)]).unwrap() {
                     Value::Int(n) => n,
                     other => panic!("expected Int, got {:?}", other),
-                }
-            })
+                },
+            )
             .collect();
         reset_rng(42);
         let b: Vec<i64> = (0..10)
-            .map(|_| {
-                match builtin_random_int(&[Value::Int(0), Value::Int(1_000_000)])
-                    .unwrap()
-                {
+            .map(
+                |_| match builtin_random_int(&[Value::Int(0), Value::Int(1_000_000)]).unwrap() {
                     Value::Int(n) => n,
                     other => panic!("expected Int, got {:?}", other),
-                }
-            })
+                },
+            )
             .collect();
         assert_eq!(a, b, "same seed must produce same sequence");
     }
@@ -12140,11 +12820,7 @@ mod tests {
             let v = builtin_random_int(&[Value::Int(10), Value::Int(20)]).unwrap();
             match v {
                 Value::Int(n) => {
-                    assert!(
-                        (10..20).contains(&n),
-                        "value {} outside [10, 20)",
-                        n
-                    );
+                    assert!((10..20).contains(&n), "value {} outside [10, 20)", n);
                 }
                 other => panic!("expected Int, got {:?}", other),
             }
@@ -12153,18 +12829,15 @@ mod tests {
 
     #[test]
     fn random_int_rejects_reversed_bounds() {
-        let err =
-            builtin_random_int(&[Value::Int(5), Value::Int(5)]).unwrap_err();
+        let err = builtin_random_int(&[Value::Int(5), Value::Int(5)]).unwrap_err();
         assert!(err.contains("hi must be > lo"), "err was: {}", err);
-        let err =
-            builtin_random_int(&[Value::Int(10), Value::Int(5)]).unwrap_err();
+        let err = builtin_random_int(&[Value::Int(10), Value::Int(5)]).unwrap_err();
         assert!(err.contains("hi must be > lo"), "err was: {}", err);
     }
 
     #[test]
     fn random_int_rejects_non_int_args() {
-        let err =
-            builtin_random_int(&[Value::Float(1.0), Value::Int(5)]).unwrap_err();
+        let err = builtin_random_int(&[Value::Float(1.0), Value::Int(5)]).unwrap_err();
         assert!(err.contains("expected (Int, Int)"), "err was: {}", err);
     }
 
@@ -12181,11 +12854,7 @@ mod tests {
             let v = builtin_random_float(&[]).unwrap();
             match v {
                 Value::Float(f) => {
-                    assert!(
-                        (0.0..1.0).contains(&f),
-                        "value {} outside [0.0, 1.0)",
-                        f
-                    );
+                    assert!((0.0..1.0).contains(&f), "value {} outside [0.0, 1.0)", f);
                 }
                 other => panic!("expected Float, got {:?}", other),
             }
@@ -12256,11 +12925,7 @@ mod tests {
     fn set_insert_rejects_non_hashable_element() {
         let s = builtin_set_new(&[]).unwrap();
         let err = builtin_set_insert(&[s, Value::Float(1.5)]).unwrap_err();
-        assert!(
-            err.contains("Set element must be"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("Set element must be"), "err was: {}", err);
     }
 
     #[test]
@@ -12288,7 +12953,11 @@ mod tests {
     #[test]
     fn set_has_rejects_non_set_first_arg() {
         let err = builtin_set_has(&[Value::Int(1), Value::Int(2)]).unwrap_err();
-        assert!(err.contains("first argument must be a Set"), "err was: {}", err);
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
     }
 
     #[test]
@@ -12387,11 +13056,7 @@ mod tests {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let mut interp = Interpreter::new();
         let err = interp.eval(&program).unwrap_err();
-        assert!(
-            err.contains("Set element must be"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("Set element must be"), "err was: {}", err);
     }
 
     // --- RES-147: clock_ms() monotonic builtin ---
@@ -12435,12 +13100,7 @@ mod tests {
         let mut prev = as_int(builtin_clock_ms(&[]).unwrap());
         for _ in 0..10 {
             let cur = as_int(builtin_clock_ms(&[]).unwrap());
-            assert!(
-                cur >= prev,
-                "clock_ms regressed: {} -> {}",
-                prev,
-                cur
-            );
+            assert!(cur >= prev, "clock_ms regressed: {} -> {}", prev, cur);
             prev = cur;
         }
     }
@@ -12480,9 +13140,21 @@ mod tests {
 
     #[test]
     fn sin_cos_tan_zero() {
-        close(as_float(builtin_sin(&[Value::Float(0.0)]).unwrap()), 0.0, "sin(0)");
-        close(as_float(builtin_cos(&[Value::Float(0.0)]).unwrap()), 1.0, "cos(0)");
-        close(as_float(builtin_tan(&[Value::Float(0.0)]).unwrap()), 0.0, "tan(0)");
+        close(
+            as_float(builtin_sin(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "sin(0)",
+        );
+        close(
+            as_float(builtin_cos(&[Value::Float(0.0)]).unwrap()),
+            1.0,
+            "cos(0)",
+        );
+        close(
+            as_float(builtin_tan(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "tan(0)",
+        );
     }
 
     #[test]
@@ -12490,22 +13162,42 @@ mod tests {
         // sin(π/2) = 1, cos(π/2) ≈ 0 (the f64 rep of π/2 has a
         // tiny residual so cos is ~6e-17; well within 1e-9).
         let pi_2 = std::f64::consts::FRAC_PI_2;
-        close(as_float(builtin_sin(&[Value::Float(pi_2)]).unwrap()), 1.0, "sin(π/2)");
-        close(as_float(builtin_cos(&[Value::Float(pi_2)]).unwrap()), 0.0, "cos(π/2)");
+        close(
+            as_float(builtin_sin(&[Value::Float(pi_2)]).unwrap()),
+            1.0,
+            "sin(π/2)",
+        );
+        close(
+            as_float(builtin_cos(&[Value::Float(pi_2)]).unwrap()),
+            0.0,
+            "cos(π/2)",
+        );
     }
 
     #[test]
     fn tan_pi_over_4() {
         // tan(π/4) = 1.
         let pi_4 = std::f64::consts::FRAC_PI_4;
-        close(as_float(builtin_tan(&[Value::Float(pi_4)]).unwrap()), 1.0, "tan(π/4)");
+        close(
+            as_float(builtin_tan(&[Value::Float(pi_4)]).unwrap()),
+            1.0,
+            "tan(π/4)",
+        );
     }
 
     #[test]
     fn ln_of_e_and_one() {
         let e = std::f64::consts::E;
-        close(as_float(builtin_ln(&[Value::Float(e)]).unwrap()), 1.0, "ln(e)");
-        close(as_float(builtin_ln(&[Value::Float(1.0)]).unwrap()), 0.0, "ln(1)");
+        close(
+            as_float(builtin_ln(&[Value::Float(e)]).unwrap()),
+            1.0,
+            "ln(e)",
+        );
+        close(
+            as_float(builtin_ln(&[Value::Float(1.0)]).unwrap()),
+            0.0,
+            "ln(1)",
+        );
     }
 
     #[test]
@@ -12519,11 +13211,7 @@ mod tests {
     #[test]
     fn ln_rejects_int_per_res130() {
         let err = builtin_ln(&[Value::Int(10)]).unwrap_err();
-        assert!(
-            err.contains("expected Float"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("expected Float"), "err was: {}", err);
         assert!(
             err.contains("to_float"),
             "diagnostic must hint at `to_float` bridge: {}",
@@ -12544,26 +13232,31 @@ mod tests {
 
     #[test]
     fn log_rejects_base_one() {
-        let err =
-            builtin_log(&[Value::Float(1.0), Value::Float(10.0)]).unwrap_err();
+        let err = builtin_log(&[Value::Float(1.0), Value::Float(10.0)]).unwrap_err();
         assert!(err.contains("base must not be 1"), "err was: {}", err);
     }
 
     #[test]
     fn log_rejects_non_positive_base_and_value() {
-        let err =
-            builtin_log(&[Value::Float(-2.0), Value::Float(8.0)]).unwrap_err();
+        let err = builtin_log(&[Value::Float(-2.0), Value::Float(8.0)]).unwrap_err();
         assert!(err.contains("base must be > 0"), "err was: {}", err);
-        let err =
-            builtin_log(&[Value::Float(2.0), Value::Float(0.0)]).unwrap_err();
+        let err = builtin_log(&[Value::Float(2.0), Value::Float(0.0)]).unwrap_err();
         assert!(err.contains("value must be > 0"), "err was: {}", err);
     }
 
     #[test]
     fn exp_zero_one_and_ln_roundtrip() {
-        close(as_float(builtin_exp(&[Value::Float(0.0)]).unwrap()), 1.0, "exp(0)");
+        close(
+            as_float(builtin_exp(&[Value::Float(0.0)]).unwrap()),
+            1.0,
+            "exp(0)",
+        );
         let e = std::f64::consts::E;
-        close(as_float(builtin_exp(&[Value::Float(1.0)]).unwrap()), e, "exp(1)");
+        close(
+            as_float(builtin_exp(&[Value::Float(1.0)]).unwrap()),
+            e,
+            "exp(1)",
+        );
         // ln(exp(x)) ≈ x for a mid-range value
         let x = 2.5;
         let round = builtin_ln(&[builtin_exp(&[Value::Float(x)]).unwrap()]).unwrap();
@@ -12585,12 +13278,16 @@ mod tests {
     #[test]
     fn trig_log_exp_arity_errors() {
         assert!(builtin_sin(&[]).unwrap_err().contains("expected 1"));
-        assert!(builtin_cos(&[Value::Float(0.0), Value::Float(0.0)])
-            .unwrap_err()
-            .contains("expected 1"));
-        assert!(builtin_log(&[Value::Float(2.0)])
-            .unwrap_err()
-            .contains("expected 2"));
+        assert!(
+            builtin_cos(&[Value::Float(0.0), Value::Float(0.0)])
+                .unwrap_err()
+                .contains("expected 1")
+        );
+        assert!(
+            builtin_log(&[Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected 2")
+        );
     }
 
     // --- RES-145: string builtins — replace / to_upper / to_lower / format ---
@@ -12664,10 +13361,7 @@ mod tests {
     fn format_interpolates_placeholders_in_order() {
         let v = builtin_format(&[
             Value::String("hello {}, you are {} years old".into()),
-            Value::Array(vec![
-                Value::String("alice".into()),
-                Value::Int(30),
-            ]),
+            Value::Array(vec![Value::String("alice".into()), Value::Int(30)]),
         ])
         .unwrap();
         assert_eq!(s145(v), "hello alice, you are 30 years old");
@@ -12692,11 +13386,7 @@ mod tests {
             Value::Array(vec![Value::Int(1)]),
         ])
         .unwrap_err();
-        assert!(
-            err.contains("not enough arguments"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("not enough arguments"), "err was: {}", err);
     }
 
     #[test]
@@ -12711,11 +13401,8 @@ mod tests {
 
     #[test]
     fn format_errors_on_unmatched_close_brace() {
-        let err = builtin_format(&[
-            Value::String("close }here".into()),
-            Value::Array(vec![]),
-        ])
-        .unwrap_err();
+        let err = builtin_format(&[Value::String("close }here".into()), Value::Array(vec![])])
+            .unwrap_err();
         assert!(err.contains("unmatched `}`"), "err was: {}", err);
     }
 
@@ -12732,11 +13419,7 @@ mod tests {
 
     #[test]
     fn format_rejects_non_array_second_arg() {
-        let err = builtin_format(&[
-            Value::String("{}".into()),
-            Value::Int(42),
-        ])
-        .unwrap_err();
+        let err = builtin_format(&[Value::String("{}".into()), Value::Int(42)]).unwrap_err();
         assert!(err.contains("expected (string, array)"), "err was: {}", err);
     }
 
@@ -12805,22 +13488,15 @@ mod tests {
     #[test]
     fn builtin_input_rejects_non_string_prompt() {
         let err = builtin_input(&[Value::Int(42)]).unwrap_err();
-        assert!(
-            err.contains("expected String prompt"),
-            "err was: {}",
-            err
-        );
+        assert!(err.contains("expected String prompt"), "err was: {}", err);
     }
 
     #[test]
     fn builtin_input_rejects_wrong_arity() {
         let err = builtin_input(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
-        let err = builtin_input(&[
-            Value::String("a".into()),
-            Value::String("b".into()),
-        ])
-        .unwrap_err();
+        let err =
+            builtin_input(&[Value::String("a".into()), Value::String("b".into())]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
@@ -12833,12 +13509,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "res_143_{}_{}_{}.tmp",
-            tag,
-            std::process::id(),
-            n
-        ))
+        std::env::temp_dir().join(format!("res_143_{}_{}_{}.tmp", tag, std::process::id(), n))
     }
 
     #[test]
@@ -12867,8 +13538,8 @@ mod tests {
         let path = tmp_path("missing");
         // Ensure it doesn't exist.
         let _ = std::fs::remove_file(&path);
-        let err = builtin_file_read(&[Value::String(path.to_string_lossy().to_string())])
-            .unwrap_err();
+        let err =
+            builtin_file_read(&[Value::String(path.to_string_lossy().to_string())]).unwrap_err();
         assert!(
             err.starts_with("file_read:"),
             "expected `file_read:` prefix, got: {}",
@@ -12881,8 +13552,8 @@ mod tests {
         let path = tmp_path("nonutf8");
         // 0xFF is never a valid UTF-8 start byte.
         std::fs::write(&path, [0xFFu8, 0xFE, 0xFD]).expect("write bytes");
-        let err = builtin_file_read(&[Value::String(path.to_string_lossy().to_string())])
-            .unwrap_err();
+        let err =
+            builtin_file_read(&[Value::String(path.to_string_lossy().to_string())]).unwrap_err();
         assert!(
             err.contains("not valid UTF-8"),
             "expected UTF-8 error, got: {}",
@@ -12921,12 +13592,7 @@ mod tests {
     #[test]
     fn map_insert_then_get_round_trip() {
         let m = builtin_map_new(&[]).unwrap();
-        let m = builtin_map_insert(&[
-            m,
-            Value::String("a".into()),
-            Value::Int(1),
-        ])
-        .unwrap();
+        let m = builtin_map_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
         let r = builtin_map_get(&[m, Value::String("a".into())]).unwrap();
         match r {
             Value::Result { ok: true, payload } => match *payload {
@@ -12977,7 +13643,10 @@ mod tests {
                         other => panic!("non-string key, got {:?}", other),
                     })
                     .collect();
-                assert_eq!(strs, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+                assert_eq!(
+                    strs,
+                    vec!["a".to_string(), "b".to_string(), "c".to_string()]
+                );
             }
             other => panic!("expected Array, got {:?}", other),
         }
@@ -13033,8 +13702,14 @@ mod tests {
         match interp.env.get("m").unwrap() {
             Value::Map(m) => {
                 assert_eq!(m.len(), 2);
-                assert!(matches!(m.get(&MapKey::Str("a".into())), Some(Value::Int(1))));
-                assert!(matches!(m.get(&MapKey::Str("b".into())), Some(Value::Int(2))));
+                assert!(matches!(
+                    m.get(&MapKey::Str("a".into())),
+                    Some(Value::Int(1))
+                ));
+                assert!(matches!(
+                    m.get(&MapKey::Str("b".into())),
+                    Some(Value::Int(2))
+                ));
             }
             other => panic!("expected Map, got {:?}", other),
         }
@@ -13108,18 +13783,28 @@ mod tests {
             panic!("expected Line struct, got {:?}", l);
         };
         let a = fields.iter().find(|(n, _)| n == "a").map(|(_, v)| v);
-        let Some(Value::Struct { fields: a_fields, .. }) = a else {
+        let Some(Value::Struct {
+            fields: a_fields, ..
+        }) = a
+        else {
             panic!("expected Point struct for a, got {:?}", a);
         };
         let x = a_fields.iter().find(|(n, _)| n == "x").map(|(_, v)| v);
         assert!(matches!(x, Some(Value::Int(99))), "got x = {:?}", x);
         // b is unchanged.
         let b = fields.iter().find(|(n, _)| n == "b").map(|(_, v)| v);
-        let Some(Value::Struct { fields: b_fields, .. }) = b else {
+        let Some(Value::Struct {
+            fields: b_fields, ..
+        }) = b
+        else {
             panic!("expected Point struct for b, got {:?}", b);
         };
         let bx = b_fields.iter().find(|(n, _)| n == "x").map(|(_, v)| v);
-        assert!(matches!(bx, Some(Value::Int(3))), "b.x should be unchanged, got {:?}", bx);
+        assert!(
+            matches!(bx, Some(Value::Int(3))),
+            "b.x should be unchanged, got {:?}",
+            bx
+        );
     }
 
     // --- RES-158: impl blocks + method calls ---
@@ -13294,7 +13979,9 @@ mod tests {
         let tokens = tokenize(". 1.5");
         assert_eq!(tokens[0], Token::Dot);
         assert!(
-            tokens.iter().any(|t| matches!(t, Token::FloatLiteral(f) if *f == 1.5)),
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::FloatLiteral(f) if *f == 1.5)),
             "expected FloatLiteral(1.5) to follow, got {:?}",
             tokens
         );
@@ -13367,13 +14054,15 @@ mod tests {
 
     #[test]
     fn audit_counts_discharged_and_runtime() {
-        let (program, _e) = parse(r#"
+        let (program, _e) = parse(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let r1 = pos(5);
             let n = 7;
             let r2 = pos(n);
             let dyn_val = pos(r1);  // r1's type is Any → not foldable
-        "#);
+        "#,
+        );
         let mut tc = typechecker::TypeChecker::new();
         tc.check_program(&program).unwrap();
         assert!(
@@ -13390,43 +14079,53 @@ mod tests {
     fn caller_requires_chains_to_callee() {
         // pos requires x > 0; caller requires n == 5; pos(n) holds
         // because 5 > 0 is statically true.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int n) requires n == 5 {
                 let r = pos(n);
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn caller_requires_violates_callee_caught() {
         // caller asserts n == 0; calls pos(n); pos requires x > 0;
         // 0 > 0 is false → reject.
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int n) requires n == 0 {
                 let r = pos(n);
             }
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Contract violation"), "got: {}", err);
     }
 
     #[test]
     fn caller_without_requires_still_works() {
         // No assumptions to propagate; call still folds normally.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int n) {
                 let r = pos(5);
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn caller_requires_does_not_leak_across_functions() {
         // The assumption is restored at end of body, so a later fn
         // sees an unconstrained n.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn first(int n) requires n == 5 {
                 let a = pos(n);
@@ -13436,7 +14135,9 @@ mod tests {
                 // not be rejected by stale assumptions.
                 let b = pos(n);
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     // ---------- Flow-sensitive if-branch assumptions (RES-064) ----------
@@ -13445,28 +14146,34 @@ mod tests {
     fn if_branch_assumption_satisfies_contract() {
         // We assume `x == 5` inside the consequence; pos requires x > 0;
         // 5 > 0 is true, so discharged.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int x) {
                 if x == 5 {
                     let r = pos(x);
                 }
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn if_branch_assumption_rejects_violating_call() {
         // We assume `x == 0` inside the consequence; pos requires x > 0;
         // 0 > 0 is false → reject.
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int x) {
                 if x == 0 {
                     let r = pos(x);
                 }
             }
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Contract violation"), "got: {}", err);
     }
 
@@ -13474,7 +14181,8 @@ mod tests {
     fn if_branch_assumption_does_not_leak_outside() {
         // After the if, x's value is unknown again.
         // pos(x) outside the if → not rejected (left for runtime)
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int x) {
                 if x == 0 {
@@ -13482,20 +14190,25 @@ mod tests {
                 }
                 let r2 = pos(x);  // x's assumption is gone now
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn if_literal_eq_ident_form_works_too() {
         // `5 == x` form, not just `x == 5`.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             fn caller(int x) {
                 if 5 == x {
                     let r = pos(x);
                 }
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     // ---------- Elide proven runtime checks (RES-068) ----------
@@ -13524,8 +14237,10 @@ mod tests {
         interp.eval(&program).unwrap();
         match interp.env.get("pos").unwrap() {
             Value::Function { requires, .. } => {
-                assert!(requires.is_empty(),
-                    "expected requires to be elided after proof");
+                assert!(
+                    requires.is_empty(),
+                    "expected requires to be elided after proof"
+                );
             }
             other => panic!("expected Function, got {:?}", other),
         }
@@ -13546,15 +14261,20 @@ mod tests {
         let mut tc = typechecker::TypeChecker::new();
         tc.check_program(&program).unwrap();
         let proven = tc.stats.fully_provable_fns();
-        assert!(!proven.contains("pos"),
-            "pos has an unproven call site, should NOT be fully proven");
+        assert!(
+            !proven.contains("pos"),
+            "pos has an unproven call site, should NOT be fully proven"
+        );
 
         let mut interp = Interpreter::new().with_proven_fns(proven);
         interp.eval(&program).unwrap();
         match interp.env.get("pos").unwrap() {
             Value::Function { requires, .. } => {
-                assert_eq!(requires.len(), 1,
-                    "expected requires to be retained for runtime check");
+                assert_eq!(
+                    requires.len(),
+                    1,
+                    "expected requires to be retained for runtime check"
+                );
             }
             other => panic!("expected Function, got {:?}", other),
         }
@@ -13564,32 +14284,41 @@ mod tests {
 
     #[test]
     fn const_let_satisfies_contract() {
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let n = 5;
             let r = pos(n);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn const_let_violates_contract() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let bad = 0;
             let r = pos(bad);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Contract violation"), "got: {}", err);
     }
 
     #[test]
     fn const_chain_through_arithmetic() {
         // n is 5, then m is 2*5 = 10 (foldable), then call.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let n = 5;
             let m = n * 2;
             let r = pos(m);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -13598,40 +14327,52 @@ mod tests {
         // even if we then assign 0, the verifier conservatively gives
         // up rather than risk being unsound. So pos(n) should NOT be
         // rejected, just left for runtime.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let n = 5;
             n = 7;          // killed; verifier gives up
             let r = pos(n); // not rejected, runtime check
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn shadowing_with_non_const_kills_tracking() {
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let n = 5;
             let n = 10 / 2;  // foldable, still a constant
             let r = pos(n);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     // ---------- Call-site contract fold (RES-061) ----------
 
     #[test]
     fn callsite_constant_args_satisfy_requires() {
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn divide(int a, int b) requires b != 0 { return a / b; }
             let r = divide(10, 5);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn callsite_constant_args_violate_requires() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn divide(int a, int b) requires b != 0 { return a / b; }
             let r = divide(10, 0);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(
             err.contains("Contract violation") && err.contains("divide"),
             "unexpected: {}",
@@ -13642,38 +14383,50 @@ mod tests {
     #[test]
     fn callsite_with_inequality_constraints() {
         // `requires x > 0`. Caller passes -3 → reject.
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let bad = pos(0 - 3);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Contract violation"), "unexpected: {}", err);
         // Caller passes 5 → accept.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let good = pos(5);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn callsite_free_variable_argument_left_for_runtime() {
         // The argument is a variable, not a literal — folder gives up
         // and the call type-checks fine.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn pos(int x) requires x > 0 { return x; }
             let v = 5;
             let r = pos(v);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn callsite_multiple_clauses_one_violated() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn ranged(int n)
                 requires n >= 0
                 requires n <= 100
             { return n; }
             let bad = ranged(150);
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Contract violation"), "unexpected: {}", err);
     }
 
@@ -13682,16 +14435,22 @@ mod tests {
     #[test]
     fn contract_tautology_passes_typecheck() {
         // `5 != 0` is provably true — the typechecker folds it.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn f() requires 5 != 0 { return 1; }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn contract_contradiction_rejected_at_compile_time() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn f() requires 0 != 0 { return 1; }
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(
             err.contains("contract can never hold"),
             "unexpected: {}",
@@ -13701,9 +14460,12 @@ mod tests {
 
     #[test]
     fn contract_literal_false_rejected() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn f() requires false { return 1; }
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(
             err.contains("contract can never hold"),
             "unexpected: {}",
@@ -13715,21 +14477,30 @@ mod tests {
     fn contract_with_free_variable_not_folded() {
         // `x > 0` can't be proven at compile time; typecheck should
         // accept it and leave the check for runtime.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn f(int x) requires x > 0 { return x; }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn contract_complex_arithmetic_folds() {
         // 2 + 3 == 5 → tautology.
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             fn f() requires 2 + 3 == 5 { return 1; }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         // 2 + 3 == 4 → contradiction.
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             fn g() requires 2 + 3 == 4 { return 1; }
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("never hold"), "unexpected: {}", err);
     }
 
@@ -13738,7 +14509,9 @@ mod tests {
     fn typecheck_src(src: &str) -> Result<(), String> {
         let (program, errors) = parse(src);
         assert!(errors.is_empty(), "parse errors: {:?}", errors);
-        typechecker::TypeChecker::new().check_program(&program).map(|_| ())
+        typechecker::TypeChecker::new()
+            .check_program(&program)
+            .map(|_| ())
     }
 
     #[test]
@@ -13766,11 +14539,7 @@ mod tests {
     #[test]
     fn typecheck_rejects_fn_return_type_mismatch() {
         let err = typecheck_src(r#"fn f() -> int { return "hi"; }"#).unwrap_err();
-        assert!(
-            err.contains("return type mismatch"),
-            "unexpected: {}",
-            err
-        );
+        assert!(err.contains("return type mismatch"), "unexpected: {}", err);
     }
 
     #[test]
@@ -13834,9 +14603,9 @@ mod tests {
         let src = r#"extern "libfoo" { @pure fn f() -> Int; }"#;
         let (_, parse_errs) = parse(src);
         assert!(
-            parse_errs.iter().any(|e| {
-                e.contains("attribute") || e.contains("@pure") || e.contains("pure")
-            }),
+            parse_errs
+                .iter()
+                .any(|e| { e.contains("attribute") || e.contains("@pure") || e.contains("pure") }),
             "expected parse error about @pure attribute, got {:?}",
             parse_errs
         );
@@ -13850,7 +14619,12 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors);
         match p {
             Node::Program(stmts) => match &stmts[0].node {
-                Node::LetStatement { name, value, type_annot, .. } => {
+                Node::LetStatement {
+                    name,
+                    value,
+                    type_annot,
+                    ..
+                } => {
                     assert_eq!(name, "x");
                     assert_eq!(type_annot.as_deref(), Some("int"));
                     assert!(matches!(**value, Node::IntegerLiteral { value: 42, .. }));
@@ -13883,7 +14657,9 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors);
         match p {
             Node::Program(stmts) => match &stmts[0].node {
-                Node::LetStatement { name, type_annot, .. } => {
+                Node::LetStatement {
+                    name, type_annot, ..
+                } => {
                     assert_eq!(name, "a");
                     assert_eq!(type_annot.as_deref(), Some("[Int; 3]"));
                 }
@@ -13984,7 +14760,9 @@ mod tests {
         // not panic, and must keep advancing.
         let (_p, errors) = parse("let a: [Int 3] = [1, 2, 3];");
         assert!(
-            errors.iter().any(|e| e.contains("';'") || e.contains("semicolon")),
+            errors
+                .iter()
+                .any(|e| e.contains("';'") || e.contains("semicolon")),
             "expected a ';' error, got {:?}",
             errors
         );
@@ -13996,7 +14774,9 @@ mod tests {
         // (const-generics are deferred per the ticket notes).
         let (_p, errors) = parse("let a: [Int; x] = [1, 2, 3];");
         assert!(
-            errors.iter().any(|e| e.contains("integer") || e.contains("length")),
+            errors
+                .iter()
+                .any(|e| e.contains("integer") || e.contains("length")),
             "expected an integer-length error, got {:?}",
             errors
         );
@@ -14032,7 +14812,9 @@ mod tests {
         // Find the Function node to check its return_type.
         match p {
             Node::Program(stmts) => match &stmts[0].node {
-                Node::Function { name, return_type, .. } => {
+                Node::Function {
+                    name, return_type, ..
+                } => {
                     assert_eq!(name, "add");
                     assert_eq!(return_type.as_deref(), Some("int"));
                 }
@@ -14165,18 +14947,23 @@ mod tests {
 
     #[test]
     fn result_ok_and_err_construct() {
-        let (p, _e) = parse(r#"
+        let (p, _e) = parse(
+            r#"
             let good = Ok(42);
             let bad = Err("boom");
             let g_ok = is_ok(good);
             let b_ok = is_ok(bad);
             let g = unwrap(good);
             let b = unwrap_err(bad);
-        "#);
+        "#,
+        );
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         assert!(matches!(interp.env.get("g_ok").unwrap(), Value::Bool(true)));
-        assert!(matches!(interp.env.get("b_ok").unwrap(), Value::Bool(false)));
+        assert!(matches!(
+            interp.env.get("b_ok").unwrap(),
+            Value::Bool(false)
+        ));
         assert!(matches!(interp.env.get("g").unwrap(), Value::Int(42)));
         assert!(matches!(interp.env.get("b").unwrap(), Value::String(s) if s == "boom"));
     }
@@ -14207,7 +14994,10 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors);
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
-        assert!(matches!(interp.env.get("was_err").unwrap(), Value::Bool(true)));
+        assert!(matches!(
+            interp.env.get("was_err").unwrap(),
+            Value::Bool(true)
+        ));
         assert!(matches!(interp.env.get("msg").unwrap(), Value::String(s) if s == "not a number"));
     }
 
@@ -14240,13 +15030,15 @@ mod tests {
 
     #[test]
     fn string_builtins_basic() {
-        let (p, _e) = parse(r#"
+        let (p, _e) = parse(
+            r#"
             let parts = split("a,b,c", ",");
             let t = trim("   hi   ");
             let hasH = contains("hello", "ell");
             let up = to_upper("Foo");
             let lo = to_lower("BAR");
-        "#);
+        "#,
+        );
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         match interp.env.get("parts").unwrap() {
@@ -14277,43 +15069,28 @@ mod tests {
 
     #[test]
     fn starts_with_happy_path_and_empty_prefix() {
-        let v = builtin_starts_with(&[
-            Value::String("hello".into()),
-            Value::String("hel".into()),
-        ])
-        .unwrap();
+        let v = builtin_starts_with(&[Value::String("hello".into()), Value::String("hel".into())])
+            .unwrap();
         assert!(matches!(v, Value::Bool(true)));
 
-        let v = builtin_starts_with(&[
-            Value::String("hello".into()),
-            Value::String("".into()),
-        ])
-        .unwrap();
+        let v = builtin_starts_with(&[Value::String("hello".into()), Value::String("".into())])
+            .unwrap();
         assert!(matches!(v, Value::Bool(true)));
 
-        let v = builtin_starts_with(&[
-            Value::String("hello".into()),
-            Value::String("world".into()),
-        ])
-        .unwrap();
+        let v =
+            builtin_starts_with(&[Value::String("hello".into()), Value::String("world".into())])
+                .unwrap();
         assert!(matches!(v, Value::Bool(false)));
 
         // Empty haystack + non-empty prefix → false (no match).
-        let v = builtin_starts_with(&[
-            Value::String("".into()),
-            Value::String("x".into()),
-        ])
-        .unwrap();
+        let v =
+            builtin_starts_with(&[Value::String("".into()), Value::String("x".into())]).unwrap();
         assert!(matches!(v, Value::Bool(false)));
     }
 
     #[test]
     fn starts_with_rejects_non_string_args() {
-        let err = builtin_starts_with(&[
-            Value::String("hello".into()),
-            Value::Int(1),
-        ])
-        .unwrap_err();
+        let err = builtin_starts_with(&[Value::String("hello".into()), Value::Int(1)]).unwrap_err();
         assert!(
             err.contains("starts_with: expected (string, string)"),
             "err was: {}",
@@ -14323,32 +15100,22 @@ mod tests {
 
     #[test]
     fn ends_with_happy_path_and_empty_suffix() {
-        let v = builtin_ends_with(&[
-            Value::String("hello".into()),
-            Value::String("lo".into()),
-        ])
-        .unwrap();
+        let v = builtin_ends_with(&[Value::String("hello".into()), Value::String("lo".into())])
+            .unwrap();
         assert!(matches!(v, Value::Bool(true)));
 
-        let v = builtin_ends_with(&[
-            Value::String("hello".into()),
-            Value::String("".into()),
-        ])
-        .unwrap();
+        let v =
+            builtin_ends_with(&[Value::String("hello".into()), Value::String("".into())]).unwrap();
         assert!(matches!(v, Value::Bool(true)));
 
-        let v = builtin_ends_with(&[
-            Value::String("hello".into()),
-            Value::String("hi".into()),
-        ])
-        .unwrap();
+        let v = builtin_ends_with(&[Value::String("hello".into()), Value::String("hi".into())])
+            .unwrap();
         assert!(matches!(v, Value::Bool(false)));
     }
 
     #[test]
     fn ends_with_rejects_non_string_args() {
-        let err = builtin_ends_with(&[Value::Int(7), Value::String("x".into())])
-            .unwrap_err();
+        let err = builtin_ends_with(&[Value::Int(7), Value::String("x".into())]).unwrap_err();
         assert!(
             err.contains("ends_with: expected (string, string)"),
             "err was: {}",
@@ -14358,22 +15125,19 @@ mod tests {
 
     #[test]
     fn repeat_happy_path_and_zero() {
-        let v = builtin_repeat(&[Value::String("ab".into()), Value::Int(3)])
-            .unwrap();
+        let v = builtin_repeat(&[Value::String("ab".into()), Value::Int(3)]).unwrap();
         match v {
             Value::String(s) => assert_eq!(s, "ababab"),
             other => panic!("expected String, got {:?}", other),
         }
 
-        let v = builtin_repeat(&[Value::String("ab".into()), Value::Int(0)])
-            .unwrap();
+        let v = builtin_repeat(&[Value::String("ab".into()), Value::Int(0)]).unwrap();
         match v {
             Value::String(s) => assert_eq!(s, ""),
             other => panic!("expected String, got {:?}", other),
         }
 
-        let v = builtin_repeat(&[Value::String("".into()), Value::Int(5)])
-            .unwrap();
+        let v = builtin_repeat(&[Value::String("".into()), Value::Int(5)]).unwrap();
         match v {
             Value::String(s) => assert_eq!(s, ""),
             other => panic!("expected String, got {:?}", other),
@@ -14382,18 +15146,13 @@ mod tests {
 
     #[test]
     fn repeat_negative_count_errors() {
-        let err = builtin_repeat(&[Value::String("ab".into()), Value::Int(-1)])
-            .unwrap_err();
+        let err = builtin_repeat(&[Value::String("ab".into()), Value::Int(-1)]).unwrap_err();
         assert!(err.contains("count must be >= 0"), "err was: {}", err);
     }
 
     #[test]
     fn repeat_rejects_non_int_count() {
-        let err = builtin_repeat(&[
-            Value::String("ab".into()),
-            Value::Float(3.0),
-        ])
-        .unwrap_err();
+        let err = builtin_repeat(&[Value::String("ab".into()), Value::Float(3.0)]).unwrap_err();
         assert!(
             err.contains("repeat: expected (string, int)"),
             "err was: {}",
@@ -14442,45 +15201,60 @@ mod tests {
 
     #[test]
     fn typecheck_rejects_non_exhaustive_bool_match() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             let b = true;
             let r = match b { true => 1, };
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Non-exhaustive match on bool"), "got: {}", err);
         assert!(err.contains("missing `false`"), "got: {}", err);
     }
 
     #[test]
     fn typecheck_accepts_exhaustive_bool_match() {
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             let b = true;
             let r = match b { true => 1, false => 0, };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn typecheck_accepts_bool_match_with_wildcard() {
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             let b = true;
             let r = match b { true => 1, _ => 0, };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn typecheck_rejects_int_match_without_default() {
-        let err = typecheck_src(r#"
+        let err = typecheck_src(
+            r#"
             let n = 5;
             let r = match n { 0 => "zero", 1 => "one", };
-        "#).unwrap_err();
+        "#,
+        )
+        .unwrap_err();
         assert!(err.contains("Non-exhaustive match on int"), "got: {}", err);
     }
 
     #[test]
     fn typecheck_accepts_int_match_with_identifier_default() {
-        typecheck_src(r#"
+        typecheck_src(
+            r#"
             let n = 5;
             let r = match n { 0 => "zero", x => "other", };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
     }
 
     // ---------- match (RES-039) ----------
@@ -14982,13 +15756,15 @@ mod tests {
 
     #[test]
     fn bitwise_operators() {
-        let (p, _e) = parse(r#"
+        let (p, _e) = parse(
+            r#"
             let a = 0xF0 & 0x33;
             let b = 0x01 | 0x02;
             let c = 0xFF ^ 0x0F;
             let d = 1 << 4;
             let e = 256 >> 3;
-        "#);
+        "#,
+        );
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         assert!(matches!(interp.env.get("a").unwrap(), Value::Int(0x30)));
@@ -15017,7 +15793,11 @@ mod tests {
         let (p, _e) = parse(src);
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
-        assert!(err.contains("Fuel must be non-negative"), "msg lost: {}", err);
+        assert!(
+            err.contains("Fuel must be non-negative"),
+            "msg lost: {}",
+            err
+        );
         assert!(
             err.contains("-5 >= 0") || err.contains("condition -5 >= 0"),
             "expected both operands in error, got: {}",
@@ -15041,7 +15821,11 @@ mod tests {
         let (p, _e) = parse(src);
         let mut interp = Interpreter::new();
         let err = interp.eval(&p).unwrap_err();
-        assert!(err.contains("ASSUME VIOLATED"), "expected ASSUME VIOLATED, got: {}", err);
+        assert!(
+            err.contains("ASSUME VIOLATED"),
+            "expected ASSUME VIOLATED, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -15070,7 +15854,10 @@ mod tests {
         interp.eval(&p).unwrap();
         assert!(matches!(interp.env.get("a").unwrap(), Value::Int(255)));
         assert!(matches!(interp.env.get("b").unwrap(), Value::Int(10)));
-        assert!(matches!(interp.env.get("c").unwrap(), Value::Int(0xDEADBEEF)));
+        assert!(matches!(
+            interp.env.get("c").unwrap(),
+            Value::Int(0xDEADBEEF)
+        ));
     }
 
     #[test]
@@ -15156,7 +15943,11 @@ mod tests {
         let w = find_while(&p).expect("expected a WhileStatement");
         match w {
             Node::WhileStatement { invariants, .. } => {
-                assert!(invariants.is_empty(), "expected no invariants, got {:?}", invariants);
+                assert!(
+                    invariants.is_empty(),
+                    "expected no invariants, got {:?}",
+                    invariants
+                );
             }
             _ => unreachable!(),
         }
@@ -15169,7 +15960,11 @@ mod tests {
         let f = find_for_in(&p).expect("expected a ForInStatement");
         match f {
             Node::ForInStatement { invariants, .. } => {
-                assert!(invariants.is_empty(), "expected no invariants, got {:?}", invariants);
+                assert!(
+                    invariants.is_empty(),
+                    "expected no invariants, got {:?}",
+                    invariants
+                );
             }
             _ => unreachable!(),
         }
@@ -15321,12 +16116,14 @@ mod tests {
 
     #[test]
     fn string_comparisons() {
-        let (p, _e) = parse(r#"
+        let (p, _e) = parse(
+            r#"
             let a = "apple" < "banana";
             let b = "abc" == "abc";
             let c = "xy" >= "xz";
             let d = len("héllo");
-        "#);
+        "#,
+        );
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         let g = |n: &str| interp.env.get(n).unwrap();
@@ -15339,12 +16136,14 @@ mod tests {
 
     #[test]
     fn logical_and_or_evaluate() {
-        let (p, _e) = parse(r#"
+        let (p, _e) = parse(
+            r#"
             let a = true && false;
             let b = true || false;
             let c = false || (1 < 2);
             let d = (5 > 0) && (5 < 10);
-        "#);
+        "#,
+        );
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         let g = |n: &str| match interp.env.get(n).unwrap() {
@@ -15698,9 +16497,12 @@ mod tests {
     #[test]
     fn pow_int_overflow_is_clean_error() {
         // 2^63 overflows i64.
-        let err = builtin_pow(&[Value::Int(2), Value::Int(63)])
-            .expect_err("must overflow");
-        assert!(err.contains("overflow"), "error should mention overflow: {}", err);
+        let err = builtin_pow(&[Value::Int(2), Value::Int(63)]).expect_err("must overflow");
+        assert!(
+            err.contains("overflow"),
+            "error should mention overflow: {}",
+            err
+        );
     }
 
     #[test]
@@ -15758,8 +16560,12 @@ mod tests {
 
     /// Read `m[i][j]` and assert it is `Value::Int(expected)`.
     fn nested_int(m: &Value, i: usize, j: usize) -> i64 {
-        let Value::Array(rows) = m else { panic!("expected outer Array, got {:?}", m); };
-        let Value::Array(row) = &rows[i] else { panic!("expected inner Array at row {}, got {:?}", i, rows[i]); };
+        let Value::Array(rows) = m else {
+            panic!("expected outer Array, got {:?}", m);
+        };
+        let Value::Array(row) = &rows[i] else {
+            panic!("expected inner Array at row {}, got {:?}", i, rows[i]);
+        };
         match &row[j] {
             Value::Int(v) => *v,
             other => panic!("expected Int at [{}][{}], got {:?}", i, j, other),
@@ -15819,9 +16625,15 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         let m = interp.env.get("m").unwrap();
-        let Value::Array(outer) = &m else { panic!("outer"); };
-        let Value::Array(mid) = &outer[1] else { panic!("mid"); };
-        let Value::Array(leaf) = &mid[0] else { panic!("leaf"); };
+        let Value::Array(outer) = &m else {
+            panic!("outer");
+        };
+        let Value::Array(mid) = &outer[1] else {
+            panic!("mid");
+        };
+        let Value::Array(leaf) = &mid[0] else {
+            panic!("leaf");
+        };
         assert!(matches!(leaf[0], Value::Int(99)));
     }
 
@@ -15877,7 +16689,9 @@ mod tests {
         let src = "fn one() { return 1; }\nfn two() { return 2; }";
         let (program, errors) = parse(src);
         assert!(errors.is_empty(), "parse errors: {:?}", errors);
-        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
         let Node::Function { span: s0, .. } = &stmts[0].node else {
             panic!("expected Function for stmt 0");
         };
@@ -15889,7 +16703,8 @@ mod tests {
         assert!(
             s1.start.line > s0.start.line,
             "expected fn 2 line ({}) > fn 1 line ({})",
-            s1.start.line, s0.start.line
+            s1.start.line,
+            s0.start.line
         );
     }
 
@@ -15899,9 +16714,17 @@ mod tests {
         // now. Parse a fn body + confirm both have populated spans.
         let (program, errors) = parse("fn f() { let x = 1; let y = 2; }");
         assert!(errors.is_empty());
-        let Node::Program(stmts) = &program else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
-        let Node::Block { stmts: inner, span: block_span } = body.as_ref() else {
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
+        let Node::Block {
+            stmts: inner,
+            span: block_span,
+        } = body.as_ref()
+        else {
             panic!("expected Block");
         };
         assert_eq!(inner.len(), 2);
@@ -15909,7 +16732,9 @@ mod tests {
 
         // ExpressionStatement: `1 + 2;` at top level
         let (program, _) = parse("1 + 2;");
-        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
         let Node::ExpressionStatement { expr: _, span } = &stmts[0].node else {
             panic!("expected ExpressionStatement");
         };
@@ -15922,8 +16747,12 @@ mod tests {
         // now. Confirm both parse sites populate their spans.
         let (program, errors) = parse("[1, 2, 3];");
         assert!(errors.is_empty());
-        let Node::Program(stmts) = &program else { panic!() };
-        let Node::ExpressionStatement { expr, .. } = &stmts[0].node else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
+        let Node::ExpressionStatement { expr, .. } = &stmts[0].node else {
+            panic!()
+        };
         let Node::ArrayLiteral { items, span } = expr.as_ref() else {
             panic!("expected ArrayLiteral, got {:?}", expr);
         };
@@ -15933,10 +16762,18 @@ mod tests {
         // TryExpression: `ok(1)?`
         let (program, _) = parse("fn f() { let x = ok(1)?; return x; }");
         // Walk into the fn body to find the `?` expression.
-        let Node::Program(stmts) = &program else { panic!() };
-        let Node::Function { body, .. } = &stmts[0].node else { panic!() };
-        let Node::Block { stmts: inner, .. } = body.as_ref() else { panic!() };
-        let Node::LetStatement { value, .. } = &inner[0] else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
+        let Node::Function { body, .. } = &stmts[0].node else {
+            panic!()
+        };
+        let Node::Block { stmts: inner, .. } = body.as_ref() else {
+            panic!()
+        };
+        let Node::LetStatement { value, .. } = &inner[0] else {
+            panic!()
+        };
         let Node::TryExpression { span, .. } = value.as_ref() else {
             panic!("expected TryExpression, got {:?}", value);
         };
@@ -15951,15 +16788,21 @@ mod tests {
         // real source.
         let (program, errors) = parse("let a = [1, 2]; a[0]; let b = a; b.len;");
         assert!(errors.is_empty(), "parse errors: {:?}", errors);
-        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
         // stmt 1: `a[0];` expression statement wrapping IndexExpression
-        let Node::ExpressionStatement { expr, .. } = &stmts[1].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[1].node else {
+            panic!()
+        };
         let Node::IndexExpression { span, .. } = expr.as_ref() else {
             panic!("expected IndexExpression");
         };
         assert!(span.start.line >= 1, "index span: {:?}", span);
         // stmt 3: `b.len;` expression statement wrapping FieldAccess
-        let Node::ExpressionStatement { expr, .. } = &stmts[3].node else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[3].node else {
+            panic!()
+        };
         let Node::FieldAccess { span, .. } = expr.as_ref() else {
             panic!("expected FieldAccess");
         };
@@ -15973,7 +16816,9 @@ mod tests {
         // source so start.line should be >= 1.
         let (program, errors) = parse("1 + 2;");
         assert!(errors.is_empty());
-        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
         let Node::ExpressionStatement { expr, .. } = &stmts[0].node else {
             panic!("expected ExpressionStatement, got {:?}", stmts[0].node);
         };
@@ -15989,15 +16834,25 @@ mod tests {
         // RES-084: prefix `!x` and call `f()` both record their
         // operator/parenthesis location.
         let (program, _) = parse("fn f() { return 1; }\n!true;\nf();");
-        let Node::Program(stmts) = &program else { panic!() };
+        let Node::Program(stmts) = &program else {
+            panic!()
+        };
         // stmt 0 is the fn decl; stmt 1 is the !true expression
-        let Node::ExpressionStatement { expr, .. } = &stmts[1].node else { panic!() };
-        let Node::PrefixExpression { operator, span, .. } = expr.as_ref() else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[1].node else {
+            panic!()
+        };
+        let Node::PrefixExpression { operator, span, .. } = expr.as_ref() else {
+            panic!()
+        };
         assert_eq!(operator, "!");
         assert!(span.start.line >= 1);
         // stmt 2 is the call f()
-        let Node::ExpressionStatement { expr, .. } = &stmts[2].node else { panic!() };
-        let Node::CallExpression { span, .. } = expr.as_ref() else { panic!() };
+        let Node::ExpressionStatement { expr, .. } = &stmts[2].node else {
+            panic!()
+        };
+        let Node::CallExpression { span, .. } = expr.as_ref() else {
+            panic!()
+        };
         assert!(span.start.line >= 1);
     }
 
@@ -16009,9 +16864,15 @@ mod tests {
         let src = "let x = 1;\nlet y = 2;";
         let (program, errors) = parse(src);
         assert!(errors.is_empty());
-        let Node::Program(stmts) = &program else { panic!("expected Program"); };
-        let Node::LetStatement { span: s0, .. } = &stmts[0].node else { panic!(); };
-        let Node::LetStatement { span: s1, .. } = &stmts[1].node else { panic!(); };
+        let Node::Program(stmts) = &program else {
+            panic!("expected Program");
+        };
+        let Node::LetStatement { span: s0, .. } = &stmts[0].node else {
+            panic!();
+        };
+        let Node::LetStatement { span: s1, .. } = &stmts[1].node else {
+            panic!();
+        };
         assert!(s0.start.line >= 1, "s0 line: {}", s0.start.line);
         assert!(s1.start.line >= 2, "s1 line: {}", s1.start.line);
         assert!(s1.start.line > s0.start.line);
@@ -16035,7 +16896,11 @@ mod tests {
             panic!("expected IntegerLiteral");
         };
         assert_eq!(*lit, 42);
-        assert!(span.start.line >= 1, "int literal span.start.line = {}", span.start.line);
+        assert!(
+            span.start.line >= 1,
+            "int literal span.start.line = {}",
+            span.start.line
+        );
     }
 
     #[test]
@@ -16044,7 +16909,9 @@ mod tests {
         // the Identifier's span should surface in the error message.
         let (program, _) = parse("let x = undefined_thing;");
         let mut tc = typechecker::TypeChecker::new();
-        let err = tc.check_program(&program).expect_err("must reject undefined");
+        let err = tc
+            .check_program(&program)
+            .expect_err("must reject undefined");
         // check_program goes through the statement-level prefix
         // (RES-080) too, so the error has two file:line:col segments.
         // We just need the identifier-level `at N:M` part to appear.
@@ -16077,7 +16944,8 @@ mod tests {
         assert!(
             s1.span.start.line > s0.span.start.line,
             "expected line order, got s0={:?} s1={:?}",
-            s0.span, s1.span
+            s0.span,
+            s1.span
         );
         // The inner node still has its existing shape.
         assert!(matches!(s0.node, Node::LetStatement { .. }));
@@ -16321,9 +17189,8 @@ mod tests {
         let src = "struct Point { int x, int y, } let p = new Point { x: 1 y: 2 };";
         let (_program, errs) = parse(src);
         assert!(
-            errs.iter().any(|e| e.contains("expected one of")
-                && e.contains("`,`")
-                && e.contains("`}`")),
+            errs.iter()
+                .any(|e| e.contains("expected one of") && e.contains("`,`") && e.contains("`}`")),
             "expected multi-alternative diagnostic, got: {:?}",
             errs
         );
@@ -16342,10 +17209,7 @@ mod tests {
     #[test]
     fn expected_hint_caps_long_lists_with_ellipsis() {
         // Slices longer than 5 entries truncate with `…`.
-        let s = format_expected(
-            &["`a`", "`b`", "`c`", "`d`", "`e`", "`f`", "`g`"],
-            "`x`",
-        );
+        let s = format_expected(&["`a`", "`b`", "`c`", "`d`", "`e`", "`f`", "`g`"], "`x`");
         assert!(
             s.starts_with("expected one of `a`, `b`, `c`, `d`, `e`, …"),
             "unexpected shape: {}",
@@ -16362,17 +17226,9 @@ mod tests {
     fn live_total_retries_zero_arity() {
         // Zero-arg contract.
         let err = builtin_live_total_retries(&[Value::Int(0)]).unwrap_err();
-        assert!(
-            err.contains("expected 0 arguments"),
-            "got: {}",
-            err
-        );
+        assert!(err.contains("expected 0 arguments"), "got: {}", err);
         let err = builtin_live_total_exhaustions(&[Value::Int(0)]).unwrap_err();
-        assert!(
-            err.contains("expected 0 arguments"),
-            "got: {}",
-            err
-        );
+        assert!(err.contains("expected 0 arguments"), "got: {}", err);
     }
 
     #[test]
@@ -16469,11 +17325,28 @@ mod tests {
             .eval(&program)
             .expect_err("outer live block should eventually exhaust");
         // Error shape: `Live block failed after 3 attempts (retry depth: 1): Live block failed after 3 attempts (retry depth: 2): ...`
-        assert!(err.contains("Live block failed after 3 attempts"), "got: {}", err);
-        assert!(err.contains("retry depth: 1"), "outer level note missing: {}", err);
-        assert!(err.contains("retry depth: 2"), "inner level note missing: {}", err);
+        assert!(
+            err.contains("Live block failed after 3 attempts"),
+            "got: {}",
+            err
+        );
+        assert!(
+            err.contains("retry depth: 1"),
+            "outer level note missing: {}",
+            err
+        );
+        assert!(
+            err.contains("retry depth: 2"),
+            "inner level note missing: {}",
+            err
+        );
         // 3 outer * 3 inner = 9 inner invocations.
-        match interp.statics.borrow().get("inner_calls").expect("static counter") {
+        match interp
+            .statics
+            .borrow()
+            .get("inner_calls")
+            .expect("static counter")
+        {
             Value::Int(n) => assert_eq!(*n, 9, "expected 9 inner invocations, got {}", n),
             other => panic!("expected Int, got {:?}", other),
         }
@@ -16529,11 +17402,15 @@ mod tests {
 
     #[test]
     fn backoff_delay_ms_caps_at_max() {
-        let cfg = BackoffConfig { base_ms: 1, factor: 2, max_ms: 100 };
-        assert_eq!(cfg.delay_ms(0), 1);    // 1 * 2^0 = 1
-        assert_eq!(cfg.delay_ms(1), 2);    // 1 * 2^1 = 2
-        assert_eq!(cfg.delay_ms(5), 32);   // 1 * 2^5 = 32
-        assert_eq!(cfg.delay_ms(7), 100);  // 1 * 2^7 = 128, capped at 100
+        let cfg = BackoffConfig {
+            base_ms: 1,
+            factor: 2,
+            max_ms: 100,
+        };
+        assert_eq!(cfg.delay_ms(0), 1); // 1 * 2^0 = 1
+        assert_eq!(cfg.delay_ms(1), 2); // 1 * 2^1 = 2
+        assert_eq!(cfg.delay_ms(5), 32); // 1 * 2^5 = 32
+        assert_eq!(cfg.delay_ms(7), 100); // 1 * 2^7 = 128, capped at 100
         assert_eq!(cfg.delay_ms(30), 100); // huge growth still capped
     }
 
@@ -16542,7 +17419,11 @@ mod tests {
         // `saturating_pow` / `saturating_mul` guard against `u64`
         // wrap on intentionally aggressive values; the cap still
         // holds.
-        let cfg = BackoffConfig { base_ms: 1_000_000, factor: 10, max_ms: 50 };
+        let cfg = BackoffConfig {
+            base_ms: 1_000_000,
+            factor: 10,
+            max_ms: 50,
+        };
         assert_eq!(cfg.delay_ms(63), 50);
     }
 
@@ -16643,9 +17524,11 @@ mod tests {
                 Node::Program(stmts) => stmts.iter().find_map(|s| walk(&s.node)),
                 Node::Function { body, .. } => walk(body),
                 Node::Block { stmts, .. } => stmts.iter().find_map(walk),
-                Node::IfStatement { consequence, alternative, .. } => walk(consequence).or_else(|| {
-                    alternative.as_ref().and_then(|a| walk(a))
-                }),
+                Node::IfStatement {
+                    consequence,
+                    alternative,
+                    ..
+                } => walk(consequence).or_else(|| alternative.as_ref().and_then(|a| walk(a))),
                 _ => None,
             }
         }
@@ -16660,16 +17543,20 @@ mod tests {
     fn find_first_live_timeout_ns(program: &Node) -> Option<u64> {
         fn walk(n: &Node) -> Option<u64> {
             match n {
-                Node::LiveBlock { timeout, .. } => timeout.as_ref().and_then(|t| match t.as_ref() {
-                    Node::DurationLiteral { nanos, .. } => Some(*nanos),
-                    _ => None,
-                }),
+                Node::LiveBlock { timeout, .. } => {
+                    timeout.as_ref().and_then(|t| match t.as_ref() {
+                        Node::DurationLiteral { nanos, .. } => Some(*nanos),
+                        _ => None,
+                    })
+                }
                 Node::Program(stmts) => stmts.iter().find_map(|s| walk(&s.node)),
                 Node::Function { body, .. } => walk(body),
                 Node::Block { stmts, .. } => stmts.iter().find_map(walk),
-                Node::IfStatement { consequence, alternative, .. } => walk(consequence).or_else(|| {
-                    alternative.as_ref().and_then(|a| walk(a))
-                }),
+                Node::IfStatement {
+                    consequence,
+                    alternative,
+                    ..
+                } => walk(consequence).or_else(|| alternative.as_ref().and_then(|a| walk(a))),
                 _ => None,
             }
         }
@@ -16699,7 +17586,12 @@ mod tests {
                 src_unit
             );
             let (program, errs) = parse(&src);
-            assert!(errs.is_empty(), "parse errors for `{}`: {:?}", src_unit, errs);
+            assert!(
+                errs.is_empty(),
+                "parse errors for `{}`: {:?}",
+                src_unit,
+                errs
+            );
             assert_eq!(
                 find_first_live_timeout_ns(&program),
                 Some(expected_ns),
@@ -16714,7 +17606,8 @@ mod tests {
         let src = "fn main(int _d) { live within 10min { let x = 1; } } main(0);";
         let (_program, errs) = parse(src);
         assert!(
-            errs.iter().any(|e| e.contains("Unknown duration unit `min`")),
+            errs.iter()
+                .any(|e| e.contains("Unknown duration unit `min`")),
             "expected unknown-unit diagnostic, got: {:?}",
             errs
         );
@@ -16725,7 +17618,8 @@ mod tests {
         let src = "fn main(int _d) { live within -5ms { let x = 1; } } main(0);";
         let (_program, errs) = parse(src);
         assert!(
-            errs.iter().any(|e| e.contains("non-negative integer literal after `within`")),
+            errs.iter()
+                .any(|e| e.contains("non-negative integer literal after `within`")),
             "expected integer-literal diagnostic, got: {:?}",
             errs
         );
@@ -16844,7 +17738,10 @@ mod tests {
         // test), fail with the dedicated diagnostic rather than
         // silently coercing.
         use span::Span;
-        let dl = Node::DurationLiteral { nanos: 1_000_000, span: Span::default() };
+        let dl = Node::DurationLiteral {
+            nanos: 1_000_000,
+            span: Span::default(),
+        };
         let mut interp = Interpreter::new();
         let err = interp.eval(&dl).unwrap_err();
         assert!(
@@ -16973,15 +17870,25 @@ mod tests {
     }
 
     #[test]
-    fn no_coercion_plus()  { assert_coercion_error("let a = 1 + 2.0;"); }
+    fn no_coercion_plus() {
+        assert_coercion_error("let a = 1 + 2.0;");
+    }
     #[test]
-    fn no_coercion_minus() { assert_coercion_error("let a = 1 - 2.0;"); }
+    fn no_coercion_minus() {
+        assert_coercion_error("let a = 1 - 2.0;");
+    }
     #[test]
-    fn no_coercion_mul()   { assert_coercion_error("let a = 1 * 2.0;"); }
+    fn no_coercion_mul() {
+        assert_coercion_error("let a = 1 * 2.0;");
+    }
     #[test]
-    fn no_coercion_div()   { assert_coercion_error("let a = 1 / 2.0;"); }
+    fn no_coercion_div() {
+        assert_coercion_error("let a = 1 / 2.0;");
+    }
     #[test]
-    fn no_coercion_mod()   { assert_coercion_error("let a = 1 % 2.0;"); }
+    fn no_coercion_mod() {
+        assert_coercion_error("let a = 1 % 2.0;");
+    }
 
     #[test]
     fn no_coercion_float_int_reversed() {
@@ -17011,11 +17918,7 @@ mod tests {
         // is caught by the interpreter's divide-by-zero guard
         // BEFORE IEEE-754 semantics kick in).
         let err = builtin_to_int(&[Value::Float(f64::NAN)]).unwrap_err();
-        assert!(
-            err.contains("NaN"),
-            "expected NaN diagnostic, got: {}",
-            err
-        );
+        assert!(err.contains("NaN"), "expected NaN diagnostic, got: {}", err);
     }
 
     #[test]
@@ -17181,7 +18084,11 @@ mod tests {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let mut tc = typechecker::TypeChecker::new();
         let res = tc.check_program(&program);
-        assert!(res.is_ok(), "same-named struct assignment should pass: {:?}", res);
+        assert!(
+            res.is_ok(),
+            "same-named struct assignment should pass: {:?}",
+            res
+        );
     }
 
     #[test]
@@ -17276,7 +18183,9 @@ mod tests {
             _ => panic!("expected Program"),
         };
         for sp in stmts {
-            if let Node::Function { name, type_params, .. } = &sp.node
+            if let Node::Function {
+                name, type_params, ..
+            } = &sp.node
                 && name == fn_name
             {
                 return type_params.clone();
@@ -17284,7 +18193,9 @@ mod tests {
             // impl-block methods are wrapped; walk inside.
             if let Node::ImplBlock { methods, .. } = &sp.node {
                 for m in methods {
-                    if let Node::Function { name, type_params, .. } = m
+                    if let Node::Function {
+                        name, type_params, ..
+                    } = m
                         && name == fn_name
                     {
                         return type_params.clone();
@@ -17331,10 +18242,7 @@ mod tests {
             { return x; }\n";
         let (program, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        assert_eq!(
-            type_params_of(&program, "identity"),
-            vec!["T".to_string()]
-        );
+        assert_eq!(type_params_of(&program, "identity"), vec!["T".to_string()]);
     }
 
     #[test]
@@ -17350,7 +18258,12 @@ mod tests {
         let f = stmts
             .iter()
             .find_map(|s| {
-                if let Node::Function { name, pure, type_params, .. } = &s.node
+                if let Node::Function {
+                    name,
+                    pure,
+                    type_params,
+                    ..
+                } = &s.node
                     && name == "id"
                 {
                     return Some((*pure, type_params.clone()));
@@ -17401,15 +18314,29 @@ mod tests {
     #[test]
     fn encode_semantic_tokens_delta_encodes_same_line() {
         let tokens = vec![
-            AbsSemToken { line: 0, col: 0, length: 3, ty: sem_tok::KEYWORD, modifiers: 0 },
-            AbsSemToken { line: 0, col: 4, length: 3, ty: sem_tok::FUNCTION,
-                          modifiers: sem_tok::MOD_DECLARATION },
+            AbsSemToken {
+                line: 0,
+                col: 0,
+                length: 3,
+                ty: sem_tok::KEYWORD,
+                modifiers: 0,
+            },
+            AbsSemToken {
+                line: 0,
+                col: 4,
+                length: 3,
+                ty: sem_tok::FUNCTION,
+                modifiers: sem_tok::MOD_DECLARATION,
+            },
         ];
         let wire = encode_semantic_tokens(&tokens);
         // First token: dLine=0, dStart=0, len=3, type=0, mods=0
         assert_eq!(&wire[0..5], &[0, 0, 3, sem_tok::KEYWORD, 0]);
         // Second: same line → dLine=0, dStart=4
-        assert_eq!(&wire[5..10], &[0, 4, 3, sem_tok::FUNCTION, sem_tok::MOD_DECLARATION]);
+        assert_eq!(
+            &wire[5..10],
+            &[0, 4, 3, sem_tok::FUNCTION, sem_tok::MOD_DECLARATION]
+        );
     }
 
     /// Tokens on later lines encode an absolute deltaStart (the
@@ -17417,8 +18344,20 @@ mod tests {
     #[test]
     fn encode_semantic_tokens_delta_encodes_across_lines() {
         let tokens = vec![
-            AbsSemToken { line: 0, col: 0, length: 3, ty: sem_tok::KEYWORD, modifiers: 0 },
-            AbsSemToken { line: 2, col: 4, length: 5, ty: sem_tok::VARIABLE, modifiers: 0 },
+            AbsSemToken {
+                line: 0,
+                col: 0,
+                length: 3,
+                ty: sem_tok::KEYWORD,
+                modifiers: 0,
+            },
+            AbsSemToken {
+                line: 2,
+                col: 4,
+                length: 5,
+                ty: sem_tok::VARIABLE,
+                modifiers: 0,
+            },
         ];
         let wire = encode_semantic_tokens(&tokens);
         // First: line 0 col 0.
@@ -17437,8 +18376,20 @@ mod tests {
         let tokens = vec![
             // Out-of-order: comment on line 2 first, then a
             // line-0 keyword.
-            AbsSemToken { line: 2, col: 0, length: 4, ty: sem_tok::COMMENT, modifiers: 0 },
-            AbsSemToken { line: 0, col: 0, length: 2, ty: sem_tok::KEYWORD, modifiers: 0 },
+            AbsSemToken {
+                line: 2,
+                col: 0,
+                length: 4,
+                ty: sem_tok::COMMENT,
+                modifiers: 0,
+            },
+            AbsSemToken {
+                line: 0,
+                col: 0,
+                length: 2,
+                ty: sem_tok::KEYWORD,
+                modifiers: 0,
+            },
         ];
         let wire = encode_semantic_tokens(&tokens);
         // After sort: keyword first.
@@ -17460,9 +18411,7 @@ mod tests {
         let tokens = collect_semantic_tokens(src);
         // Expect tokens: fn (KEYWORD), alpha (FUNCTION+DECLARATION),
         // return (KEYWORD), 0 (NUMBER).
-        let by_kind: Vec<(u32, u32)> = tokens.iter()
-            .map(|t| (t.ty, t.modifiers))
-            .collect();
+        let by_kind: Vec<(u32, u32)> = tokens.iter().map(|t| (t.ty, t.modifiers)).collect();
         assert!(
             by_kind.contains(&(sem_tok::FUNCTION, sem_tok::MOD_DECLARATION)),
             "expected FUNCTION+DECLARATION for `alpha`, got: {:?}",
@@ -17476,11 +18425,10 @@ mod tests {
     /// not a define).
     #[test]
     fn classify_lex_token_struct_type_new_all_tag_type() {
-        let src = "struct Point { int x }\ntype Meters = int;\nfn f() { let p = new Point(); return 0; }";
+        let src =
+            "struct Point { int x }\ntype Meters = int;\nfn f() { let p = new Point(); return 0; }";
         let tokens = collect_semantic_tokens(src);
-        let by_kind: Vec<(u32, u32)> = tokens.iter()
-            .map(|t| (t.ty, t.modifiers))
-            .collect();
+        let by_kind: Vec<(u32, u32)> = tokens.iter().map(|t| (t.ty, t.modifiers)).collect();
         // `Point` appears twice — once as a struct declaration,
         // once via `new`. At least one of each variant should
         // show up.
@@ -17505,7 +18453,11 @@ mod tests {
         let src = "// hi\nlet s = \"abc\";\nlet n = 42;";
         let tokens = collect_semantic_tokens(src);
         let tys: Vec<u32> = tokens.iter().map(|t| t.ty).collect();
-        assert!(tys.contains(&sem_tok::COMMENT), "missing COMMENT: {:?}", tys);
+        assert!(
+            tys.contains(&sem_tok::COMMENT),
+            "missing COMMENT: {:?}",
+            tys
+        );
         assert!(tys.contains(&sem_tok::STRING), "missing STRING: {:?}", tys);
         assert!(tys.contains(&sem_tok::NUMBER), "missing NUMBER: {:?}", tys);
     }
@@ -17556,22 +18508,28 @@ mod tests {
             }\n\
         ";
         let tokens = collect_semantic_tokens(src);
-        let types_seen: std::collections::HashSet<u32> =
-            tokens.iter().map(|t| t.ty).collect();
+        let types_seen: std::collections::HashSet<u32> = tokens.iter().map(|t| t.ty).collect();
         for want in [
-            sem_tok::KEYWORD, sem_tok::FUNCTION, sem_tok::VARIABLE,
-            sem_tok::TYPE, sem_tok::STRING, sem_tok::NUMBER,
-            sem_tok::COMMENT, sem_tok::OPERATOR,
+            sem_tok::KEYWORD,
+            sem_tok::FUNCTION,
+            sem_tok::VARIABLE,
+            sem_tok::TYPE,
+            sem_tok::STRING,
+            sem_tok::NUMBER,
+            sem_tok::COMMENT,
+            sem_tok::OPERATOR,
         ] {
             assert!(
                 types_seen.contains(&want),
                 "expected token type {} in output, got types {:?}",
-                want, types_seen
+                want,
+                types_seen
             );
         }
         // At least one DECLARATION modifier should appear (on
         // `greet` and `Point`).
-        let any_decl = tokens.iter()
+        let any_decl = tokens
+            .iter()
             .any(|t| t.modifiers & sem_tok::MOD_DECLARATION != 0);
         assert!(any_decl, "expected a DECLARATION modifier somewhere");
     }
@@ -17586,7 +18544,8 @@ mod tests {
         let wire = compute_semantic_tokens(src);
         assert!(!wire.is_empty(), "expected tokens for non-empty program");
         assert_eq!(
-            wire.len() % 5, 0,
+            wire.len() % 5,
+            0,
             "wire format must be 5-tuples, got len {}",
             wire.len()
         );
@@ -17622,7 +18581,8 @@ mod ffi_integration_tests {
                             // SAFETY: intentional one-time-per-extern-decl leak to obtain a &'static str
                             // for Value::Foreign.name. The leaked memory is bounded by the number of
                             // extern decls in the program and is reclaimed when the process exits.
-                            let name: &'static str = Box::leak(d.resilient_name.clone().into_boxed_str());
+                            let name: &'static str =
+                                Box::leak(d.resilient_name.clone().into_boxed_str());
                             interpreter.env.set(
                                 d.resilient_name.clone(),
                                 Value::Foreign {
@@ -17654,11 +18614,7 @@ mod ffi_integration_tests {
         let src = "extern \"libm.so.6\" { fn my_cos(x: Float) -> Float = \"cos\"; }; fn main(int _d) { return my_cos(0.0); } main(0);";
         let result = run_with_ffi(src).expect("cos(0.0) should work");
         match result {
-            Value::Float(v) => assert!(
-                (v - 1.0_f64).abs() < 1e-10,
-                "cos(0.0) ≈ 1.0, got {}",
-                v
-            ),
+            Value::Float(v) => assert!((v - 1.0_f64).abs() < 1e-10, "cos(0.0) ≈ 1.0, got {}", v),
             other => panic!("expected Float, got {:?}", other),
         }
     }
@@ -17742,10 +18698,6 @@ mod ffi_integration_tests {
         assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
         let mut tc = typechecker::TypeChecker::new();
         let result = tc.check_program(&program);
-        assert!(
-            result.is_ok(),
-            "typecheck/verifier failed: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "typecheck/verifier failed: {:?}", result);
     }
 }
