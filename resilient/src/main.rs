@@ -4929,6 +4929,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-145: string manipulation expansion.
     ("replace", builtin_replace),
     ("format", builtin_format),
+    // RES-213: prefix/suffix/repeat — common stdlib gap.
+    ("starts_with", builtin_starts_with),
+    ("ends_with", builtin_ends_with),
+    ("repeat", builtin_repeat),
     ("Ok", builtin_ok),
     ("Err", builtin_err),
     ("is_ok", builtin_is_ok),
@@ -5575,6 +5579,67 @@ fn builtin_replace(args: &[Value]) -> RResult<Value> {
             "replace: expected 3 arguments, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-213: `starts_with(s, prefix)` — true when `s` begins with
+/// `prefix`. An empty prefix is always a match (matches Rust's
+/// `str::starts_with` semantics).
+fn builtin_starts_with(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(prefix)] => {
+            Ok(Value::Bool(s.starts_with(prefix.as_str())))
+        }
+        [a, b] => Err(format!(
+            "starts_with: expected (string, string), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!(
+            "starts_with: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-213: `ends_with(s, suffix)` — true when `s` ends with `suffix`.
+/// An empty suffix is always a match.
+fn builtin_ends_with(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(suffix)] => {
+            Ok(Value::Bool(s.ends_with(suffix.as_str())))
+        }
+        [a, b] => Err(format!(
+            "ends_with: expected (string, string), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!(
+            "ends_with: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-213: `repeat(s, n)` — concatenate `n` copies of `s`. `n == 0`
+/// returns an empty string; negative `n` is a hard error (repeating a
+/// negative number of times is meaningless, and silently clamping
+/// masks the bug).
+fn builtin_repeat(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!("repeat: count must be >= 0, got {}", n));
+            }
+            // `usize::try_from` guards against the (theoretical) case
+            // where i64 > usize::MAX on exotic targets.
+            let count = usize::try_from(*n)
+                .map_err(|_| format!("repeat: count {} out of range", n))?;
+            Ok(Value::String(s.repeat(count)))
+        }
+        [a, b] => Err(format!(
+            "repeat: expected (string, int), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!("repeat: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -13844,6 +13909,171 @@ mod tests {
             Value::Array(v) => assert_eq!(v.len(), 3),
             _ => panic!("expected Array"),
         }
+    }
+
+    // ---------- RES-213 string builtins ----------
+
+    #[test]
+    fn starts_with_happy_path_and_empty_prefix() {
+        let v = builtin_starts_with(&[
+            Value::String("hello".into()),
+            Value::String("hel".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(true)));
+
+        let v = builtin_starts_with(&[
+            Value::String("hello".into()),
+            Value::String("".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(true)));
+
+        let v = builtin_starts_with(&[
+            Value::String("hello".into()),
+            Value::String("world".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(false)));
+
+        // Empty haystack + non-empty prefix → false (no match).
+        let v = builtin_starts_with(&[
+            Value::String("".into()),
+            Value::String("x".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(false)));
+    }
+
+    #[test]
+    fn starts_with_rejects_non_string_args() {
+        let err = builtin_starts_with(&[
+            Value::String("hello".into()),
+            Value::Int(1),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("starts_with: expected (string, string)"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn ends_with_happy_path_and_empty_suffix() {
+        let v = builtin_ends_with(&[
+            Value::String("hello".into()),
+            Value::String("lo".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(true)));
+
+        let v = builtin_ends_with(&[
+            Value::String("hello".into()),
+            Value::String("".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(true)));
+
+        let v = builtin_ends_with(&[
+            Value::String("hello".into()),
+            Value::String("hi".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::Bool(false)));
+    }
+
+    #[test]
+    fn ends_with_rejects_non_string_args() {
+        let err = builtin_ends_with(&[Value::Int(7), Value::String("x".into())])
+            .unwrap_err();
+        assert!(
+            err.contains("ends_with: expected (string, string)"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn repeat_happy_path_and_zero() {
+        let v = builtin_repeat(&[Value::String("ab".into()), Value::Int(3)])
+            .unwrap();
+        match v {
+            Value::String(s) => assert_eq!(s, "ababab"),
+            other => panic!("expected String, got {:?}", other),
+        }
+
+        let v = builtin_repeat(&[Value::String("ab".into()), Value::Int(0)])
+            .unwrap();
+        match v {
+            Value::String(s) => assert_eq!(s, ""),
+            other => panic!("expected String, got {:?}", other),
+        }
+
+        let v = builtin_repeat(&[Value::String("".into()), Value::Int(5)])
+            .unwrap();
+        match v {
+            Value::String(s) => assert_eq!(s, ""),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn repeat_negative_count_errors() {
+        let err = builtin_repeat(&[Value::String("ab".into()), Value::Int(-1)])
+            .unwrap_err();
+        assert!(err.contains("count must be >= 0"), "err was: {}", err);
+    }
+
+    #[test]
+    fn repeat_rejects_non_int_count() {
+        let err = builtin_repeat(&[
+            Value::String("ab".into()),
+            Value::Float(3.0),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("repeat: expected (string, int)"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn res213_string_builtins_end_to_end() {
+        // Exercises the full pipeline: parse → eval produces the
+        // expected values. Signatures are registered in
+        // typechecker.rs so `cargo run -- --typecheck` passes too.
+        let (p, _e) = parse(
+            r#"
+                let sw = starts_with("hello", "hel");
+                let ew = ends_with("hello", "lo");
+                let r  = repeat("ab", 3);
+                let empty_split = split("", ",");
+                let trimmed    = trim("   ");
+            "#,
+        );
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("sw").unwrap(), Value::Bool(true)));
+        assert!(matches!(interp.env.get("ew").unwrap(), Value::Bool(true)));
+        assert!(matches!(
+            interp.env.get("r").unwrap(),
+            Value::String(s) if s == "ababab"
+        ));
+        // `split("", sep)` returns a 1-element array containing the
+        // empty string — matches Rust's `str::split` semantics.
+        match interp.env.get("empty_split").unwrap() {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 1);
+                assert!(matches!(&v[0], Value::String(s) if s.is_empty()));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+        assert!(matches!(
+            interp.env.get("trimmed").unwrap(),
+            Value::String(s) if s.is_empty()
+        ));
     }
 
     // ---------- Match exhaustiveness (RES-054) ----------

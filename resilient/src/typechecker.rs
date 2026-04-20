@@ -624,6 +624,19 @@ impl TypeChecker {
             params: vec![Type::String, Type::Array],
             return_type: Box::new(Type::String),
         });
+        // RES-213: prefix/suffix tests + string repetition.
+        env.set("starts_with".to_string(), Type::Function {
+            params: vec![Type::String, Type::String],
+            return_type: Box::new(Type::Bool),
+        });
+        env.set("ends_with".to_string(), Type::Function {
+            params: vec![Type::String, Type::String],
+            return_type: Box::new(Type::Bool),
+        });
+        env.set("repeat".to_string(), Type::Function {
+            params: vec![Type::String, Type::Int],
+            return_type: Box::new(Type::String),
+        });
 
         // RES-130: explicit int ↔ float conversions. These are the
         // only supported bridge between the two numeric types —
@@ -2149,6 +2162,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // String/collection.
         "len", "push", "pop", "slice", "split", "trim", "contains",
         "to_upper", "to_lower", "replace", "format",
+        "starts_with", "ends_with", "repeat",
         // Result helpers.
         "Ok", "Err", "is_ok", "is_err", "unwrap", "unwrap_err",
         // Map/Set/Bytes.
