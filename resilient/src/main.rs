@@ -9458,6 +9458,17 @@ fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
 
+    // RES-209: `--version` / `-V` prints the compiler version plus a
+    // pre-1.0 stability notice and exits. See STABILITY.md at the
+    // repo root for the policy this notice points to.
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "resilient {}: pre-1.0 — breaking changes possible (see STABILITY.md)",
+            env!("CARGO_PKG_VERSION")
+        );
+        std::process::exit(0);
+    }
+
     // RES-211: `--help` / `-h` prints a short usage summary listing
     // the most-used flags. Kept hand-rolled (no clap dep) to match
     // the rest of the driver's arg-parsing style.
