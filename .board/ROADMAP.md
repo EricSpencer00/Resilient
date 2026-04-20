@@ -54,6 +54,7 @@ time, commit it, and only then move the post.
 | **G18** | Effect tracking | ⏳ |
 | **G19** | Proof-carrying assertions | 🟡 RES-071 landed `--emit-certificate`: SMT-LIB2 dumps re-verifiable by stock Z3. Full PCA semantics (signed certs, manifest) still ahead. |
 | **G20** | Self-hosting | ⏳ |
+| **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19 |
 
 ### New between G4 and G5 (core-language improvements landed in session 2)
 
@@ -212,3 +213,14 @@ bottom — the ladder grows indefinitely.
   * Remaining OPEN at iter 39: RES-101 (cortex-m demo crate
     that links resilient-runtime + wires LlffHeap — needs the
     manager pass to flesh out acceptance criteria first).
+- 2026-04-19 — FFI Phase 1 shipped on `ffi-phase-1-tree-walker`:
+  * **G21 — FFI v1 (tree-walker + static registry)** ✅.
+    `extern "lib" { fn ... }` blocks parsed, type-checked, and
+    resolved via `libloading` at program load. Tree-walker dispatches
+    through a hand-rolled C-ABI trampoline table (arity 0–8, primitives
+    only). `requires`/`ensures` contracts evaluated at FFI call sites;
+    `@trusted` propagates ensures as Z3 axioms. `resilient-runtime`
+    gains a zero-alloc `StaticRegistry` behind `ffi-static` for
+    Cortex-M / RISC-V targets. Example `ffi_libm.rs` + SYNTAX and
+    docs pages. End-to-end integration tests against a bundled C
+    helper lib. All 748 tests pass (`--features ffi`).
