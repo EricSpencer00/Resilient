@@ -652,6 +652,99 @@ fn bytecode_jit_runs_while_loop() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// RES-217: helper — write a temp program whose requires-clause is a
+/// nonlinear integer predicate Z3 cannot resolve in 1ms. The contract
+/// `a*a*a + b*b*b != 9*a*b*b + 3` (Mordell-curve-like form) forces the
+/// NIA engine into a non-trivial search; with `--verifier-timeout-ms 1`
+/// it reliably hits the timeout on every platform we run CI on.
+#[cfg(feature = "z3")]
+fn write_partial_proof_program(tag: &str) -> std::path::PathBuf {
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!(
+        "res_217_{}_{}.rs",
+        tag,
+        std::process::id()
+    ));
+    let src = "\
+fn check(int a, int b)
+    requires a * a * a + b * b * b != 9 * a * b * b + 3
+{
+    return;
+}
+
+fn main() {
+    check(1, 2);
+}
+
+main();
+";
+    let mut f = std::fs::File::create(&tmp).expect("create tmp");
+    f.write_all(src.as_bytes()).unwrap();
+    tmp
+}
+
+#[test]
+#[cfg(feature = "z3")]
+fn partial_proof_warning_fires_on_z3_timeout() {
+    // RES-217: when Z3 returns Unknown (here forced by a 1ms budget
+    // on a nonlinear-int obligation), the typechecker must emit the
+    // structured `warning[partial-proof]:` line pointing at the
+    // specific assertion's source position. Compilation still
+    // succeeds and the runtime check is retained.
+    let tmp = write_partial_proof_program("timeout");
+    let output = Command::new(bin())
+        .arg("--typecheck")
+        .arg("--verifier-timeout-ms")
+        .arg("1")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --typecheck");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning[partial-proof]:"),
+        "expected partial-proof warning in stderr; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Z3 returned Unknown for assertion at"),
+        "expected canonical warning body; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("proof is incomplete"),
+        "expected warning suffix; got:\n{stderr}"
+    );
+    // File path and line:col should be present (not `<unknown>`).
+    let tmp_str = tmp.to_string_lossy();
+    assert!(
+        stderr.contains(tmp_str.as_ref()),
+        "expected source path in warning; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+#[cfg(feature = "z3")]
+fn no_warn_unverified_suppresses_partial_proof_warning() {
+    // RES-217: `--no-warn-unverified` silences the structured
+    // warning even when Z3 times out. The per-fn `hint:` line
+    // (pre-RES-217 diagnostic) is still emitted — the two are
+    // intentionally independent signals.
+    let tmp = write_partial_proof_program("suppressed");
+    let output = Command::new(bin())
+        .arg("--typecheck")
+        .arg("--verifier-timeout-ms")
+        .arg("1")
+        .arg("--no-warn-unverified")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient --typecheck --no-warn-unverified");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("warning[partial-proof]:"),
+        "partial-proof warning should be suppressed; got:\n{stderr}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
 #[test]
 fn minimal_rs_runs_end_to_end() {
     // After RES-003 (println) and RES-008 (string+primitive coercion)

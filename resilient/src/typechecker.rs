@@ -439,6 +439,59 @@ fn z3_prove_with_cert(
     (None, None, None, false)
 }
 
+/// RES-217: best-effort span for a contract clause. Mirrors
+/// the helper in `infer::expr_span` — duplicated here so the
+/// typechecker stays independent of the inference module's
+/// feature gating. Nodes outside the supported expression
+/// subset fall back to a default (line-0) span, which the
+/// warning formatter detects and prints `<unknown>` for.
+fn clause_span(node: &Node) -> Span {
+    match node {
+        Node::IntegerLiteral { span, .. }
+        | Node::FloatLiteral { span, .. }
+        | Node::StringLiteral { span, .. }
+        | Node::BooleanLiteral { span, .. }
+        | Node::Identifier { span, .. }
+        | Node::InfixExpression { span, .. }
+        | Node::PrefixExpression { span, .. }
+        | Node::CallExpression { span, .. }
+        | Node::TryExpression { span, .. } => *span,
+        _ => Span::default(),
+    }
+}
+
+/// RES-217: format + print the partial-proof warning to stderr.
+/// The message follows the ticket's mandated shape:
+///
+/// ```text
+/// warning[partial-proof]: Z3 returned Unknown for assertion at <file>:<line>:<col> — proof is incomplete
+/// ```
+///
+/// `source_path` is the typechecker's recorded file path (set
+/// by `check_program_with_source`); an empty string falls back
+/// to `<unknown>` so REPL / unit-test callers still produce a
+/// readable line. Spans whose `start.line` is 0 (synthetic
+/// clauses, e.g. REPL-constructed AST) print `<unknown>` for
+/// the position — avoiding misleading `:0:0`.
+#[cfg_attr(not(feature = "z3"), allow(dead_code))]
+fn emit_partial_proof_warning(source_path: &str, clause: &Node) {
+    let span = clause_span(clause);
+    let file = if source_path.is_empty() {
+        "<unknown>"
+    } else {
+        source_path
+    };
+    let location = if span.start.line == 0 {
+        format!("{}:<unknown>", file)
+    } else {
+        format!("{}:{}:{}", file, span.start.line, span.start.column)
+    };
+    eprintln!(
+        "warning[partial-proof]: Z3 returned Unknown for assertion at {} \u{2014} proof is incomplete",
+        location
+    );
+}
+
 /// RES-071: a single SMT-LIB2 proof certificate that the typechecker
 /// captured when Z3 successfully discharged a contract obligation.
 /// Filename on disk: `{fn_name}__{kind}__{idx}.smt2`.
@@ -482,6 +535,21 @@ pub struct TypeChecker {
     /// Unknown — treated as "not proven" rather than an error, so
     /// compilation continues with the runtime check retained.
     verifier_timeout_ms: u32,
+    /// RES-217: when `true`, Z3 returning `Unknown` (timeout or
+    /// undecidable theory) emits a `warning[partial-proof]`
+    /// diagnostic to stderr that names the specific assertion
+    /// and its source position. Defaults to `true`; the driver
+    /// flips it off via `--no-warn-unverified` when CI noise is
+    /// unwanted. Independent of the pre-existing `hint: proof
+    /// timed out ...` line, which is the per-fn diagnostic about
+    /// the `--verifier-timeout-ms` budget.
+    warn_unverified: bool,
+    /// RES-217: source path threaded from
+    /// `check_program_with_source` so the partial-proof warning
+    /// can print `<file>:<line>:<col>`. Empty when the caller
+    /// used the `check_program` shim (REPL / unit tests); the
+    /// warning falls back to `<unknown>` in that case.
+    source_path: String,
     /// RES-189: inferred types for unannotated `let` bindings,
     /// accumulated during the walk. The LSP backend reads this
     /// after `check_program_with_source` to produce inlay hints.
@@ -781,6 +849,10 @@ impl TypeChecker {
             type_aliases: HashMap::new(),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
+            // RES-217: partial-proof warnings on by default.
+            warn_unverified: true,
+            // RES-217: populated by `check_program_with_source`.
+            source_path: String::new(),
             // RES-189: populated during LetStatement handling.
             let_type_hints: Vec::new(),
         }
@@ -795,7 +867,18 @@ impl TypeChecker {
         self.verifier_timeout_ms = ms;
         self
     }
-    
+
+    /// RES-217: toggle partial-proof warnings. When `true`
+    /// (default), Z3 `Unknown` verdicts surface as
+    /// `warning[partial-proof]: Z3 returned Unknown for
+    /// assertion at <file>:<line>:<col> — proof is incomplete`.
+    /// The driver flips this to `false` on `--no-warn-unverified`
+    /// for CI runs that want a quieter stderr.
+    pub fn with_warn_unverified(mut self, on: bool) -> Self {
+        self.warn_unverified = on;
+        self
+    }
+
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
         // Backwards-compatible thin shim: callers that don't have a
         // source path (REPL, unit tests) keep the original signature.
@@ -815,6 +898,9 @@ impl TypeChecker {
         program: &Node,
         source_path: &str,
     ) -> Result<Type, String> {
+        // RES-217: stash the source path for partial-proof
+        // warnings that want to print `<file>:<line>:<col>`.
+        self.source_path = source_path.to_string();
         match program {
             Node::Program(statements) => {
                 // RES-061: pre-pass to register every top-level Function
@@ -981,6 +1067,15 @@ impl TypeChecker {
                                 "hint: proof timed out after {}ms — runtime check retained (fn {})",
                                 self.verifier_timeout_ms, name
                             );
+                        }
+                        // RES-217: any unresolved verdict (timeout OR a
+                        // genuine Z3 `Unknown`) is a partial proof. Emit
+                        // the structured diagnostic so CI / LSP tooling
+                        // can discover the specific assertion via a
+                        // stable `[partial-proof]` tag. Suppressed with
+                        // `--no-warn-unverified`.
+                        if verdict.is_none() && self.warn_unverified {
+                            emit_partial_proof_warning(&self.source_path, clause);
                         }
                         decl_counterexample = cx;
                     }
@@ -1754,6 +1849,17 @@ impl TypeChecker {
                                 eprintln!(
                                     "hint: proof timed out after {}ms — runtime check retained (call to fn {})",
                                     self.verifier_timeout_ms, callee_name
+                                );
+                            }
+                            // RES-217: any unresolved verdict (timeout
+                            // OR a genuine Z3 `Unknown`) is a partial
+                            // proof. Emit the structured diagnostic
+                            // with the specific assertion's source
+                            // position; suppressed on
+                            // `--no-warn-unverified`.
+                            if verdict.is_none() && self.warn_unverified {
+                                emit_partial_proof_warning(
+                                    &self.source_path, clause,
                                 );
                             }
                             if matches!(verdict, Some(true))
