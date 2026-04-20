@@ -1,0 +1,31 @@
+RES-218 — Criterion tree-walker baseline
+========================================
+
+Captured: 2026-04-20
+Hardware: Apple M1 Max, macOS arm64 (darwin 25.3.0)
+Rust: stable, release profile (`cargo bench`)
+Command: cargo bench --manifest-path resilient/Cargo.toml --bench interpreter
+
+All three benchmarks shell out to the compiled `resilient` binary and
+include process-startup overhead in the measurement (see the rationale
+in `resilient/benches/interpreter.rs`). The numbers are intended as a
+shape-of-the-curve baseline; deltas between commits are the signal.
+
+tree_walker/fib_25
+    time:   [388.83 ms 430.02 ms 478.52 ms]
+    # Recursive fib with n=25 (~243k calls). Exercises fn dispatch
+    # and environment cloning. Matches the workload used by the
+    # cross-language table in benchmarks/README.md.
+
+tree_walker/bubble_sort_50
+    time:   [7.1283 ms 7.9167 ms 9.6360 ms]
+    # 50-element descending array, O(n^2). Exercises indexed array
+    # read/write and nested while loops.
+
+tree_walker/string_concat_200
+    time:   [2.5026 ms 2.8698 ms 3.6827 ms]
+    # 200-iteration `s = s + "x"` loop then len(s). Exercises the
+    # string-value path and `+` coercion in the interpreter.
+
+Criterion also writes per-benchmark HTML reports to
+`resilient/target/criterion/` — open `index.html` for the full breakdown.

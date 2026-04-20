@@ -100,3 +100,18 @@ serde_json = "1"
 insta = { version = "1", features = ["filters"] }
 # RES-189 tests use `serde_json::json!` — serde_json is now a
 # regular dep (RES-195) so nothing to add here.
+# RES-218: Criterion benchmark harness driving the tree-walker
+# interpreter on three representative workloads (recursive fib,
+# bubble-sort, string-processing). Test-only dep; see
+# `resilient/benches/interpreter.rs` and the Performance section
+# of the repo README for how to run.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+# RES-218: Criterion-driven baselines for the tree-walker. `harness
+# = false` lets Criterion own `main`; the benchmark invokes the
+# compiled `resilient` binary (the language's only supported entry
+# point today — main.rs is not exposed as a library) against
+# inline Resilient source.
+name = "interpreter"
+harness = false
