@@ -58,3 +58,4 @@ exclude:
   - "*.lock"
   - vendor/
   - node_modules/
+  - superpowers/
