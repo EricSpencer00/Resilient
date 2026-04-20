@@ -1,0 +1,4 @@
+unconditional: 43
+literal hit: 10
+guard positive: 10
+Program executed successfully
