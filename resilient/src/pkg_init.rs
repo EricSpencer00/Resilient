@@ -1,16 +1,18 @@
-//! RES-205: `resilient pkg init <name>` — scaffolds a minimal project.
+//! RES-205 / RES-212: `resilient pkg init [<name>] [--name <n>]` —
+//! scaffolds a minimal project.
 //!
-//! Not a full package manager (follow-ups under G?? will handle deps,
-//! build graph, publish). This module just lays down three files so a
-//! new user has something to run:
+//! Not a full package manager (follow-ups will handle deps, build
+//! graph, publish). This module just lays down three files so a new
+//! user has something to run:
 //!
-//! - `Resilient.toml`  — manifest with `[package]` table
+//! - `resilient.toml`  — manifest with `[package]` and `[dependencies]`
 //! - `src/main.rs`     — hello-world entry point
 //! - `.gitignore`      — ignore build artifacts
 //!
 //! Design rules:
-//! - **Refuse to clobber.** If the target directory already exists and
-//!   is non-empty, bail. Fresh directory creation is allowed.
+//! - **Refuse to clobber.** If `resilient.toml` already exists in the
+//!   target, bail — don't overwrite a user's manifest silently.
+//!   Empty-directory scaffolding is still allowed.
 //! - **Two-phase fallback** isn't worth the complexity — if any of the
 //!   three writes fails mid-stream, we surface the error and stop; the
 //!   user can re-run after fixing whatever blocked us.
@@ -18,6 +20,16 @@
 //!   clear this is a "breaking-changes window" field rather than a
 //!   compiler version. `2026-04` matches today's manager date; future
 //!   editions will bump monotonically.
+//!
+//! RES-212 additions on top of RES-205:
+//! - Manifest file is now lowercase `resilient.toml` (was `Resilient.toml`).
+//! - Manifest carries `author = "..."` and an empty `[dependencies]`
+//!   table so downstream tooling has a stable shape to target.
+//! - `--name foo` flag supported as a non-interactive alternative to
+//!   the positional `<name>` arg (handled in the CLI dispatcher).
+//! - A tiny `read_package_name` helper lives here so the run path can
+//!   surface the package name in error messages without dragging in a
+//!   full TOML parser.
 
 use std::fs;
 use std::io;
@@ -26,6 +38,16 @@ use std::path::{Path, PathBuf};
 /// The edition string embedded in freshly-generated manifests. A
 /// date rather than a semver — see module doc-comment.
 pub const DEFAULT_EDITION: &str = "2026-04";
+
+/// Default author string stamped into generated manifests when the
+/// caller didn't supply one. Kept generic because `pkg init` can't
+/// reliably discover the user's identity cross-platform (no git
+/// config read, no `whoami` probe — both are footguns under sandbox).
+pub const DEFAULT_AUTHOR: &str = "unknown";
+
+/// Canonical manifest filename (lowercase per RES-212). Exposed as a
+/// constant so the run path, tests, and future tooling all agree.
+pub const MANIFEST_FILENAME: &str = "resilient.toml";
 
 /// Result of scaffolding. Carries the directory we created so the
 /// CLI can print a helpful "cd into it and run" line on success.
@@ -47,6 +69,10 @@ pub enum PkgInitError {
     InvalidName(String),
     /// Target directory exists and is non-empty.
     DirectoryNotEmpty(PathBuf),
+    /// `resilient.toml` already exists at the target — refuse to
+    /// clobber the user's manifest even when the dir is otherwise
+    /// empty (RES-212 idempotency guard).
+    ManifestExists(PathBuf),
     /// Something went wrong on disk — surface the `io::Error`.
     Io(io::Error),
 }
@@ -63,7 +89,7 @@ impl std::fmt::Display for PkgInitError {
             Self::MissingName => write!(
                 f,
                 "`resilient pkg init` requires a project name: \
-                 `resilient pkg init <name>`"
+                 `resilient pkg init <name>` or `resilient pkg init --name <n>`"
             ),
             Self::InvalidName(n) => write!(
                 f,
@@ -75,6 +101,12 @@ impl std::fmt::Display for PkgInitError {
                 f,
                 "refusing to scaffold into `{}`: directory already \
                  exists and is non-empty",
+                p.display()
+            ),
+            Self::ManifestExists(p) => write!(
+                f,
+                "refusing to overwrite existing manifest `{}`: \
+                 remove it first if you really want to reinitialize",
                 p.display()
             ),
             Self::Io(e) => write!(f, "i/o error: {}", e),
@@ -111,17 +143,22 @@ fn validate_name(name: &str) -> Result<(), PkgInitError> {
 /// - Non-existent target → create it and the three files.
 /// - Existing empty target → reuse and create the three files.
 /// - Existing non-empty target → `Err(DirectoryNotEmpty)`, no writes.
+/// - Pre-existing `resilient.toml` at the target → `Err(ManifestExists)`,
+///   even if the directory itself is otherwise empty.
 ///
 /// Returns the paths of every file we wrote in the order written.
 pub fn scaffold_in(parent: &Path, name: &str) -> Result<Scaffold, PkgInitError> {
     validate_name(name)?;
     let root = parent.join(name);
 
-    // Directory-state check. If it exists and has any entries,
-    // refuse — users can opt in to "merge into empty dir" by
-    // creating an empty dir first; a non-empty dir is opt-out
-    // territory.
+    // Directory-state checks. Manifest-exists wins over the general
+    // non-empty-dir error so callers get a sharper message — the
+    // idempotency guard is the common case ("I already ran init").
     if root.exists() {
+        let manifest_path = root.join(MANIFEST_FILENAME);
+        if manifest_path.exists() {
+            return Err(PkgInitError::ManifestExists(manifest_path));
+        }
         let is_non_empty = fs::read_dir(&root)?.next().is_some();
         if is_non_empty {
             return Err(PkgInitError::DirectoryNotEmpty(root));
@@ -135,8 +172,8 @@ pub fn scaffold_in(parent: &Path, name: &str) -> Result<Scaffold, PkgInitError> 
 
     // Write manifest. Keep formatting byte-for-byte stable so the
     // unit test can assert verbatim.
-    let manifest_path = root.join("Resilient.toml");
-    let manifest = render_manifest(name);
+    let manifest_path = root.join(MANIFEST_FILENAME);
+    let manifest = render_manifest(name, DEFAULT_AUTHOR);
     fs::write(&manifest_path, manifest)?;
 
     // Write hello-world entry point. The `int _d` param is the
@@ -158,15 +195,23 @@ pub fn scaffold_in(parent: &Path, name: &str) -> Result<Scaffold, PkgInitError> 
     })
 }
 
-/// Render the `Resilient.toml` body. Pure — factored out so tests
+/// Render the `resilient.toml` body. Pure — factored out so tests
 /// can assert on the exact bytes without an on-disk round-trip.
-pub fn render_manifest(name: &str) -> String {
+///
+/// `author` is injected so tests can stamp in a known value; the
+/// CLI passes `DEFAULT_AUTHOR` unless the user supplied their own
+/// in some future flag.
+pub fn render_manifest(name: &str, author: &str) -> String {
     format!(
         "[package]\n\
          name = \"{name}\"\n\
          version = \"0.1.0\"\n\
-         edition = \"{edition}\"\n",
+         author = \"{author}\"\n\
+         edition = \"{edition}\"\n\
+         \n\
+         [dependencies]\n",
         name = name,
+        author = author,
         edition = DEFAULT_EDITION,
     )
 }
@@ -191,6 +236,93 @@ fn main(int _d) {\n    println(\"Hello, world!\");\n    return 0;\n}\nmain(0);\n
 pub fn render_gitignore() -> &'static str {
     "target/\n\
      cert/\n"
+}
+
+/// RES-212: minimal TOML-ish reader for the `[package].name` field.
+///
+/// Intentionally hand-rolled to keep the compiler's dep tree small.
+/// We don't need a general TOML parser — just scan for a `name = "..."`
+/// line that appears under the `[package]` table and before any
+/// subsequent `[section]` header. Returns `None` when the file
+/// doesn't exist, can't be read, or doesn't contain a parseable
+/// `name`. Callers treat `None` as "no manifest, fall back to the
+/// raw filename."
+///
+/// Supported shape (lenient on whitespace):
+/// ```toml
+/// [package]
+/// name = "my-project"
+/// version = "0.1.0"
+/// ```
+///
+/// NOT supported (by design — these would drag in a real parser):
+/// - Multi-line basic strings (`"""..."""`).
+/// - Literal strings (`'...'`).
+/// - Escape sequences inside the name (`"\u0041"` stays raw).
+/// - Inline tables.
+///
+/// The manifests this function reads are the ones we write in
+/// `render_manifest`, so the tight shape is fine in practice.
+pub fn read_package_name(manifest_path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(manifest_path).ok()?;
+    let mut in_package = false;
+    for raw in contents.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            // New section header. Enter `[package]`, leave anything
+            // else.
+            let header = rest.trim_end_matches(']').trim();
+            in_package = header == "package";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        // Look for `name = "..."`. Split on the first `=`.
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        // Expect `"..."` (double-quoted basic string).
+        let v = val.trim().strip_prefix('"')?;
+        // Tolerate a trailing comment: `name = "foo" # …`.
+        let end = v.find('"')?;
+        let name = &v[..end];
+        if name.is_empty() {
+            return None;
+        }
+        return Some(name.to_string());
+    }
+    None
+}
+
+/// RES-212: walk upward from `start` looking for a sibling
+/// `resilient.toml`. Returns the manifest path if one is found.
+///
+/// `resilient run path/to/file.res` conventionally lives inside a
+/// project; rather than require the user to be in the project root,
+/// we search `start`, `start/..`, … up to the filesystem root. This
+/// matches how cargo finds `Cargo.toml`.
+pub fn find_manifest_upwards(start: &Path) -> Option<PathBuf> {
+    let mut dir = if start.is_file() {
+        start.parent()?.to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        let candidate = dir.join(MANIFEST_FILENAME);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,7 +350,7 @@ mod tests {
         assert_eq!(out.root, parent.join("my-proj"));
         assert_eq!(out.wrote.len(), 3);
         // Every promised file exists.
-        assert!(parent.join("my-proj/Resilient.toml").exists());
+        assert!(parent.join("my-proj/resilient.toml").exists());
         assert!(parent.join("my-proj/src/main.rs").exists());
         assert!(parent.join("my-proj/.gitignore").exists());
 
@@ -229,13 +361,30 @@ mod tests {
     fn manifest_contents_match_template() {
         let parent = tmp_parent("manifest");
         scaffold_in(&parent, "cool_proj").expect("scaffold");
-        let got = fs::read_to_string(parent.join("cool_proj/Resilient.toml"))
+        let got = fs::read_to_string(parent.join("cool_proj/resilient.toml"))
             .expect("read manifest");
         let expected = format!(
-            "[package]\nname = \"cool_proj\"\nversion = \"0.1.0\"\nedition = \"{}\"\n",
+            "[package]\nname = \"cool_proj\"\nversion = \"0.1.0\"\nauthor = \"{}\"\nedition = \"{}\"\n\n[dependencies]\n",
+            DEFAULT_AUTHOR,
             DEFAULT_EDITION,
         );
         assert_eq!(got, expected);
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn manifest_includes_dependencies_table() {
+        // Separate assertion so a future template change that drops
+        // `[dependencies]` fails loudly rather than silently.
+        let parent = tmp_parent("deps");
+        scaffold_in(&parent, "projdeps").expect("scaffold");
+        let got = fs::read_to_string(parent.join("projdeps/resilient.toml"))
+            .expect("read manifest");
+        assert!(
+            got.contains("[dependencies]"),
+            "missing [dependencies] table in: {got}"
+        );
+        assert!(got.contains("author = "), "missing author field in: {got}");
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -280,7 +429,31 @@ mod tests {
             "preexisting content",
         );
         // AND no manifest was written.
-        assert!(!target.join("Resilient.toml").exists());
+        assert!(!target.join("resilient.toml").exists());
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn scaffold_refuses_when_manifest_already_exists() {
+        // RES-212 idempotency guard: a pre-existing `resilient.toml`
+        // should trigger `ManifestExists`, distinct from the
+        // general non-empty-dir error. This lets the CLI print a
+        // sharper message and hint at removing the file.
+        let parent = tmp_parent("manifest_exists");
+        let target = parent.join("already");
+        fs::create_dir(&target).unwrap();
+        fs::write(
+            target.join("resilient.toml"),
+            "[package]\nname = \"already\"\n",
+        )
+        .unwrap();
+
+        let err = scaffold_in(&parent, "already")
+            .expect_err("scaffold should refuse");
+        assert!(
+            matches!(err, PkgInitError::ManifestExists(_)),
+            "unexpected error: {:?}", err
+        );
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -292,7 +465,7 @@ mod tests {
         let target = parent.join("fresh");
         fs::create_dir(&target).unwrap();
         scaffold_in(&parent, "fresh").expect("scaffold should succeed");
-        assert!(target.join("Resilient.toml").exists());
+        assert!(target.join("resilient.toml").exists());
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -339,5 +512,56 @@ mod tests {
         assert!(validate_name("foo-bar").is_ok());
         assert!(validate_name("Foo.Bar").is_ok());
         assert!(validate_name("proj123").is_ok());
+    }
+
+    #[test]
+    fn read_package_name_picks_up_field() {
+        let parent = tmp_parent("readname");
+        scaffold_in(&parent, "pkg_read_ok").expect("scaffold");
+        let name =
+            read_package_name(&parent.join("pkg_read_ok/resilient.toml"))
+                .expect("should find name");
+        assert_eq!(name, "pkg_read_ok");
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn read_package_name_ignores_unrelated_sections() {
+        // `name = "…"` inside a non-`[package]` section must not be
+        // reported; otherwise a future `[dependencies]` entry like
+        // `name = "sqlite"` would masquerade as the package name.
+        let parent = tmp_parent("readname_unrelated");
+        let manifest = parent.join("m.toml");
+        fs::write(
+            &manifest,
+            "[dependencies]\nname = \"not-the-package\"\n\n[package]\nname = \"real\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_package_name(&manifest).as_deref(),
+            Some("real"),
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn read_package_name_missing_file_is_none() {
+        let p = std::env::temp_dir().join("definitely-not-here-912374.toml");
+        assert!(read_package_name(&p).is_none());
+    }
+
+    #[test]
+    fn find_manifest_upwards_walks_parents() {
+        // Set up parent/proj/resilient.toml and start from
+        // parent/proj/src/nested/ — the search should climb up.
+        let parent = tmp_parent("walkup");
+        let proj = parent.join("proj");
+        let nested = proj.join("src/nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(proj.join("resilient.toml"), "[package]\nname = \"p\"\n")
+            .unwrap();
+        let found = find_manifest_upwards(&nested).expect("should find");
+        assert_eq!(found, proj.join("resilient.toml"));
+        let _ = fs::remove_dir_all(&parent);
     }
 }
