@@ -4408,6 +4408,21 @@ enum Value {
         fn_idx: u16,
         upvalues: Box<[Value]>,
     },
+    /// FFI v1: resolved foreign symbol, callable from Resilient source.
+    /// The Arc holds both the resolved ptr and the signature; the
+    /// loader owns the backing `Library` for the lifetime of the
+    /// driver run, so the ptr stays valid. Contract vecs (`requires` /
+    /// `ensures`) are checked by `apply_function`; `trusted` turns
+    /// the ensures into an assumption rather than a runtime check.
+    #[cfg(feature = "ffi")]
+    #[allow(dead_code)]
+    Foreign {
+        name: &'static str,
+        symbol: std::sync::Arc<crate::ffi::ForeignSymbol>,
+        requires: Vec<Node>,
+        ensures: Vec<Node>,
+        trusted: bool,
+    },
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -4485,6 +4500,10 @@ impl std::fmt::Debug for Value {
             // future test printf doesn't silently no-op.
             Value::Closure { fn_idx, upvalues } => {
                 write!(f, "Closure(fn={}, {} upvalues)", fn_idx, upvalues.len())
+            }
+            #[cfg(feature = "ffi")]
+            Value::Foreign { name, symbol, .. } => {
+                write!(f, "Foreign({}, {} params)", name, symbol.sig.params.len())
             }
         }
     }
@@ -4600,6 +4619,8 @@ impl std::fmt::Display for Value {
             // that happen to stringify a closure see something
             // intelligible instead of "unreachable".
             Value::Closure { .. } => write!(f, "<closure>"),
+            #[cfg(feature = "ffi")]
+            Value::Foreign { name, .. } => write!(f, "<foreign {}>", name),
         }
     }
 }
