@@ -7490,6 +7490,55 @@ impl Interpreter {
                 Ok(return_value)
             }
             Value::Builtin { func, .. } => func(&args),
+            #[cfg(feature = "ffi")]
+            Value::Foreign { name: _, symbol, requires, ensures, trusted } => {
+                // Bind params positionally as `_0`, `_1`, ... for contract eval.
+                let contract_env = Environment::new_enclosed(self.env.clone());
+                for (i, v) in args.iter().enumerate() {
+                    contract_env.set(format!("_{}", i), v.clone());
+                }
+                // Check preconditions.
+                let mut contract_interp = Interpreter {
+                    env: contract_env.clone(),
+                    statics: self.statics.clone(),
+                    proven_fns: self.proven_fns.clone(),
+                };
+                for pre in &requires {
+                    let ok = match contract_interp.eval(pre)? {
+                        Value::Bool(b) => b,
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(
+                            "contract violation: `requires` failed entering foreign fn".to_string(),
+                        );
+                    }
+                }
+                // Dispatch through the trampoline.
+                let result = crate::ffi_trampolines::call_foreign(&symbol, &args)?;
+                // Check postconditions.
+                if !ensures.is_empty() {
+                    let mut post_interp = Interpreter {
+                        env: contract_env,
+                        statics: self.statics.clone(),
+                        proven_fns: self.proven_fns.clone(),
+                    };
+                    post_interp.env.set("result".to_string(), result.clone());
+                    for post in &ensures {
+                        let ok = match post_interp.eval(post)? {
+                            Value::Bool(b) => b,
+                            _ => false,
+                        };
+                        if !ok && !trusted {
+                            return Err(
+                                "contract violation: `ensures` failed leaving foreign fn"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                Ok(result)
+            }
             _ => Err(format!("Not a function: {}", func)),
         }
     }
@@ -8413,6 +8462,40 @@ fn execute_file(
     }
 
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
+
+    // FFI v1: resolve every `Node::Extern` block ahead of eval, bind as
+    // Value::Foreign in the root env so the tree-walker can call through.
+    #[cfg(feature = "ffi")]
+    let _ffi_loader = {
+        let mut loader = crate::ffi::ForeignLoader::new();
+        if let Node::Program(stmts) = &program {
+            for stmt in stmts {
+                if let Node::Extern { library, decls, .. } = &stmt.node {
+                    if let Err(e) = loader.resolve_block(library, decls) {
+                        return Err(format!("{}", e));
+                    }
+                    for d in decls {
+                        if let Some(sym) = loader.lookup(&d.resilient_name) {
+                            let name: &'static str =
+                                Box::leak(d.resilient_name.clone().into_boxed_str());
+                            interpreter.env.set(
+                                d.resilient_name.clone(),
+                                Value::Foreign {
+                                    name,
+                                    symbol: sym,
+                                    requires: d.requires.clone(),
+                                    ensures: d.ensures.clone(),
+                                    trusted: d.trusted,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        loader // keep the Library alive until execute_file returns
+    };
+
     // RES-116: runtime errors from the tree-walker now carry a
     // `line:col:` prefix (applied in `eval_program`). Reshape that
     // here into `filename:line:col: Runtime error: <msg>` so the
@@ -16686,5 +16769,83 @@ mod tests {
         // First token starts at column 0 of line 0.
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "ffi")]
+mod ffi_integration_tests {
+    use super::*;
+
+    /// Helper: parse source, resolve extern blocks into the interpreter's env,
+    /// run the interpreter, return the final value.
+    fn run_with_ffi(src: &str) -> RResult<Value> {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+
+        let mut interpreter = Interpreter::new();
+
+        // Resolve extern blocks — same logic as execute_file but inline.
+        let mut loader = crate::ffi::ForeignLoader::new();
+        if let Node::Program(stmts) = &program {
+            for stmt in stmts {
+                if let Node::Extern { library, decls, .. } = &stmt.node {
+                    loader
+                        .resolve_block(library, decls)
+                        .map_err(|e| format!("{}", e))?;
+                    for d in decls {
+                        if let Some(sym) = loader.lookup(&d.resilient_name) {
+                            let name: &'static str =
+                                Box::leak(d.resilient_name.clone().into_boxed_str());
+                            interpreter.env.set(
+                                d.resilient_name.clone(),
+                                Value::Foreign {
+                                    name,
+                                    symbol: sym,
+                                    requires: d.requires.clone(),
+                                    ensures: d.ensures.clone(),
+                                    trusted: d.trusted,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // SAFETY: loader lives as long as interpreter so ForeignSymbol ptrs stay valid.
+        let result = interpreter.eval(&program)?;
+        // Keep loader alive past eval.
+        drop(loader);
+        Ok(result)
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn can_call_cos_from_system_lib() {
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_cos(x: Float) -> Float = \"cos\"; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_cos(x: Float) -> Float = \"cos\"; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        let result = run_with_ffi(src).expect("cos(0.0) should work");
+        match result {
+            Value::Float(v) => assert!(
+                (v - 1.0_f64).abs() < 1e-10,
+                "cos(0.0) ≈ 1.0, got {}",
+                v
+            ),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn foreign_call_missing_library_errors_cleanly() {
+        let src = r#"extern "libnotreal_xyz.so" { fn f() -> Int; }; fn main(int _d) { return f(); } main(0);"#;
+        let err = run_with_ffi(src).expect_err("must fail");
+        assert!(
+            err.contains("FFI") || err.contains("libnotreal"),
+            "expected FFI error, got: {}",
+            err
+        );
     }
 }
