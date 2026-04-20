@@ -284,6 +284,20 @@ fn extract_counterexample(
     expr: &Node,
     bindings: &HashMap<String, i64>,
 ) -> Option<String> {
+    let parts = extract_counterexample_parts(ctx, solver, expr, bindings)?;
+    Some(parts.join(", "))
+}
+
+/// RES-223: collect per-variable assignment strings from the Z3 model.
+/// Returns `None` when the model is unavailable or no free variables
+/// appear in the expression; otherwise returns a Vec of `"name = val"`
+/// strings in deterministic BTreeSet order.
+fn extract_counterexample_parts(
+    ctx: &z3::Context,
+    solver: &z3::Solver<'_>,
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<Vec<String>> {
     let model = solver.get_model()?;
     let mut idents: BTreeSet<String> = BTreeSet::new();
     collect_int_identifiers(expr, &mut idents);
@@ -300,11 +314,33 @@ fn extract_counterexample(
             parts.push(format!("{} = {}", name, n));
         }
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(", "))
+    if parts.is_empty() { None } else { Some(parts) }
+}
+
+/// RES-223: reformat a comma-separated counterexample string (as returned
+/// by `extract_counterexample`) into the multi-line diagnostic block:
+///
+/// ```text
+/// counterexample:
+///   x = -1
+///   y = 0
+/// ```
+///
+/// Each assignment appears on its own indented line so the user can read
+/// the witness at a glance. Returns an empty string when `cx` is empty
+/// (no free variables in the model); callers should check for that before
+/// appending to a diagnostic message.
+pub fn format_counterexample_block(cx: &str) -> String {
+    if cx.is_empty() {
+        return String::new();
     }
+    let mut out = String::from("counterexample:\n");
+    for part in cx.split(", ") {
+        out.push_str("  ");
+        out.push_str(part.trim());
+        out.push('\n');
+    }
+    out
 }
 
 /// Walk the AST collecting every identifier that the integer or boolean
@@ -336,10 +372,15 @@ fn translate_bool<'c>(
 ) -> Option<Bool<'c>> {
     match node {
         Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
-        Node::PrefixExpression { operator, right, .. } if operator == "!" => {
-            translate_bool(ctx, right, bindings).map(|b| b.not())
-        }
-        Node::InfixExpression { left, operator, right, .. } => match operator.as_str() {
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "!" => translate_bool(ctx, right, bindings).map(|b| b.not()),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => match operator.as_str() {
             "&&" => {
                 let l = translate_bool(ctx, left, bindings)?;
                 let r = translate_bool(ctx, right, bindings)?;
@@ -384,10 +425,15 @@ fn translate_int<'c>(
             Some(v) => Some(Int::from_i64(ctx, *v)),
             None => Some(Int::new_const(ctx, name.as_str())),
         },
-        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
-            translate_int(ctx, right, bindings).map(|v| v.unary_minus())
-        }
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => translate_int(ctx, right, bindings).map(|v| v.unary_minus()),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             let l = translate_int(ctx, left, bindings)?;
             let r = translate_int(ctx, right, bindings)?;
             Some(match operator.as_str() {
@@ -408,9 +454,11 @@ fn translate_int<'c>(
         // injected by `collect_len_args` + the `prove_with_timeout`
         // caller, not here; this fn stays side-effect-free on the
         // solver.
-        Node::CallExpression { function, arguments, .. }
-            if is_len_call(function, arguments) =>
-        {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } if is_len_call(function, arguments) => {
             if let Node::Identifier { name, .. } = &arguments[0] {
                 Some(Int::new_const(ctx, format!("len_{}", name)))
             } else {
@@ -441,9 +489,11 @@ fn is_len_call(function: &Node, arguments: &[Node]) -> bool {
 /// format the axiom / certificate consistently.
 fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
     match node {
-        Node::CallExpression { function, arguments, .. }
-            if is_len_call(function, arguments) =>
-        {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } if is_len_call(function, arguments) => {
             if let Node::Identifier { name, .. } = &arguments[0] {
                 out.insert(name.clone());
             }
@@ -455,7 +505,11 @@ fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
             collect_len_args(left, out);
             collect_len_args(right, out);
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             collect_len_args(function, out);
             for arg in arguments {
                 collect_len_args(arg, out);
@@ -474,9 +528,15 @@ mod tests {
         let no_b = HashMap::new();
         // `5 != 0` — provably true, no free variables.
         let expr = Node::InfixExpression {
-            left: Box::new(Node::IntegerLiteral { value: 5, span: crate::span::Span::default() }),
+            left: Box::new(Node::IntegerLiteral {
+                value: 5,
+                span: crate::span::Span::default(),
+            }),
             operator: "!=".to_string(),
-            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
@@ -487,9 +547,15 @@ mod tests {
         let no_b = HashMap::new();
         // `0 != 0` — provably false.
         let expr = Node::InfixExpression {
-            left: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            left: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
             operator: "!=".to_string(),
-            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(false));
@@ -502,13 +568,22 @@ mod tests {
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+                left: Box::new(Node::Identifier {
+                    name: "x".to_string(),
+                    span: crate::span::Span::default(),
+                }),
                 operator: "+".to_string(),
-                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
-            span: crate::span::Span::default(),
+                right: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: crate::span::Span::default(),
+                }),
+                span: crate::span::Span::default(),
             }),
             operator: "==".to_string(),
-            right: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+            right: Box::new(Node::Identifier {
+                name: "x".to_string(),
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), Some(true));
@@ -527,17 +602,29 @@ mod tests {
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+                left: Box::new(Node::Identifier {
+                    name: "x".to_string(),
+                    span: crate::span::Span::default(),
+                }),
                 operator: ">".to_string(),
-                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
-            span: crate::span::Span::default(),
+                right: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: crate::span::Span::default(),
+                }),
+                span: crate::span::Span::default(),
             }),
             operator: "||".to_string(),
             right: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+                left: Box::new(Node::Identifier {
+                    name: "x".to_string(),
+                    span: crate::span::Span::default(),
+                }),
                 operator: "<=".to_string(),
-                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
-            span: crate::span::Span::default(),
+                right: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: crate::span::Span::default(),
+                }),
+                span: crate::span::Span::default(),
             }),
             span: crate::span::Span::default(),
         };
@@ -552,22 +639,47 @@ mod tests {
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
             left: Box::new(Node::InfixExpression {
-                left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+                left: Box::new(Node::Identifier {
+                    name: "x".to_string(),
+                    span: crate::span::Span::default(),
+                }),
                 operator: "+".to_string(),
-                right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
-            span: crate::span::Span::default(),
+                right: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: crate::span::Span::default(),
+                }),
+                span: crate::span::Span::default(),
             }),
             operator: "==".to_string(),
-            right: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+            right: Box::new(Node::Identifier {
+                name: "x".to_string(),
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         let (verdict, cert) = prove_with_certificate(&expr, &no_b);
         assert_eq!(verdict, Some(true));
         let cert = cert.expect("tautology must yield a certificate");
-        assert!(cert.smt2.contains("(declare-const x Int)"), "missing decl in:\n{}", cert.smt2);
-        assert!(cert.smt2.contains("(check-sat)"), "missing check-sat in:\n{}", cert.smt2);
-        assert!(cert.smt2.contains("(set-logic"), "missing set-logic in:\n{}", cert.smt2);
-        assert!(cert.smt2.contains("(assert "), "missing negated assertion in:\n{}", cert.smt2);
+        assert!(
+            cert.smt2.contains("(declare-const x Int)"),
+            "missing decl in:\n{}",
+            cert.smt2
+        );
+        assert!(
+            cert.smt2.contains("(check-sat)"),
+            "missing check-sat in:\n{}",
+            cert.smt2
+        );
+        assert!(
+            cert.smt2.contains("(set-logic"),
+            "missing set-logic in:\n{}",
+            cert.smt2
+        );
+        assert!(
+            cert.smt2.contains("(assert "),
+            "missing negated assertion in:\n{}",
+            cert.smt2
+        );
     }
 
     #[test]
@@ -578,16 +690,26 @@ mod tests {
         let mut bindings = HashMap::new();
         bindings.insert("n".to_string(), 5);
         let expr = Node::InfixExpression {
-            left: Box::new(Node::Identifier { name: "n".to_string(), span: crate::span::Span::default() }),
+            left: Box::new(Node::Identifier {
+                name: "n".to_string(),
+                span: crate::span::Span::default(),
+            }),
             operator: ">".to_string(),
-            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         let (verdict, cert) = prove_with_certificate(&expr, &bindings);
         assert_eq!(verdict, Some(true));
         let cert = cert.expect("bound tautology must yield a certificate");
         assert!(cert.smt2.contains("(declare-const n Int)"));
-        assert!(cert.smt2.contains("(assert (= n 5))"), "missing binding pin:\n{}", cert.smt2);
+        assert!(
+            cert.smt2.contains("(assert (= n 5))"),
+            "missing binding pin:\n{}",
+            cert.smt2
+        );
     }
 
     #[test]
@@ -595,9 +717,15 @@ mod tests {
         // RES-071: don't emit a certificate when there's no proof.
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
-            left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+            left: Box::new(Node::Identifier {
+                name: "x".to_string(),
+                span: crate::span::Span::default(),
+            }),
             operator: ">".to_string(),
-            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         let (_, cert) = prove_with_certificate(&expr, &no_b);
@@ -610,9 +738,15 @@ mod tests {
         // sat for both forms, so prove() returns None.
         let no_b = HashMap::new();
         let expr = Node::InfixExpression {
-            left: Box::new(Node::Identifier { name: "x".to_string(), span: crate::span::Span::default() }),
+            left: Box::new(Node::Identifier {
+                name: "x".to_string(),
+                span: crate::span::Span::default(),
+            }),
             operator: ">".to_string(),
-            right: Box::new(Node::IntegerLiteral { value: 0, span: crate::span::Span::default() }),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
             span: crate::span::Span::default(),
         };
         assert_eq!(prove(&expr, &no_b), None);
@@ -622,12 +756,18 @@ mod tests {
 
     /// Build `Node::Identifier { name }` with a default span.
     fn ident(name: &str) -> Node {
-        Node::Identifier { name: name.to_string(), span: crate::span::Span::default() }
+        Node::Identifier {
+            name: name.to_string(),
+            span: crate::span::Span::default(),
+        }
     }
 
     /// Build `Node::IntegerLiteral { value }` with a default span.
     fn int(value: i64) -> Node {
-        Node::IntegerLiteral { value, span: crate::span::Span::default() }
+        Node::IntegerLiteral {
+            value,
+            span: crate::span::Span::default(),
+        }
     }
 
     /// Build `left OP right` with a default span.
@@ -654,7 +794,11 @@ mod tests {
         let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
         assert_eq!(verdict, Some(false));
         let cx = cx.expect("contradiction must surface a counterexample");
-        assert!(cx.contains("x ="), "counterexample should name `x`; got: {:?}", cx);
+        assert!(
+            cx.contains("x ="),
+            "counterexample should name `x`; got: {:?}",
+            cx
+        );
     }
 
     #[test]
@@ -667,7 +811,11 @@ mod tests {
         let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
         assert_eq!(verdict, None);
         let cx = cx.expect("undecidable clause must surface a counterexample");
-        assert!(cx.contains("x ="), "counterexample should name `x`; got: {:?}", cx);
+        assert!(
+            cx.contains("x ="),
+            "counterexample should name `x`; got: {:?}",
+            cx
+        );
     }
 
     #[test]
@@ -677,7 +825,11 @@ mod tests {
         let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
         let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&expr, &no_b);
         assert_eq!(verdict, Some(true));
-        assert!(cx.is_none(), "tautology should have no counterexample, got: {:?}", cx);
+        assert!(
+            cx.is_none(),
+            "tautology should have no counterexample, got: {:?}",
+            cx
+        );
     }
 
     #[test]
@@ -750,8 +902,7 @@ mod tests {
                 int(3),
             ),
         );
-        let (_verdict, _cert, _cx, timed_out) =
-            prove_with_timeout(&expr, &no_b, 1);
+        let (_verdict, _cert, _cx, timed_out) = prove_with_timeout(&expr, &no_b, 1);
         assert!(
             timed_out,
             "expected the 1ms budget to trigger Z3's Unknown return"
@@ -767,10 +918,7 @@ mod tests {
         let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
         let (verdict, _cert, _cx, timed_out) = prove_with_timeout(&expr, &no_b, 0);
         assert_eq!(verdict, Some(true));
-        assert!(
-            !timed_out,
-            "unlimited timeout should not report timed_out"
-        );
+        assert!(!timed_out, "unlimited timeout should not report timed_out");
     }
 
     // ---------- RES-131 (RES-131a): len(<ident>) SMT encoding ----------
@@ -790,7 +938,10 @@ mod tests {
     }
 
     fn int_lit(v: i64) -> Node {
-        Node::IntegerLiteral { value: v, span: crate::span::Span::default() }
+        Node::IntegerLiteral {
+            value: v,
+            span: crate::span::Span::default(),
+        }
     }
 
     #[test]
@@ -901,11 +1052,7 @@ mod tests {
 
     #[test]
     fn collect_len_args_finds_all_references() {
-        let expr = infix(
-            infix(len_call("xs"), "+", len_call("ys")),
-            ">",
-            int_lit(0),
-        );
+        let expr = infix(infix(len_call("xs"), "+", len_call("ys")), ">", int_lit(0));
         let mut out = BTreeSet::new();
         collect_len_args(&expr, &mut out);
         assert_eq!(
@@ -946,8 +1093,7 @@ mod tests {
         let no_b = HashMap::new();
         let goal = infix(ident("r"), ">=", int(0));
         let axiom = infix(ident("r"), ">=", int(0));
-        let (verdict, _cert, _cx, _t) =
-            prove_with_axioms_and_timeout(&goal, &no_b, &[axiom], 0);
+        let (verdict, _cert, _cx, _t) = prove_with_axioms_and_timeout(&goal, &no_b, &[axiom], 0);
         assert_eq!(verdict, Some(true));
     }
 
@@ -991,8 +1137,105 @@ mod tests {
         let goal = infix(ident("b"), ">", int(0));
         let ax1 = infix(ident("a"), ">", int(0));
         let ax2 = infix(ident("b"), ">", ident("a"));
-        let (verdict, _cert, _cx, _t) =
-            prove_with_axioms_and_timeout(&goal, &no_b, &[ax1, ax2], 0);
+        let (verdict, _cert, _cx, _t) = prove_with_axioms_and_timeout(&goal, &no_b, &[ax1, ax2], 0);
         assert_eq!(verdict, Some(true));
+    }
+
+    // ---------- RES-223: counterexample block formatting ----------
+
+    #[test]
+    fn format_counterexample_block_produces_multiline_output() {
+        // A comma-separated inline counterexample string is reformatted
+        // into one `  name = val` line per variable.
+        let inline = "x = -1, y = 0";
+        let block = format_counterexample_block(inline);
+        assert!(
+            block.starts_with("counterexample:\n"),
+            "block must open with `counterexample:` header; got: {:?}",
+            block
+        );
+        assert!(
+            block.contains("  x = -1\n"),
+            "missing x line in:\n{}",
+            block
+        );
+        assert!(block.contains("  y = 0\n"), "missing y line in:\n{}", block);
+    }
+
+    #[test]
+    fn format_counterexample_block_single_variable() {
+        let inline = "result = 0";
+        let block = format_counterexample_block(inline);
+        assert_eq!(block, "counterexample:\n  result = 0\n");
+    }
+
+    #[test]
+    fn format_counterexample_block_empty_string_returns_empty() {
+        // When there are no free variables, the inline string is empty
+        // and the block formatter must return an empty string so callers
+        // can gate on it.
+        let block = format_counterexample_block("");
+        assert!(
+            block.is_empty(),
+            "empty input must yield empty output; got: {:?}",
+            block
+        );
+    }
+
+    #[test]
+    fn format_counterexample_block_negative_values_use_minus_sign() {
+        // Negative integers should appear with a `-` sign, not in any
+        // Z3 bitvector representation.
+        let inline = "n = -5";
+        let block = format_counterexample_block(inline);
+        assert!(
+            block.contains("  n = -5\n"),
+            "negative value must use minus sign; got: {:?}",
+            block
+        );
+    }
+
+    #[test]
+    fn ensures_contradiction_produces_multiline_counterexample_in_error() {
+        // RES-223 acceptance criterion: a known-bad `ensures` clause that
+        // is a provable contradiction (no assignment satisfies it) returns
+        // a counterexample whose free variables appear one-per-line in the
+        // multi-line block format.
+        //
+        // Clause: `result > 0 && result < 0`
+        // This is a strict contradiction for any value of `result`; Z3
+        // reports `Some(false)` and the tautology-check solver provides a
+        // model that falsifies it — here `result` is the free variable.
+        let no_b = HashMap::new();
+        let clause = infix(
+            infix(ident("result"), ">", int(0)),
+            "&&",
+            infix(ident("result"), "<", int(0)),
+        );
+        let (verdict, _cert, cx) = prove_with_certificate_and_counterexample(&clause, &no_b);
+        assert_eq!(
+            verdict,
+            Some(false),
+            "impossible ensures must be a contradiction"
+        );
+        let cx_inline = cx.expect("contradiction must yield a counterexample");
+        // `result` is the single free variable; the inline format has it.
+        assert!(
+            cx_inline.contains("result ="),
+            "counterexample must name `result`; got: {:?}",
+            cx_inline,
+        );
+        // Reformat to the block style the typechecker will emit.
+        let block = format_counterexample_block(&cx_inline);
+        assert!(
+            block.starts_with("counterexample:\n"),
+            "block must open with counterexample header; got: {:?}",
+            block
+        );
+        assert!(
+            block.contains("  result ="),
+            "block must contain indented `result = ...` line; got:\n{}",
+            block
+        );
     }
 }
