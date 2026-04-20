@@ -13145,6 +13145,41 @@ mod tests {
         assert!(err.contains("? operator"), "unexpected: {}", err);
     }
 
+    // ---------- FFI typechecker (Task 4) ----------
+
+    #[test]
+    fn typecheck_rejects_array_param_in_extern() {
+        let err = typecheck_src(r#"extern "libfoo" { fn f(xs: Array) -> Int; }"#).unwrap_err();
+        assert!(
+            err.contains("Array") && (err.contains("extern") || err.contains("FFI")),
+            "expected type-error about Array in extern, got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_primitive_extern() {
+        typecheck_src(r#"extern "libm" { fn sqrt(x: Float) -> Float; }"#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_accepts_void_return_in_extern() {
+        typecheck_src(r#"extern "libfoo" { fn noop() -> Void; }"#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_pure_on_extern() {
+        let src = r#"extern "libfoo" { @pure fn f() -> Int; }"#;
+        let (_, parse_errs) = parse(src);
+        assert!(
+            parse_errs.iter().any(|e| {
+                e.contains("attribute") || e.contains("@pure") || e.contains("pure")
+            }),
+            "expected parse error about @pure attribute, got {:?}",
+            parse_errs
+        );
+    }
+
     // ---------- Typed declarations (RES-052) ----------
 
     #[test]
