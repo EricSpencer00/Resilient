@@ -1486,6 +1486,7 @@ impl Parser {
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
+            Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
@@ -2682,6 +2683,74 @@ impl Parser {
         }
         Some(Node::Use { path,
             span: self.span_at_current() })
+    }
+
+    /// FFI v1: `extern "lib" { decl; decl; ... }`.
+    /// Each decl is parsed by `parse_extern_decl`.
+    fn parse_extern_block(&mut self) -> Option<Node> {
+        let extern_span = self.span_at_current();
+        self.next_token(); // consume `extern`
+
+        // Library descriptor.
+        let library = match &self.current_token {
+            Token::StringLiteral(s) => {
+                let s = s.clone();
+                self.next_token();
+                s
+            }
+            _ => {
+                self.record_error(format!(
+                    "expected string literal after `extern`, got {:?}",
+                    self.current_token
+                ));
+                return None;
+            }
+        };
+
+        // `{`
+        if !matches!(self.current_token, Token::LeftBrace) {
+            self.record_error(format!(
+                "expected `{{` after `extern \"{}\"`, got {:?}",
+                library,
+                self.current_token
+            ));
+            return None;
+        }
+        self.next_token();
+
+        let mut decls: Vec<ExternDecl> = Vec::new();
+        while !matches!(self.current_token, Token::RightBrace | Token::Eof) {
+            if let Some(d) = self.parse_extern_decl() {
+                decls.push(d);
+            } else {
+                // Recovery: skip to next `;` or `}`.
+                while !matches!(
+                    self.current_token,
+                    Token::Semicolon | Token::RightBrace | Token::Eof
+                ) {
+                    self.next_token();
+                }
+                if matches!(self.current_token, Token::Semicolon) {
+                    self.next_token();
+                }
+            }
+        }
+
+        if matches!(self.current_token, Token::RightBrace) {
+            self.next_token();
+        }
+
+        Some(Node::Extern {
+            library,
+            decls,
+            span: extern_span,
+        })
+    }
+
+    /// Stub — real implementation lands in Task 3.
+    fn parse_extern_decl(&mut self) -> Option<ExternDecl> {
+        self.record_error("FFI: extern fn declarations not yet implemented".to_string());
+        None
     }
 
     fn parse_return_statement(&mut self) -> Node {
