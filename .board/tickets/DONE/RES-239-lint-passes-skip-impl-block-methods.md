@@ -77,3 +77,5 @@ impl Point {
 
 ## Log
 - 2026-04-20 created by analyzer (found during review of lint.rs walker coverage)
+- 2026-04-20 implemented in commit 0d080de (bundled with RES-237 changes)
+closed-by: 0d080de
