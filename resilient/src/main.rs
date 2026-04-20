@@ -963,6 +963,7 @@ enum Node {
     /// (after `expand_uses`) into `Value::Foreign` bindings in
     /// the global environment.
     Extern {
+        #[allow(dead_code)]
         library: String,
         decls: Vec<ExternDecl>,
         /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
@@ -1370,6 +1371,7 @@ enum Node {
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ExternDecl {
     /// The name used in Resilient source (e.g. `sine`).
     pub(crate) resilient_name: String,
@@ -2836,10 +2838,7 @@ impl Parser {
             return None;
         }
         self.next_token(); // skip `->`
-        let return_type = match self.parse_type_annotation("after '->' in extern fn") {
-            Some(t) => t,
-            None => return None,
-        };
+        let return_type = self.parse_type_annotation("after '->' in extern fn")?;
 
         // Optional `= "c_name"` alias.
         let c_name = if matches!(self.current_token, Token::Assign) {
