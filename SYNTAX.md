@@ -529,19 +529,20 @@ fn sqrt(x: Float) -> Float
 
 ```
 @trusted
-fn fast_log(x: Float) -> Float requires _0 > 0.0 ensures result == result;
+fn fast_log(x: Float) -> Float requires _0 > 0.0 ensures result >= 0.0;
 ```
 
 Mark a function `@trusted` to treat its `ensures` clauses as SMT axioms
-(fed to Z3 at verification sites) rather than runtime assertions. Use this
-when you have a proof or vendor guarantee and want to avoid the overhead of
-a runtime check.
+(fed to Z3 at verification sites). The `ensures` clause is still evaluated
+at runtime; a failure does not abort the program. Instead, the clause is
+propagated as an SMT axiom for the Z3 verifier, which can reason about
+foreign postconditions without you needing to prove them inline.
 
 ### Feature flags
 
 | Feature | Effect |
 |---------|--------|
-| `ffi` *(default)* | Enables the `extern` block, dynamic linker, trampolines |
+| `ffi` *(opt-in)* | Enables the `extern` block, dynamic linker, trampolines |
 | `ffi-static` | `resilient-runtime` static registry for `no_std` hosts |
 
 Compile without the `ffi` feature to get a compile-time error on any program that uses `extern` blocks (`FfiError::FfiDisabled`).

@@ -689,8 +689,8 @@ fn ffi_libm_example_calls_sqrt() {
         "ffi_libm.rs must exit 0; stdout={stdout} stderr={stderr}"
     );
     assert!(
-        stdout.contains("4"),
-        "expected sqrt(16.0)=4 in stdout; got:\nstdout={stdout}\nstderr={stderr}"
+        stdout.lines().any(|l| l.trim() == "4"),
+        "expected a line `4` from sqrt(16.0) in stdout; got:\nstdout={stdout}\nstderr={stderr}"
     );
     assert!(
         stdout.contains("1.4142135623730951"),

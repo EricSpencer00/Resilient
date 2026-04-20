@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Foreign Function Interface
-nav_order: 10
+nav_order: 15
 ---
 
 # Foreign Function Interface
@@ -20,7 +20,7 @@ Resilient programs call into C libraries through `extern` blocks.
 
 ```
 extern "libm.so.6" {
-    fn sqrt(x: Float) -> Float requires _0 >= 0.0;
+    fn sqrt(x: Float) -> Float requires _0 >= 0.0 ensures result >= 0.0;
 }
 
 fn main() {
@@ -56,6 +56,7 @@ Only primitive types are supported in FFI Phase 1:
 | `Int`     | `int64_t` |
 | `Float`   | `double`  |
 | `Bool`    | `bool`    |
+| `String`  | not yet supported |
 | `Void`    | `void`    |
 
 At most 8 parameters per extern function.
@@ -80,13 +81,14 @@ Violations are caught at runtime before (or after) the C call, producing a
 
 ```
 @trusted
-fn fast_log(x: Float) -> Float requires _0 > 0.0;
+fn fast_log(x: Float) -> Float requires _0 > 0.0 ensures result >= 0.0;
 ```
 
 `@trusted` propagates the `ensures` clause as an SMT axiom to the Z3
-verifier rather than checking it at runtime. Use this when you have an
-external proof and want the verifier to reason about the foreign function's
-postcondition.
+verifier. The `ensures` clause is still evaluated at runtime; a failure does
+not abort the program. Instead, the clause is passed through and asserted as
+an axiom for the Z3 verifier, which can reason about the foreign function's
+postcondition without you needing to prove it inline.
 
 ## C symbol aliases
 
