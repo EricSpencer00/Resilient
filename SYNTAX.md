@@ -154,6 +154,11 @@ live {
 }
 ```
 
+During development, pass `--panic-on-fault` to `resilient` to
+disable the retry loop and surface the first fault immediately
+(exit code 1); use `--no-panic-on-fault` to restore the default
+self-healing behaviour (RES-211).
+
 ### Nesting (RES-140)
 
 `live` blocks **compose**. When an inner block exhausts its own
