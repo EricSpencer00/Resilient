@@ -137,6 +137,12 @@ fn tick() {
 
 ## Live Blocks
 
+> **Formal spec:** the normative rules for retry counts, invariant
+> ordering, state roll-back, nesting, timeouts, and the
+> `live_retries()` builtin live in
+> [`docs/live-block-semantics.md`](docs/live-block-semantics.md).
+> This section is the friendly tour; that page is the contract.
+
 Live blocks re-execute on recoverable error, restoring state from the
 last known-good snapshot:
 
