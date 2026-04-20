@@ -1,12 +1,13 @@
 ---
 id: RES-241
 title: "Test regression: imports_missing_file_errors_cleanly expects clean diagnostic but gets OS error"
-state: IN_PROGRESS
+state: SUPERSEDED
 priority: P2
 goalpost: G11
 created: 2026-04-20
 owner: executor
 Claimed-by: Claude
+superseded-by: RES-243
 ---
 
 ## Summary
@@ -81,3 +82,8 @@ cargo test imports_missing_file_errors_cleanly 2>&1 | grep -A 20 "imports_missin
 
 ## Log
 - 2026-04-20 created by analyzer (found during `cargo test` run)
+- 2026-04-20 superseded by RES-243 — the root-cause hypothesis in this
+  ticket (broken import-error propagation pipeline) is incorrect. The test
+  passes consistently when run in isolation. The true cause is a parallel-test
+  race on a fixed shared temp-file path; see RES-243 for the correct
+  analysis and fix. No code changes needed in imports.rs or main.rs.

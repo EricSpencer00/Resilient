@@ -1,11 +1,12 @@
 ---
 id: RES-242
 title: "file_io_demo golden test regression: file_read returns empty string"
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G3
 created: 2026-04-20
 owner: executor
+closing-note: "golden_outputs_match passes as of 2026-04-20 scan; file_io_demo produces the expected output. The regression described here is no longer reproducible."
 ---
 
 ## Summary
@@ -79,3 +80,6 @@ fn main() {
 ## Log
 
 - 2026-04-20 created by analyzer (golden test failure discovered during analysis)
+- 2026-04-20 closed by analyzer — `cargo test --test examples_golden` passes cleanly;
+  `golden_outputs_match` is ok. The regression is not reproducible on the current
+  codebase. Moving to DONE.
