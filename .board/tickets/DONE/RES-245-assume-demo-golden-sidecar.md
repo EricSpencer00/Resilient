@@ -1,7 +1,7 @@
 ---
 id: RES-245
 title: "Add assume_demo.res + .expected.txt golden sidecar for assume() feature"
-state: OPEN
+state: DONE
 priority: P3
 goalpost: testing
 created: 2026-04-20
@@ -66,3 +66,4 @@ output when `resilient examples/assume_demo.res` runs.
 ## Log
 
 - 2026-04-20 created by analyzer (RES-133a shipped without golden sidecar)
+closed-by: duplicate of RES-233 (done on PR #65)
