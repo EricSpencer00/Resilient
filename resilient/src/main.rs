@@ -8720,18 +8720,54 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         return None;
     }
     match args.get(2).map(|s| s.as_str()) {
+        // RES-212: explicit `--help` / `-h` / `help` emits the
+        // subcommand catalog on stdout so callers can pipe it into
+        // pagers / docs without stderr muddying the stream.
+        Some("--help") | Some("-h") | Some("help") => {
+            print_pkg_help();
+            Some(0)
+        }
         Some("init") => {
-            // `pkg init <name>` — the only subcommand for now.
-            // Future `pkg add`, `pkg build`, etc. will branch here.
-            let name = match args.get(3) {
-                Some(n) => n.as_str(),
-                None => {
+            // `pkg init [<name>] [--name <n>]`. Both forms are
+            // accepted; if both are supplied the last one on the
+            // command line wins, which matches how most CLI parsers
+            // resolve the conflict. Future `pkg add`, `pkg build`,
+            // etc. will branch here.
+            let mut name: Option<String> = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_init_help();
+                    return Some(0);
+                } else if a == "--name" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: --name requires an argument");
+                        return Some(2);
+                    }
+                    name = Some(args[i].clone());
+                } else if let Some(v) = a.strip_prefix("--name=") {
+                    name = Some(v.to_string());
+                } else if a.starts_with("--") {
+                    eprintln!("Error: unknown flag `{}` to `pkg init`", a);
+                    return Some(2);
+                } else if name.is_none() {
+                    // First positional wins as the project name —
+                    // preserves the RES-205 invocation shape.
+                    name = Some(a.clone());
+                } else {
                     eprintln!(
-                        "Error: {}",
-                        pkg_init::PkgInitError::MissingName
+                        "Error: unexpected extra argument `{}` to `pkg init`",
+                        a
                     );
                     return Some(2);
                 }
+                i += 1;
+            }
+            let Some(name) = name else {
+                eprintln!("Error: {}", pkg_init::PkgInitError::MissingName);
+                return Some(2);
             };
             let cwd = match env::current_dir() {
                 Ok(p) => p,
@@ -8740,13 +8776,9 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                     return Some(2);
                 }
             };
-            match pkg_init::scaffold_in(&cwd, name) {
+            match pkg_init::scaffold_in(&cwd, &name) {
                 Ok(scaffold) => {
-                    println!(
-                        "Created {} at {}",
-                        name,
-                        scaffold.root.display()
-                    );
+                    println!("Created {} at {}", name, scaffold.root.display());
                     for p in &scaffold.wrote {
                         println!("  wrote {}", p.display());
                     }
@@ -8763,16 +8795,73 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         }
         Some(other) => {
             eprintln!(
-                "Error: unknown pkg subcommand `{}`. Known: init",
+                "Error: unknown pkg subcommand `{}`. Known: init. \
+                 Run `resilient pkg --help` for usage.",
                 other
             );
             Some(2)
         }
         None => {
-            eprintln!("Error: `resilient pkg` requires a subcommand. Known: init");
+            // Bare `resilient pkg` — surface the help catalog
+            // instead of bailing with a cryptic error. Exit 2 still
+            // (usage error) so shell scripts treat it as a failed
+            // invocation.
+            print_pkg_help_to_stderr();
             Some(2)
         }
     }
+}
+
+/// RES-212: `resilient pkg --help` output. Lists the known
+/// subcommands so new users don't have to grep source.
+fn print_pkg_help() {
+    println!(
+        "resilient pkg — package-manager subcommands\n\
+         \n\
+         USAGE:\n    \
+             resilient pkg <subcommand> [options]\n\
+         \n\
+         SUBCOMMANDS:\n    \
+             init    Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
+             help    Show this message\n\
+         \n\
+         Run `resilient pkg init --help` for subcommand-specific options."
+    );
+}
+
+/// Same as `print_pkg_help` but writes to stderr. Used when the
+/// user invoked `resilient pkg` with no subcommand — we still want
+/// to be helpful, but the exit code is non-zero so the stream that
+/// carries the catalog matches the failure channel.
+fn print_pkg_help_to_stderr() {
+    eprintln!(
+        "resilient pkg — package-manager subcommands\n\
+         \n\
+         USAGE:\n    \
+             resilient pkg <subcommand> [options]\n\
+         \n\
+         SUBCOMMANDS:\n    \
+             init    Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
+             help    Show this message\n\
+         \n\
+         Error: `resilient pkg` requires a subcommand."
+    );
+}
+
+/// `resilient pkg init --help`. Focused on the init-specific
+/// flags so users don't have to read the top-level catalog twice.
+fn print_pkg_init_help() {
+    println!(
+        "resilient pkg init — scaffold a new project\n\
+         \n\
+         USAGE:\n    \
+             resilient pkg init <name>\n    \
+             resilient pkg init --name <n>\n\
+         \n\
+         Creates `<name>/resilient.toml`, `<name>/src/main.rs`, and\n\
+         `<name>/.gitignore`. Refuses to overwrite an existing manifest\n\
+         or scaffold into a non-empty directory."
+    );
 }
 
 /// RES-194: `resilient verify-cert <dir> [--pubkey <path>]`.
@@ -9728,7 +9817,22 @@ fn main() {
                     return;
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    // RES-212: when a `resilient.toml` manifest
+                    // sits above the source file, prefix the error
+                    // with `[<package-name>] ` so multi-project
+                    // workflows can tell which package bailed. We
+                    // search upward from the source's parent dir
+                    // (cargo-style); absence is silent.
+                    let pkg = std::path::Path::new(filename)
+                        .canonicalize()
+                        .ok()
+                        .and_then(|p| pkg_init::find_manifest_upwards(&p))
+                        .and_then(|m| pkg_init::read_package_name(&m));
+                    if let Some(name) = pkg {
+                        eprintln!("Error: [{}] {}", name, e);
+                    } else {
+                        eprintln!("Error: {}", e);
+                    }
                     std::process::exit(1);
                 }
             }
