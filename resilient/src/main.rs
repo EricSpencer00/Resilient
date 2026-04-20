@@ -958,6 +958,8 @@ enum Node {
     Extern {
         library: String,
         decls: Vec<ExternDecl>,
+        /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
+        #[allow(dead_code)]
         span: span::Span,
     },
     Function {
@@ -1361,21 +1363,25 @@ enum Node {
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
 #[derive(Debug, Clone)]
-pub struct ExternDecl {
+pub(crate) struct ExternDecl {
     /// The name used in Resilient source (e.g. `sine`).
-    pub resilient_name: String,
+    pub(crate) resilient_name: String,
     /// The C symbol to look up. Defaults to `resilient_name`; overridden
     /// by `fn NAME(...) = "C_NAME";`.
-    pub c_name: String,
+    pub(crate) c_name: String,
     /// (type, name) pairs — matches `Node::Function::parameters`.
-    pub parameters: Vec<(String, String)>,
+    pub(crate) parameters: Vec<(String, String)>,
     /// Resilient type name; `"Void"` for unit return.
-    pub return_type: String,
-    pub requires: Vec<Node>,
-    pub ensures: Vec<Node>,
+    pub(crate) return_type: String,
+    /// FFI v1: pre-condition expressions. Empty when absent.
+    pub(crate) requires: Vec<Node>,
+    /// FFI v1: post-condition expressions. The special identifier `result` is bound to the return value.
+    pub(crate) ensures: Vec<Node>,
     /// `@trusted` — `ensures` is assumed, not checked.
-    pub trusted: bool,
-    pub span: span::Span,
+    pub(crate) trusted: bool,
+    /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
+    #[allow(dead_code)]
+    pub(crate) span: span::Span,
 }
 
 // Parser for creating AST from tokens
