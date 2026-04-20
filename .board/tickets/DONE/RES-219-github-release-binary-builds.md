@@ -46,4 +46,4 @@ notes.
 ## Closing notes
 
 Implemented in commit f5668fe (branch `main`). Ticket closed by this PR.
-Closing commit: to be filled by merge SHA.
+Closing commit: 694c4c1
