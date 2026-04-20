@@ -1,12 +1,13 @@
 ---
 id: RES-224
 title: REPL history persistence — save/load ~/.resilient_history
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G11
 created: 2026-04-20
 owner: executor
 Claimed-by: Claude
+Closed-by: 3109037
 ---
 
 ## Summary
@@ -26,5 +27,6 @@ The REPL loses all input history on exit. Wire up `rustyline`'s history API to p
 
 ## Log
 - 2026-04-20 created by manager
+- 2026-04-20 implemented and closed by Claude (commit 3109037)
 </content>
 </invoke>
