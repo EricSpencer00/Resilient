@@ -116,31 +116,46 @@ fn run_l0001_unused_local(program: &Node, out: &mut Vec<Lint>) {
         return;
     };
     for spanned in stmts {
-        if let Node::Function { body, .. } = &spanned.node {
-            let mut lets: Vec<(String, Span)> = Vec::new();
-            collect_lets_in(body, &mut lets);
-            if lets.is_empty() {
-                continue;
+        match &spanned.node {
+            Node::Function { body, .. } => {
+                l0001_check_body(body, out);
             }
-            let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-            collect_identifier_reads_in(body, &mut used);
-            for (name, span) in &lets {
-                if name.starts_with('_') {
-                    continue;
-                }
-                if !used.contains(name) {
-                    out.push(Lint {
-                        code: "L0001".into(),
-                        severity: Severity::Warning,
-                        message: format!(
-                            "unused local binding `{}` — prefix with `_` to silence",
-                            name
-                        ),
-                        line: span.start.line as u32,
-                        column: span.start.column as u32,
-                    });
+            // RES-239: descend into impl block methods.
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function { body, .. } = method {
+                        l0001_check_body(body, out);
+                    }
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+fn l0001_check_body(body: &Node, out: &mut Vec<Lint>) {
+    let mut lets: Vec<(String, Span)> = Vec::new();
+    collect_lets_in(body, &mut lets);
+    if lets.is_empty() {
+        return;
+    }
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_identifier_reads_in(body, &mut used);
+    for (name, span) in &lets {
+        if name.starts_with('_') {
+            continue;
+        }
+        if !used.contains(name) {
+            out.push(Lint {
+                code: "L0001".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "unused local binding `{}` — prefix with `_` to silence",
+                    name
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
         }
     }
 }
@@ -197,6 +212,19 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
                 }
                 collect_lets_in(arm_body, out);
             }
+        }
+        // RES-237: struct destructure — each local binding name is a
+        // new `let`-equivalent that L0001 should track.
+        Node::LetDestructureStruct {
+            fields,
+            value,
+            span,
+            ..
+        } => {
+            for (_field_name, local_name) in fields {
+                out.push((local_name.clone(), *span));
+            }
+            collect_lets_in(value, out);
         }
         _ => {}
     }
@@ -320,6 +348,33 @@ fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<
         Node::Assert { condition, .. } => {
             collect_identifier_reads_in(condition, out);
         }
+        // RES-237: assume(cond[, msg]) — identifiers inside the condition
+        // and optional message are reads.
+        Node::Assume {
+            condition, message, ..
+        } => {
+            collect_identifier_reads_in(condition, out);
+            if let Some(msg) = message {
+                collect_identifier_reads_in(msg, out);
+            }
+        }
+        // RES-237: {k -> v, ...} map literal — both keys and values are reads.
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_identifier_reads_in(k, out);
+                collect_identifier_reads_in(v, out);
+            }
+        }
+        // RES-237: #{item, ...} set literal — each item is a read.
+        Node::SetLiteral { items, .. } => {
+            for item in items {
+                collect_identifier_reads_in(item, out);
+            }
+        }
+        // RES-237: struct destructure — the RHS value is a read.
+        Node::LetDestructureStruct { value, .. } => {
+            collect_identifier_reads_in(value, out);
+        }
         _ => {}
     }
 }
@@ -364,6 +419,12 @@ fn walk_matches(node: &Node, out: &mut Vec<Lint>) {
             }
         }
         Node::Function { body, .. } => walk_matches(body, out),
+        // RES-239: descend into impl block methods.
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                walk_matches(method, out);
+            }
+        }
         Node::Block { stmts, .. } => {
             for s in stmts {
                 walk_matches(s, out);
@@ -602,20 +663,36 @@ fn run_l0005_redundant_return(program: &Node, out: &mut Vec<Lint>) {
         return;
     };
     for spanned in stmts {
-        if let Node::Function { body, .. } = &spanned.node
-            && let Node::Block {
-                stmts: body_stmts, ..
-            } = body.as_ref()
-            && let Some(Node::ReturnStatement { value: None, span }) = body_stmts.last()
-        {
-            out.push(Lint {
-                code: "L0005".into(),
-                severity: Severity::Warning,
-                message: "redundant `return;` at end of function body — remove it".into(),
-                line: span.start.line as u32,
-                column: span.start.column as u32,
-            });
+        match &spanned.node {
+            Node::Function { body, .. } => {
+                l0005_check_fn_body(body, out);
+            }
+            // RES-239: check methods inside impl blocks.
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function { body, .. } = method {
+                        l0005_check_fn_body(body, out);
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+}
+
+fn l0005_check_fn_body(body: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block {
+        stmts: body_stmts, ..
+    } = body
+        && let Some(Node::ReturnStatement { value: None, span }) = body_stmts.last()
+    {
+        out.push(Lint {
+            code: "L0005".into(),
+            severity: Severity::Warning,
+            message: "redundant `return;` at end of function body — remove it".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
     }
 }
 
@@ -681,6 +758,12 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             }
             for e in ensures {
                 f(e);
+            }
+        }
+        // RES-239: descend into impl block methods so L0003/L0004/L0006 cover methods.
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                f(method);
             }
         }
         Node::Block { stmts, .. } => {
@@ -1089,6 +1172,135 @@ mod tests {
         assert!(
             KNOWN_CODES.contains(&"L0006"),
             "L0006 missing from KNOWN_CODES"
+        );
+    }
+
+    // ---------- RES-237: L0001 false-positives for Assume / MapLiteral /
+    // SetLiteral / LetDestructureStruct ----------
+
+    #[test]
+    fn l0001_no_false_positive_in_assume_condition() {
+        // `x` is read inside assume() — must not fire L0001.
+        let src = "fn f(int x) {\n    let y = x + 1;\n    assume(y > 0);\n    return y;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire when local is used inside assume()"
+        );
+    }
+
+    #[test]
+    fn l0001_no_false_positive_in_map_literal_key() {
+        // `key` is a let binding that is used only as a map key.
+        // Before RES-237 this fired a false L0001 because MapLiteral
+        // was not visited by collect_identifier_reads_in.
+        let src = "fn f(int n) -> Int {\n    let key = n + 1;\n    let m = {key -> 0};\n    return map_len(m);\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire when let binding is used as a map key"
+        );
+    }
+
+    #[test]
+    fn l0001_no_false_positive_in_set_literal_item() {
+        // `elem` is a let binding that is used only inside a set literal.
+        // Before RES-237 this fired a false L0001 because SetLiteral
+        // was not visited by collect_identifier_reads_in.
+        let src = "fn f(int n) -> Int {\n    let elem = n + 1;\n    let s = #{elem};\n    return set_len(s);\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire when let binding is used inside a set literal"
+        );
+    }
+
+    #[test]
+    fn l0001_fires_for_unused_struct_destructure_binding() {
+        // `b` is bound by destructure but never read.
+        let src = "\
+            struct Pt { int x, int y }\n\
+            fn f(int d) -> Int {\n\
+                let p = new Pt { x: 1, y: 2 };\n\
+                let Pt { x: a, y: b } = p;\n\
+                return a;\n\
+            }\n\
+        ";
+        assert!(
+            codes(src).contains(&"L0001".to_string()),
+            "L0001 must fire for unused struct-destructure binding"
+        );
+    }
+
+    #[test]
+    fn l0001_silent_for_used_struct_destructure_binding() {
+        // Both `a` and `b` are read after destructuring.
+        let src = "\
+            struct Pt { int x, int y }\n\
+            fn f(int d) -> Int {\n\
+                let p = new Pt { x: 3, y: 4 };\n\
+                let Pt { x: a, y: b } = p;\n\
+                return a + b;\n\
+            }\n\
+        ";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire when all struct-destructure bindings are used"
+        );
+    }
+
+    // ---------- RES-239: lint passes walk impl block methods ----------
+
+    #[test]
+    fn l0001_fires_for_unused_binding_in_impl_method() {
+        // `unused` is declared but never read inside a method body.
+        let src = "\
+            struct Counter { int n }\n\
+            impl Counter {\n\
+                fn tick(self) -> int {\n\
+                    let unused = 99;\n\
+                    return self.n;\n\
+                }\n\
+            }\n\
+        ";
+        assert!(
+            codes(src).contains(&"L0001".to_string()),
+            "L0001 must fire for unused binding inside an impl method"
+        );
+    }
+
+    #[test]
+    fn l0002_fires_for_unreachable_arm_in_impl_method() {
+        // An arm after `_` inside a method is unreachable.
+        let src = "\
+            struct Wrapper { int v }\n\
+            impl Wrapper {\n\
+                fn kind(self) -> int {\n\
+                    return match self.v {\n\
+                        _ => 0,\n\
+                        1 => 1,\n\
+                    };\n\
+                }\n\
+            }\n\
+        ";
+        assert!(
+            codes(src).contains(&"L0002".to_string()),
+            "L0002 must fire for unreachable arm inside an impl method"
+        );
+    }
+
+    #[test]
+    fn l0005_fires_for_trailing_return_in_impl_method() {
+        // A trailing bare `return;` inside a method is redundant.
+        let src = "\
+            struct Noop { int x }\n\
+            impl Noop {\n\
+                fn run(self) {\n\
+                    let _v = self.x;\n\
+                    return;\n\
+                }\n\
+            }\n\
+        ";
+        assert!(
+            codes(src).contains(&"L0005".to_string()),
+            "L0005 must fire for trailing bare return inside an impl method"
         );
     }
 }
