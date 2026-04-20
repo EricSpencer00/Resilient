@@ -2526,7 +2526,14 @@ impl Parser {
 
         self.next_token(); // Skip '='
 
-        let value = self.parse_expression(0).unwrap();
+        let value = self.parse_expression(0).unwrap_or_else(|| {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected expression after '=' in let statement, found {}",
+                tok
+            ));
+            Node::IntegerLiteral { value: 0, span: span::Span::default() }
+        });
 
         if self.peek_token == Token::Semicolon {
             self.next_token(); // Skip to semicolon
@@ -3565,7 +3572,7 @@ impl Parser {
         let op_span = self.span_at_current();
         self.next_token();
 
-        let right = self.parse_expression(precedence).unwrap();
+        let right = self.parse_expression(precedence)?;
 
         Some(Node::InfixExpression {
             left: Box::new(left),
@@ -3597,12 +3604,26 @@ impl Parser {
         }
         
         self.next_token();
-        args.push(self.parse_expression(0).unwrap());
-        
+        args.push(self.parse_expression(0).unwrap_or_else(|| {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected expression in call arguments, found {}",
+                tok
+            ));
+            Node::IntegerLiteral { value: 0, span: span::Span::default() }
+        }));
+
         while self.peek_token == Token::Comma {
             self.next_token(); // Skip current
             self.next_token(); // Skip comma
-            args.push(self.parse_expression(0).unwrap());
+            args.push(self.parse_expression(0).unwrap_or_else(|| {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected expression in call arguments, found {}",
+                    tok
+                ));
+                Node::IntegerLiteral { value: 0, span: span::Span::default() }
+            }));
         }
         
         if self.peek_token != Token::RightParen {
@@ -17628,6 +17649,44 @@ mod ffi_integration_tests {
             result.is_ok(),
             "typecheck/verifier failed: {:?}",
             result
+        );
+    }
+
+    // RES-230: malformed inputs must produce a diagnostic rather than an
+    // unwrap panic.  These tests document the recovery behaviour introduced
+    // to fix the four remaining `.unwrap()` calls in the production parser.
+
+    #[test]
+    fn let_statement_missing_rhs_yields_error_not_panic() {
+        // `let x = ;` — semicolon is not a valid expression start.
+        // parse_expression returns None; the fix must record an error
+        // and return a placeholder rather than panicking.
+        let (_program, errs) = crate::parse("let x = ;");
+        assert!(
+            !errs.is_empty(),
+            "expected a parse error for `let x = ;`, got none"
+        );
+    }
+
+    #[test]
+    fn infix_missing_rhs_yields_error_not_panic() {
+        // `1 + ;` — the RHS of the infix operator is not a valid expression.
+        // parse_infix_expression previously called .unwrap() on the result.
+        let (_program, errs) = crate::parse("fn f() -> Int { return 1 + ; }");
+        assert!(
+            !errs.is_empty(),
+            "expected a parse error for `1 + ;`, got none"
+        );
+    }
+
+    #[test]
+    fn call_args_leading_comma_yields_error_not_panic() {
+        // `f(,)` — a leading comma means parse_expression is called with
+        // the current token being `,`, which is not a valid expression start.
+        let (_program, errs) = crate::parse("fn f(x: Int) -> Int { return x; } fn g() -> Int { return f(,); }");
+        assert!(
+            !errs.is_empty(),
+            "expected a parse error for `f(,)`, got none"
         );
     }
 }
