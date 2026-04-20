@@ -28,7 +28,7 @@
           "resilient"
         ],
         "extensions": [
-          ".rs"
+          ".res"
         ],
         "configuration": "./language-configuration.json"
       }

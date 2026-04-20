@@ -30,7 +30,7 @@ fn list_examples() -> Vec<PathBuf> {
         .expect("reading examples dir")
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rs"))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("res"))
         .collect();
     out.sort();
     out

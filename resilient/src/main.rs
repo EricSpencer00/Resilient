@@ -10052,7 +10052,7 @@ mod tests {
         for entry in fs::read_dir(&examples_dir).expect("read examples/") {
             let entry = entry.expect("readable dir entry");
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            if path.extension().and_then(|s| s.to_str()) != Some("res") {
                 continue;
             }
             base.push_str(&fs::read_to_string(&path).expect("read example"));
@@ -10220,7 +10220,7 @@ mod tests {
         for entry in entries {
             let entry = entry.expect("readable dir entry");
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            if path.extension().and_then(|s| s.to_str()) != Some("res") {
                 continue;
             }
             let src = fs::read_to_string(&path)
@@ -10264,7 +10264,7 @@ mod tests {
 
         assert!(
             checked > 0,
-            "no .rs examples found under {}",
+            "no .res examples found under {}",
             examples_dir.display(),
         );
     }

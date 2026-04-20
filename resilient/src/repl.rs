@@ -312,7 +312,7 @@ impl EnhancedREPL {
         let mut names: Vec<String> = entries
             .flatten()
             .filter(|e| {
-                e.path().extension().and_then(|s| s.to_str()) == Some("rs")
+                e.path().extension().and_then(|s| s.to_str()) == Some("res")
             })
             .filter_map(|e| {
                 e.file_name().into_string().ok()

@@ -6,7 +6,7 @@
 //! user has something to run:
 //!
 //! - `resilient.toml`  — manifest with `[package]` and `[dependencies]`
-//! - `src/main.rs`     — hello-world entry point
+//! - `src/main.res`     — hello-world entry point
 //! - `.gitignore`      — ignore build artifacts
 //!
 //! Design rules:
@@ -180,7 +180,7 @@ pub fn scaffold_in(parent: &Path, name: &str) -> Result<Scaffold, PkgInitError> 
     // idiom examples/*.rs use — every `fn main` in this codebase
     // takes a dummy int so the caller (`main(0);`) always supplies
     // one arg.
-    let main_path = src_dir.join("main.rs");
+    let main_path = src_dir.join("main.res");
     let main_src = render_hello_world();
     fs::write(&main_path, main_src)?;
 
@@ -216,7 +216,7 @@ pub fn render_manifest(name: &str, author: &str) -> String {
     )
 }
 
-/// The hello-world `src/main.rs` body. Pinned so the template
+/// The hello-world `src/main.res` body. Pinned so the template
 /// stays deterministic across runs.
 ///
 /// Written with explicit `\n    ` rather than Rust's line-
@@ -227,7 +227,7 @@ pub fn render_hello_world() -> &'static str {
     "// Welcome to Resilient.\n\
 //\n\
 // Run with:\n\
-//   resilient src/main.rs\n\
+//   resilient src/main.res\n\
 fn main(int _d) {\n    println(\"Hello, world!\");\n    return 0;\n}\nmain(0);\n"
 }
 
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(out.wrote.len(), 3);
         // Every promised file exists.
         assert!(parent.join("my-proj/resilient.toml").exists());
-        assert!(parent.join("my-proj/src/main.rs").exists());
+        assert!(parent.join("my-proj/src/main.res").exists());
         assert!(parent.join("my-proj/.gitignore").exists());
 
         let _ = fs::remove_dir_all(&parent);
@@ -392,8 +392,8 @@ mod tests {
     fn hello_world_main_runs_via_template() {
         let parent = tmp_parent("hello");
         scaffold_in(&parent, "greetings").expect("scaffold");
-        let got = fs::read_to_string(parent.join("greetings/src/main.rs"))
-            .expect("read main.rs");
+        let got = fs::read_to_string(parent.join("greetings/src/main.res"))
+            .expect("read main.res");
         assert!(got.contains("fn main"), "expected fn main in: {got}");
         assert!(got.contains("Hello, world!"), "expected greeting in: {got}");
         let _ = fs::remove_dir_all(&parent);
