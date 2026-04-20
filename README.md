@@ -576,6 +576,14 @@ small code size (≈15 LOC, zero dependencies), not unpredictability.
 When the language grows a cryptographic-grade primitive it will
 live under a separate name with the appropriate guarantees.
 
+## Performance
+
+Run `cargo bench --manifest-path resilient/Cargo.toml` to benchmark the
+tree-walker interpreter on three representative workloads (recursive
+`fib(25)`, bubble-sort, and string concatenation). Results are saved to
+`resilient/target/criterion/`; a captured baseline lives at
+[`benchmarks/baseline.txt`](benchmarks/baseline.txt).
+
 ## Syntax Requirements
 
 See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and examples. Key points:
