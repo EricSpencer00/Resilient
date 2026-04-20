@@ -41,12 +41,7 @@ fn bin() -> &'static str {
 fn scratch_path(tag: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "res_snap_{}_{}_{}.rs",
-        tag,
-        std::process::id(),
-        n
-    ))
+    std::env::temp_dir().join(format!("res_snap_{}_{}_{}.rs", tag, std::process::id(), n))
 }
 
 /// Strip ANSI color escapes (CSI `ESC [ ... m`) from `s`. The
@@ -179,7 +174,11 @@ fn parser_let_missing_identifier() {
 #[test]
 fn typecheck_let_int_assigned_string() {
     let src = "fn main(int _d) {\n    let bad: int = \"hi\";\n    return 0;\n}\n";
-    check_diagnostic("typecheck_let_int_assigned_string", &["-t", "--seed", "0"], src);
+    check_diagnostic(
+        "typecheck_let_int_assigned_string",
+        &["-t", "--seed", "0"],
+        src,
+    );
 }
 
 #[test]
@@ -197,13 +196,21 @@ fn typecheck_call_arity_mismatch() {
 #[test]
 fn typecheck_if_condition_nonbool() {
     let src = "fn main(int _d) {\n    if 1 { return 0; }\n    return 0;\n}\nmain(0);\n";
-    check_diagnostic("typecheck_if_condition_nonbool", &["-t", "--seed", "0"], src);
+    check_diagnostic(
+        "typecheck_if_condition_nonbool",
+        &["-t", "--seed", "0"],
+        src,
+    );
 }
 
 #[test]
 fn typecheck_binop_array_plus_int() {
     let src = "fn main(int _d) {\n    let xs = [1, 2, 3];\n    return xs + 1;\n}\nmain(0);\n";
-    check_diagnostic("typecheck_binop_array_plus_int", &["-t", "--seed", "0"], src);
+    check_diagnostic(
+        "typecheck_binop_array_plus_int",
+        &["-t", "--seed", "0"],
+        src,
+    );
 }
 
 // ---------- runtime canaries (default run) ----------

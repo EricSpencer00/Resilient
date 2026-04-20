@@ -28,9 +28,9 @@
 use std::fs;
 use std::path::Path;
 
-use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
-use ed25519_dalek::{PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH};
 use ed25519_dalek::ed25519::signature::Signer;
+use ed25519_dalek::{PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH};
+use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 /// RES-194: the public key committed alongside the binary. The
@@ -59,25 +59,19 @@ const PEM_PRIV_END: &str = "-----END ED25519 PRIVATE KEY-----";
 /// signature after the fact. `cert.sig` is specifically excluded
 /// too (signing the signature would be a chicken-and-egg issue).
 pub fn compute_cert_payload(dir: &Path) -> Result<Vec<u8>, String> {
-    let rd = fs::read_dir(dir).map_err(|e| {
-        format!("could not read cert directory {}: {}", dir.display(), e)
-    })?;
+    let rd = fs::read_dir(dir)
+        .map_err(|e| format!("could not read cert directory {}: {}", dir.display(), e))?;
     let mut entries: Vec<_> = rd
         .filter_map(|r| r.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .ends_with(".smt2")
-        })
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".smt2"))
         .map(|e| e.path())
         .collect();
     entries.sort();
 
     let mut payload = Vec::new();
     for (i, p) in entries.iter().enumerate() {
-        let body = fs::read(p).map_err(|e| {
-            format!("could not read cert file {}: {}", p.display(), e)
-        })?;
+        let body =
+            fs::read(p).map_err(|e| format!("could not read cert file {}: {}", p.display(), e))?;
         if i > 0 {
             payload.push(b'\n');
         }
@@ -117,22 +111,20 @@ pub fn verify_payload(
 /// ASCII file with the `BEGIN ED25519 PUBLIC KEY` markers and a
 /// hex-encoded 32-byte body. Whitespace is ignored.
 pub fn parse_public_key_pem(pem: &str) -> Result<[u8; PUBLIC_KEY_LENGTH], String> {
-    parse_hex_pem(pem, PEM_PUB_BEGIN, PEM_PUB_END, PUBLIC_KEY_LENGTH)
-        .map(|v| {
-            let mut out = [0u8; PUBLIC_KEY_LENGTH];
-            out.copy_from_slice(&v);
-            out
-        })
+    parse_hex_pem(pem, PEM_PUB_BEGIN, PEM_PUB_END, PUBLIC_KEY_LENGTH).map(|v| {
+        let mut out = [0u8; PUBLIC_KEY_LENGTH];
+        out.copy_from_slice(&v);
+        out
+    })
 }
 
 /// RES-194: parse our mini-PEM for a private key.
 pub fn parse_private_key_pem(pem: &str) -> Result<[u8; SECRET_KEY_LENGTH], String> {
-    parse_hex_pem(pem, PEM_PRIV_BEGIN, PEM_PRIV_END, SECRET_KEY_LENGTH)
-        .map(|v| {
-            let mut out = [0u8; SECRET_KEY_LENGTH];
-            out.copy_from_slice(&v);
-            out
-        })
+    parse_hex_pem(pem, PEM_PRIV_BEGIN, PEM_PRIV_END, SECRET_KEY_LENGTH).map(|v| {
+        let mut out = [0u8; SECRET_KEY_LENGTH];
+        out.copy_from_slice(&v);
+        out
+    })
 }
 
 /// Internal: shared mini-PEM parser for public + private keys.
@@ -157,7 +149,9 @@ fn parse_hex_pem(
     if hex.len() != expected_len * 2 {
         return Err(format!(
             "expected {} hex chars ({}-byte key), got {}",
-            expected_len * 2, expected_len, hex.len()
+            expected_len * 2,
+            expected_len,
+            hex.len()
         ));
     }
     hex_decode(&hex)
@@ -203,7 +197,8 @@ pub fn parse_signature_hex(s: &str) -> Result<[u8; SIGNATURE_LENGTH], String> {
     if hex.len() != SIGNATURE_LENGTH * 2 {
         return Err(format!(
             "expected {} hex chars (64-byte signature), got {}",
-            SIGNATURE_LENGTH * 2, hex.len()
+            SIGNATURE_LENGTH * 2,
+            hex.len()
         ));
     }
     let v = hex_decode(&hex)?;
@@ -326,7 +321,10 @@ pub fn format_manifest_json(m: &Manifest) -> String {
         })
         .collect();
     let mut root = serde_json::Map::new();
-    root.insert("program".into(), serde_json::Value::String(m.program.clone()));
+    root.insert(
+        "program".into(),
+        serde_json::Value::String(m.program.clone()),
+    );
     root.insert("obligations".into(), serde_json::Value::Array(obligations));
     serde_json::to_string_pretty(&serde_json::Value::Object(root))
         .unwrap_or_else(|_| "{}".to_string())
@@ -337,9 +335,11 @@ pub fn format_manifest_json(m: &Manifest) -> String {
 /// ignores) extra fields so future schema versions don't break
 /// old verifiers.
 pub fn parse_manifest_json(s: &str) -> Result<Manifest, String> {
-    let v: serde_json::Value = serde_json::from_str(s)
-        .map_err(|e| format!("manifest.json isn't valid JSON: {}", e))?;
-    let obj = v.as_object().ok_or("manifest.json root must be an object")?;
+    let v: serde_json::Value =
+        serde_json::from_str(s).map_err(|e| format!("manifest.json isn't valid JSON: {}", e))?;
+    let obj = v
+        .as_object()
+        .ok_or("manifest.json root must be an object")?;
     let program = obj
         .get("program")
         .and_then(|v| v.as_str())
@@ -389,7 +389,10 @@ pub fn parse_manifest_json(s: &str) -> Result<Manifest, String> {
             sig,
         });
     }
-    Ok(Manifest { program, obligations })
+    Ok(Manifest {
+        program,
+        obligations,
+    })
 }
 
 #[cfg(test)]
@@ -485,7 +488,10 @@ mod manifest_tests {
     fn parse_rejects_malformed_obligation() {
         let json = r#"{"program": "x.rs", "obligations": [{"fn": "f"}]}"#;
         let err = parse_manifest_json(json).unwrap_err();
-        assert!(err.contains("kind") || err.contains("obligation"), "error was: {err}");
+        assert!(
+            err.contains("kind") || err.contains("obligation"),
+            "error was: {err}"
+        );
     }
 
     #[test]
@@ -626,10 +632,7 @@ mod tests {
 
     #[test]
     fn pem_rejects_wrong_length() {
-        let bad = format!(
-            "{}\n{}\n{}\n",
-            PEM_PUB_BEGIN, "aabb", PEM_PUB_END
-        );
+        let bad = format!("{}\n{}\n{}\n", PEM_PUB_BEGIN, "aabb", PEM_PUB_END);
         let err = parse_public_key_pem(&bad).unwrap_err();
         assert!(err.contains("hex chars"), "error was: {err}");
     }
@@ -651,8 +654,7 @@ mod tests {
     #[test]
     fn embedded_public_key_parses() {
         // The committed `cert_key.pem` must always be valid.
-        parse_public_key_pem(EMBEDDED_PUBLIC_KEY_PEM)
-            .expect("embedded key must parse");
+        parse_public_key_pem(EMBEDDED_PUBLIC_KEY_PEM).expect("embedded key must parse");
     }
 
     #[test]
@@ -660,11 +662,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "res_certsign_{}_{}",
-            std::process::id(),
-            n
-        ));
+        let dir = std::env::temp_dir().join(format!("res_certsign_{}_{}", std::process::id(), n));
         fs::create_dir_all(&dir).unwrap();
         // Two files, written in reverse alphabetical order — the
         // payload must still sort them.
@@ -685,11 +683,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "res_certsign_e2e_{}_{}",
-            std::process::id(),
-            n
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("res_certsign_e2e_{}_{}", std::process::id(), n));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("foo__requires__0.smt2"), b"(assert true)\n").unwrap();
         fs::write(dir.join("foo__ensures__0.smt2"), b"(assert false)\n").unwrap();

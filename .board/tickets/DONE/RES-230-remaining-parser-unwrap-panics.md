@@ -1,7 +1,7 @@
 ---
 id: RES-230
 title: Four remaining `unwrap()` panics in production parser paths
-state: IN_PROGRESS
+state: DONE
 claimed-by: Claude Sonnet 4.6
 priority: P2
 goalpost: G3
@@ -65,3 +65,4 @@ recovery default is appropriate.
 
 ## Log
 - 2026-04-20 created by analyzer
+- 2026-04-20 fixes and tests implemented; cargo fmt applied across all files; closed

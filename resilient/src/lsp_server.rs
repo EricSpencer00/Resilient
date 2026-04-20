@@ -34,7 +34,7 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::{builtin_names, compute_semantic_tokens, parse, typechecker, Node};
+use crate::{Node, builtin_names, compute_semantic_tokens, parse, typechecker};
 
 /// RES-186: one workspace-level symbol entry. A flat vec of these
 /// is the backend's search index — substring filter at query time,
@@ -256,10 +256,7 @@ fn span_to_range(span: crate::span::Span) -> Range {
 /// This lookup is O(tokens). A cached-source document is small
 /// enough that re-lexing on each hover request is cheap — faster
 /// than the HashMap operation that reads it.
-pub(crate) fn hover_literal_at(
-    src: &str,
-    pos: Position,
-) -> Option<(&'static str, Range)> {
+pub(crate) fn hover_literal_at(src: &str, pos: Position) -> Option<(&'static str, Range)> {
     use crate::{Lexer, Token};
     let mut lex = Lexer::new(src.to_string());
     loop {
@@ -319,10 +316,7 @@ fn lex_span_contains_lsp_position(span: crate::span::Span, pos: Position) -> boo
 /// directly against the cached source and find the containing
 /// `Token::Identifier`. Caller uses the returned name to look up
 /// the definition in a `TopLevelDefMap`.
-pub(crate) fn identifier_at(
-    src: &str,
-    pos: Position,
-) -> Option<(String, Range)> {
+pub(crate) fn identifier_at(src: &str, pos: Position) -> Option<(String, Range)> {
     use crate::{Lexer, Token};
     let mut lex = Lexer::new(src.to_string());
     loop {
@@ -473,10 +467,7 @@ impl CandidateKind {
 ///
 /// When `prefix` is empty, the full candidate set (up to the cap)
 /// is returned — that's the Ctrl-Space case.
-pub(crate) fn completion_candidates(
-    program: &Node,
-    prefix: &str,
-) -> Vec<Candidate> {
+pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
 
     // Builtins — alphabetically sorted snapshot.
@@ -504,7 +495,9 @@ pub(crate) fn completion_candidates(
     };
     for spanned in stmts {
         let (name, kind, detail) = match &spanned.node {
-            Node::Function { name, parameters, .. } => (
+            Node::Function {
+                name, parameters, ..
+            } => (
                 name.clone(),
                 CandidateKind::Function,
                 Some(format!("fn ({} params)", parameters.len())),
@@ -572,12 +565,8 @@ pub(crate) fn document_symbols_for_program(program: &Node) -> Vec<DocumentSymbol
     let mut out = Vec::new();
     for spanned in stmts {
         let symbol = match &spanned.node {
-            Node::Function { name, .. } => {
-                make_symbol(name, SymbolKind::FUNCTION, spanned.span)
-            }
-            Node::StructDecl { name, .. } => {
-                make_symbol(name, SymbolKind::STRUCT, spanned.span)
-            }
+            Node::Function { name, .. } => make_symbol(name, SymbolKind::FUNCTION, spanned.span),
+            Node::StructDecl { name, .. } => make_symbol(name, SymbolKind::STRUCT, spanned.span),
             Node::TypeAlias { name, .. } => {
                 make_symbol(name, SymbolKind::TYPE_PARAMETER, spanned.span)
             }
@@ -606,8 +595,7 @@ impl Backend {
         };
         let Some(root) = root else { return };
         let files = walk_resilient_files(&root);
-        let mut new_index: HashMap<Url, Vec<WorkspaceSymbolEntry>> =
-            HashMap::new();
+        let mut new_index: HashMap<Url, Vec<WorkspaceSymbolEntry>> = HashMap::new();
         for path in files {
             if let Some(entries) = index_file(&path) {
                 let Ok(uri) = Url::from_file_path(&path) else {
@@ -627,7 +615,9 @@ impl Backend {
 /// index build artifacts or management metadata.
 fn walk_resilient_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else { return out };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
     for e in entries.flatten() {
         let path = e.path();
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
@@ -724,7 +714,10 @@ fn semantic_tokens_legend() -> SemanticTokensLegend {
         SemanticTokenModifier::DECLARATION,
         SemanticTokenModifier::READONLY,
     ];
-    SemanticTokensLegend { token_types, token_modifiers }
+    SemanticTokensLegend {
+        token_types,
+        token_modifiers,
+    }
 }
 
 /// RES-187: the capability advertised in `initialize` — full-file
@@ -812,10 +805,12 @@ fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
     let mut out = HashMap::new();
     if let Node::Program(stmts) = program {
         for spanned in stmts {
-            if let Node::Function { name, parameters, .. } = &spanned.node {
+            if let Node::Function {
+                name, parameters, ..
+            } = &spanned.node
+            {
                 // parameters are (type, name) — only names needed.
-                let names: Vec<String> =
-                    parameters.iter().map(|(_, n)| n.clone()).collect();
+                let names: Vec<String> = parameters.iter().map(|(_, n)| n.clone()).collect();
                 out.insert(name.clone(), names);
             }
         }
@@ -827,18 +822,19 @@ fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
 /// `node`. For each one, if the callee is a bare identifier
 /// that's in `fns` AND the arg count matches, emit one hint per
 /// positional argument.
-fn walk_call_hints(
-    node: &Node,
-    fns: &HashMap<String, Vec<String>>,
-    out: &mut Vec<InlayHint>,
-) {
+fn walk_call_hints(node: &Node, fns: &HashMap<String, Vec<String>>, out: &mut Vec<InlayHint>) {
     match node {
         Node::Program(stmts) => {
             for s in stmts {
                 walk_call_hints(&s.node, fns, out);
             }
         }
-        Node::Function { body, requires, ensures, .. } => {
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
             walk_call_hints(body, fns, out);
             for r in requires {
                 walk_call_hints(r, fns, out);
@@ -853,7 +849,11 @@ fn walk_call_hints(
                 walk_call_hints(s, fns, out);
             }
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             // First recurse into the arguments so nested calls get
             // hints too.
             for a in arguments {
@@ -890,10 +890,17 @@ fn walk_call_hints(
         }
         Node::LetStatement { value, .. }
         | Node::StaticLet { value, .. }
-        | Node::ReturnStatement { value: Some(value), .. } => {
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
             walk_call_hints(value, fns, out);
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             walk_call_hints(condition, fns, out);
             walk_call_hints(consequence, fns, out);
             if let Some(a) = alternative {
@@ -935,9 +942,7 @@ fn position_in_range(p: Position, range: Range) -> bool {
 /// value isn't a boolean `true`. Exported pub(crate) so unit
 /// tests can exercise the parser without an LSP round-trip.
 #[allow(dead_code)]
-pub(crate) fn read_init_param_hints_flag(
-    opts: Option<&tower_lsp::lsp_types::LSPAny>,
-) -> bool {
+pub(crate) fn read_init_param_hints_flag(opts: Option<&tower_lsp::lsp_types::LSPAny>) -> bool {
     let Some(opts) = opts else { return false };
     // Flat form.
     if let Some(v) = opts.get("resilient.inlayHints.parameters")
@@ -1008,9 +1013,7 @@ impl LanguageServer for Backend {
             .map(|f| f.uri.clone())
             .or(params.root_uri.clone())
             .and_then(|u| u.to_file_path().ok());
-        if let (Ok(mut slot), Some(p)) =
-            (self.workspace_root.lock(), root_path)
-        {
+        if let (Ok(mut slot), Some(p)) = (self.workspace_root.lock(), root_path) {
             *slot = Some(p);
         }
 
@@ -1020,9 +1023,7 @@ impl LanguageServer for Backend {
         // `{"resilient": {"inlayHints": {"parameters": true}}}`
         // (nested). Either is fine; clients vary. Absent / false →
         // parameter hints stay off.
-        let params_enabled = read_init_param_hints_flag(
-            params.initialization_options.as_ref(),
-        );
+        let params_enabled = read_init_param_hints_flag(params.initialization_options.as_ref());
         if let Ok(mut slot) = self.inlay_hint_parameters.lock() {
             *slot = params_enabled;
         }
@@ -1049,12 +1050,12 @@ impl LanguageServer for Backend {
                 // options) — the server supports the feature for any
                 // document that already has a `TextDocumentSyncKind`
                 // registered above.
-                inlay_hint_provider: Some(OneOf::Right(
-                    InlayHintServerCapabilities::Options(InlayHintOptions {
+                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+                    InlayHintOptions {
                         work_done_progress_options: WorkDoneProgressOptions::default(),
                         resolve_provider: Some(false),
-                    }),
-                )),
+                    },
+                ))),
                 // RES-181a: advertise hover support. Today the handler
                 // only surfaces a type for literals (Int / Float /
                 // Bool / String / Bytes / Duration) — identifier
@@ -1143,17 +1144,16 @@ impl LanguageServer for Backend {
     /// untouched. If the save happened before the index was
     /// built, this is still safe: the lazy-build on next
     /// `workspace/symbol` call will include the saved state.
-    async fn did_save(
-        &self,
-        params: tower_lsp::lsp_types::DidSaveTextDocumentParams,
-    ) {
+    async fn did_save(&self, params: tower_lsp::lsp_types::DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         // Re-read the file from disk. `did_save` notifications
         // carry the text only when the client opts into the
         // `TextDocumentSyncSaveOptions { include_text: true }`
         // — we registered TextDocumentSyncKind::FULL without
         // that, so walk to disk instead.
-        let Some(path) = uri.to_file_path().ok() else { return };
+        let Some(path) = uri.to_file_path().ok() else {
+            return;
+        };
         let entries = match index_file(&path) {
             Some(e) => e,
             None => return,
@@ -1324,10 +1324,7 @@ impl LanguageServer for Backend {
     ///      applies the 100-item cap.
     ///   4. Convert each `Candidate` to `CompletionItem` and wrap
     ///      as `CompletionResponse::Array`.
-    async fn completion(
-        &self,
-        params: CompletionParams,
-    ) -> JsonResult<Option<CompletionResponse>> {
+    async fn completion(&self, params: CompletionParams) -> JsonResult<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let text = match self.documents_text.lock() {
@@ -1389,10 +1386,7 @@ impl LanguageServer for Backend {
     /// Filters the output by the request's `range` so clients
     /// that ask for a viewport don't pay to render the whole
     /// file's worth.
-    async fn inlay_hint(
-        &self,
-        params: InlayHintParams,
-    ) -> JsonResult<Option<Vec<InlayHint>>> {
+    async fn inlay_hint(&self, params: InlayHintParams) -> JsonResult<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri;
         let range = params.range;
 
@@ -1409,8 +1403,7 @@ impl LanguageServer for Backend {
         // collected up to the error point.
         let mut tc = typechecker::TypeChecker::new();
         let _ = tc.check_program_with_source(&program, uri.as_str());
-        let let_hints: Vec<InlayHint> =
-            tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
+        let let_hints: Vec<InlayHint> = tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
 
         let mut out: Vec<InlayHint> = let_hints
             .into_iter()
@@ -1601,12 +1594,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "res_186_{}_{}_{}",
-            tag,
-            std::process::id(),
-            n
-        ));
+        let path =
+            std::env::temp_dir().join(format!("res_186_{}_{}_{}", tag, std::process::id(), n));
         std::fs::create_dir_all(&path).expect("create scratch dir");
         path
     }
@@ -1629,11 +1618,7 @@ mod tests {
             "fn c() { return 0; }\n",
         );
         std::fs::create_dir_all(root.join(".cache")).unwrap();
-        write_file(
-            &root.join(".cache"),
-            "d.rs",
-            "fn d() { return 0; }\n",
-        );
+        write_file(&root.join(".cache"), "d.rs", "fn d() { return 0; }\n");
         let found = walk_resilient_files(&root);
         let names: Vec<String> = found
             .iter()
@@ -1641,8 +1626,14 @@ mod tests {
             .collect();
         assert!(names.contains(&"a.rs".to_string()));
         assert!(names.contains(&"b.rs".to_string()));
-        assert!(!names.contains(&"c.rs".to_string()), "target/ must be skipped");
-        assert!(!names.contains(&"d.rs".to_string()), "dot-dirs must be skipped");
+        assert!(
+            !names.contains(&"c.rs".to_string()),
+            "target/ must be skipped"
+        );
+        assert!(
+            !names.contains(&"d.rs".to_string()),
+            "dot-dirs must be skipped"
+        );
         // Clean up.
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1675,28 +1666,19 @@ mod tests {
                 name: "alpha".into(),
                 kind: SymbolKind::FUNCTION,
                 uri: uri.clone(),
-                range: Range::new(
-                    Position::new(0, 0),
-                    Position::new(0, 0),
-                ),
+                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
             },
             WorkspaceSymbolEntry {
                 name: "AlphaBeta".into(),
                 kind: SymbolKind::FUNCTION,
                 uri: uri.clone(),
-                range: Range::new(
-                    Position::new(1, 0),
-                    Position::new(1, 0),
-                ),
+                range: Range::new(Position::new(1, 0), Position::new(1, 0)),
             },
             WorkspaceSymbolEntry {
                 name: "gamma".into(),
                 kind: SymbolKind::FUNCTION,
                 uri: uri.clone(),
-                range: Range::new(
-                    Position::new(2, 0),
-                    Position::new(2, 0),
-                ),
+                range: Range::new(Position::new(2, 0), Position::new(2, 0)),
             },
         ];
         let mut index: HashMap<Url, Vec<WorkspaceSymbolEntry>> = HashMap::new();
@@ -1734,26 +1716,47 @@ mod tests {
     fn semantic_tokens_legend_indices_match_sem_tok_constants() {
         use crate::sem_tok;
         let legend = semantic_tokens_legend();
-        assert_eq!(legend.token_types[sem_tok::KEYWORD as usize],
-                   SemanticTokenType::KEYWORD);
-        assert_eq!(legend.token_types[sem_tok::FUNCTION as usize],
-                   SemanticTokenType::FUNCTION);
-        assert_eq!(legend.token_types[sem_tok::VARIABLE as usize],
-                   SemanticTokenType::VARIABLE);
-        assert_eq!(legend.token_types[sem_tok::PARAMETER as usize],
-                   SemanticTokenType::PARAMETER);
-        assert_eq!(legend.token_types[sem_tok::TYPE as usize],
-                   SemanticTokenType::TYPE);
-        assert_eq!(legend.token_types[sem_tok::STRING as usize],
-                   SemanticTokenType::STRING);
-        assert_eq!(legend.token_types[sem_tok::NUMBER as usize],
-                   SemanticTokenType::NUMBER);
-        assert_eq!(legend.token_types[sem_tok::COMMENT as usize],
-                   SemanticTokenType::COMMENT);
-        assert_eq!(legend.token_types[sem_tok::OPERATOR as usize],
-                   SemanticTokenType::OPERATOR);
+        assert_eq!(
+            legend.token_types[sem_tok::KEYWORD as usize],
+            SemanticTokenType::KEYWORD
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::FUNCTION as usize],
+            SemanticTokenType::FUNCTION
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::VARIABLE as usize],
+            SemanticTokenType::VARIABLE
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::PARAMETER as usize],
+            SemanticTokenType::PARAMETER
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::TYPE as usize],
+            SemanticTokenType::TYPE
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::STRING as usize],
+            SemanticTokenType::STRING
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::NUMBER as usize],
+            SemanticTokenType::NUMBER
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::COMMENT as usize],
+            SemanticTokenType::COMMENT
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::OPERATOR as usize],
+            SemanticTokenType::OPERATOR
+        );
         // Modifier bit positions: bit 0 = declaration, bit 1 = readonly.
-        assert_eq!(legend.token_modifiers[0], SemanticTokenModifier::DECLARATION);
+        assert_eq!(
+            legend.token_modifiers[0],
+            SemanticTokenModifier::DECLARATION
+        );
         assert_eq!(legend.token_modifiers[1], SemanticTokenModifier::READONLY);
     }
 
@@ -1811,10 +1814,12 @@ mod tests {
             hints.len(),
             3,
             "expected 3 hints (a, c, e), got {:?}",
-            hints.iter().map(|h| (h.name_len_chars, &h.ty)).collect::<Vec<_>>(),
+            hints
+                .iter()
+                .map(|h| (h.name_len_chars, &h.ty))
+                .collect::<Vec<_>>(),
         );
-        let types: Vec<String> =
-            hints.iter().map(|h| format!("{}", h.ty)).collect();
+        let types: Vec<String> = hints.iter().map(|h| format!("{}", h.ty)).collect();
         assert_eq!(types, vec!["int", "bool", "string"]);
     }
 
@@ -1961,7 +1966,11 @@ mod tests {
         // Ticket AC: pre-seed two files, invoke the query (via the
         // helper path), assert both files' symbols are returned.
         let root = tmp_workspace("multifile");
-        write_file(&root, "mod_a.rs", "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n");
+        write_file(
+            &root,
+            "mod_a.rs",
+            "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n",
+        );
         write_file(&root, "mod_b.rs", "fn b_fn() { return 0; }\n");
 
         // Walk + index the whole scratch dir, reproducing what
@@ -1972,7 +1981,9 @@ mod tests {
         let mut index: std::collections::HashMap<Url, Vec<WorkspaceSymbolEntry>> =
             std::collections::HashMap::new();
         for p in files {
-            let Ok(uri) = Url::from_file_path(&p) else { continue };
+            let Ok(uri) = Url::from_file_path(&p) else {
+                continue;
+            };
             if let Some(entries) = index_file(&p) {
                 index.insert(uri, entries);
             }
@@ -1980,8 +1991,7 @@ mod tests {
 
         // All-match query: three names across two files.
         let r = filter_workspace_symbols(&index, "", 50);
-        let names: std::collections::HashSet<&str> =
-            r.iter().map(|s| s.name.as_str()).collect();
+        let names: std::collections::HashSet<&str> = r.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains("a_fn"));
         assert!(names.contains("A_Struct"));
         assert!(names.contains("b_fn"));
@@ -2113,8 +2123,8 @@ mod tests {
     fn res181a_hover_returns_range_covering_the_token() {
         // The Range returned with the hover should span the whole
         // literal. For `42` at cols 9..11 (1-indexed) = LSP 8..10.
-        let (ty, range) = hover_literal_at("let x = 42;", Position::new(0, 8))
-            .expect("expected hover");
+        let (ty, range) =
+            hover_literal_at("let x = 42;", Position::new(0, 8)).expect("expected hover");
         assert_eq!(ty, "Int");
         assert_eq!(range.start.line, 0);
         assert_eq!(range.end.line, 0);

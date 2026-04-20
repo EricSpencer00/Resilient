@@ -281,7 +281,11 @@ impl std::fmt::Display for CompileError {
             CompileError::UnknownFunction(n) => {
                 write!(f, "bytecode compile: unknown function: {}", n)
             }
-            CompileError::ArityMismatch { callee, expected, got } => write!(
+            CompileError::ArityMismatch {
+                callee,
+                expected,
+                got,
+            } => write!(
                 f,
                 "bytecode compile: call to {} has {} args, expected {}",
                 callee, got, expected
@@ -338,7 +342,10 @@ mod tests {
     #[test]
     fn compile_error_display_is_descriptive() {
         let e = CompileError::Unsupported("struct decl");
-        assert_eq!(e.to_string(), "bytecode compile: unsupported construct: struct decl");
+        assert_eq!(
+            e.to_string(),
+            "bytecode compile: unsupported construct: struct decl"
+        );
     }
 
     // ---------- RES-169a: skeleton closure opcodes ----------
@@ -347,8 +354,15 @@ mod tests {
     fn res169a_make_closure_constructs_with_payload() {
         // Sanity: the variant accepts both operands. Not yet
         // emitted by the compiler — RES-169b will add that.
-        let op = Op::MakeClosure { fn_idx: 7, upvalue_count: 3 };
-        if let Op::MakeClosure { fn_idx, upvalue_count } = op {
+        let op = Op::MakeClosure {
+            fn_idx: 7,
+            upvalue_count: 3,
+        };
+        if let Op::MakeClosure {
+            fn_idx,
+            upvalue_count,
+        } = op
+        {
             assert_eq!(fn_idx, 7);
             assert_eq!(upvalue_count, 3);
         } else {
@@ -370,7 +384,10 @@ mod tests {
     fn res169a_closure_ops_are_copy() {
         // `Op` derives Copy — adding new variants must not break
         // that, because the VM dispatch reads `*op` per step.
-        let a = Op::MakeClosure { fn_idx: 0, upvalue_count: 0 };
+        let a = Op::MakeClosure {
+            fn_idx: 0,
+            upvalue_count: 0,
+        };
         let b = a; // copy, not move
         assert_eq!(a, b);
     }
@@ -399,7 +416,13 @@ mod tests {
         // verbatim. No semantic expectation yet (the VM returns
         // Unsupported on dispatch); RES-169b/c make these live.
         let mut c = Chunk::new();
-        let a = c.emit(Op::MakeClosure { fn_idx: 1, upvalue_count: 2 }, 10);
+        let a = c.emit(
+            Op::MakeClosure {
+                fn_idx: 1,
+                upvalue_count: 2,
+            },
+            10,
+        );
         let b = c.emit(Op::LoadUpvalue(0), 11);
         assert_eq!(a, 0);
         assert_eq!(b, 1);

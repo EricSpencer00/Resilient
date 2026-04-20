@@ -1,7 +1,7 @@
 // Type checker module for Resilient language
-use std::collections::HashMap;
-use crate::{Node, Pattern};
 use crate::span::Span;
+use crate::{Node, Pattern};
+use std::collections::HashMap;
 
 /// RES-189: one entry in the typechecker's post-walk inlay-hint
 /// cache. Produced for every unannotated `let` binding (i.e.
@@ -66,7 +66,10 @@ impl std::fmt::Display for Type {
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
             Type::Bytes => write!(f, "bytes"),
-            Type::Function { params, return_type } => {
+            Type::Function {
+                params,
+                return_type,
+            } => {
                 write!(f, "fn(")?;
                 for (i, param) in params.iter().enumerate() {
                     if i > 0 {
@@ -75,7 +78,7 @@ impl std::fmt::Display for Type {
                     write!(f, "{}", param)?;
                 }
                 write!(f, ") -> {}", return_type)
-            },
+            }
             Type::Array => write!(f, "array"),
             Type::Result => write!(f, "Result"),
             Type::Struct(n) => write!(f, "{}", n),
@@ -104,10 +107,7 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
             // introduces the same names — pick the first branch's
             // list. Callers use this helper AFTER the consistency
             // check.
-            branches
-                .first()
-                .map(pattern_bindings)
-                .unwrap_or_default()
+            branches.first().map(pattern_bindings).unwrap_or_default()
         }
         // RES-161a: outer name + whatever the inner pattern binds.
         Pattern::Bind(outer, inner) => {
@@ -117,8 +117,6 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
         }
     }
 }
-
-
 
 /// RES-160: does the pattern match every value (i.e. a
 /// wildcard / identifier, or an or-pattern with at least one
@@ -153,11 +151,7 @@ fn pattern_covers_bool(p: &Pattern, want: bool) -> bool {
 /// Returns the result type on success or a type-error diagnostic
 /// pointing users at the explicit `to_float(x)` / `to_int(x)`
 /// conversions when they mixed the two.
-fn check_numeric_same_type(
-    op: &str,
-    left: &Type,
-    right: &Type,
-) -> Result<Type, String> {
+fn check_numeric_same_type(op: &str, left: &Type, right: &Type) -> Result<Type, String> {
     match (left, right) {
         (Type::Int, Type::Int) => Ok(Type::Int),
         (Type::Float, Type::Float) => Ok(Type::Float),
@@ -170,10 +164,7 @@ fn check_numeric_same_type(
             "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
             op
         )),
-        _ => Err(format!(
-            "Cannot apply '{}' to {} and {}",
-            op, left, right
-        )),
+        _ => Err(format!("Cannot apply '{}' to {} and {}", op, left, right)),
     }
 }
 
@@ -192,43 +183,46 @@ fn check_numeric_same_type(
 fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
     match n {
         Node::BooleanLiteral { value: b, .. } => Some(*b),
-        Node::PrefixExpression { operator, right, .. } if operator == "!" => {
-            fold_const_bool(right, bindings).map(|b| !b)
-        }
-        Node::InfixExpression { left, operator, right, .. } => {
-            match operator.as_str() {
-                "&&" => match (
-                    fold_const_bool(left, bindings),
-                    fold_const_bool(right, bindings),
-                ) {
-                    (Some(a), Some(b)) => Some(a && b),
-                    (Some(false), _) | (_, Some(false)) => Some(false),
-                    _ => None,
-                },
-                "||" => match (
-                    fold_const_bool(left, bindings),
-                    fold_const_bool(right, bindings),
-                ) {
-                    (Some(a), Some(b)) => Some(a || b),
-                    (Some(true), _) | (_, Some(true)) => Some(true),
-                    _ => None,
-                },
-                "==" | "!=" | "<" | ">" | "<=" | ">=" => {
-                    let l = fold_const_i64(left, bindings)?;
-                    let r = fold_const_i64(right, bindings)?;
-                    Some(match operator.as_str() {
-                        "==" => l == r,
-                        "!=" => l != r,
-                        "<" => l < r,
-                        ">" => l > r,
-                        "<=" => l <= r,
-                        ">=" => l >= r,
-                        _ => unreachable!(),
-                    })
-                }
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "!" => fold_const_bool(right, bindings).map(|b| !b),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => match operator.as_str() {
+            "&&" => match (
+                fold_const_bool(left, bindings),
+                fold_const_bool(right, bindings),
+            ) {
+                (Some(a), Some(b)) => Some(a && b),
+                (Some(false), _) | (_, Some(false)) => Some(false),
                 _ => None,
+            },
+            "||" => match (
+                fold_const_bool(left, bindings),
+                fold_const_bool(right, bindings),
+            ) {
+                (Some(a), Some(b)) => Some(a || b),
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                _ => None,
+            },
+            "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+                let l = fold_const_i64(left, bindings)?;
+                let r = fold_const_i64(right, bindings)?;
+                Some(match operator.as_str() {
+                    "==" => l == r,
+                    "!=" => l != r,
+                    "<" => l < r,
+                    ">" => l > r,
+                    "<=" => l <= r,
+                    ">=" => l >= r,
+                    _ => unreachable!(),
+                })
             }
-        }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -241,7 +235,12 @@ fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
 /// Future tickets will extend to inequality bounds, ranges, and the
 /// negative branch (else).
 fn extract_eq_assumption(cond: &Node) -> Option<(String, i64)> {
-    if let Node::InfixExpression { left, operator, right, .. } = cond
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        ..
+    } = cond
         && operator == "=="
     {
         let no_b: HashMap<String, i64> = HashMap::new();
@@ -264,10 +263,15 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
     match n {
         Node::IntegerLiteral { value: v, .. } => Some(*v),
         Node::Identifier { name, .. } => bindings.get(name).copied(),
-        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
-            fold_const_i64(right, bindings).map(|v| -v)
-        }
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => fold_const_i64(right, bindings).map(|v| -v),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             let l = fold_const_i64(left, bindings)?;
             let r = fold_const_i64(right, bindings)?;
             match operator.as_str() {
@@ -297,14 +301,14 @@ impl TypeEnvironment {
             outer: None,
         }
     }
-    
+
     pub fn new_enclosed(outer: TypeEnvironment) -> Self {
         TypeEnvironment {
             store: HashMap::new(),
             outer: Some(Box::new(outer)),
         }
     }
-    
+
     pub fn get(&self, name: &str) -> Option<Type> {
         match self.store.get(name) {
             Some(typ) => Some(typ.clone()),
@@ -317,7 +321,7 @@ impl TypeEnvironment {
             }
         }
     }
-    
+
     pub fn set(&mut self, name: String, typ: Type) {
         self.store.insert(name, typ);
     }
@@ -614,26 +618,38 @@ impl TypeChecker {
         env.set("tan".to_string(), fn_float_to_float());
         env.set("ln".to_string(), fn_float_to_float());
         env.set("exp".to_string(), fn_float_to_float());
-        env.set("log".to_string(), Type::Function {
-            params: vec![Type::Float, Type::Float],
-            return_type: Box::new(Type::Float),
-        });
+        env.set(
+            "log".to_string(),
+            Type::Function {
+                params: vec![Type::Float, Type::Float],
+                return_type: Box::new(Type::Float),
+            },
+        );
 
         // RES-147: monotonic ms-clock builtin. std-only.
-        env.set("clock_ms".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Int),
-        });
+        env.set(
+            "clock_ms".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // RES-150: seedable random builtins. std-only.
-        env.set("random_int".to_string(), Type::Function {
-            params: vec![Type::Int, Type::Int],
-            return_type: Box::new(Type::Int),
-        });
-        env.set("random_float".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Float),
-        });
+        env.set(
+            "random_int".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "random_float".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Float),
+            },
+        );
 
         // len: any -> int
         env.set(
@@ -645,190 +661,301 @@ impl TypeChecker {
         );
 
         // Array builtins: any -> array / (array,int,int) -> array
-        env.set("push".to_string(), Type::Function {
-            params: vec![Type::Array, Type::Any],
-            return_type: Box::new(Type::Array),
-        });
-        env.set("pop".to_string(), Type::Function {
-            params: vec![Type::Array],
-            return_type: Box::new(Type::Array),
-        });
-        env.set("slice".to_string(), Type::Function {
-            params: vec![Type::Array, Type::Int, Type::Int],
-            return_type: Box::new(Type::Array),
-        });
+        env.set(
+            "push".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
+        env.set(
+            "pop".to_string(),
+            Type::Function {
+                params: vec![Type::Array],
+                return_type: Box::new(Type::Array),
+            },
+        );
+        env.set(
+            "slice".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Int, Type::Int],
+                return_type: Box::new(Type::Array),
+            },
+        );
 
         // String builtins
-        env.set("split".to_string(), Type::Function {
-            params: vec![Type::String, Type::String],
-            return_type: Box::new(Type::Array),
-        });
-        env.set("trim".to_string(), Type::Function {
-            params: vec![Type::String],
-            return_type: Box::new(Type::String),
-        });
-        env.set("contains".to_string(), Type::Function {
-            params: vec![Type::String, Type::String],
-            return_type: Box::new(Type::Bool),
-        });
-        env.set("to_upper".to_string(), Type::Function {
-            params: vec![Type::String],
-            return_type: Box::new(Type::String),
-        });
-        env.set("to_lower".to_string(), Type::Function {
-            params: vec![Type::String],
-            return_type: Box::new(Type::String),
-        });
+        env.set(
+            "split".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Array),
+            },
+        );
+        env.set(
+            "trim".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "contains".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "to_upper".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "to_lower".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-145: replace + format.
-        env.set("replace".to_string(), Type::Function {
-            params: vec![Type::String, Type::String, Type::String],
-            return_type: Box::new(Type::String),
-        });
+        env.set(
+            "replace".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String, Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
         // `format`'s second argument is `Array<?>` — the prelude
         // `Type::Array` is untyped (no element-type parameter yet),
         // which fits the ticket's `Array<?>` signature.
-        env.set("format".to_string(), Type::Function {
-            params: vec![Type::String, Type::Array],
-            return_type: Box::new(Type::String),
-        });
+        env.set(
+            "format".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Array],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-213: prefix/suffix tests + string repetition.
-        env.set("starts_with".to_string(), Type::Function {
-            params: vec![Type::String, Type::String],
-            return_type: Box::new(Type::Bool),
-        });
-        env.set("ends_with".to_string(), Type::Function {
-            params: vec![Type::String, Type::String],
-            return_type: Box::new(Type::Bool),
-        });
-        env.set("repeat".to_string(), Type::Function {
-            params: vec![Type::String, Type::Int],
-            return_type: Box::new(Type::String),
-        });
+        env.set(
+            "starts_with".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "ends_with".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "repeat".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
 
         // RES-130: explicit int ↔ float conversions. These are the
         // only supported bridge between the two numeric types —
         // arithmetic and literal-match pattern equality both reject
         // implicit coercion (see `check_numeric_same_type`).
-        env.set("to_float".to_string(), Type::Function {
-            params: vec![Type::Any],
-            return_type: Box::new(Type::Float),
-        });
-        env.set("to_int".to_string(), Type::Function {
-            params: vec![Type::Any],
-            return_type: Box::new(Type::Int),
-        });
+        env.set(
+            "to_float".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Float),
+            },
+        );
+        env.set(
+            "to_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // RES-138: current retry counter of the enclosing live block.
-        env.set("live_retries".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Int),
-        });
+        env.set(
+            "live_retries".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // RES-141: process-wide live-block telemetry.
-        env.set("live_total_retries".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Int),
-        });
-        env.set("live_total_exhaustions".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Int),
-        });
+        env.set(
+            "live_total_retries".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "live_total_exhaustions".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // RES-144: one-line stdin reader (std-only).
-        env.set("input".to_string(), Type::Function {
-            params: vec![Type::String],
-            return_type: Box::new(Type::String),
-        });
+        env.set(
+            "input".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
 
         // RES-143: file I/O builtins (std-only; the resilient-runtime
         // sibling crate has no builtins table so its no_std posture is
         // unaffected).
-        env.set("file_read".to_string(), Type::Function {
-            params: vec![Type::String],
-            return_type: Box::new(Type::String),
-        });
-        env.set("file_write".to_string(), Type::Function {
-            params: vec![Type::String, Type::String],
-            return_type: Box::new(Type::Void),
-        });
+        env.set(
+            "file_read".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "file_write".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Void),
+            },
+        );
 
         // RES-151: read-only env-var accessor. `Result<String, String>`
         // — absence is a first-class outcome, not a runtime halt.
-        env.set("env".to_string(), Type::Function {
-            params: vec![Type::String],
-            return_type: Box::new(Type::Result),
-        });
+        env.set(
+            "env".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Result),
+            },
+        );
 
         // RES-148: Map builtins. The typechecker doesn't (yet) carry
         // a dedicated `Type::Map<K, V>` constructor — following the
         // same permissive-Any convention as the Array / Result
         // builtins until G7 inference lands.
-        env.set("map_new".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Any),
-        });
-        env.set("map_insert".to_string(), Type::Function {
-            params: vec![Type::Any, Type::Any, Type::Any],
-            return_type: Box::new(Type::Any),
-        });
-        env.set("map_get".to_string(), Type::Function {
-            params: vec![Type::Any, Type::Any],
-            return_type: Box::new(Type::Result),
-        });
-        env.set("map_remove".to_string(), Type::Function {
-            params: vec![Type::Any, Type::Any],
-            return_type: Box::new(Type::Any),
-        });
-        env.set("map_keys".to_string(), Type::Function {
-            params: vec![Type::Any],
-            return_type: Box::new(Type::Array),
-        });
-        env.set("map_len".to_string(), Type::Function {
-            params: vec![Type::Any],
-            return_type: Box::new(Type::Int),
-        });
+        env.set(
+            "map_new".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "map_insert".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "map_get".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "map_remove".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "map_keys".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
+        env.set(
+            "map_len".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
-        env.set("set_new".to_string(), Type::Function {
-            params: vec![],
-            return_type: Box::new(Type::Any),
-        });
-        env.set("set_insert".to_string(), Type::Function {
-            params: vec![Type::Any, Type::Any],
-            return_type: Box::new(Type::Any),
-        });
-        env.set("set_remove".to_string(), Type::Function {
-            params: vec![Type::Any, Type::Any],
-            return_type: Box::new(Type::Any),
-        });
-        env.set("set_has".to_string(), Type::Function {
-            params: vec![Type::Any, Type::Any],
-            return_type: Box::new(Type::Bool),
-        });
-        env.set("set_len".to_string(), Type::Function {
-            params: vec![Type::Any],
-            return_type: Box::new(Type::Int),
-        });
-        env.set("set_items".to_string(), Type::Function {
-            params: vec![Type::Any],
-            return_type: Box::new(Type::Array),
-        });
+        env.set(
+            "set_new".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "set_insert".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "set_remove".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "set_has".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "set_len".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "set_items".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
 
         // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
         // `byte_at` returns Int — the language has no `u8` yet.
-        env.set("bytes_len".to_string(), Type::Function {
-            params: vec![Type::Bytes],
-            return_type: Box::new(Type::Int),
-        });
-        env.set("bytes_slice".to_string(), Type::Function {
-            params: vec![Type::Bytes, Type::Int, Type::Int],
-            return_type: Box::new(Type::Bytes),
-        });
-        env.set("byte_at".to_string(), Type::Function {
-            params: vec![Type::Bytes, Type::Int],
-            return_type: Box::new(Type::Int),
-        });
+        env.set(
+            "bytes_len".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "bytes_slice".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Int, Type::Int],
+                return_type: Box::new(Type::Bytes),
+            },
+        );
+        env.set(
+            "byte_at".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // Result builtins
         env.set("Ok".to_string(), fn_any_to_result());
@@ -948,10 +1075,7 @@ impl TypeChecker {
                         } else {
                             format!(
                                 "{}:{}:{}: {}",
-                                source_path,
-                                stmt.span.start.line,
-                                stmt.span.start.column,
-                                e
+                                source_path, stmt.span.start.line, stmt.span.start.column, e
                             )
                         }
                     })?;
@@ -979,7 +1103,7 @@ impl TypeChecker {
             _ => Err("Expected program node".to_string()),
         }
     }
-    
+
     pub fn check_node(&mut self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Program(_statements) => self.check_program(node),
@@ -995,21 +1119,32 @@ impl TypeChecker {
                         if !PARAM_PRIMS.contains(&ty.as_str()) {
                             return Err(format!(
                                 "FFI: extern parameter `{}` has type `{}`; extern fn supports only {} in v1",
-                                name, ty, PARAM_PRIMS.join(", ")
+                                name,
+                                ty,
+                                PARAM_PRIMS.join(", ")
                             ));
                         }
                     }
                     if !RET_PRIMS.contains(&d.return_type.as_str()) {
                         return Err(format!(
                             "FFI: extern return type `{}` not supported in v1 (allowed: {})",
-                            d.return_type, RET_PRIMS.join(", ")
+                            d.return_type,
+                            RET_PRIMS.join(", ")
                         ));
                     }
                 }
                 Ok(Type::Void)
             }
-            
-            Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt, .. } => {
+
+            Node::Function {
+                name,
+                parameters,
+                body,
+                requires,
+                ensures,
+                return_type: declared_rt,
+                ..
+            } => {
                 let mut param_types = Vec::new();
 
                 // Create a new enclosed environment for function body
@@ -1118,8 +1253,12 @@ impl TypeChecker {
                 // Restore const_bindings to its pre-body state.
                 for (aname, prev) in pushed_assumptions.into_iter().rev() {
                     match prev {
-                        Some(v) => { self.const_bindings.insert(aname, v); }
-                        None => { self.const_bindings.remove(&aname); }
+                        Some(v) => {
+                            self.const_bindings.insert(aname, v);
+                        }
+                        None => {
+                            self.const_bindings.remove(&aname);
+                        }
                     }
                 }
 
@@ -1149,12 +1288,12 @@ impl TypeChecker {
                 self.env.set(name.clone(), func_type);
 
                 Ok(effective_rt)
-            },
-            
+            }
+
             Node::LiveBlock { body, .. } => {
                 // Live blocks preserve the type of their body
                 self.check_node(body)
-            },
+            }
 
             // RES-142: duration literals are a parser-internal node
             // that only appear inside a `live ... within <duration>`
@@ -1164,12 +1303,17 @@ impl TypeChecker {
             // (nanosecond count) — defensive; should never fire in
             // well-formed programs.
             Node::DurationLiteral { .. } => Ok(Type::Int),
-            
-            Node::Assert { condition, message, .. } => {
+
+            Node::Assert {
+                condition, message, ..
+            } => {
                 // Condition must be a boolean expression
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
-                    return Err(format!("Assert condition must be a boolean, got {}", condition_type));
+                    return Err(format!(
+                        "Assert condition must be a boolean, got {}",
+                        condition_type
+                    ));
                 }
 
                 // Message, if present, should be a string
@@ -1181,13 +1325,18 @@ impl TypeChecker {
                 }
 
                 Ok(Type::Void)
-            },
+            }
 
             // RES-133a: assume has the same type rules as assert
-            Node::Assume { condition, message, .. } => {
+            Node::Assume {
+                condition, message, ..
+            } => {
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
-                    return Err(format!("Assume condition must be a boolean, got {}", condition_type));
+                    return Err(format!(
+                        "Assume condition must be a boolean, got {}",
+                        condition_type
+                    ));
                 }
                 if let Some(msg) = message {
                     let msg_type = self.check_node(msg)?;
@@ -1196,26 +1345,33 @@ impl TypeChecker {
                     }
                 }
                 Ok(Type::Void)
-            },
-            
-            Node::Block { stmts: statements, .. } => {
+            }
+
+            Node::Block {
+                stmts: statements, ..
+            } => {
                 let mut result_type = Type::Void;
-                
+
                 // Create a new enclosed environment for block
                 let mut block_env = TypeEnvironment::new_enclosed(self.env.clone());
                 std::mem::swap(&mut self.env, &mut block_env);
-                
+
                 for stmt in statements {
                     result_type = self.check_node(stmt)?;
                 }
-                
+
                 // Restore original environment
                 std::mem::swap(&mut self.env, &mut block_env);
-                
+
                 Ok(result_type)
-            },
-            
-            Node::LetStatement { name, value, type_annot, span } => {
+            }
+
+            Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                span,
+            } => {
                 let value_type = self.check_node(value)?;
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
@@ -1236,10 +1392,7 @@ impl TypeChecker {
                     // (shouldn't happen for a let, but guard
                     // against it) or `Var` (inference artifact
                     // that shouldn't leak to users).
-                    if !matches!(
-                        value_type,
-                        Type::Any | Type::Void | Type::Var(_)
-                    ) {
+                    if !matches!(value_type, Type::Any | Type::Void | Type::Var(_)) {
                         self.let_type_hints.push(LetTypeHint {
                             span: *span,
                             name_len_chars: name.chars().count(),
@@ -1262,7 +1415,7 @@ impl TypeChecker {
                     self.const_bindings.remove(name);
                 }
                 Ok(Type::Void)
-            },
+            }
 
             // RES-155: `let <StructName> { field1, field2: local, .. } = expr;`.
             // Exhaustiveness: without `..`, every struct field must
@@ -1290,19 +1443,14 @@ impl TypeChecker {
                     // would otherwise generate.
                     for (pf, _) in fields {
                         if !declared_fields.iter().any(|(fname, _)| fname == pf) {
-                            return Err(format!(
-                                "Struct {} has no field `{}`",
-                                struct_name, pf
-                            ));
+                            return Err(format!("Struct {} has no field `{}`", struct_name, pf));
                         }
                     }
                     // Exhaustiveness check when `..` is not used.
                     if !has_rest {
                         let mut missing: Vec<&str> = declared_fields
                             .iter()
-                            .filter(|(fname, _)| {
-                                !fields.iter().any(|(pf, _)| pf == fname)
-                            })
+                            .filter(|(fname, _)| !fields.iter().any(|(pf, _)| pf == fname))
                             .map(|(fname, _)| fname.as_str())
                             .collect();
                         if !missing.is_empty() {
@@ -1322,7 +1470,9 @@ impl TypeChecker {
                     let ty = declared
                         .as_ref()
                         .and_then(|dfs| {
-                            dfs.iter().find(|(fn_, _)| fn_ == field_name).map(|(_, t)| t.clone())
+                            dfs.iter()
+                                .find(|(fn_, _)| fn_ == field_name)
+                                .map(|(_, t)| t.clone())
                         })
                         .unwrap_or(Type::Any);
                     self.env.set(local_name.clone(), ty);
@@ -1336,7 +1486,7 @@ impl TypeChecker {
                     let _ = self.check_node(item)?;
                 }
                 Ok(Type::Array)
-            },
+            }
 
             // RES-148: map literal — walk every key and value to
             // surface nested type errors, but fall back to `Type::Any`
@@ -1348,7 +1498,7 @@ impl TypeChecker {
                     let _ = self.check_node(v)?;
                 }
                 Ok(Type::Any)
-            },
+            }
 
             // RES-149: set literal. Walk each item to catch nested
             // type errors; return `Type::Any` for now — same posture
@@ -1358,22 +1508,21 @@ impl TypeChecker {
                     let _ = self.check_node(item)?;
                 }
                 Ok(Type::Any)
-            },
+            }
 
             Node::TryExpression { expr: inner, .. } => {
                 let inner_type = self.check_node(inner)?;
                 // `?` expects a Result and unwraps to Any at MVP (we
                 // don't track Ok's payload type yet).
                 if !compatible(&inner_type, &Type::Result) {
-                    return Err(format!(
-                        "? operator expects a Result, got {}",
-                        inner_type
-                    ));
+                    return Err(format!("? operator expects a Result, got {}", inner_type));
                 }
                 Ok(Type::Any)
-            },
+            }
 
-            Node::FunctionLiteral { parameters, body, .. } => {
+            Node::FunctionLiteral {
+                parameters, body, ..
+            } => {
                 // Evaluate the body's type in a child env with params
                 // bound, just like named Function.
                 let mut param_types = Vec::new();
@@ -1390,9 +1539,11 @@ impl TypeChecker {
                     params: param_types,
                     return_type: Box::new(body_type),
                 })
-            },
+            }
 
-            Node::Match { scrutinee, arms, .. } => {
+            Node::Match {
+                scrutinee, arms, ..
+            } => {
                 let scrutinee_type = self.check_node(scrutinee)?;
                 for (pattern, guard, body) in arms {
                     // RES-160: or-pattern binding consistency —
@@ -1438,13 +1589,12 @@ impl TypeChecker {
                             for (n, prev) in &rollback_bindings {
                                 match prev {
                                     Some(t) => self.env.set(n.clone(), t.clone()),
-                                    None => { self.env.remove(n); }
+                                    None => {
+                                        self.env.remove(n);
+                                    }
                                 }
                             }
-                            return Err(format!(
-                                "Match arm guard must be a boolean, got {}",
-                                gt
-                            ));
+                            return Err(format!("Match arm guard must be a boolean, got {}", gt));
                         }
                     }
                     let body_res = self.check_node(body);
@@ -1452,7 +1602,9 @@ impl TypeChecker {
                     for (n, prev) in rollback_bindings {
                         match prev {
                             Some(t) => self.env.set(n, t),
-                            None => { self.env.remove(&n); }
+                            None => {
+                                self.env.remove(&n);
+                            }
                         }
                     }
                     let _ = body_res?;
@@ -1463,9 +1615,9 @@ impl TypeChecker {
                 // pattern contains at least one wildcard / identifier
                 // branch — `pattern_is_default` recurses through
                 // or-patterns so `_ | x` and `0 | _` both count.
-                let has_default = arms.iter().any(|(p, guard, _)| {
-                    guard.is_none() && pattern_is_default(p)
-                });
+                let has_default = arms
+                    .iter()
+                    .any(|(p, guard, _)| guard.is_none() && pattern_is_default(p));
 
                 if !has_default {
                     match scrutinee_type {
@@ -1510,7 +1662,7 @@ impl TypeChecker {
                 }
 
                 Ok(Type::Any)
-            },
+            }
 
             // RES-158: walk each method as if it were a top-level fn.
             // The parser has already mangled the name and injected
@@ -1558,7 +1710,7 @@ impl TypeChecker {
                     let _ = self.check_node(e)?;
                 }
                 Ok(Type::Struct(name.clone()))
-            },
+            }
 
             Node::FieldAccess { target, field, .. } => {
                 let tgt_ty = self.check_node(target)?;
@@ -1573,9 +1725,14 @@ impl TypeChecker {
                     return Ok(ty.clone());
                 }
                 Ok(Type::Any)
-            },
+            }
 
-            Node::FieldAssignment { target, field, value, .. } => {
+            Node::FieldAssignment {
+                target,
+                field,
+                value,
+                ..
+            } => {
                 let tgt_ty = self.check_node(target)?;
                 let _ = self.check_node(value)?;
                 // RES-153: reject writes to non-existent fields
@@ -1586,8 +1743,7 @@ impl TypeChecker {
                     && let Some(declared) = self.struct_fields.get(sname)
                     && !declared.iter().any(|(n, _)| n == field)
                 {
-                    let avail: Vec<&str> =
-                        declared.iter().map(|(n, _)| n.as_str()).collect();
+                    let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
                     return Err(format!(
                         "struct `{}` has no field `{}`; available fields: {}",
                         sname,
@@ -1596,33 +1752,40 @@ impl TypeChecker {
                     ));
                 }
                 Ok(Type::Void)
-            },
+            }
 
             Node::IndexExpression { target, index, .. } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
                 // Element type not tracked at MVP.
                 Ok(Type::Any)
-            },
+            }
 
-            Node::IndexAssignment { target, index, value, .. } => {
+            Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
                 let _ = self.check_node(value)?;
                 Ok(Type::Void)
-            },
+            }
 
             Node::ForInStatement { iterable, body, .. } => {
                 let _ = self.check_node(iterable)?;
                 let _ = self.check_node(body)?;
                 Ok(Type::Void)
-            },
+            }
 
-            Node::WhileStatement { condition, body, .. } => {
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
                 let _ = self.check_node(condition)?;
                 let _ = self.check_node(body)?;
                 Ok(Type::Void)
-            },
+            }
 
             Node::StaticLet { name, value, .. } => {
                 let value_type = self.check_node(value)?;
@@ -1632,7 +1795,7 @@ impl TypeChecker {
                 // for verification.
                 self.const_bindings.remove(name);
                 Ok(Type::Void)
-            },
+            }
 
             Node::Assignment { name, value, .. } => {
                 let _ = self.check_node(value)?;
@@ -1642,8 +1805,8 @@ impl TypeChecker {
                 // choice keeps the verifier sound.
                 self.const_bindings.remove(name);
                 Ok(Type::Void)
-            },
-            
+            }
+
             Node::ReturnStatement { value, .. } => {
                 // Bare `return;` has type Void; otherwise pass through
                 // the type of the returned value.
@@ -1651,12 +1814,20 @@ impl TypeChecker {
                     Some(expr) => self.check_node(expr),
                     None => Ok(Type::Void),
                 }
-            },
-            
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            }
+
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
-                    return Err(format!("If condition must be a boolean, got {}", condition_type));
+                    return Err(format!(
+                        "If condition must be a boolean, got {}",
+                        condition_type
+                    ));
                 }
 
                 // RES-064: if the condition is `IDENT == LITERAL` (or
@@ -1677,8 +1848,12 @@ impl TypeChecker {
                 // Restore.
                 if let Some((name, prev)) = saved {
                     match prev {
-                        Some(v) => { self.const_bindings.insert(name, v); }
-                        None => { self.const_bindings.remove(&name); }
+                        Some(v) => {
+                            self.const_bindings.insert(name, v);
+                        }
+                        None => {
+                            self.const_bindings.remove(&name);
+                        }
                     }
                 }
 
@@ -1686,21 +1861,22 @@ impl TypeChecker {
                     let alternative_type = self.check_node(alt)?;
 
                     // Both branches should have compatible types
-                    if consequence_type != alternative_type &&
-                       consequence_type != Type::Any &&
-                       alternative_type != Type::Any {
-                        return Err(format!("If branches have incompatible types: {} and {}",
-                                          consequence_type, alternative_type));
+                    if consequence_type != alternative_type
+                        && consequence_type != Type::Any
+                        && alternative_type != Type::Any
+                    {
+                        return Err(format!(
+                            "If branches have incompatible types: {} and {}",
+                            consequence_type, alternative_type
+                        ));
                     }
                 }
 
                 Ok(consequence_type)
-            },
-            
-            Node::ExpressionStatement { expr, .. } => {
-                self.check_node(expr)
-            },
-            
+            }
+
+            Node::ExpressionStatement { expr, .. } => self.check_node(expr),
+
             Node::Identifier { name, span } => {
                 // RES-078: identifier span lets us tell users where
                 // exactly the undefined reference lives. Skip the
@@ -1718,35 +1894,45 @@ impl TypeChecker {
                         }
                     }
                 }
-            },
-            
+            }
+
             Node::IntegerLiteral { .. } => Ok(Type::Int),
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::StringLiteral { .. } => Ok(Type::String),
             Node::BytesLiteral { .. } => Ok(Type::Bytes),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
-            
-            Node::PrefixExpression { operator, right, .. } => {
+
+            Node::PrefixExpression {
+                operator, right, ..
+            } => {
                 let right_type = self.check_node(right)?;
-                
+
                 match operator.as_str() {
                     "!" => {
                         if right_type != Type::Bool && right_type != Type::Any {
                             return Err(format!("Cannot apply '!' to {}", right_type));
                         }
                         Ok(Type::Bool)
-                    },
+                    }
                     "-" => {
-                        if right_type != Type::Int && right_type != Type::Float && right_type != Type::Any {
+                        if right_type != Type::Int
+                            && right_type != Type::Float
+                            && right_type != Type::Any
+                        {
                             return Err(format!("Cannot apply '-' to {}", right_type));
                         }
                         Ok(right_type)
-                    },
+                    }
                     _ => Err(format!("Unknown prefix operator: {}", operator)),
                 }
-            },
-            
-            Node::InfixExpression { left, operator, right, .. } => {
+            }
+
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } => {
                 let left_type = self.check_node(left)?;
                 let right_type = self.check_node(right)?;
 
@@ -1783,8 +1969,7 @@ impl TypeChecker {
                     }
                     "&" | "|" | "^" | "<<" | ">>" => {
                         // Bitwise operators are int-only.
-                        if compatible(&left_type, &Type::Int)
-                            && compatible(&right_type, &Type::Int)
+                        if compatible(&left_type, &Type::Int) && compatible(&right_type, &Type::Int)
                         {
                             Ok(Type::Int)
                         } else {
@@ -1808,17 +1993,18 @@ impl TypeChecker {
                         if compatible(&left_type, &right_type) {
                             Ok(Type::Bool)
                         } else {
-                            Err(format!(
-                                "Cannot compare {} and {}",
-                                left_type, right_type
-                            ))
+                            Err(format!("Cannot compare {} and {}", left_type, right_type))
                         }
                     }
                     _ => Err(format!("Unknown infix operator: {}", operator)),
                 }
-            },
-            
-            Node::CallExpression { function, arguments, .. } => {
+            }
+
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
                 let func_type = self.check_node(function)?;
 
                 // RES-061 + RES-063: if the callee is a known top-level
@@ -1826,7 +2012,9 @@ impl TypeChecker {
                 // call's arguments substituted for parameters. Arguments
                 // can be literal expressions OR identifiers that resolve
                 // to a constant via const_bindings.
-                if let Node::Identifier { name: callee_name, .. } = function.as_ref()
+                if let Node::Identifier {
+                    name: callee_name, ..
+                } = function.as_ref()
                     && let Some(info) = self.contract_table.get(callee_name).cloned()
                 {
                     if !info.requires.is_empty() {
@@ -1870,9 +2058,7 @@ impl TypeChecker {
                             // position; suppressed on
                             // `--no-warn-unverified`.
                             if verdict.is_none() && self.warn_unverified {
-                                emit_partial_proof_warning(
-                                    &self.source_path, clause,
-                                );
+                                emit_partial_proof_warning(&self.source_path, clause);
                             }
                             if matches!(verdict, Some(true))
                                 && let Some(smt2) = cert
@@ -1901,46 +2087,65 @@ impl TypeChecker {
                             }
                             Some(true) => {
                                 self.stats.requires_discharged_at_compile += 1;
-                                *self.stats.per_fn_discharged
-                                    .entry(callee_name.clone()).or_insert(0) += 1;
+                                *self
+                                    .stats
+                                    .per_fn_discharged
+                                    .entry(callee_name.clone())
+                                    .or_insert(0) += 1;
                             }
                             None => {
                                 self.stats.requires_left_for_runtime += 1;
-                                *self.stats.per_fn_runtime
-                                    .entry(callee_name.clone()).or_insert(0) += 1;
+                                *self
+                                    .stats
+                                    .per_fn_runtime
+                                    .entry(callee_name.clone())
+                                    .or_insert(0) += 1;
                             }
                         }
                     }
                 }
 
                 match func_type {
-                    Type::Function { params, return_type } => {
+                    Type::Function {
+                        params,
+                        return_type,
+                    } => {
                         // Check argument count
                         if arguments.len() != params.len() {
-                            return Err(format!("Expected {} arguments, got {}",
-                                              params.len(), arguments.len()));
+                            return Err(format!(
+                                "Expected {} arguments, got {}",
+                                params.len(),
+                                arguments.len()
+                            ));
                         }
 
                         // Check each argument type
-                        for (i, (arg, param_type)) in arguments.iter().zip(params.iter()).enumerate() {
+                        for (i, (arg, param_type)) in
+                            arguments.iter().zip(params.iter()).enumerate()
+                        {
                             let arg_type = self.check_node(arg)?;
-                            if arg_type != *param_type && *param_type != Type::Any && arg_type != Type::Any {
-                                return Err(format!("Type mismatch in argument {}: expected {}, got {}",
-                                                  i + 1, param_type, arg_type));
+                            if arg_type != *param_type
+                                && *param_type != Type::Any
+                                && arg_type != Type::Any
+                            {
+                                return Err(format!(
+                                    "Type mismatch in argument {}: expected {}, got {}",
+                                    i + 1,
+                                    param_type,
+                                    arg_type
+                                ));
                             }
                         }
 
                         Ok(*return_type)
-                    },
-                    Type::Any => {
-                        Ok(Type::Any)
-                    },
+                    }
+                    Type::Any => Ok(Type::Any),
                     _ => Err(format!("Cannot call non-function type: {}", func_type)),
                 }
-            },
+            }
         }
     }
-    
+
     fn parse_type_name(&self, name: &str) -> Result<Type, String> {
         self.parse_type_name_inner(name, &mut Vec::new())
     }
@@ -1968,10 +2173,7 @@ impl TypeChecker {
                     // how they got into it.
                     let mut chain = seen.clone();
                     chain.push(other.to_string());
-                    return Err(format!(
-                        "type alias cycle: {}",
-                        chain.join(" -> ")
-                    ));
+                    return Err(format!("type alias cycle: {}", chain.join(" -> ")));
                 }
                 seen.push(other.to_string());
                 let target = self.type_aliases[other].clone();
@@ -2022,20 +2224,26 @@ impl TypeChecker {
 /// new I/O / clock / env builtin there means adding it here.
 const IMPURE_BUILTINS: &[&str] = &[
     // RES-004 / RES-144: stdio.
-    "println", "print", "input",
+    "println",
+    "print",
+    "input",
     // RES-147: monotonic clock.
     "clock_ms",
     // RES-150: seedable PRNG — nondeterministic from the caller's
     // point of view even though the seed pins it globally.
-    "random_int", "random_float",
+    "random_int",
+    "random_float",
     // RES-143: disk I/O.
-    "file_read", "file_write",
+    "file_read",
+    "file_write",
     // RES-151: env-var reads depend on process state outside
     // the fn.
     "env",
     // RES-138 / RES-141: retry-counter readers — observe runtime
     // state that isn't the fn's parameters.
-    "live_retries", "live_total_retries", "live_total_exhaustions",
+    "live_retries",
+    "live_total_retries",
+    "live_total_exhaustions",
 ];
 
 /// RES-191: top-level entry for the purity pass. Walks the
@@ -2053,17 +2261,24 @@ fn check_program_purity(
     // Optimistic assumption: every `@pure` fn is pure until proven
     // otherwise. Populate the set so mutual-recursion checks
     // succeed.
-    let mut pure_fns: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut pure_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
     for stmt in statements {
-        if let Node::Function { name, pure: true, .. } = &stmt.node {
+        if let Node::Function {
+            name, pure: true, ..
+        } = &stmt.node
+        {
             pure_fns.insert(name.clone());
         }
     }
 
     // Second pass: check each pure fn's body.
     for stmt in statements {
-        if let Node::Function { name, body, pure: true, .. } = &stmt.node
+        if let Node::Function {
+            name,
+            body,
+            pure: true,
+            ..
+        } = &stmt.node
             && let Err(reason) = check_body_purity(body, name, &pure_fns)
         {
             let (line, col) = (stmt.span.start.line, stmt.span.start.column);
@@ -2108,18 +2323,27 @@ fn check_body_purity(
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
             check_body_purity(value, fn_name, pure_fns)?;
         }
-        Node::ReturnStatement { value: Some(value), .. } => {
+        Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
             check_body_purity(value, fn_name, pure_fns)?;
         }
         Node::ReturnStatement { value: None, .. } => {}
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             check_body_purity(condition, fn_name, pure_fns)?;
             check_body_purity(consequence, fn_name, pure_fns)?;
             if let Some(a) = alternative {
                 check_body_purity(a, fn_name, pure_fns)?;
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             check_body_purity(condition, fn_name, pure_fns)?;
             check_body_purity(body, fn_name, pure_fns)?;
         }
@@ -2137,7 +2361,8 @@ fn check_body_purity(
             // live-blocks retry on failure — that's observable,
             // non-pure behaviour by construction.
             return Err("contains a `live` block (retries are \
-                        observable side effects)".to_string());
+                        observable side effects)"
+                .to_string());
         }
         Node::InfixExpression { left, right, .. } => {
             check_body_purity(left, fn_name, pure_fns)?;
@@ -2146,7 +2371,11 @@ fn check_body_purity(
         Node::PrefixExpression { right, .. } => {
             check_body_purity(right, fn_name, pure_fns)?;
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             // Recurse into args first (nested calls get checked too).
             for a in arguments {
                 check_body_purity(a, fn_name, pure_fns)?;
@@ -2158,9 +2387,7 @@ fn check_body_purity(
             // conservative "unknown callee — reject" treatment.
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
                 if IMPURE_BUILTINS.contains(&callee.as_str()) {
-                    return Err(format!(
-                        "calls impure builtin `{}`", callee
-                    ));
+                    return Err(format!("calls impure builtin `{}`", callee));
                 }
                 // Pure-to-pure is fine.
                 if pure_fns.contains(callee) {
@@ -2176,18 +2403,14 @@ fn check_body_purity(
                 if is_known_pure_builtin(callee) {
                     return Ok(());
                 }
-                return Err(format!(
-                    "calls unannotated fn `{}`", callee
-                ));
+                return Err(format!("calls unannotated fn `{}`", callee));
             }
             // Indirect / method callee — can't resolve statically.
             // Conservatively reject so @pure is meaningful.
             check_body_purity(function, fn_name, pure_fns)?;
-            return Err(
-                "calls a non-identifier callee (method or computed); \
+            return Err("calls a non-identifier callee (method or computed); \
                  only bare-identifier calls to pure fns are allowed"
-                    .to_string()
-            );
+                .to_string());
         }
         Node::FieldAccess { target, .. } => {
             check_body_purity(target, fn_name, pure_fns)?;
@@ -2196,9 +2419,7 @@ fn check_body_purity(
             check_body_purity(target, fn_name, pure_fns)?;
             check_body_purity(value, fn_name, pure_fns)?;
             // Mutating a field is observable — disallow.
-            return Err(
-                "mutates a struct field (field assignment is a side effect)".to_string()
-            );
+            return Err("mutates a struct field (field assignment is a side effect)".to_string());
         }
         Node::Assignment { value, .. } => {
             check_body_purity(value, fn_name, pure_fns)?;
@@ -2207,12 +2428,17 @@ fn check_body_purity(
             check_body_purity(target, fn_name, pure_fns)?;
             check_body_purity(index, fn_name, pure_fns)?;
         }
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             check_body_purity(target, fn_name, pure_fns)?;
             check_body_purity(index, fn_name, pure_fns)?;
             check_body_purity(value, fn_name, pure_fns)?;
             return Err(
-                "mutates an array/map element (index assignment is a side effect)".to_string()
+                "mutates an array/map element (index assignment is a side effect)".to_string(),
             );
         }
         Node::ArrayLiteral { items, .. } => {
@@ -2225,7 +2451,9 @@ fn check_body_purity(
                 check_body_purity(v, fn_name, pure_fns)?;
             }
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             check_body_purity(scrutinee, fn_name, pure_fns)?;
             // Each arm is `(pattern, guard?, body)`. Recurse into
             // the optional guard and the body.
@@ -2277,21 +2505,59 @@ fn is_known_pure_builtin(name: &str) -> bool {
     // minus the names in `IMPURE_BUILTINS`.
     const PURE_BUILTINS: &[&str] = &[
         // Math.
-        "abs", "min", "max", "sqrt", "pow", "floor", "ceil",
-        "to_float", "to_int",
-        "sin", "cos", "tan", "ln", "log", "exp",
+        "abs",
+        "min",
+        "max",
+        "sqrt",
+        "pow",
+        "floor",
+        "ceil",
+        "to_float",
+        "to_int",
+        "sin",
+        "cos",
+        "tan",
+        "ln",
+        "log",
+        "exp",
         // String/collection.
-        "len", "push", "pop", "slice", "split", "trim", "contains",
-        "to_upper", "to_lower", "replace", "format",
-        "starts_with", "ends_with", "repeat",
+        "len",
+        "push",
+        "pop",
+        "slice",
+        "split",
+        "trim",
+        "contains",
+        "to_upper",
+        "to_lower",
+        "replace",
+        "format",
+        "starts_with",
+        "ends_with",
+        "repeat",
         // Result helpers.
-        "Ok", "Err", "is_ok", "is_err", "unwrap", "unwrap_err",
+        "Ok",
+        "Err",
+        "is_ok",
+        "is_err",
+        "unwrap",
+        "unwrap_err",
         // Map/Set/Bytes.
-        "map_new", "map_insert", "map_get", "map_remove",
-        "map_keys", "map_len",
-        "set_new", "set_insert", "set_remove", "set_has",
-        "set_len", "set_items",
-        "bytes_len", "bytes_slice", "byte_at",
+        "map_new",
+        "map_insert",
+        "map_get",
+        "map_remove",
+        "map_keys",
+        "map_len",
+        "set_new",
+        "set_insert",
+        "set_remove",
+        "set_has",
+        "set_len",
+        "set_items",
+        "bytes_len",
+        "bytes_slice",
+        "byte_at",
     ];
     PURE_BUILTINS.contains(&name)
 }
@@ -2324,8 +2590,7 @@ pub fn infer_fn_effects(
     statements: &[crate::span::Spanned<Node>],
 ) -> std::collections::HashMap<String, bool> {
     // Step 1: collect user-fn names + their body references.
-    let mut fn_bodies: std::collections::HashMap<String, &Node> =
-        std::collections::HashMap::new();
+    let mut fn_bodies: std::collections::HashMap<String, &Node> = std::collections::HashMap::new();
     for stmt in statements {
         if let Node::Function { name, body, .. } = &stmt.node {
             fn_bodies.insert(name.clone(), body.as_ref());
@@ -2361,10 +2626,7 @@ pub fn infer_fn_effects(
 /// current `effects` snapshot. Used inside the fixpoint loop —
 /// each iteration treats `effects` as a frozen best-estimate and
 /// asks "does this body reach anything marked IO today?".
-fn body_reaches_io(
-    node: &Node,
-    effects: &std::collections::HashMap<String, bool>,
-) -> bool {
+fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<String, bool>) -> bool {
     match node {
         Node::Block { stmts, .. } => stmts.iter().any(|s| body_reaches_io(s, effects)),
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
@@ -2372,22 +2634,29 @@ fn body_reaches_io(
         }
         Node::ReturnStatement { value: Some(v), .. } => body_reaches_io(v, effects),
         Node::ReturnStatement { value: None, .. } => false,
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             body_reaches_io(condition, effects)
                 || body_reaches_io(consequence, effects)
                 || alternative
                     .as_ref()
                     .is_some_and(|a| body_reaches_io(a, effects))
         }
-        Node::WhileStatement { condition, body, .. } => {
-            body_reaches_io(condition, effects) || body_reaches_io(body, effects)
-        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => body_reaches_io(condition, effects) || body_reaches_io(body, effects),
         Node::ForInStatement { iterable, body, .. } => {
             body_reaches_io(iterable, effects) || body_reaches_io(body, effects)
         }
         Node::Assert { condition, .. } => body_reaches_io(condition, effects),
         Node::Assume { condition, .. } => body_reaches_io(condition, effects),
-        Node::LiveBlock { body, invariants, .. } => {
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
             // A `live` block is NOT intrinsically IO (retries on
             // failure observe error state, but not IO per the
             // ticket's definition). If the body reaches IO, the
@@ -2399,7 +2668,11 @@ fn body_reaches_io(
             body_reaches_io(left, effects) || body_reaches_io(right, effects)
         }
         Node::PrefixExpression { right, .. } => body_reaches_io(right, effects),
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             // Any arg side-effecting → IO.
             if arguments.iter().any(|a| body_reaches_io(a, effects)) {
                 return true;
@@ -2437,18 +2710,23 @@ fn body_reaches_io(
         Node::IndexExpression { target, index, .. } => {
             body_reaches_io(target, effects) || body_reaches_io(index, effects)
         }
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             body_reaches_io(target, effects)
                 || body_reaches_io(index, effects)
                 || body_reaches_io(value, effects)
         }
-        Node::ArrayLiteral { items, .. } => {
-            items.iter().any(|i| body_reaches_io(i, effects))
-        }
+        Node::ArrayLiteral { items, .. } => items.iter().any(|i| body_reaches_io(i, effects)),
         Node::StructLiteral { fields, .. } => {
             fields.iter().any(|(_, v)| body_reaches_io(v, effects))
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             if body_reaches_io(scrutinee, effects) {
                 return true;
             }
@@ -2545,8 +2823,7 @@ mod purity_tests {
             fn helper(int x) { return x + 1; }\n\
             @pure fn f(int x) { return helper(x); }\n";
         let s = stmts(src);
-        let err = check_program_purity(&s, "<t>")
-            .expect_err("unannotated user fn is rejected");
+        let err = check_program_purity(&s, "<t>").expect_err("unannotated user fn is rejected");
         assert!(
             err.contains("calls unannotated fn `helper`"),
             "unexpected error: {err}"
@@ -2567,8 +2844,7 @@ mod purity_tests {
         // purity pass itself correctly handles mutual recursion
         // because the optimistic first pass populates `pure_fns`
         // with both names.
-        check_program_purity(&s, "<t>")
-            .expect("mutual recursion between two @pure fns is fine");
+        check_program_purity(&s, "<t>").expect("mutual recursion between two @pure fns is fine");
     }
 
     #[test]
@@ -2576,8 +2852,7 @@ mod purity_tests {
         // `live` blocks retry on failure — observable from outside.
         let src = "@pure fn f(int x) { live { return x; } return 0; }\n";
         let s = stmts(src);
-        let err = check_program_purity(&s, "<t>")
-            .expect_err("live blocks are impure");
+        let err = check_program_purity(&s, "<t>").expect_err("live blocks are impure");
         assert!(err.contains("live"), "unexpected error: {err}");
     }
 
@@ -2587,8 +2862,7 @@ mod purity_tests {
         // leave them alone even if they'd violate purity.
         let src = "fn noisy() { println(\"hi\"); return 0; }\n";
         let s = stmts(src);
-        check_program_purity(&s, "<t>")
-            .expect("non-@pure fns bypass the purity checker");
+        check_program_purity(&s, "<t>").expect("non-@pure fns bypass the purity checker");
     }
 
     // ---------- error message shape ----------
@@ -2599,7 +2873,10 @@ mod purity_tests {
         let s = stmts(src);
         let err = check_program_purity(&s, "<t>").unwrap_err();
         assert!(err.contains("noisy"), "expected fn name in error: {err}");
-        assert!(err.contains("println"), "expected callee name in error: {err}");
+        assert!(
+            err.contains("println"),
+            "expected callee name in error: {err}"
+        );
     }
 
     #[test]
