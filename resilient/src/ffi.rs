@@ -28,6 +28,12 @@ pub enum FfiType {
     /// `sqlite3*`, etc. without teaching the language about their
     /// layout.
     OpaquePtr,
+    /// RES-216: a Resilient function reference passed to C as a
+    /// function pointer. Phase 1 parses and recognises this type but
+    /// calling an extern fn with a `Callback` argument returns
+    /// `FfiError::CallbackNotYetSupported`. Full trampoline support is
+    /// planned for Phase 2 (bytecode VM).
+    Callback,
 }
 
 impl FfiType {
@@ -39,6 +45,7 @@ impl FfiType {
             "String" => Some(FfiType::Str),
             "Void" => Some(FfiType::Void),
             "OpaquePtr" => Some(FfiType::OpaquePtr),
+            "Callback" => Some(FfiType::Callback),
             _ => None,
         }
     }
@@ -117,6 +124,13 @@ pub enum FfiError {
     StaticOnlyUnavailable {
         library: String,
     },
+    /// RES-216: the extern signature declared a `Callback` parameter
+    /// and a call attempted to use it. Phase 1 recognises the type
+    /// but cannot yet build a stable C function pointer from a
+    /// Resilient closure; Phase 2 (bytecode VM) adds real trampolines.
+    CallbackNotYetSupported {
+        name: String,
+    },
 }
 
 impl std::fmt::Display for FfiError {
@@ -149,6 +163,13 @@ impl std::fmt::Display for FfiError {
                     f,
                     "FFI: library descriptor `{}` requires a static registry, not available in this build",
                     library
+                )
+            }
+            FfiError::CallbackNotYetSupported { name } => {
+                write!(
+                    f,
+                    "FFI: extern fn `{}` uses a Callback parameter; callbacks require the trampoline feature (planned for Phase 2)",
+                    name
                 )
             }
         }
@@ -393,6 +414,26 @@ mod tests {
             "got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn ffi_type_recognises_callback() {
+        // RES-216: the Callback type is recognised at declaration time.
+        assert_eq!(FfiType::from_resilient("Callback"), Some(FfiType::Callback));
+        let d = decl("register", "register", vec![("Callback", "cb")], "Void");
+        let sig = ForeignSignature::from_decl(&d).expect("Callback must parse");
+        assert_eq!(sig.params, vec![FfiType::Callback]);
+        assert_eq!(sig.ret, FfiType::Void);
+    }
+
+    #[test]
+    fn callback_error_display_mentions_phase_2() {
+        let err = FfiError::CallbackNotYetSupported {
+            name: "register_handler".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("register_handler"), "msg = {}", msg);
+        assert!(msg.contains("Phase 2"), "msg = {}", msg);
     }
 }
 
