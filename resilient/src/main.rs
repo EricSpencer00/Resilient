@@ -9449,6 +9449,118 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+/// RES-225: `resilient check <file> [-q]` — parse + type-check without running.
+///
+/// Exit codes:
+/// - 0 = file parsed and type-checked cleanly.
+/// - 1 = parse error or type error.
+/// - 2 = usage error (missing path, bad flag).
+///
+/// Returns `None` when the first arg isn't `check`.
+fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("check") {
+        return None;
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut quiet = false;
+    let mut verifier_timeout_ms: u32 = 5000;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--quiet" || a == "-q" {
+            quiet = true;
+        } else if a == "--verifier-timeout-ms" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --verifier-timeout-ms requires a value");
+                return Some(2);
+            }
+            verifier_timeout_ms = match args[i].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("Error: --verifier-timeout-ms requires an integer");
+                    return Some(2);
+                }
+            };
+        } else if let Some(v) = a.strip_prefix("--verifier-timeout-ms=") {
+            verifier_timeout_ms = match v.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("Error: --verifier-timeout-ms requires an integer");
+                    return Some(2);
+                }
+            };
+        } else if file.is_none() && !a.starts_with('-') {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to check", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!("Error: `resilient check <file> [-q]` requires a file path");
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", path.display(), e);
+            return Some(2);
+        }
+    };
+
+    // Parse.
+    let (mut program, parse_errs) = parse(&src);
+    if !parse_errs.is_empty() {
+        if !quiet {
+            for e in &parse_errs {
+                eprintln!("{}", render_with_caret(&src, e, "parse error"));
+            }
+        }
+        return Some(1);
+    }
+
+    // Resolve imports.
+    let base_dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut loaded: HashSet<PathBuf> = HashSet::new();
+    if let Ok(canon) = fs::canonicalize(&path) {
+        loaded.insert(canon);
+    }
+    if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+        if !quiet {
+            eprintln!("{}:1:1: error: {}", path.display(), e);
+        }
+        return Some(1);
+    }
+
+    // Type-check (Z3 verifier runs automatically when built with --features z3).
+    let mut tc = typechecker::TypeChecker::new()
+        .with_verifier_timeout_ms(verifier_timeout_ms)
+        .with_warn_unverified(!quiet);
+    match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
+        Ok(_) => {
+            if !quiet {
+                println!("{}: ok", path.display());
+            }
+            Some(0)
+        }
+        Err(e) => {
+            if !quiet {
+                eprintln!("{}", e);
+                eprintln!("{}", render_with_caret(&src, &e, "error"));
+            }
+            Some(1)
+        }
+    }
+}
+
 /// RES-fmt: `resilient fmt <file> [--in-place]` — pretty-print a
 /// Resilient source file in canonical style.
 ///
@@ -9549,6 +9661,7 @@ COMMON FLAGS:\n\
         --lsp                    Run the LSP server on stdio\n\
 \n\
 SUBCOMMANDS:\n\
+    check <file>        Type-check without running (RES-225)\n\
     pkg <verb>          Package manager operations (RES-205)\n\
     fmt <file>          Canonical source formatter\n\
     lint <file>         Run the starter lints\n\
@@ -9615,6 +9728,11 @@ fn main() {
     // RES-198: `lint <file>` — parse + run the 5 starter lints
     // with `// resilient: allow`-comment suppression.
     if let Some(code) = dispatch_lint_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-225: `check <file>` — parse + type-check without running.
+    if let Some(code) = dispatch_check_subcommand(&args) {
         std::process::exit(code);
     }
 
