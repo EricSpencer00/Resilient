@@ -103,6 +103,8 @@ enum Token {
     Question,
     /// RES-073: `use "path/to/file.res";` — module import.
     Use,
+    /// FFI v1: `extern "libname" { fn ... }` block keyword.
+    Extern,
     /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
     Impl,
     /// RES-128: `type <Name> = <Target>;` non-nominal alias.
@@ -216,6 +218,7 @@ impl Token {
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
             Token::Use => "`use`".to_string(),
+            Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
             Token::Underscore => "`_`".to_string(),
@@ -597,6 +600,7 @@ impl Lexer {
                         "struct" => Token::Struct,
                         "new" => Token::New,
                         "match" => Token::Match,
+                        "extern" => Token::Extern,
                         "use" => Token::Use,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
@@ -945,6 +949,15 @@ enum Node {
         path: String,
         /// RES-088: span of the `use` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// FFI v1: `extern "libname" { fn ... }` block. Each inner
+    /// declaration is an `ExternDecl`. Resolved by the driver
+    /// (after `expand_uses`) into `Value::Foreign` bindings in
+    /// the global environment.
+    Extern {
+        library: String,
+        decls: Vec<ExternDecl>,
         span: span::Span,
     },
     Function {
@@ -1344,6 +1357,25 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+}
+
+/// FFI v1: one foreign fn declaration inside an `extern` block.
+#[derive(Debug, Clone)]
+pub struct ExternDecl {
+    /// The name used in Resilient source (e.g. `sine`).
+    pub resilient_name: String,
+    /// The C symbol to look up. Defaults to `resilient_name`; overridden
+    /// by `fn NAME(...) = "C_NAME";`.
+    pub c_name: String,
+    /// (type, name) pairs — matches `Node::Function::parameters`.
+    pub parameters: Vec<(String, String)>,
+    /// Resilient type name; `"Void"` for unit return.
+    pub return_type: String,
+    pub requires: Vec<Node>,
+    pub ensures: Vec<Node>,
+    /// `@trusted` — `ensures` is assumed, not checked.
+    pub trusted: bool,
+    pub span: span::Span,
 }
 
 // Parser for creating AST from tokens
@@ -6117,6 +6149,10 @@ impl Interpreter {
             // before the program reached here. Treat any leftover as
             // a no-op so unit tests that bypass the driver don't trip.
             Node::Use { .. } => Ok(Value::Void),
+            // FFI v1: extern blocks are processed by the driver after
+            // expand_uses. Stubs here so the interpreter is silent if
+            // any slip through; real dispatch lands in Tasks 4-8.
+            Node::Extern { .. } => Ok(Value::Void),
             Node::Function { name, parameters, body, requires, ensures, .. } => {
                 // RES-068: if every observed call site for this fn was
                 // statically proven, the runtime requires check is
@@ -9145,6 +9181,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_empty_extern_block() {
+        let (program, errs) = crate::parse(r#"extern "libm.so.6" { }"#);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            crate::Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0].node {
+            crate::Node::Extern { library, decls, .. } => {
+                assert_eq!(library, "libm.so.6");
+                assert!(decls.is_empty());
+            }
+            other => panic!("expected Node::Extern, got {:?}", other),
+        }
+    }
 
     /// Lex the entire input into a Vec<Token>, stopping at (and including) Eof.
     fn tokenize(input: &str) -> Vec<Token> {

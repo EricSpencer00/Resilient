@@ -108,6 +108,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             truncate_to(bound, snapshot);
         }
         Node::Use { .. } => {}
+        // FFI v1: extern blocks don't introduce Resilient bindings
+        // at the source level; driver resolves them separately.
+        Node::Extern { .. } => {}
 
         // ---- Blocks introduce scope ----
         Node::Block { stmts, .. } => {

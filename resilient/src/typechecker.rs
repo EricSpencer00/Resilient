@@ -888,6 +888,9 @@ impl TypeChecker {
             // RES-073: `use` is resolved away before typecheck. Treat
             // leftovers as void (no-op) for safety.
             Node::Use { .. } => Ok(Type::Void),
+            // FFI v1: extern blocks are processed by the driver; stub
+            // for typecheck until Tasks 4-8 implement full dispatch.
+            Node::Extern { .. } => Ok(Type::Void),
             
             Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt, .. } => {
                 let mut param_types = Vec::new();

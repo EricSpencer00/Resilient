@@ -601,6 +601,7 @@ fn node_line(n: &Node) -> Option<u32> {
         // Structural variants (RES-088).
         Node::Function { span, .. }
         | Node::Use { span, .. }
+        | Node::Extern { span, .. }
         | Node::LiveBlock { span, .. }
         | Node::Assert { span, .. }
         | Node::Match { span, .. }

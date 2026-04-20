@@ -344,6 +344,8 @@ impl Formatter {
                 self.write(";");
                 self.newline();
             }
+            // FFI v1: extern blocks not yet formatted (Tasks 4-8).
+            Node::Extern { .. } => {}
             // Anything else was an expression; dispatch to fmt_expr
             // and terminate with a semicolon so a bare expression
             // statement at top level still looks like a statement.
@@ -640,6 +642,7 @@ impl Formatter {
             | Node::ImplBlock { .. }
             | Node::TypeAlias { .. }
             | Node::Use { .. }
+            | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
