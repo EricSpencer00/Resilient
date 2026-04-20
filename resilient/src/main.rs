@@ -16852,4 +16852,50 @@ mod ffi_integration_tests {
             err
         );
     }
+
+    /// FFI Phase 1 Task 10: a `@trusted` extern fn's `ensures` clauses
+    /// should be usable by the Z3 verifier as axioms when reasoning
+    /// about code that calls the extern. Without `@trusted`, Z3 knows
+    /// nothing about the callee's return; with `@trusted`, the ensures
+    /// is an assumption.
+    ///
+    /// The verifier primitive that enables this lives in
+    /// `verifier_z3::prove_with_axioms_and_timeout` — unit-tested in
+    /// the `verifier_z3` module. See:
+    ///   `verifier_z3::tests::axiom_promotes_undecidable_to_tautology`
+    ///   `verifier_z3::tests::axiom_chain_enables_two_step_reasoning`
+    ///   `verifier_z3::tests::untranslatable_axiom_is_silently_skipped`
+    ///
+    /// The end-to-end plumbing — registering extern decls in the
+    /// typechecker's scope and identifier table, then routing
+    /// call-site ensures through `prove_with_axioms_and_timeout` —
+    /// lives in `typechecker.rs`, which is out-of-scope for this
+    /// task per the Task 10 constraints. This test is marked
+    /// `#[ignore]` as a tripwire: when the typechecker integration
+    /// lands, removing the `#[ignore]` should make it pass.
+    #[test]
+    #[ignore = "end-to-end trusted-ensures integration requires typechecker.rs changes (out of scope for Task 10)"]
+    #[cfg(all(feature = "z3", feature = "ffi"))]
+    fn trusted_extern_ensures_propagates_as_smt_assumption() {
+        let src = r#"
+            extern "libc.so.6" {
+                @trusted fn abs_val(n: Int) -> Int ensures result >= 0;
+            };
+            fn f(int n)
+                requires n != 0
+                ensures result >= 0
+            {
+                return abs_val(n);
+            }
+        "#;
+        let (program, parse_errs) = parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let result = tc.check_program(&program);
+        assert!(
+            result.is_ok(),
+            "typecheck/verifier failed: {:?}",
+            result
+        );
+    }
 }
