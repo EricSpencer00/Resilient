@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
@@ -5985,6 +5985,25 @@ thread_local! {
     static LIVE_RETRY_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
+// --- RES-211: --panic-on-fault dev-mode flag ---
+//
+// When set, the live-block retry loop is disabled: the first
+// runtime error inside a `live { ... }` body aborts the process
+// with exit code 1 instead of quietly retrying. Helpful during
+// development when live's self-healing would otherwise mask
+// real bugs. Default `false` preserves existing behaviour.
+thread_local! {
+    static PANIC_ON_FAULT: Cell<bool> = const { Cell::new(false) };
+}
+
+fn set_panic_on_fault(enabled: bool) {
+    PANIC_ON_FAULT.with(|c| c.set(enabled));
+}
+
+fn panic_on_fault_enabled() -> bool {
+    PANIC_ON_FAULT.with(|c| c.get())
+}
+
 struct LiveRetryGuard;
 
 impl LiveRetryGuard {
@@ -6736,6 +6755,21 @@ impl Interpreter {
                     return Ok(value);
                 }
                 Err(error) => {
+                    // RES-211: `--panic-on-fault` dev mode —
+                    // disable the retry loop entirely so the
+                    // first fault surfaces immediately instead of
+                    // being silently healed. Process exits 1 with
+                    // a diagnostic pointing at the override flag.
+                    if panic_on_fault_enabled() {
+                        eprintln!(
+                            "\x1B[31m[LIVE BLOCK] fault: {}\x1B[0m",
+                            error
+                        );
+                        eprintln!(
+                            "[fault] --panic-on-fault: aborting (disable with --no-panic-on-fault)"
+                        );
+                        std::process::exit(1);
+                    }
                     retry_count += 1;
                     // RES-138: keep the thread-local counter in
                     // sync so `live_retries()` inside the body on
@@ -8769,9 +8803,57 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
+/// RES-211: help text printed by `--help` / `-h`. Lists the most
+/// commonly used driver flags; kept short because the full
+/// reference lives in SYNTAX.md and the per-subcommand dispatchers.
+fn print_help() {
+    println!(
+        "resilient — the Resilient language compiler & interpreter\n\
+\n\
+USAGE:\n\
+    resilient [FLAGS] <file>\n\
+    resilient <subcommand> [ARGS]\n\
+\n\
+COMMON FLAGS:\n\
+    -h, --help                   Show this help and exit\n\
+    -t, --typecheck              Run the static type checker\n\
+        --audit                  Print the verification audit trail\n\
+        --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
+        --sign-cert PATH         Ed25519-sign the emitted certificate\n\
+        --vm                     Route through the bytecode VM\n\
+        --jit                    Route through the Cranelift JIT\n\
+        --dump-tokens            Print the lexer stream and exit\n\
+        --dump-chunks            Print the VM disassembly and exit\n\
+        --verifier-timeout-ms N  Per-Z3-query timeout (ms, 0 = off)\n\
+        --seed N                 Pin the RNG seed for determinism\n\
+        --panic-on-fault         Disable live-block retry healing;\n\
+                                 abort with exit 1 on the first fault\n\
+        --no-panic-on-fault      Restore default retry behaviour\n\
+        --examples-dir DIR       REPL examples directory\n\
+        --lsp                    Run the LSP server on stdio\n\
+\n\
+SUBCOMMANDS:\n\
+    pkg <verb>          Package manager operations (RES-205)\n\
+    fmt <file>          Canonical source formatter\n\
+    lint <file>         Run the starter lints\n\
+    verify-cert <dir>   Verify an RES-071 certificate directory\n\
+    verify-all <dir>    Re-check every obligation in a manifest\n\
+\n\
+See SYNTAX.md for the language reference."
+    );
+}
+
 fn main() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
+
+    // RES-211: `--help` / `-h` prints a short usage summary listing
+    // the most-used flags. Kept hand-rolled (no clap dep) to match
+    // the rest of the driver's arg-parsing style.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        std::process::exit(0);
+    }
 
     // RES-205: intercept `pkg` subcommands before the normal flow.
     // Exits directly on handled verbs so the rest of main stays
@@ -8836,6 +8918,11 @@ fn main() {
     // RES-150: `--seed <u64>` pins the RNG seed for determinism.
     // `None` → fall back to clock-derived seed at startup.
     let mut seed_override: Option<u64> = None;
+    // RES-211: `--panic-on-fault` disables the live-block retry
+    // loop so the first fault aborts the process (exit 1) with a
+    // diagnostic instead of being silently healed. Handy during
+    // development — `--no-panic-on-fault` restores the default.
+    let mut panic_on_fault_flag = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -8947,6 +9034,16 @@ fn main() {
                     );
                     std::process::exit(2);
                 }));
+            } else if arg == "--panic-on-fault" {
+                // RES-211: disable live-block retry healing so the
+                // first fault aborts with exit 1. Thread-local flag
+                // so nested `resilient` invocations don't leak state.
+                panic_on_fault_flag = true;
+            } else if arg == "--no-panic-on-fault" {
+                // RES-211: explicit override — restore default
+                // retry behaviour even if an earlier arg or wrapper
+                // script set `--panic-on-fault`.
+                panic_on_fault_flag = false;
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -9070,6 +9167,12 @@ fn main() {
         }
 
         if !filename.is_empty() {
+            // RES-211: install the dev-mode "abort on first fault"
+            // flag on this thread's thread-local before `execute_file`
+            // constructs the interpreter, so `eval_live_block` can
+            // observe it without plumbing an extra parameter through
+            // the pipeline.
+            set_panic_on_fault(panic_on_fault_flag);
             // Execute a file. RES-027: a failed run exits non-zero so
             // `run_examples.sh` / CI / ops tooling can distinguish
             // success from failure without parsing stdout.
