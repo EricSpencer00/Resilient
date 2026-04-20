@@ -61,6 +61,11 @@ mod formatter;
 // by a parameter / let / for-in / match pattern within it.
 // No runtime deps; no Environment touched.
 mod free_vars;
+// FFI Phase 1: loader module that resolves extern-block symbols.
+// Two backends share one public API: the `ffi` feature routes through
+// `libloading` (dynamic linking); the default build compiles the
+// `disabled` stub that returns `FfiError::FfiDisabled` on every call.
+mod ffi;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
