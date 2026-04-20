@@ -963,6 +963,7 @@ enum Node {
     /// (after `expand_uses`) into `Value::Foreign` bindings in
     /// the global environment.
     Extern {
+        #[allow(dead_code)]
         library: String,
         decls: Vec<ExternDecl>,
         /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
@@ -1370,6 +1371,7 @@ enum Node {
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ExternDecl {
     /// The name used in Resilient source (e.g. `sine`).
     pub(crate) resilient_name: String,
@@ -2836,10 +2838,7 @@ impl Parser {
             return None;
         }
         self.next_token(); // skip `->`
-        let return_type = match self.parse_type_annotation("after '->' in extern fn") {
-            Some(t) => t,
-            None => return None,
-        };
+        let return_type = self.parse_type_annotation("after '->' in extern fn")?;
 
         // Optional `= "c_name"` alias.
         let c_name = if matches!(self.current_token, Token::Assign) {
@@ -9469,19 +9468,21 @@ fn main() {
         std::process::exit(0);
     }
 
+    // RES-205: intercept `pkg` subcommands before the normal flow.
+    // Must run before the global --help check so that
+    // `resilient pkg --help` reaches print_pkg_help() instead of
+    // the general print_help(). Exits directly on handled verbs so
+    // the rest of main stays focused on the compiler driver.
+    if let Some(code) = dispatch_pkg_subcommand(&args) {
+        std::process::exit(code);
+    }
+
     // RES-211: `--help` / `-h` prints a short usage summary listing
     // the most-used flags. Kept hand-rolled (no clap dep) to match
     // the rest of the driver's arg-parsing style.
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         std::process::exit(0);
-    }
-
-    // RES-205: intercept `pkg` subcommands before the normal flow.
-    // Exits directly on handled verbs so the rest of main stays
-    // focused on the compiler driver.
-    if let Some(code) = dispatch_pkg_subcommand(&args) {
-        std::process::exit(code);
     }
 
     // RES-fmt: `fmt <file> [--in-place]` — canonical source
