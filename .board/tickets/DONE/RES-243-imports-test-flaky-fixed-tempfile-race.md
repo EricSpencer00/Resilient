@@ -1,12 +1,13 @@
 ---
 id: RES-243
 title: "imports_missing_file_errors_cleanly is flaky: shared fixed temp-file path causes parallel-test race"
-state: IN_PROGRESS
+state: DONE
 priority: P2
 goalpost: G11
 created: 2026-04-20
 owner: executor
 claimed-by: Claude Sonnet 4.6
+closed-by: 8140f3818e3d5241de80688cc7aaeb6ffb82c70c
 ---
 
 ## Summary
