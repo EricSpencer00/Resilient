@@ -7,7 +7,6 @@
 //! Capacity defaults to 64 entries. Override with exactly ONE of:
 //! `--features ffi-static-64`, `--features ffi-static-256`, `--features ffi-static-1024`.
 //! Enabling multiple capacity features is a compile error.
-#![cfg(feature = "ffi-static")]
 
 // Mutual-exclusion compile_error — only one capacity feature at a time.
 #[cfg(all(feature = "ffi-static-64", feature = "ffi-static-256"))]
@@ -113,14 +112,7 @@ impl StaticRegistry {
 
     /// Look up a registered function by name. O(N) scan.
     pub fn lookup(&self, name: &str) -> Option<&Entry> {
-        for slot in &self.slots[..self.len] {
-            if let Some(e) = slot {
-                if e.name == name {
-                    return Some(e);
-                }
-            }
-        }
-        None
+        self.slots[..self.len].iter().flatten().find(|&e| e.name == name).map(|v| v as _)
     }
 
     /// Number of registered entries.
