@@ -1,7 +1,8 @@
 ---
 id: RES-199
 title: Property-based test: `format(parse(src)) == src` for canonical files
-state: OPEN
+state: IN_PROGRESS
+claimed-by: Claude Sonnet 4.6
 priority: P3
 goalpost: testing
 created: 2026-04-17
