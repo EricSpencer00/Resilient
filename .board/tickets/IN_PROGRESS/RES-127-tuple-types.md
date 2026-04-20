@@ -1,11 +1,12 @@
 ---
 id: RES-127
 title: Tuple types `(Int, String)` with inference and destructuring let
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G7
 created: 2026-04-17
 owner: executor
+claimed-by: Claude
 ---
 
 ## Summary

@@ -38,7 +38,10 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     let mut fn_index: HashMap<String, u16> = HashMap::new();
     let mut next_fn_idx: u16 = 0;
     for spanned in stmts {
-        if let Node::Function { name, parameters, .. } = &spanned.node {
+        if let Node::Function {
+            name, parameters, ..
+        } = &spanned.node
+        {
             if parameters.len() > u8::MAX as usize {
                 return Err(CompileError::Unsupported("fn with >255 params"));
             }
@@ -53,7 +56,13 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // Pass 2: compile each function body in declaration order.
     let mut functions: Vec<Function> = Vec::new();
     for spanned in stmts {
-        if let Node::Function { name, parameters, body, .. } = &spanned.node {
+        if let Node::Function {
+            name,
+            parameters,
+            body,
+            ..
+        } = &spanned.node
+        {
             let arity = parameters.len() as u8;
             let mut chunk = Chunk::new();
             // Parameters occupy locals 0..arity. Map each param name
@@ -78,8 +87,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 // line, not just the line of the enclosing fn.
                 // Falls back to the fn's outer line when the
                 // statement node has no span (synthetic).
-                let line = node_line(stmt)
-                    .unwrap_or(spanned.span.start.line as u32);
+                let line = node_line(stmt).unwrap_or(spanned.span.start.line as u32);
                 compile_stmt_in_fn(
                     stmt,
                     &mut chunk,
@@ -189,12 +197,19 @@ fn compile_stmt(
         // Nested `a[i][j] = v` is RES-171c; here we explicitly
         // reject non-Identifier targets so the compile error is
         // descriptive rather than a silent miscompile.
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             let local_name = match target.as_ref() {
                 Node::Identifier { name, .. } => name.clone(),
-                _ => return Err(CompileError::Unsupported(
-                    "nested index assignment (RES-171c)",
-                )),
+                _ => {
+                    return Err(CompileError::Unsupported(
+                        "nested index assignment (RES-171c)",
+                    ));
+                }
             };
             let slot = *locals
                 .get(&local_name)
@@ -235,7 +250,12 @@ fn compile_control_flow(
             }
             Ok(())
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             // cond
             compile_expr(condition, chunk, locals, fn_index, line)?;
             // JumpIfFalse to else-or-end (placeholder 0 offset)
@@ -259,7 +279,9 @@ fn compile_control_flow(
             }
             Ok(())
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             let loop_start = chunk.code.len();
             compile_expr(condition, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
@@ -333,12 +355,19 @@ fn compile_stmt_in_fn(
         // `Return`, the other `ReturnFromCall`); extracting a
         // shared helper is overkill for RES-171a but a candidate
         // cleanup when RES-171c expands this path.
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             let local_name = match target.as_ref() {
                 Node::Identifier { name, .. } => name.clone(),
-                _ => return Err(CompileError::Unsupported(
-                    "nested index assignment (RES-171c)",
-                )),
+                _ => {
+                    return Err(CompileError::Unsupported(
+                        "nested index assignment (RES-171c)",
+                    ));
+                }
             };
             let slot = *locals
                 .get(&local_name)
@@ -372,7 +401,12 @@ fn compile_control_flow_in_fn(
             }
             Ok(())
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             compile_expr(condition, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_stmt_in_fn(consequence, chunk, locals, next_local, fn_index, line)?;
@@ -389,7 +423,9 @@ fn compile_control_flow_in_fn(
             }
             Ok(())
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             let loop_start = chunk.code.len();
             compile_expr(condition, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
@@ -430,19 +466,28 @@ fn compile_expr(
             chunk.emit(Op::LoadLocal(idx), line);
             Ok(())
         }
-        Node::PrefixExpression { operator, right, .. } if operator == "-" => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => {
             compile_expr(right, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Neg, line);
             Ok(())
         }
         // RES-083: logical negation.
-        Node::PrefixExpression { operator, right, .. } if operator == "!" => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "!" => {
             compile_expr(right, chunk, locals, fn_index, line)?;
             chunk.emit(Op::Not, line);
             Ok(())
         }
         // RES-083: short-circuit && desugars to `if lhs { rhs } else { false }`.
-        Node::InfixExpression { left, operator, right, .. } if operator == "&&" => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "&&" => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             compile_expr(right, chunk, locals, fn_index, line)?;
@@ -457,7 +502,12 @@ fn compile_expr(
             Ok(())
         }
         // RES-083: short-circuit || desugars to `if !lhs { rhs } else { true }`.
-        Node::InfixExpression { left, operator, right, .. } if operator == "||" => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } if operator == "||" => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
             chunk.emit(Op::Not, line);
@@ -474,7 +524,12 @@ fn compile_expr(
             chunk.patch_jump(jmp_end, end)?;
             Ok(())
         }
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             compile_expr(left, chunk, locals, fn_index, line)?;
             compile_expr(right, chunk, locals, fn_index, line)?;
             let op = match operator.as_str() {
@@ -499,7 +554,11 @@ fn compile_expr(
         // calls where the callee is a bare `Identifier` — indirect
         // call through a function value (closures, lambdas) is out
         // of scope here.
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             let callee_name = match function.as_ref() {
                 Node::Identifier { name: n, .. } => n.clone(),
                 _ => return Err(CompileError::Unsupported("indirect call")),
@@ -525,7 +584,12 @@ fn compile_expr(
             for item in items {
                 compile_expr(item, chunk, locals, fn_index, line)?;
             }
-            chunk.emit(Op::MakeArray { len: items.len() as u16 }, line);
+            chunk.emit(
+                Op::MakeArray {
+                    len: items.len() as u16,
+                },
+                line,
+            );
             Ok(())
         }
         // RES-171a: `target[index]` read → push target, push index,
@@ -561,9 +625,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::ForInStatement { span, .. } => span.start.line as u32,
 
         // Block + ExpressionStatement (RES-087, tuple→struct).
-        Node::Block { span, .. } | Node::ExpressionStatement { span, .. } => {
-            span.start.line as u32
-        }
+        Node::Block { span, .. } | Node::ExpressionStatement { span, .. } => span.start.line as u32,
 
         // Leaves (RES-078).
         Node::IntegerLiteral { span, .. }
@@ -597,6 +659,11 @@ fn node_line(n: &Node) -> Option<u32> {
 
         // RES-155: struct destructure let carries the `let` keyword span.
         Node::LetDestructureStruct { span, .. } => span.start.line as u32,
+
+        // RES-127: tuple nodes carry a span.
+        Node::TupleLiteral { span, .. }
+        | Node::TupleIndex { span, .. }
+        | Node::LetDestructureTuple { span, .. } => span.start.line as u32,
 
         // Structural variants (RES-088).
         Node::Function { span, .. }
@@ -750,7 +817,7 @@ impl StructRegistry {
             _ => {
                 return Err(CompileError::Unsupported(
                     "struct registry requires a Program root",
-                ))
+                ));
             }
         };
         let mut entries: HashMap<String, StructRegistryEntry> = HashMap::new();
@@ -851,7 +918,12 @@ mod tests {
     fn compile_let_emits_store_local() {
         let p = parse_one("let x = 7;");
         let prog = compile(&p).unwrap();
-        assert!(prog.main.code.iter().any(|op| matches!(op, Op::StoreLocal(0))));
+        assert!(
+            prog.main
+                .code
+                .iter()
+                .any(|op| matches!(op, Op::StoreLocal(0)))
+        );
     }
 
     #[test]
@@ -908,8 +980,17 @@ mod tests {
         assert_eq!(f.arity, 1);
         // Inside the body, `n` is local 0. The emitted code should
         // LoadLocal(0) twice before Mul.
-        let load_count = f.chunk.code.iter().filter(|op| matches!(op, Op::LoadLocal(0))).count();
-        assert_eq!(load_count, 2, "expected two LoadLocal(0) for n*n: {:?}", f.chunk.code);
+        let load_count = f
+            .chunk
+            .code
+            .iter()
+            .filter(|op| matches!(op, Op::LoadLocal(0)))
+            .count();
+        assert_eq!(
+            load_count, 2,
+            "expected two LoadLocal(0) for n*n: {:?}",
+            f.chunk.code
+        );
     }
 
     #[test]
@@ -934,12 +1015,14 @@ mod tests {
 
     #[test]
     fn res170a_single_struct_registers_with_type_id_zero() {
-        let p = parse_one(r#"
+        let p = parse_one(
+            r#"
             struct Point {
                 int x,
                 int y,
             }
-        "#);
+        "#,
+        );
         let reg = StructRegistry::from_program(&p).unwrap();
         let pt = reg.get("Point").expect("Point should be registered");
         assert_eq!(pt.name, "Point");
@@ -949,17 +1032,22 @@ mod tests {
 
     #[test]
     fn res170a_field_names_preserve_declaration_order() {
-        let p = parse_one(r#"
+        let p = parse_one(
+            r#"
             struct Rec {
                 int c,
                 int a,
                 int b,
             }
-        "#);
+        "#,
+        );
         let reg = StructRegistry::from_program(&p).unwrap();
         let r = reg.get("Rec").unwrap();
         // Source order is c, a, b — NOT alphabetical.
-        assert_eq!(r.fields, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+        assert_eq!(
+            r.fields,
+            vec!["c".to_string(), "a".to_string(), "b".to_string()]
+        );
         assert_eq!(r.field_index("c"), Some(0));
         assert_eq!(r.field_index("a"), Some(1));
         assert_eq!(r.field_index("b"), Some(2));
@@ -976,11 +1064,13 @@ mod tests {
 
     #[test]
     fn res170a_multiple_structs_get_sequential_type_ids() {
-        let p = parse_one(r#"
+        let p = parse_one(
+            r#"
             struct A { int x, }
             struct B { int y, }
             struct C { int z, }
-        "#);
+        "#,
+        );
         let reg = StructRegistry::from_program(&p).unwrap();
         assert_eq!(reg.get("A").unwrap().type_id, 0);
         assert_eq!(reg.get("B").unwrap().type_id, 1);
@@ -990,10 +1080,12 @@ mod tests {
 
     #[test]
     fn res170a_duplicate_struct_name_errors() {
-        let p = parse_one(r#"
+        let p = parse_one(
+            r#"
             struct Dup { int x, }
             struct Dup { int y, }
-        "#);
+        "#,
+        );
         let err = StructRegistry::from_program(&p).unwrap_err();
         match err {
             CompileError::DuplicateStructName(n) => assert_eq!(n, "Dup"),
@@ -1010,10 +1102,12 @@ mod tests {
 
     #[test]
     fn res170a_resolve_roundtrips_type_id_and_field_index() {
-        let p = parse_one(r#"
+        let p = parse_one(
+            r#"
             struct First  { int a, }
             struct Second { int x, bool y, int z, }
-        "#);
+        "#,
+        );
         let reg = StructRegistry::from_program(&p).unwrap();
         assert_eq!(reg.resolve("First", "a"), Some((0, 0)));
         assert_eq!(reg.resolve("Second", "x"), Some((1, 0)));
@@ -1028,12 +1122,14 @@ mod tests {
     fn res170a_registry_coexists_with_let_and_fn_decls() {
         // Realistic program: mixed struct / fn / let statements at
         // top level. The registry must pick up only the structs.
-        let p = parse_one(r#"
+        let p = parse_one(
+            r#"
             let start = 0;
             struct P { int x, int y, }
             fn add(int a, int b) -> int { return a + b; }
             struct Q { bool flag, }
-        "#);
+        "#,
+        );
         let reg = StructRegistry::from_program(&p).unwrap();
         assert_eq!(reg.len(), 2);
         assert_eq!(reg.get("P").unwrap().type_id, 0);

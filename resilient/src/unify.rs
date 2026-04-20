@@ -72,7 +72,9 @@ pub struct Substitution {
 impl Substitution {
     /// A fresh (identity) substitution.
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     /// The underlying map — exposed as `&` so tests can assert on
@@ -111,10 +113,15 @@ impl Substitution {
                     }
                 }
             }
-            Type::Function { params, return_type } => Type::Function {
+            Type::Function {
+                params,
+                return_type,
+            } => Type::Function {
                 params: params.iter().map(|p| self.apply(p)).collect(),
                 return_type: Box::new(self.apply(return_type)),
             },
+            // RES-127: apply substitution element-wise through tuples.
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.apply(e)).collect()),
             // Primitive and opaque variants have no sub-types.
             Type::Int
             | Type::Float
@@ -157,8 +164,14 @@ impl Substitution {
             (other, Type::Var(v)) => self.bind(v, other),
             // Function: unify arities and then per-component.
             (
-                Type::Function { params: p1, return_type: r1 },
-                Type::Function { params: p2, return_type: r2 },
+                Type::Function {
+                    params: p1,
+                    return_type: r1,
+                },
+                Type::Function {
+                    params: p2,
+                    return_type: r2,
+                },
             ) => {
                 if p1.len() != p2.len() {
                     return Err(UnifyError::ArityMismatch(p1.len(), p2.len()));
@@ -167,6 +180,18 @@ impl Substitution {
                     self.unify(l, r)?;
                 }
                 self.unify(&r1, &r2)
+            }
+            // RES-127: tuples unify element-wise; arity mismatch is an
+            // error. Reuse `ArityMismatch` (it carries two lengths) for
+            // a consistent diagnostic shape.
+            (Type::Tuple(es1), Type::Tuple(es2)) => {
+                if es1.len() != es2.len() {
+                    return Err(UnifyError::ArityMismatch(es1.len(), es2.len()));
+                }
+                for (l, r) in es1.iter().zip(es2.iter()) {
+                    self.unify(l, r)?;
+                }
+                Ok(())
             }
             (a, b) => Err(UnifyError::Mismatch(a, b)),
         }
@@ -226,9 +251,12 @@ impl Substitution {
                 }
                 false
             }
-            Type::Function { params, return_type } => {
-                params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, return_type)
-            }
+            Type::Function {
+                params,
+                return_type,
+            } => params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, return_type),
+            // RES-127: tuples carry sub-types; check each element.
+            Type::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
             _ => false,
         }
     }

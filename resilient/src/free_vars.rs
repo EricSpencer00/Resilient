@@ -122,13 +122,18 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 // Note: we add the binder AFTER walking the stmt
                 // itself so the RHS sees the outer scope.
                 match s {
-                    Node::LetStatement { name, .. }
-                    | Node::StaticLet { name, .. } => {
+                    Node::LetStatement { name, .. } | Node::StaticLet { name, .. } => {
                         bound.insert(name.clone());
                     }
                     Node::LetDestructureStruct { fields, .. } => {
                         for (_, local) in fields {
                             bound.insert(local.clone());
+                        }
+                    }
+                    // RES-127: tuple destructure binds each name.
+                    Node::LetDestructureTuple { names, .. } => {
+                        for n in names {
+                            bound.insert(n.clone());
                         }
                     }
                     _ => {}
@@ -208,6 +213,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         Node::LetDestructureStruct { value, .. } => {
             walk(value, bound, free);
         }
+        // RES-127: `let (x, y) = expr;` — RHS evaluated in outer scope;
+        // binders added by the enclosing block after this walk returns.
+        Node::LetDestructureTuple { value, .. } => {
+            walk(value, bound, free);
+        }
         Node::Assignment { name, value, .. } => {
             // LHS is a read of `name` in Resilient's scoping model —
             // you can't assign to a name you haven't declared.
@@ -222,21 +232,37 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             }
         }
         Node::ExpressionStatement { expr, .. } => walk(expr, bound, free),
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             walk(condition, bound, free);
             walk(consequence, bound, free);
             if let Some(a) = alternative {
                 walk(a, bound, free);
             }
         }
-        Node::WhileStatement { condition, body, invariants, .. } => {
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
             walk(condition, bound, free);
             for inv in invariants {
                 walk(inv, bound, free);
             }
             walk(body, bound, free);
         }
-        Node::ForInStatement { name, iterable, body, invariants, .. } => {
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
             walk(iterable, bound, free);
             let snapshot = bound.len();
             bound.insert(name.clone());
@@ -246,7 +272,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             walk(body, bound, free);
             truncate_to(bound, snapshot);
         }
-        Node::LiveBlock { body, invariants, .. } => {
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
             walk(body, bound, free);
             for inv in invariants {
                 walk(inv, bound, free);
@@ -261,7 +289,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             walk(left, bound, free);
             walk(right, bound, free);
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             walk(function, bound, free);
             for a in arguments {
                 walk(a, bound, free);
@@ -272,7 +304,12 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             walk(target, bound, free);
             walk(index, bound, free);
         }
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             walk(target, bound, free);
             walk(index, bound, free);
             walk(value, bound, free);
@@ -287,6 +324,14 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(i, bound, free);
             }
         }
+        // RES-127: tuple literal — walk each element.
+        Node::TupleLiteral { items, .. } => {
+            for i in items {
+                walk(i, bound, free);
+            }
+        }
+        // RES-127: `t.N` — walk the target.
+        Node::TupleIndex { tuple, .. } => walk(tuple, bound, free),
         Node::StructLiteral { fields, .. } => {
             for (_, v) in fields {
                 walk(v, bound, free);
@@ -303,7 +348,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(i, bound, free);
             }
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             walk(scrutinee, bound, free);
             for (pat, guard, body) in arms {
                 let snapshot = bound.len();
@@ -388,15 +435,24 @@ mod tests {
     use crate::span::Span;
 
     fn ident(name: &str) -> Node {
-        Node::Identifier { name: name.into(), span: Span::default() }
+        Node::Identifier {
+            name: name.into(),
+            span: Span::default(),
+        }
     }
 
     fn int_lit(v: i64) -> Node {
-        Node::IntegerLiteral { value: v, span: Span::default() }
+        Node::IntegerLiteral {
+            value: v,
+            span: Span::default(),
+        }
     }
 
     fn bool_lit(v: bool) -> Node {
-        Node::BooleanLiteral { value: v, span: Span::default() }
+        Node::BooleanLiteral {
+            value: v,
+            span: Span::default(),
+        }
     }
 
     fn parse_program(src: &str) -> Node {
@@ -775,10 +831,7 @@ mod tests {
         // `new Point { x: a, y: b }` — both `a` and `b` free.
         let lit = Node::StructLiteral {
             name: "Point".into(),
-            fields: vec![
-                ("x".into(), ident("a")),
-                ("y".into(), ident("b")),
-            ],
+            fields: vec![("x".into(), ident("a")), ("y".into(), ident("b"))],
             span: Span::default(),
         };
         assert_eq!(free_vars(&lit), as_set(["a", "b"]));
@@ -791,7 +844,10 @@ mod tests {
         // is actually visited.
         let stmt = Node::WhileStatement {
             condition: Box::new(ident("cond")),
-            body: Box::new(Node::Block { stmts: Vec::new(), span: Span::default() }),
+            body: Box::new(Node::Block {
+                stmts: Vec::new(),
+                span: Span::default(),
+            }),
             invariants: vec![Node::InfixExpression {
                 left: Box::new(ident("p")),
                 operator: ">=".into(),

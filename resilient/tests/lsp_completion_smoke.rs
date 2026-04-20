@@ -38,8 +38,8 @@ fn read_one_message<R: Read>(r: &mut R, deadline: Instant) -> Result<String, Str
         }
         header.push(buf[0]);
         if header.ends_with(b"\r\n\r\n") {
-            let header_str = std::str::from_utf8(&header)
-                .map_err(|e| format!("bad header utf8: {}", e))?;
+            let header_str =
+                std::str::from_utf8(&header).map_err(|e| format!("bad header utf8: {}", e))?;
             for line in header_str.split("\r\n") {
                 let line = line.trim();
                 if let Some(rest) = line.strip_prefix("Content-Length:") {
@@ -53,7 +53,10 @@ fn read_one_message<R: Read>(r: &mut R, deadline: Instant) -> Result<String, Str
             if content_length.is_some() {
                 break;
             }
-            return Err(format!("LSP header missing Content-Length: {:?}", header_str));
+            return Err(format!(
+                "LSP header missing Content-Length: {:?}",
+                header_str
+            ));
         }
     }
     let len = content_length.unwrap();

@@ -29,9 +29,9 @@
 //   This is a known deficiency documented in `docs/tooling.md` and
 //   is the top follow-up for the next formatter ticket.
 
+use crate::BackoffConfig;
 use crate::Node;
 use crate::Pattern;
-use crate::BackoffConfig;
 
 /// Canonical indent width, in spaces.
 const INDENT: &str = "    ";
@@ -46,7 +46,11 @@ pub struct Formatter {
 
 impl Formatter {
     pub fn new() -> Self {
-        Self { out: String::new(), depth: 0, at_line_start: true }
+        Self {
+            out: String::new(),
+            depth: 0,
+            at_line_start: true,
+        }
     }
 
     /// Entry point. Formats a `Node::Program` (or any top-level
@@ -140,7 +144,13 @@ impl Formatter {
                 self.newline();
             }
             Node::Function {
-                name, parameters, body, requires, ensures, return_type, ..
+                name,
+                parameters,
+                body,
+                requires,
+                ensures,
+                return_type,
+                ..
             } => {
                 self.fmt_function(
                     Some(name),
@@ -163,7 +173,11 @@ impl Formatter {
                 self.write("}");
                 self.newline();
             }
-            Node::ImplBlock { struct_name, methods, .. } => {
+            Node::ImplBlock {
+                struct_name,
+                methods,
+                ..
+            } => {
                 self.write(&format!("impl {} {{", struct_name));
                 self.newline();
                 self.indent();
@@ -181,7 +195,12 @@ impl Formatter {
                 self.write(&format!("type {} = {};", name, target));
                 self.newline();
             }
-            Node::LetStatement { name, value, type_annot, .. } => {
+            Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
                 let ann = match type_annot {
                     Some(t) => format!(": {}", t),
                     None => String::new(),
@@ -198,7 +217,11 @@ impl Formatter {
                 self.newline();
             }
             Node::LetDestructureStruct {
-                struct_name, fields, has_rest, value, ..
+                struct_name,
+                fields,
+                has_rest,
+                value,
+                ..
             } => {
                 self.write(&format!("let {} {{ ", struct_name));
                 let mut parts: Vec<String> = Vec::new();
@@ -214,6 +237,15 @@ impl Formatter {
                 }
                 self.write(&parts.join(", "));
                 self.write(" } = ");
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
+            // RES-127: `let (x, y) = expr;` tuple destructure.
+            Node::LetDestructureTuple { names, value, .. } => {
+                self.write("let (");
+                self.write(&names.join(", "));
+                self.write(") = ");
                 self.fmt_expr(value);
                 self.write(";");
                 self.newline();
@@ -236,7 +268,12 @@ impl Formatter {
                     self.newline();
                 }
             },
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 self.write("if ");
                 self.fmt_expr(condition);
                 self.write(" ");
@@ -253,7 +290,12 @@ impl Formatter {
                     self.newline();
                 }
             }
-            Node::WhileStatement { condition, body, invariants, .. } => {
+            Node::WhileStatement {
+                condition,
+                body,
+                invariants,
+                ..
+            } => {
                 self.write("while ");
                 self.fmt_expr(condition);
                 if !invariants.is_empty() {
@@ -274,7 +316,13 @@ impl Formatter {
                     self.newline();
                 }
             }
-            Node::ForInStatement { name, iterable, body, invariants, .. } => {
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                invariants,
+                ..
+            } => {
                 self.write(&format!("for {} in ", name));
                 self.fmt_expr(iterable);
                 if !invariants.is_empty() {
@@ -295,7 +343,13 @@ impl Formatter {
                     self.newline();
                 }
             }
-            Node::LiveBlock { body, invariants, backoff, timeout, .. } => {
+            Node::LiveBlock {
+                body,
+                invariants,
+                backoff,
+                timeout,
+                ..
+            } => {
                 self.write("live");
                 if let Some(bo) = backoff {
                     self.write(&format!(
@@ -318,7 +372,9 @@ impl Formatter {
                     self.newline();
                 }
             }
-            Node::Assert { condition, message, .. } => {
+            Node::Assert {
+                condition, message, ..
+            } => {
                 self.write("assert(");
                 self.fmt_expr(condition);
                 if let Some(m) = message {
@@ -328,7 +384,9 @@ impl Formatter {
                 self.write(");");
                 self.newline();
             }
-            Node::Assume { condition, message, .. } => {
+            Node::Assume {
+                condition, message, ..
+            } => {
                 self.write("assume(");
                 self.fmt_expr(condition);
                 if let Some(m) = message {
@@ -490,16 +548,27 @@ impl Formatter {
                 }
                 self.write("\"");
             }
-            Node::PrefixExpression { operator, right, .. } => {
+            Node::PrefixExpression {
+                operator, right, ..
+            } => {
                 self.write(operator);
                 self.fmt_expr(right);
             }
-            Node::InfixExpression { left, operator, right, .. } => {
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } => {
                 self.fmt_expr(left);
                 self.write(&format!(" {} ", operator));
                 self.fmt_expr(right);
             }
-            Node::CallExpression { function, arguments, .. } => {
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
                 self.fmt_expr(function);
                 self.write("(");
                 for (i, a) in arguments.iter().enumerate() {
@@ -518,7 +587,12 @@ impl Formatter {
                 self.fmt_expr(target);
                 self.write(&format!(".{}", field));
             }
-            Node::FieldAssignment { target, field, value, .. } => {
+            Node::FieldAssignment {
+                target,
+                field,
+                value,
+                ..
+            } => {
                 self.fmt_expr(target);
                 self.write(&format!(".{} = ", field));
                 self.fmt_expr(value);
@@ -529,7 +603,12 @@ impl Formatter {
                 self.fmt_expr(index);
                 self.write("]");
             }
-            Node::IndexAssignment { target, index, value, .. } => {
+            Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
                 self.fmt_expr(target);
                 self.write("[");
                 self.fmt_expr(index);
@@ -588,7 +667,12 @@ impl Formatter {
                 self.write("}");
             }
             Node::FunctionLiteral {
-                parameters, body, requires, ensures, return_type, ..
+                parameters,
+                body,
+                requires,
+                ensures,
+                return_type,
+                ..
             } => {
                 // Anonymous fn inside an expression context: reuse the
                 // shared function-renderer with `name = None`.
@@ -601,7 +685,9 @@ impl Formatter {
                     body,
                 );
             }
-            Node::Match { scrutinee, arms, .. } => {
+            Node::Match {
+                scrutinee, arms, ..
+            } => {
                 self.write("match ");
                 self.fmt_expr(scrutinee);
                 self.write(" {");
@@ -634,6 +720,25 @@ impl Formatter {
                     self.write(&format!("{}ns", nanos));
                 }
             }
+            // RES-127: tuple literal `(e1, e2, …)`.
+            Node::TupleLiteral { items, .. } => {
+                self.write("(");
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_expr(it);
+                }
+                if items.len() == 1 {
+                    self.write(",");
+                }
+                self.write(")");
+            }
+            // RES-127: `t.N` positional index.
+            Node::TupleIndex { tuple, index, .. } => {
+                self.fmt_expr(tuple);
+                self.write(&format!(".{}", index));
+            }
             // Statement-shaped nodes that ended up in expression
             // position: degrade gracefully to their statement form.
             Node::Block { .. }
@@ -655,6 +760,7 @@ impl Formatter {
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
+            | Node::LetDestructureTuple { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
@@ -744,8 +850,7 @@ fn f(int x) -> int {
     /// Golden: function contracts land indented under the signature.
     #[test]
     fn fmt_function_contracts() {
-        let src =
-            "fn safe_div(int a, int b) -> int requires b != 0 ensures result * b == a { return a / b; }";
+        let src = "fn safe_div(int a, int b) -> int requires b != 0 ensures result * b == a { return a / b; }";
         let (program, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let out = Formatter::format(&program);
@@ -783,8 +888,16 @@ struct Point {
         let (program, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let out = Formatter::format(&program);
-        assert!(out.contains("live {"), "expected brace on same line: {}", out);
-        assert!(out.contains("    live {"), "expected indented live block: {}", out);
+        assert!(
+            out.contains("live {"),
+            "expected brace on same line: {}",
+            out
+        );
+        assert!(
+            out.contains("    live {"),
+            "expected indented live block: {}",
+            out
+        );
     }
 
     /// Property: formatting is idempotent — formatting twice yields
@@ -796,7 +909,12 @@ struct Point {
         assert!(errs.is_empty());
         let once = Formatter::format(&p1);
         let (p2, errs2) = parse(&once);
-        assert!(errs2.is_empty(), "re-parse failed: {:?}\nsource was:\n{}", errs2, once);
+        assert!(
+            errs2.is_empty(),
+            "re-parse failed: {:?}\nsource was:\n{}",
+            errs2,
+            once
+        );
         let twice = Formatter::format(&p2);
         assert_eq!(once, twice, "formatter is not idempotent");
     }
