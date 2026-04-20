@@ -1,0 +1,75 @@
+name: Agent-Ready Ticket
+description: A well-scoped task structured for autonomous AI agents (or humans) to pick up and implement
+labels: ["enhancement", "ticket", "agent-ready"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for new work items. The more specific the acceptance criteria, the easier it is for an agent to pick up and implement correctly.
+  - type: input
+    id: ticket-id
+    attributes:
+      label: Ticket ID
+      description: Next RES-NNN number (check .board/tickets/ for the current max)
+      placeholder: "RES-NNN"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should exist or work after this ticket is done? One paragraph.
+    validations:
+      required: true
+  - type: textarea
+    id: files-to-touch
+    attributes:
+      label: Files / modules to touch
+      description: List the files or modules an implementor should read and modify
+      placeholder: |
+        - resilient/src/main.rs — add CLI subcommand
+        - resilient/tests/foo_smoke.rs — add integration test
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: Concrete pass/fail checks. Each item should be verifiable by running a command or reading code.
+      placeholder: |
+        - [ ] `cargo test foo_` passes
+        - [ ] `resilient foo --help` prints usage to stdout and exits 0
+        - [ ] No new clippy warnings
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: Explicitly name things NOT to do in this ticket
+  - type: dropdown
+    id: roadmap-goal
+    attributes:
+      label: Roadmap goal
+      description: Which roadmap goalpost does this serve? (see .board/ROADMAP.md)
+      options:
+        - G1 — Hello World
+        - G2 — Arithmetic
+        - G3 — Control flow
+        - G4 — Functions
+        - G5 — Strings
+        - G6 — Structs
+        - G7 — Pattern matching
+        - G8 — Modules
+        - G9 — Effect system
+        - G10 — Type inference
+        - G11 — LSP
+        - G12 — Verifier
+        - G13 — Package manager
+        - G14 — Embedded runtime
+        - G15 — JIT
+        - G16 — FFI
+        - G17 — Concurrency
+        - G18 — Self-hosting
+        - G19 — Stability
+        - G20 — Release
+        - G21+ — Future
+        - Infra / tooling (no roadmap goal)
