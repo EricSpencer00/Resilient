@@ -51,6 +51,14 @@ logos-lexer = ["dep:logos"]
 # `infer` module; off by default until RES-123 flips it on once
 # the surface is covered.
 infer = []
+# FFI Phase 1: opt-in dynamic-library loading via libloading. Default off
+# so the standard build has zero native-library dependency. Enable with:
+#
+#   cargo build --features ffi
+#
+# The `ffi` module provides `ForeignLoader` which resolves extern-block
+# symbols at evaluation time so the tree-walker can dispatch in O(1).
+ffi = ["dep:libloading"]
 
 [dependencies]
 # RES-115: source-position types live in their own crate so
@@ -60,6 +68,7 @@ infer = []
 # does *not* take this dep (it stays no_std-clean).
 resilient-span = { path = "../resilient-span" }
 clap = { version = "4.4", features = ["derive"] }
+libloading = { version = "0.8", optional = true }
 logos = { version = "0.14", optional = true }
 rustyline = "12.0.0"
 z3 = { version = "0.12", optional = true }

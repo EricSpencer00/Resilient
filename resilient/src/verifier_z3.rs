@@ -99,6 +99,36 @@ pub fn prove_with_timeout(
     bindings: &HashMap<String, i64>,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    prove_with_axioms_and_timeout(expr, bindings, &[], timeout_ms)
+}
+
+/// FFI Phase 1 Task 10: prove `expr` under an additional list of
+/// free boolean `axioms` that the solver treats as `true`. Designed
+/// for `@trusted` extern fn `ensures` clauses: a caller collects the
+/// trusted ensures that reference values in scope, rewrites them so
+/// every occurrence of `result` is replaced with the call site's
+/// return-value identifier, and hands the list to this function as
+/// axioms.
+///
+/// Axioms that fail to translate (unsupported nodes, floats, etc.)
+/// are silently skipped — the same fail-open policy the rest of the
+/// translator uses. A silently skipped axiom is safe: dropping
+/// information can only weaken the assumption set, never make an
+/// unsound verdict sound.
+///
+/// Return shape matches `prove_with_timeout`. The
+/// certificate-generation path does NOT yet embed the axioms in the
+/// emitted SMT-LIB2 because the re-verifier would need the same
+/// axioms to reproduce the proof; callers that need re-verifiable
+/// certificates for trusted-axiom-assisted proofs should persist
+/// the axiom list alongside the certificate. Tracked as a follow-up.
+#[allow(dead_code)]
+pub fn prove_with_axioms_and_timeout(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
 
@@ -135,11 +165,24 @@ pub fn prove_with_timeout(
         })
         .collect();
 
+    // FFI Phase 1 Task 10: translate caller-supplied axioms. Each
+    // axiom that successfully translates to a Z3 Bool is asserted
+    // on both the tautology-check solver and the contradiction-check
+    // solver — just like `len_axioms`. Axioms that translate to None
+    // (unsupported nodes) are silently dropped.
+    let user_axioms: Vec<Bool<'_>> = axioms
+        .iter()
+        .filter_map(|ax| translate_bool(&ctx, ax, bindings))
+        .collect();
+
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
     // is always true regardless of any free variables.
     let solver = z3::Solver::new(&ctx);
     apply_timeout(&solver);
     for (_, axiom) in &len_axioms {
+        solver.assert(axiom);
+    }
+    for axiom in &user_axioms {
         solver.assert(axiom);
     }
     let negated = formula.not();
@@ -210,6 +253,9 @@ pub fn prove_with_timeout(
     let solver = z3::Solver::new(&ctx);
     apply_timeout(&solver);
     for (_, axiom) in &len_axioms {
+        solver.assert(axiom);
+    }
+    for axiom in &user_axioms {
         solver.assert(axiom);
     }
     solver.assert(&formula);
@@ -887,5 +933,66 @@ mod tests {
         let mut out = BTreeSet::new();
         collect_len_args(&expr, &mut out);
         assert!(out.is_empty());
+    }
+
+    // ---------- FFI Phase 1 Task 10: trusted-ensures as axioms ----------
+
+    #[test]
+    fn axiom_promotes_undecidable_to_tautology() {
+        // Without axioms, `r >= 0` with a free `r` is undecidable —
+        // `r` could be negative. Feeding `r >= 0` as an axiom (as a
+        // trusted extern's `ensures result >= 0` would do after
+        // rewriting `result` → `r`) lets the solver close the proof.
+        let no_b = HashMap::new();
+        let goal = infix(ident("r"), ">=", int(0));
+        let axiom = infix(ident("r"), ">=", int(0));
+        let (verdict, _cert, _cx, _t) =
+            prove_with_axioms_and_timeout(&goal, &no_b, &[axiom], 0);
+        assert_eq!(verdict, Some(true));
+    }
+
+    #[test]
+    fn empty_axioms_behaves_like_plain_prove() {
+        // Passing an empty axiom slice must preserve the existing
+        // `prove_with_timeout` behaviour — a regression check that
+        // the new plumbing doesn't perturb the default path.
+        let no_b = HashMap::new();
+        let expr = infix(ident("x"), ">", int(0));
+        let (v1, _, _, _) = prove_with_timeout(&expr, &no_b, 0);
+        let (v2, _, _, _) = prove_with_axioms_and_timeout(&expr, &no_b, &[], 0);
+        assert_eq!(v1, v2);
+        assert_eq!(v1, None); // `x > 0` is undecidable without context
+    }
+
+    #[test]
+    fn untranslatable_axiom_is_silently_skipped() {
+        // A float literal inside an axiom can't be translated (the
+        // verifier is integer-only). The axiom must be dropped
+        // rather than panic; the goal proof proceeds as if no axiom
+        // were supplied — here `x + 0 == x` is a plain tautology.
+        let no_b = HashMap::new();
+        let goal = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        // Use a string literal as a deliberately untranslatable axiom.
+        let bogus_axiom = Node::StringLiteral {
+            value: "nope".to_string(),
+            span: crate::span::Span::default(),
+        };
+        let (verdict, _cert, _cx, _t) =
+            prove_with_axioms_and_timeout(&goal, &no_b, &[bogus_axiom], 0);
+        assert_eq!(verdict, Some(true));
+    }
+
+    #[test]
+    fn axiom_chain_enables_two_step_reasoning() {
+        // Given two axioms `a > 0` and `b > a`, prove `b > 0`.
+        // Neither axiom alone proves the goal, and the goal is
+        // undecidable without them.
+        let no_b = HashMap::new();
+        let goal = infix(ident("b"), ">", int(0));
+        let ax1 = infix(ident("a"), ">", int(0));
+        let ax2 = infix(ident("b"), ">", ident("a"));
+        let (verdict, _cert, _cx, _t) =
+            prove_with_axioms_and_timeout(&goal, &no_b, &[ax1, ax2], 0);
+        assert_eq!(verdict, Some(true));
     }
 }

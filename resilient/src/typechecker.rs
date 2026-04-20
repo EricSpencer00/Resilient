@@ -888,6 +888,28 @@ impl TypeChecker {
             // RES-073: `use` is resolved away before typecheck. Treat
             // leftovers as void (no-op) for safety.
             Node::Use { .. } => Ok(Type::Void),
+            // FFI v1: validate extern block — reject non-primitive types.
+            Node::Extern { decls, .. } => {
+                const PARAM_PRIMS: &[&str] = &["Int", "Float", "Bool", "String"];
+                const RET_PRIMS: &[&str] = &["Int", "Float", "Bool", "String", "Void"];
+                for d in decls {
+                    for (ty, name) in &d.parameters {
+                        if !PARAM_PRIMS.contains(&ty.as_str()) {
+                            return Err(format!(
+                                "FFI: extern parameter `{}` has type `{}`; extern fn supports only {} in v1",
+                                name, ty, PARAM_PRIMS.join(", ")
+                            ));
+                        }
+                    }
+                    if !RET_PRIMS.contains(&d.return_type.as_str()) {
+                        return Err(format!(
+                            "FFI: extern return type `{}` not supported in v1 (allowed: {})",
+                            d.return_type, RET_PRIMS.join(", ")
+                        ));
+                    }
+                }
+                Ok(Type::Void)
+            }
             
             Node::Function { name, parameters, body, requires, ensures, return_type: declared_rt, .. } => {
                 let mut param_types = Vec::new();

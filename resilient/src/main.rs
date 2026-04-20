@@ -61,6 +61,13 @@ mod formatter;
 // by a parameter / let / for-in / match pattern within it.
 // No runtime deps; no Environment touched.
 mod free_vars;
+// FFI Phase 1: loader module that resolves extern-block symbols.
+// Two backends share one public API: the `ffi` feature routes through
+// `libloading` (dynamic linking); the default build compiles the
+// `disabled` stub that returns `FfiError::FfiDisabled` on every call.
+mod ffi;
+#[cfg(feature = "ffi")]
+mod ffi_trampolines;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -103,6 +110,8 @@ enum Token {
     Question,
     /// RES-073: `use "path/to/file.res";` — module import.
     Use,
+    /// FFI v1: `extern "libname" { fn ... }` block keyword.
+    Extern,
     /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
     Impl,
     /// RES-128: `type <Name> = <Target>;` non-nominal alias.
@@ -216,6 +225,7 @@ impl Token {
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
             Token::Use => "`use`".to_string(),
+            Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
             Token::Underscore => "`_`".to_string(),
@@ -597,6 +607,7 @@ impl Lexer {
                         "struct" => Token::Struct,
                         "new" => Token::New,
                         "match" => Token::Match,
+                        "extern" => Token::Extern,
                         "use" => Token::Use,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
@@ -944,6 +955,17 @@ enum Node {
     Use {
         path: String,
         /// RES-088: span of the `use` keyword. Consumed in follow-ups.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// FFI v1: `extern "libname" { fn ... }` block. Each inner
+    /// declaration is an `ExternDecl`. Resolved by the driver
+    /// (after `expand_uses`) into `Value::Foreign` bindings in
+    /// the global environment.
+    Extern {
+        library: String,
+        decls: Vec<ExternDecl>,
+        /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -1346,6 +1368,29 @@ enum Node {
     },
 }
 
+/// FFI v1: one foreign fn declaration inside an `extern` block.
+#[derive(Debug, Clone)]
+pub(crate) struct ExternDecl {
+    /// The name used in Resilient source (e.g. `sine`).
+    pub(crate) resilient_name: String,
+    /// The C symbol to look up. Defaults to `resilient_name`; overridden
+    /// by `fn NAME(...) = "C_NAME";`.
+    pub(crate) c_name: String,
+    /// (type, name) pairs — matches `Node::Function::parameters`.
+    pub(crate) parameters: Vec<(String, String)>,
+    /// Resilient type name; `"Void"` for unit return.
+    pub(crate) return_type: String,
+    /// FFI v1: pre-condition expressions. Empty when absent.
+    pub(crate) requires: Vec<Node>,
+    /// FFI v1: post-condition expressions. The special identifier `result` is bound to the return value.
+    pub(crate) ensures: Vec<Node>,
+    /// `@trusted` — `ensures` is assumed, not checked.
+    pub(crate) trusted: bool,
+    /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
+    #[allow(dead_code)]
+    pub(crate) span: span::Span,
+}
+
 // Parser for creating AST from tokens
 struct Parser {
     lexer: Lexer,
@@ -1448,6 +1493,7 @@ impl Parser {
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
+            Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
@@ -2644,6 +2690,283 @@ impl Parser {
         }
         Some(Node::Use { path,
             span: self.span_at_current() })
+    }
+
+    /// FFI v1: `extern "lib" { decl; decl; ... }`.
+    /// Each decl is parsed by `parse_extern_decl`.
+    fn parse_extern_block(&mut self) -> Option<Node> {
+        let extern_span = self.span_at_current();
+        self.next_token(); // consume `extern`
+
+        // Library descriptor.
+        let library = match &self.current_token {
+            Token::StringLiteral(s) => {
+                let s = s.clone();
+                self.next_token();
+                s
+            }
+            _ => {
+                self.record_error(format!(
+                    "expected string literal after `extern`, got {}",
+                    self.current_token
+                ));
+                return None;
+            }
+        };
+
+        // `{`
+        if !matches!(self.current_token, Token::LeftBrace) {
+            self.record_error(format!(
+                "expected `{{` after `extern \"{}\"`, got {}",
+                library,
+                self.current_token
+            ));
+            return None;
+        }
+        self.next_token();
+
+        let mut decls: Vec<ExternDecl> = Vec::new();
+        while !matches!(self.current_token, Token::RightBrace | Token::Eof) {
+            if let Some(d) = self.parse_extern_decl() {
+                decls.push(d);
+            } else {
+                // Recovery: skip to next `;` or `}`.
+                while !matches!(
+                    self.current_token,
+                    Token::Semicolon | Token::RightBrace | Token::Eof
+                ) {
+                    self.next_token();
+                }
+                if matches!(self.current_token, Token::Semicolon) {
+                    self.next_token();
+                }
+            }
+        }
+
+        if matches!(self.current_token, Token::RightBrace) {
+            self.next_token();
+        }
+
+        Some(Node::Extern {
+            library,
+            decls,
+            span: extern_span,
+        })
+    }
+
+    /// FFI v1: parse one `extern fn` declaration.
+    ///
+    /// Grammar:
+    /// ```text
+    /// extern_decl = `@trusted`?
+    ///               `fn` NAME `(` params `)` `->` TYPE
+    ///               (`=` STRING_LIT)?
+    ///               requires_clause* ensures_clause*
+    ///               `;`
+    /// ```
+    fn parse_extern_decl(&mut self) -> Option<ExternDecl> {
+        let decl_span = self.span_at_current();
+
+        // Optional `@trusted` prefix.
+        let mut trusted = false;
+        if matches!(self.current_token, Token::At) {
+            self.next_token(); // skip `@`
+            match &self.current_token {
+                Token::Identifier(id) if id == "trusted" => {
+                    trusted = true;
+                    self.next_token(); // skip `trusted`
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "unknown attribute in extern block: @{}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        }
+
+        // `fn`
+        if !matches!(self.current_token, Token::Function) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `fn` inside extern block, got {}",
+                tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `fn`
+
+        // Function name.
+        let resilient_name = match &self.current_token {
+            Token::Identifier(n) => {
+                let n = n.clone();
+                self.next_token();
+                n
+            }
+            other => {
+                let tok = other.clone();
+                self.record_error(format!("expected fn name, got {}", tok));
+                return None;
+            }
+        };
+
+        // `(` — required.
+        if !matches!(self.current_token, Token::LeftParen) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `(` after extern fn name `{}`, got {}",
+                resilient_name, tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `(`
+
+        // Parameter list — extern fn uses `name: Type` (not `Type name`).
+        let parameters = self.parse_extern_fn_parameters();
+
+        // Return type `-> T`. Required for extern fns.
+        if !matches!(self.current_token, Token::Arrow) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "extern fn `{}` requires an explicit `-> TYPE` return annotation, got {}",
+                resilient_name, tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `->`
+        let return_type = match self.parse_type_annotation("after '->' in extern fn") {
+            Some(t) => t,
+            None => return None,
+        };
+
+        // Optional `= "c_name"` alias.
+        let c_name = if matches!(self.current_token, Token::Assign) {
+            self.next_token(); // skip `=`
+            match &self.current_token {
+                Token::StringLiteral(s) => {
+                    let s = s.clone();
+                    self.next_token();
+                    s
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "expected string literal after `=` (C symbol name), got {}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        } else {
+            resilient_name.clone()
+        };
+
+        // Optional `requires EXPR` / `ensures EXPR` clauses (paren-less — Resilient
+        // contract syntax; reuses parse_function_contracts).
+        let (requires, ensures) = self.parse_function_contracts();
+
+        // Terminator `;`.
+        if !matches!(self.current_token, Token::Semicolon) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `;` at end of extern fn declaration, got {}",
+                tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip `;`
+
+        Some(ExternDecl {
+            resilient_name,
+            c_name,
+            parameters,
+            return_type,
+            requires,
+            ensures,
+            trusted,
+            span: decl_span,
+        })
+    }
+
+    /// FFI v1: parse `name: Type` parameter list for extern fn declarations.
+    ///
+    /// This differs from `parse_function_parameters` (which uses `Type name`
+    /// order). Extern fn declarations use the `name: Type` convention to match
+    /// conventional FFI binding style. Result tuple is `(type, name)` to stay
+    /// consistent with `Node::Function::parameters`.
+    ///
+    /// On entry `current_token` is the first token after `(` (i.e., the `(`
+    /// has already been consumed by the caller). On exit `current_token` is
+    /// the token after `)`.
+    fn parse_extern_fn_parameters(&mut self) -> Vec<(String, String)> {
+        let mut parameters = Vec::new();
+
+        // Empty param list: `()`.
+        if matches!(self.current_token, Token::RightParen) {
+            self.next_token(); // skip `)`
+            return parameters;
+        }
+
+        loop {
+            // Param name.
+            let param_name = match &self.current_token {
+                Token::Identifier(n) => {
+                    let n = n.clone();
+                    self.next_token();
+                    n
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "expected parameter name in extern fn, got {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+
+            // `:`.
+            if !matches!(self.current_token, Token::Colon) {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "expected `:` after parameter name `{}` in extern fn, got {}",
+                    param_name, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip `:`
+
+            // Type.
+            let param_type = match self.parse_type_annotation("in extern fn parameter") {
+                Some(t) => t,
+                None => break,
+            };
+
+            parameters.push((param_type, param_name));
+
+            match &self.current_token {
+                Token::Comma => {
+                    self.next_token(); // skip `,`
+                }
+                Token::RightParen => break,
+                other => {
+                    let tok_syntax = other.display_syntax();
+                    self.record_error(format!(
+                        "after extern fn parameter: {}",
+                        format_expected(&["`,`", "`)`"], &tok_syntax)
+                    ));
+                    break;
+                }
+            }
+        }
+
+        // Consume `)`.
+        if matches!(self.current_token, Token::RightParen) {
+            self.next_token();
+        }
+        parameters
     }
 
     fn parse_return_statement(&mut self) -> Node {
@@ -4085,6 +4408,34 @@ enum Value {
         fn_idx: u16,
         upvalues: Box<[Value]>,
     },
+    /// FFI v1: resolved foreign symbol, callable from Resilient source.
+    /// The Arc holds both the resolved ptr and the signature; the
+    /// loader owns the backing `Library` for the lifetime of the
+    /// driver run, so the ptr stays valid. Contract vecs (`requires` /
+    /// `ensures`) are checked by `apply_function`; `trusted` turns
+    /// the ensures into an assumption rather than a runtime check.
+    #[cfg(feature = "ffi")]
+    #[allow(dead_code)]
+    Foreign {
+        name: &'static str,
+        symbol: std::sync::Arc<crate::ffi::ForeignSymbol>,
+        requires: Vec<Node>,
+        ensures: Vec<Node>,
+        trusted: bool,
+    },
+    /// RES-215: an opaque C pointer received from (or bound for) an
+    /// FFI call. Resilient source cannot dereference or inspect it;
+    /// it is only passed through. The raw pointer is `Copy`, so the
+    /// derived `Clone` on `Value` copies the address — consistent
+    /// with the pass-through semantics (the language never owns the
+    /// pointee; the C library does).
+    ///
+    /// Constructed only through FFI trampolines (requires the `ffi`
+    /// feature to actually fire at runtime); the variant itself is
+    /// always present so the `Value` enum's shape matches across
+    /// feature gates.
+    #[allow(dead_code)]
+    OpaquePtr(crate::ffi::OpaquePtrHandle),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -4163,6 +4514,13 @@ impl std::fmt::Debug for Value {
             Value::Closure { fn_idx, upvalues } => {
                 write!(f, "Closure(fn={}, {} upvalues)", fn_idx, upvalues.len())
             }
+            #[cfg(feature = "ffi")]
+            Value::Foreign { name, symbol, .. } => {
+                write!(f, "Foreign({}, {} params)", name, symbol.sig.params.len())
+            }
+            // RES-215: opaque-pointer handle — print the address, not
+            // the pointee. Resilient never dereferences it.
+            Value::OpaquePtr(h) => write!(f, "OpaquePtr({:p})", h.0),
         }
     }
 }
@@ -4277,6 +4635,11 @@ impl std::fmt::Display for Value {
             // that happen to stringify a closure see something
             // intelligible instead of "unreachable".
             Value::Closure { .. } => write!(f, "<closure>"),
+            #[cfg(feature = "ffi")]
+            Value::Foreign { name, .. } => write!(f, "<foreign {}>", name),
+            // RES-215: opaque-pointer handle Display — show the
+            // address in the conventional `<opaque-ptr 0x…>` form.
+            Value::OpaquePtr(h) => write!(f, "<opaque-ptr {:p}>", h.0),
         }
     }
 }
@@ -6117,6 +6480,10 @@ impl Interpreter {
             // before the program reached here. Treat any leftover as
             // a no-op so unit tests that bypass the driver don't trip.
             Node::Use { .. } => Ok(Value::Void),
+            // FFI v1: extern blocks are processed by the driver after
+            // expand_uses. Stubs here so the interpreter is silent if
+            // any slip through; real dispatch lands in Tasks 4-8.
+            Node::Extern { .. } => Ok(Value::Void),
             Node::Function { name, parameters, body, requires, ensures, .. } => {
                 // RES-068: if every observed call site for this fn was
                 // statically proven, the runtime requires check is
@@ -7142,6 +7509,55 @@ impl Interpreter {
                 Ok(return_value)
             }
             Value::Builtin { func, .. } => func(&args),
+            #[cfg(feature = "ffi")]
+            Value::Foreign { name: _, symbol, requires, ensures, trusted } => {
+                // Bind params positionally as `_0`, `_1`, ... for contract eval.
+                let contract_env = Environment::new_enclosed(self.env.clone());
+                for (i, v) in args.iter().enumerate() {
+                    contract_env.set(format!("_{}", i), v.clone());
+                }
+                // Check preconditions.
+                let mut contract_interp = Interpreter {
+                    env: contract_env.clone(),
+                    statics: self.statics.clone(),
+                    proven_fns: self.proven_fns.clone(),
+                };
+                for pre in &requires {
+                    let ok = match contract_interp.eval(pre)? {
+                        Value::Bool(b) => b,
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(
+                            "contract violation: `requires` failed entering foreign fn".to_string(),
+                        );
+                    }
+                }
+                // Dispatch through the trampoline.
+                let result = crate::ffi_trampolines::call_foreign(&symbol, &args)?;
+                // Check postconditions.
+                if !ensures.is_empty() {
+                    let mut post_interp = Interpreter {
+                        env: contract_env,
+                        statics: self.statics.clone(),
+                        proven_fns: self.proven_fns.clone(),
+                    };
+                    post_interp.env.set("result".to_string(), result.clone());
+                    for post in &ensures {
+                        let ok = match post_interp.eval(post)? {
+                            Value::Bool(b) => b,
+                            _ => false,
+                        };
+                        if !ok && !trusted {
+                            return Err(
+                                "contract violation: `ensures` failed leaving foreign fn"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                Ok(result)
+            }
             _ => Err(format!("Not a function: {}", func)),
         }
     }
@@ -8065,6 +8481,42 @@ fn execute_file(
     }
 
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
+
+    // FFI v1: resolve every `Node::Extern` block ahead of eval, bind as
+    // Value::Foreign in the root env so the tree-walker can call through.
+    #[cfg(feature = "ffi")]
+    let _ffi_loader = {
+        let mut loader = crate::ffi::ForeignLoader::new();
+        if let Node::Program(stmts) = &program {
+            for stmt in stmts {
+                if let Node::Extern { library, decls, .. } = &stmt.node {
+                    if let Err(e) = loader.resolve_block(library, decls) {
+                        return Err(format!("{}", e));
+                    }
+                    for d in decls {
+                        if let Some(sym) = loader.lookup(&d.resilient_name) {
+                            // SAFETY: intentional one-time-per-extern-decl leak to obtain a &'static str
+                            // for Value::Foreign.name. The leaked memory is bounded by the number of
+                            // extern decls in the program and is reclaimed when the process exits.
+                            let name: &'static str = Box::leak(d.resilient_name.clone().into_boxed_str());
+                            interpreter.env.set(
+                                d.resilient_name.clone(),
+                                Value::Foreign {
+                                    name,
+                                    symbol: sym,
+                                    requires: d.requires.clone(),
+                                    ensures: d.ensures.clone(),
+                                    trusted: d.trusted,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        loader // keep the Library alive until execute_file returns
+    };
+
     // RES-116: runtime errors from the tree-walker now carry a
     // `line:col:` prefix (applied in `eval_program`). Reshape that
     // here into `filename:line:col: Runtime error: <msg>` so the
@@ -9145,6 +9597,97 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_empty_extern_block() {
+        let (program, errs) = crate::parse(r#"extern "libm.so.6" { }"#);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            crate::Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0].node {
+            crate::Node::Extern { library, decls, .. } => {
+                assert_eq!(library, "libm.so.6");
+                assert!(decls.is_empty());
+            }
+            other => panic!("expected Node::Extern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_extern_fn_with_primitive_types() {
+        let src = r#"extern "libm.so.6" { fn sqrt(x: Float) -> Float; }"#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].resilient_name, "sqrt");
+        assert_eq!(decls[0].c_name, "sqrt");
+        assert_eq!(decls[0].parameters, vec![("Float".into(), "x".into())]);
+        assert_eq!(decls[0].return_type, "Float");
+    }
+
+    #[test]
+    fn parses_extern_fn_with_c_name_alias() {
+        let src = r#"extern "libm.so.6" { fn sine(x: Float) -> Float = "sin"; }"#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(decls[0].resilient_name, "sine");
+        assert_eq!(decls[0].c_name, "sin");
+    }
+
+    #[test]
+    fn parses_extern_fn_with_contracts() {
+        let src = r#"
+            extern "libm.so.6" {
+                fn sqrt(x: Float) -> Float
+                    requires x >= 0.0
+                    ensures result >= 0.0;
+            }
+        "#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert_eq!(decls[0].requires.len(), 1);
+        assert_eq!(decls[0].ensures.len(), 1);
+        assert!(!decls[0].trusted);
+    }
+
+    #[test]
+    fn parses_trusted_extern_fn() {
+        let src = r#"extern "libfoo" { @trusted fn f() -> Int; }"#;
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
+        let decls = match &program {
+            crate::Node::Program(s) => match &s[0].node {
+                crate::Node::Extern { decls, .. } => decls.clone(),
+                _ => panic!(),
+            },
+            _ => panic!(),
+        };
+        assert!(decls[0].trusted);
+    }
 
     /// Lex the entire input into a Vec<Token>, stopping at (and including) Eof.
     fn tokenize(input: &str) -> Vec<Token> {
@@ -12734,6 +13277,41 @@ mod tests {
         assert!(err.contains("? operator"), "unexpected: {}", err);
     }
 
+    // ---------- FFI typechecker (Task 4) ----------
+
+    #[test]
+    fn typecheck_rejects_array_param_in_extern() {
+        let err = typecheck_src(r#"extern "libfoo" { fn f(xs: Array) -> Int; }"#).unwrap_err();
+        assert!(
+            err.contains("Array") && (err.contains("extern") || err.contains("FFI")),
+            "expected type-error about Array in extern, got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_primitive_extern() {
+        typecheck_src(r#"extern "libm" { fn sqrt(x: Float) -> Float; }"#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_accepts_void_return_in_extern() {
+        typecheck_src(r#"extern "libfoo" { fn noop() -> Void; }"#).unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_pure_on_extern() {
+        let src = r#"extern "libfoo" { @pure fn f() -> Int; }"#;
+        let (_, parse_errs) = parse(src);
+        assert!(
+            parse_errs.iter().any(|e| {
+                e.contains("attribute") || e.contains("@pure") || e.contains("pure")
+            }),
+            "expected parse error about @pure attribute, got {:?}",
+            parse_errs
+        );
+    }
+
     // ---------- Typed declarations (RES-052) ----------
 
     #[test]
@@ -16212,5 +16790,159 @@ mod tests {
         // First token starts at column 0 of line 0.
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "ffi")]
+mod ffi_integration_tests {
+    use super::*;
+
+    /// Helper: parse source, resolve extern blocks into the interpreter's env,
+    /// run the interpreter, return the final value.
+    fn run_with_ffi(src: &str) -> RResult<Value> {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+
+        let mut interpreter = Interpreter::new();
+
+        // Resolve extern blocks — same logic as execute_file but inline.
+        let mut loader = crate::ffi::ForeignLoader::new();
+        if let Node::Program(stmts) = &program {
+            for stmt in stmts {
+                if let Node::Extern { library, decls, .. } = &stmt.node {
+                    loader
+                        .resolve_block(library, decls)
+                        .map_err(|e| format!("{}", e))?;
+                    for d in decls {
+                        if let Some(sym) = loader.lookup(&d.resilient_name) {
+                            // SAFETY: intentional one-time-per-extern-decl leak to obtain a &'static str
+                            // for Value::Foreign.name. The leaked memory is bounded by the number of
+                            // extern decls in the program and is reclaimed when the process exits.
+                            let name: &'static str = Box::leak(d.resilient_name.clone().into_boxed_str());
+                            interpreter.env.set(
+                                d.resilient_name.clone(),
+                                Value::Foreign {
+                                    name,
+                                    symbol: sym,
+                                    requires: d.requires.clone(),
+                                    ensures: d.ensures.clone(),
+                                    trusted: d.trusted,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // SAFETY: loader lives as long as interpreter so ForeignSymbol ptrs stay valid.
+        let result = interpreter.eval(&program)?;
+        // Keep loader alive past eval.
+        drop(loader);
+        Ok(result)
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn can_call_cos_from_system_lib() {
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_cos(x: Float) -> Float = \"cos\"; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_cos(x: Float) -> Float = \"cos\"; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        let result = run_with_ffi(src).expect("cos(0.0) should work");
+        match result {
+            Value::Float(v) => assert!(
+                (v - 1.0_f64).abs() < 1e-10,
+                "cos(0.0) ≈ 1.0, got {}",
+                v
+            ),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn foreign_call_missing_library_errors_cleanly() {
+        let src = r#"extern "libnotreal_xyz.so" { fn f() -> Int; }; fn main(int _d) { return f(); } main(0);"#;
+        let err = run_with_ffi(src).expect_err("must fail");
+        assert!(
+            err.contains("FFI") || err.contains("libnotreal"),
+            "expected FFI error, got: {}",
+            err
+        );
+    }
+
+    /// RES-215: `OpaquePtr` parses cleanly as both a parameter type
+    /// and a return type in `extern` declarations. We deliberately
+    /// point at a non-existent library so the test passes on any
+    /// platform — all that matters is that parsing and loader
+    /// resolution reach the "library not found" error (not a
+    /// "type `OpaquePtr` is not supported" error).
+    #[test]
+    fn extern_decl_accepts_opaque_ptr_type() {
+        let src = r#"
+            extern "libnotreal_opaqueptr_xyz.so" {
+                fn alloc_point() -> OpaquePtr;
+                fn free_point(p: OpaquePtr) -> Void;
+                fn get_x(p: OpaquePtr) -> Int;
+            };
+            fn main(int _d) { return 0; }
+            main(0);
+        "#;
+        // With --features ffi we expect LibNotFound, not UnsupportedType.
+        // Without the feature we'd get FfiDisabled — also fine; the point
+        // of this test is that the parser accepts the `OpaquePtr` type.
+        let err = run_with_ffi(src).expect_err("library does not exist");
+        assert!(
+            !err.contains("OpaquePtr") || !err.contains("not supported"),
+            "OpaquePtr must be a recognised FFI type, got: {}",
+            err
+        );
+    }
+
+    /// FFI Phase 1 Task 10: a `@trusted` extern fn's `ensures` clauses
+    /// should be usable by the Z3 verifier as axioms when reasoning
+    /// about code that calls the extern. Without `@trusted`, Z3 knows
+    /// nothing about the callee's return; with `@trusted`, the ensures
+    /// is an assumption.
+    ///
+    /// The verifier primitive that enables this lives in
+    /// `verifier_z3::prove_with_axioms_and_timeout` — unit-tested in
+    /// the `verifier_z3` module. See:
+    ///   `verifier_z3::tests::axiom_promotes_undecidable_to_tautology`
+    ///   `verifier_z3::tests::axiom_chain_enables_two_step_reasoning`
+    ///   `verifier_z3::tests::untranslatable_axiom_is_silently_skipped`
+    ///
+    /// The end-to-end plumbing — registering extern decls in the
+    /// typechecker's scope and identifier table, then routing
+    /// call-site ensures through `prove_with_axioms_and_timeout` —
+    /// lives in `typechecker.rs`, which is out-of-scope for this
+    /// task per the Task 10 constraints. This test is marked
+    /// `#[ignore]` as a tripwire: when the typechecker integration
+    /// lands, removing the `#[ignore]` should make it pass.
+    #[test]
+    #[ignore = "end-to-end trusted-ensures integration requires typechecker.rs changes (out of scope for Task 10)"]
+    #[cfg(all(feature = "z3", feature = "ffi"))]
+    fn trusted_extern_ensures_propagates_as_smt_assumption() {
+        let src = r#"
+            extern "libc.so.6" {
+                @trusted fn abs_val(n: Int) -> Int ensures result >= 0;
+            };
+            fn f(int n)
+                requires n != 0
+                ensures result >= 0
+            {
+                return abs_val(n);
+            }
+        "#;
+        let (program, parse_errs) = parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let result = tc.check_program(&program);
+        assert!(
+            result.is_ok(),
+            "typecheck/verifier failed: {:?}",
+            result
+        );
     }
 }

@@ -1263,6 +1263,7 @@ dependencies = [
  "cranelift-native",
  "ed25519-dalek",
  "insta",
+ "libloading",
  "logos",
  "rand_core",
  "resilient-span",

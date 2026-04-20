@@ -36,6 +36,14 @@ compile_error!(
      `static-only` asserts no-heap posture. Both set = ambiguous build intent."
 );
 
+// FFI static registry capacity flags are mutually exclusive.
+#[cfg(all(feature = "ffi-static-64", feature = "ffi-static-256"))]
+compile_error!("`ffi-static-64` and `ffi-static-256` are mutually exclusive.");
+#[cfg(all(feature = "ffi-static-64", feature = "ffi-static-1024"))]
+compile_error!("`ffi-static-64` and `ffi-static-1024` are mutually exclusive.");
+#[cfg(all(feature = "ffi-static-256", feature = "ffi-static-1024"))]
+compile_error!("`ffi-static-256` and `ffi-static-1024` are mutually exclusive.");
+
 // RES-098: pull in the `alloc` crate when the `alloc` feature
 // is on. Needed in both test and production builds — even when
 // std is available, `alloc::string::String` requires the crate
@@ -46,6 +54,9 @@ extern crate alloc;
 // RES-180: `Sink` abstraction + global `print` / `println`
 // helpers that route through a user-installed sink.
 pub mod sink;
+
+#[cfg(feature = "ffi-static")]
+pub mod ffi_static;
 
 #[cfg(feature = "alloc")]
 use alloc::string::String;

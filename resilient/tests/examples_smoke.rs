@@ -674,3 +674,26 @@ fn minimal_rs_runs_end_to_end() {
         "missing completion println:\n{stdout}"
     );
 }
+
+#[test]
+#[cfg(all(feature = "ffi", target_os = "linux"))]
+fn ffi_libm_example_calls_sqrt() {
+    // Smoke-test the ffi_libm.rs example end-to-end on Linux where
+    // libm.so.6 is always available. Checks sqrt(16.0)=4 and sqrt(2.0)
+    // round-trips through the C trampoline. Gated on feature=ffi and
+    // target_os=linux; skipped silently on other platforms.
+    let (stdout, stderr, code) = run_example("ffi_libm.rs");
+    assert_eq!(
+        code,
+        Some(0),
+        "ffi_libm.rs must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.lines().any(|l| l.trim() == "4"),
+        "expected a line `4` from sqrt(16.0) in stdout; got:\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        stdout.contains("1.4142135623730951"),
+        "expected sqrt(2.0) in stdout; got:\nstdout={stdout}\nstderr={stderr}"
+    );
+}
