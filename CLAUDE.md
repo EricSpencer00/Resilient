@@ -61,6 +61,10 @@ Optional features: `--features z3` (SMT verifier), `--features lsp`,
 Commit format: `RES-NNN: short description` (≤72 chars on the first line).
 Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
 
+**Push policy: push to remote immediately after every commit.** Do not
+accumulate local commits. As soon as a ticket is closed and committed, run
+`git push` so the branch is on remote. Keep as little as possible local-only.
+
 ---
 
 ## Agent autonomy — what you may do freely
