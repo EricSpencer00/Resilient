@@ -4,73 +4,119 @@ Welcome — and thank you for your interest in Resilient! Contributions from
 humans, AI agents, and automated tooling are all equally welcome. Every
 improvement, no matter how small, helps push the language forward.
 
+New here? Skip to [Good first issues](#good-first-issues) for a handful of
+tickets sized for a first PR.
+
+---
+
+## Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/EricSpencer00/Resilient.git
+cd Resilient
+
+# 2. Build the compiler (default features — no z3, no lsp, no jit)
+cargo build --manifest-path resilient/Cargo.toml
+
+# 3. Run the compiler test suite
+cargo test --manifest-path resilient/Cargo.toml
+
+# 4. Build the embedded runtime
+cargo build --manifest-path resilient-runtime/Cargo.toml
+cargo test  --manifest-path resilient-runtime/Cargo.toml
+
+# 5. Run an example
+cargo run --manifest-path resilient/Cargo.toml -- resilient/examples/hello.rs
+```
+
+If all four commands succeed, you have a working dev environment.
+
 ---
 
 ## Setting Up the Development Environment
 
 ### Prerequisites
 
-- **Rust** (stable toolchain) — install via [rustup.rs](https://rustup.rs/)
-- **z3** (optional, for SMT-backed verification)
+- **Rust** (stable toolchain) — install via [rustup.rs](https://rustup.rs/).
+  Edition 2024 is required; any recent stable rustc will do.
+- **z3** (optional, only if you work on verifier code with `--features z3`)
   - macOS: `brew install z3`
   - Linux: `sudo apt-get install libz3-dev z3`
+- **Cross-compile targets** (optional, for `resilient-runtime` cross builds):
+
+  ```bash
+  rustup target add thumbv7em-none-eabihf   # Cortex-M4F
+  rustup target add thumbv6m-none-eabi      # Cortex-M0/M0+
+  rustup target add riscv32imac-unknown-none-elf
+  ```
+
+### Feature flags
+
+The `resilient` crate has several opt-in features; pick only what you need.
+
+| Feature | Flag                     | What it enables                                                    |
+|---------|--------------------------|--------------------------------------------------------------------|
+| `z3`    | `cargo build --features z3`  | Z3-backed SMT verification (requires libz3).                   |
+| `lsp`   | `cargo build --features lsp` | Language server over stdio (`resilient --lsp`).                |
+| `jit`   | `cargo build --features jit` | Cranelift JIT backend (heavy deps; off by default).            |
+| `ffi`   | `cargo build --features ffi` | Dynamic FFI via `extern "lib" { ... }` in the tree walker.     |
+
+The `resilient-runtime` crate has its own feature set — notably
+`--features alloc` (heap types) and `--features ffi-static` (static FFI
+registry). See its `Cargo.toml` for the full list.
 
 ### Building
 
 ```bash
-# Clone the repo
-git clone https://github.com/EricSpencer00/Resilient.git
-cd Resilient
+# Compiler / CLI driver
+cargo build --manifest-path resilient/Cargo.toml
 
-# Build the compiler
-cd resilient
-cargo build
+# With Z3 support
+cargo build --manifest-path resilient/Cargo.toml --features z3
 
-# Build the embedded runtime
-cd ../resilient-runtime
-cargo build
+# With the LSP server
+cargo build --manifest-path resilient/Cargo.toml --features lsp
 
-# Build with the alloc feature
-cargo build --features alloc
+# Embedded runtime
+cargo build --manifest-path resilient-runtime/Cargo.toml
+cargo build --manifest-path resilient-runtime/Cargo.toml --features alloc
+cargo build --manifest-path resilient-runtime/Cargo.toml --features ffi-static
 
-# Build with z3 support (requires z3 installed)
-cd ../resilient
-cargo build --features z3
+# Cross-compile check
+cargo build --manifest-path resilient-runtime/Cargo.toml --target thumbv7em-none-eabihf
 ```
 
-### Running Tests
+### Running tests
 
 ```bash
-# Compiler + interpreter tests
-cd resilient
-cargo test
+# Compiler + interpreter tests (default)
+cargo test --manifest-path resilient/Cargo.toml
 
 # With Z3 integration tests
-cargo test --features z3
+cargo test --manifest-path resilient/Cargo.toml --features z3
 
-# Embedded runtime — default (alloc-free, 11 tests)
-cd resilient-runtime
-cargo test
+# With FFI tests (tree walker)
+cargo test --manifest-path resilient/Cargo.toml --features ffi
 
-# With alloc feature (14 tests)
-cargo test --features alloc
+# Embedded runtime — default (no_std, alloc-free)
+cargo test --manifest-path resilient-runtime/Cargo.toml
 
-# With static-only feature (13 tests)
-cargo test --features static-only
+# With alloc feature
+cargo test --manifest-path resilient-runtime/Cargo.toml --features alloc
+
+# Static FFI registry
+cargo test --manifest-path resilient-runtime/Cargo.toml --features ffi-static
 ```
 
-### Cross-compile targets (optional)
+### Formatting and lints
 
 ```bash
-rustup target add thumbv7em-none-eabihf   # Cortex-M4F
-rustup target add thumbv6m-none-eabi      # Cortex-M0/M0+
-rustup target add riscv32imac-unknown-none-elf
-
-cd resilient-runtime
-cargo build --target thumbv7em-none-eabihf
-cargo build --target thumbv6m-none-eabi
-cargo build --target riscv32imac-unknown-none-elf
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
 ```
+
+Both must pass before a PR can merge; CI enforces them.
 
 ---
 
@@ -82,12 +128,13 @@ Resilient/
 │   ├── src/                        # Lexer, parser, type checker, VM, JIT, builtins
 │   └── examples/                   # Example programs (each with .expected.txt sidecar)
 ├── resilient-runtime/              # no_std-compatible embedded runtime crate
-│   └── src/                        # Value types, ops, sink abstraction
-├── resilient-runtime-cortex-m-demo/# Cortex-M4F cross-compile demo (build check)
+│   └── src/                        # Value types, ops, sink abstraction, FFI registry
+├── resilient-runtime-cortex-m-demo/# Cortex-M4F cross-compile demo (size-gated in CI)
 ├── docs/                           # Static site source (published to GitHub Pages)
 ├── benchmarks/                     # Benchmark scripts and RESULTS.md
 ├── self-host/                      # Self-hosting bootstrap experiments
 ├── scripts/                        # Helper shell scripts (CI, size gate, etc.)
+├── STABILITY.md                    # Pre-1.0 stability policy (read before upgrading)
 ├── .board/                         # Project management board
 │   ├── ROADMAP.md                  # Goalpost ladder (G1–G20+)
 │   └── tickets/                    # Ticket files (OPEN / IN_PROGRESS / DONE)
@@ -96,7 +143,7 @@ Resilient/
 
 ---
 
-## Ticket and Issue Workflow
+## The `.board/` Workflow
 
 Resilient uses a lightweight file-based ticket system under `.board/tickets/`.
 GitHub Issues mirror the OPEN tickets so external contributors can see and
@@ -105,23 +152,46 @@ claim work without needing special repo access.
 ### Ticket lifecycle
 
 ```
-OPEN  →  IN_PROGRESS  →  DONE
+.board/tickets/OPEN/  →  .board/tickets/IN_PROGRESS/  →  .board/tickets/DONE/
 ```
 
-- **OPEN** — `/.board/tickets/OPEN/RES-NNN-short-title.md`
-  Filed when work is defined but not yet started.
-- **IN_PROGRESS** — `/.board/tickets/IN_PROGRESS/RES-NNN-short-title.md`
-  Move the file when you start work. Add your name / agent ID to the ticket.
-- **DONE** — `/.board/tickets/DONE/RES-NNN-short-title.md`
-  Move the file when the work lands on `main`. Record the closing commit hash.
+- **OPEN** — `.board/tickets/OPEN/RES-NNN-short-title.md`
+  Filed when work is defined but not yet started. These mirror the GitHub
+  Issues tagged with `ticket`.
+- **IN_PROGRESS** — `.board/tickets/IN_PROGRESS/RES-NNN-short-title.md`
+  Move the file when you start work. Add your name / agent ID to the ticket
+  header as `Claimed-by:`.
+- **DONE** — `.board/tickets/DONE/RES-NNN-short-title.md`
+  Move the file when the work lands on `main`. Record the closing commit
+  hash in the ticket footer.
 
-### Claiming a ticket
+### Picking up a ticket
 
-1. Pick an OPEN ticket (or open a GitHub Issue for new work).
-2. Move the ticket file from `OPEN/` to `IN_PROGRESS/`.
-3. Add a `Claimed-by:` line to the ticket header.
-4. Open a draft PR referencing the ticket number early so others know work is
-   in progress.
+1. Skim `.board/tickets/OPEN/` (or the GitHub Issues list) and pick one. New
+   contributors — look for issues tagged `good first issue`.
+2. **Claim it** by moving the file:
+
+   ```bash
+   git mv .board/tickets/OPEN/RES-NNN-*.md .board/tickets/IN_PROGRESS/
+   ```
+
+   Add a `Claimed-by: <your-github-handle>` line to the ticket header and
+   commit that move as its own commit, or include it in your first PR.
+3. Open a **draft PR** early — this signals to others that the ticket is
+   taken.
+4. When the PR merges, move the ticket to `DONE/` and record the commit hash
+   in the ticket footer.
+5. Close the corresponding GitHub Issue (`Closes #N` in the PR body does this
+   automatically).
+
+### Good first issues
+
+New contributors: the `good first issue` label on GitHub marks tickets that
+are well-scoped for a first PR. They come with clear acceptance criteria and
+generally don't require deep knowledge of the compiler internals.
+
+Browse them at:
+<https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22>
 
 ---
 
@@ -129,10 +199,18 @@ OPEN  →  IN_PROGRESS  →  DONE
 
 - **Ticket work**: `RES-NNN: short description`
   Example: `RES-207: add struct literal syntax to parser`
+- **Multi-ticket change**: join the ticket IDs with `/`.
+  Example: `RES-209/214: stability policy doc + contributing guide overhaul`
 - **Other fixes / chores**: free-form, but keep the first line under 72 chars.
   Example: `Fix typo in CONTRIBUTING.md`
 - **Multi-line bodies** are welcome for complex changes — explain *why*, not
   just *what*.
+- AI-agent-authored commits should include a `Co-Authored-By:` trailer so
+  authorship is transparent. Example:
+
+  ```
+  Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+  ```
 
 ---
 
@@ -140,8 +218,9 @@ OPEN  →  IN_PROGRESS  →  DONE
 
 ### General
 
-- Follow existing code style. Run `cargo fmt` before committing.
-- Run `cargo clippy -- -D warnings` and address all warnings.
+- Run `cargo fmt --all` before committing.
+- Run `cargo clippy --all-targets -- -D warnings` and fix every warning —
+  CI rejects clippy warnings.
 - Every new language feature must have tests. Every new example program must
   have a `.expected.txt` golden-output sidecar in `resilient/examples/`.
 
@@ -171,23 +250,37 @@ OPEN  →  IN_PROGRESS  →  DONE
 - Tests that require z3 must be gated with `#[cfg(feature = "z3")]` or placed
   under `cargo test --features z3`.
 
+### Stability-sensitive changes
+
+Before changing anything listed as **stable** in [STABILITY.md](STABILITY.md),
+read that file's "How Breaking Changes Land" section. Breaking changes to
+stable surface require a deprecation plan in the ticket.
+
 ---
 
-## Pull Request Guidelines
+## Pull Request Checklist
 
-- **Keep PRs small and focused.** One ticket = one PR is ideal.
-- **Link the GitHub Issue** in the PR description:
-  `Closes #<issue-number>` or `Fixes #<issue-number>`.
-- **CI must be green** before requesting review. The workflows gate on:
-  - `cargo test` (host)
-  - `cargo test --features z3`
-  - `cargo test --features alloc` in `resilient-runtime`
-  - Cross-compile for `thumbv7em-none-eabihf`, `thumbv6m-none-eabi`,
-    and `riscv32imac-unknown-none-elf`
-  - Size gate (`.text` ≤ 64 KiB for the Cortex-M4F demo)
-  - Performance gate (`cargo bench` regression check)
-- Include a brief description of *what* changed and *why*.
-- Update `CHANGELOG` or the relevant ticket file if appropriate.
+Before marking a PR ready for review:
+
+- [ ] Linked GitHub issue in the PR body (`Closes #N` / `Fixes #N`).
+- [ ] Commit subject follows `RES-NNN: short description`.
+- [ ] `cargo fmt --all` clean.
+- [ ] `cargo clippy --all-targets -- -D warnings` clean.
+- [ ] `cargo test` passes on the crates you touched (with relevant features).
+- [ ] New behaviour has tests (unit or `.expected.txt` golden).
+- [ ] Documentation updated if user-visible behaviour changed (README,
+      SYNTAX.md, docs/, STABILITY.md CHANGELOG).
+- [ ] Ticket moved from `IN_PROGRESS/` to `DONE/` in the same PR when the
+      work is complete.
+
+CI gates PRs on all of the above plus:
+
+- Cross-compile for `thumbv7em-none-eabihf`, `thumbv6m-none-eabi`, and
+  `riscv32imac-unknown-none-elf`.
+- Size gate (`.text` ≤ 64 KiB for the Cortex-M4F demo).
+- Performance gate (`cargo bench` regression check).
+
+Keep PRs small and focused — one ticket per PR is ideal.
 
 ---
 
@@ -196,19 +289,12 @@ OPEN  →  IN_PROGRESS  →  DONE
 AI agents are first-class contributors. The same rules apply as for humans:
 
 - Follow the commit format (`RES-NNN: short description` for ticket work).
-- Open PRs against `main`; do not force-push.
+- Open PRs against `main`; never force-push.
 - Keep PRs focused — one ticket, one concern.
 - All CI checks must pass before requesting a merge.
-- If an agent opens a PR on behalf of a human, include a `Co-Authored-By:`
-  trailer in the commit message so authorship is transparent.
-- Agents may claim tickets by moving them from `OPEN/` to `IN_PROGRESS/` and
-  adding `Claimed-by: <agent-id>` to the ticket header.
-
-Example commit trailer for agent-assisted work:
-
-```
-Co-Authored-By: Claude Sonnet <noreply@anthropic.com>
-```
+- Include a `Co-Authored-By:` trailer on any agent-assisted commit.
+- Claim tickets by moving them from `OPEN/` to `IN_PROGRESS/` and adding
+  `Claimed-by: <agent-id>` to the ticket header.
 
 ---
 
