@@ -2758,6 +2758,8 @@ impl Parser {
     ///               `;`
     /// ```
     fn parse_extern_decl(&mut self) -> Option<ExternDecl> {
+        let decl_span = self.span_at_current();
+
         // Optional `@trusted` prefix.
         let mut trusted = false;
         if matches!(self.current_token, Token::At) {
@@ -2779,7 +2781,6 @@ impl Parser {
         }
 
         // `fn`
-        let decl_span = self.span_at_current();
         if !matches!(self.current_token, Token::Function) {
             let tok = self.current_token.clone();
             self.record_error(format!(
@@ -2855,7 +2856,8 @@ impl Parser {
             resilient_name.clone()
         };
 
-        // Optional `requires(...)` / `ensures(...)` clauses.
+        // Optional `requires EXPR` / `ensures EXPR` clauses (paren-less — Resilient
+        // contract syntax; reuses parse_function_contracts).
         let (requires, ensures) = self.parse_function_contracts();
 
         // Terminator `;`.
@@ -2943,10 +2945,10 @@ impl Parser {
                 }
                 Token::RightParen => break,
                 other => {
-                    let tok = other.clone();
+                    let tok_syntax = other.display_syntax();
                     self.record_error(format!(
-                        "expected `,` or `)` in extern fn parameters, got {}",
-                        tok
+                        "after extern fn parameter: {}",
+                        format_expected(&["`,`", "`)`"], &tok_syntax)
                     ));
                     break;
                 }
@@ -9504,7 +9506,8 @@ mod tests {
     #[test]
     fn parses_extern_fn_with_c_name_alias() {
         let src = r#"extern "libm.so.6" { fn sine(x: Float) -> Float = "sin"; }"#;
-        let (program, _) = crate::parse(src);
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "{:?}", errs);
         let decls = match &program {
             crate::Node::Program(s) => match &s[0].node {
                 crate::Node::Extern { decls, .. } => decls.clone(),
