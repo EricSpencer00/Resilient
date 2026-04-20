@@ -1,0 +1,4 @@
+# Platform-specific demo: Linux only (libm.so.6).
+# On macOS the library name differs (libm.dylib).
+# Blocked by RES-229 (parse_extern_block cursor desync).
+# Exempt from the golden-file audit via this .interactive marker.
