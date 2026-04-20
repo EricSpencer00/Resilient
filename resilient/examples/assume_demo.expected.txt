@@ -1,0 +1,2 @@
+assume passed, y = 43
+Program executed successfully
