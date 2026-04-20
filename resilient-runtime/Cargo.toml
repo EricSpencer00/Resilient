@@ -29,6 +29,12 @@ static-only = []
 # without this feature; this just adds a convenience
 # implementation for users who WANT to route to stdout.
 std-sink = []
+# FFI static registry for no_std embedded hosts.
+# Pick exactly ONE capacity feature (default 64):
+ffi-static = []
+ffi-static-64 = ["ffi-static"]
+ffi-static-256 = ["ffi-static"]
+ffi-static-1024 = ["ffi-static"]
 
 [dependencies]
 embedded-alloc = { version = "0.5", optional = true }
