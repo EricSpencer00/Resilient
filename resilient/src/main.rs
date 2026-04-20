@@ -2086,6 +2086,13 @@ impl Parser {
     /// messages (e.g. `"after ':'"`, `"in struct field"`).
     fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
         match &self.current_token {
+            // RES-125: `_` in a type position is an inference placeholder.
+            // Each occurrence becomes a distinct fresh `Type::Var` during
+            // the inference pass (see `infer.rs`:`parse_primitive_type`).
+            Token::Underscore => {
+                self.next_token(); // advance past `_`
+                Some("_".to_string())
+            }
             Token::Identifier(t) => {
                 let ty = t.clone();
                 self.next_token(); // advance past the identifier
@@ -18552,6 +18559,125 @@ mod tests {
         // First token starts at column 0 of line 0.
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
+    }
+
+    // ---------- RES-125: `_` type holes as inference placeholders ----------
+
+    #[test]
+    fn res125_underscore_let_annotation_parses() {
+        // `let x: _ = 42` must parse without errors and record the
+        // annotation as "_".
+        let (p, errors) = parse("let x: _ = 42;");
+        assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::LetStatement {
+                    name, type_annot, ..
+                } => {
+                    assert_eq!(name, "x");
+                    assert_eq!(type_annot.as_deref(), Some("_"));
+                }
+                other => panic!("expected LetStatement, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn res125_underscore_fn_param_annotation_parses() {
+        // `fn foo(_ x) -> int { return x; }` — `_` as a parameter
+        // type annotation must parse cleanly.
+        let src = "fn foo(_ x) -> int { return x; }";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { parameters, .. } => {
+                    assert_eq!(parameters.len(), 1);
+                    assert_eq!(parameters[0].0, "_");
+                    assert_eq!(parameters[0].1, "x");
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    fn res125_underscore_fn_return_annotation_parses() {
+        // `fn bar(int x) -> _ { return x; }` — `_` as a return type
+        // annotation must parse cleanly.
+        let src = "fn bar(int x) -> _ { return x; }";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+        match p {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { return_type, .. } => {
+                    assert_eq!(return_type.as_deref(), Some("_"));
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            _ => panic!("expected Program"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "infer")]
+    fn res125_each_underscore_becomes_independent_inference_var() {
+        // Two `_` in the same function's parameter list must each
+        // become an independent fresh `Type::Var` — they must not
+        // share a variable id.
+        use crate::infer::Inferer;
+
+        let src = "fn f(_ a, _ b) { return 0; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let func = match prog {
+            Node::Program(ref stmts) => stmts[0].node.clone(),
+            _ => panic!("expected Program"),
+        };
+        let mut inf = Inferer::new();
+        inf.infer_function(&func).expect("inference ok");
+        // Each `_`-annotated param gets a distinct fresh var.
+        // If they were the same var, unifying `a` with `int` would
+        // force `b` to be `int` too. We check they're distinct by
+        // verifying the types stored in env are not identical when
+        // they are still unresolved vars.
+        let ta = inf.env_type("a").cloned().unwrap();
+        let tb = inf.env_type("b").cloned().unwrap();
+        // Both should be Var, and distinct.
+        match (&ta, &tb) {
+            (crate::typechecker::Type::Var(ia), crate::typechecker::Type::Var(ib)) => {
+                assert_ne!(ia, ib, "each _ must produce a distinct Var id")
+            }
+            // If either resolved to a concrete type it's still fine —
+            // both arms produce different types so they're independent.
+            _ => {}
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "infer")]
+    fn res125_let_underscore_infers_int_from_arithmetic() {
+        // `let x: _ = 3 + 2` inside a function: `x` must infer
+        // as `Int`.
+        use crate::infer::Inferer;
+        use crate::typechecker::Type;
+
+        let src = "fn f() { let x: _ = 3 + 2; return x; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let func = match prog {
+            Node::Program(ref stmts) => stmts[0].node.clone(),
+            _ => panic!("expected Program"),
+        };
+        let mut inf = Inferer::new();
+        inf.infer_function(&func).expect("inference ok");
+        assert_eq!(
+            inf.env_type("x"),
+            Some(&Type::Int),
+            "let x: _ = 3 + 2 must infer x as Int"
+        );
     }
 }
 

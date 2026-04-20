@@ -1,11 +1,12 @@
 ---
 id: RES-125
 title: Type holes `_` in annotations are treated as inference placeholders
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G7
 created: 2026-04-17
 owner: executor
+Claimed-by: Claude
 ---
 
 ## Summary
@@ -36,6 +37,7 @@ in: a `_` in a type position becomes a fresh `Type::Var`.
 ## Log
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked on RES-120)
+- 2026-04-20 claimed by Claude — RES-120 is now done; implementing
 
 ## Attempt 1 failed
 

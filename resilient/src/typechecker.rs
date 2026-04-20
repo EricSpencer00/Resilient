@@ -2187,6 +2187,12 @@ impl TypeChecker {
             "Result" => Ok(Type::Result),
             "array" => Ok(Type::Array),
             "" => Ok(Type::Any), // Empty type name means "any" for now
+            // RES-125: `_` in a type position is an inference placeholder.
+            // The typechecker treats it as `Any` so existing compatibility
+            // rules (`compatible()`) let it unify with any concrete type.
+            // The HM inference pass (`infer.rs`) mints a proper `Type::Var`
+            // for each `_` occurrence so each hole is independently resolved.
+            "_" => Ok(Type::Any),
             // RES-128: a registered alias expands transitively.
             other if self.type_aliases.contains_key(other) => {
                 if seen.iter().any(|n| n == other) {

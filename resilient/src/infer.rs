@@ -48,11 +48,11 @@
 
 use std::collections::HashMap;
 
+use crate::Node;
 use crate::diag::{DiagCode, Diagnostic, Severity};
 use crate::span::Span;
 use crate::typechecker::Type;
 use crate::unify::{Substitution, UnifyError};
-use crate::Node;
 
 /// RES-120: one type-inference error.
 ///
@@ -135,7 +135,10 @@ impl Scheme {
     /// uniformly treat monomorphic + polymorphic bindings the
     /// same way.
     pub fn monotype(ty: Type) -> Self {
-        Self { vars: Vec::new(), ty }
+        Self {
+            vars: Vec::new(),
+            ty,
+        }
     }
 }
 
@@ -153,7 +156,10 @@ fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
         Type::Var(v) => {
             out.insert(*v);
         }
-        Type::Function { params, return_type } => {
+        Type::Function {
+            params,
+            return_type,
+        } => {
             for p in params {
                 collect_ftv(p, out);
             }
@@ -203,7 +209,10 @@ pub fn generalize(env: &HashMap<String, Type>, ty: &Type) -> Scheme {
     // Diff, sorted for deterministic output.
     let mut vars: Vec<u32> = ty_vars.difference(&env_vars).copied().collect();
     vars.sort();
-    Scheme { vars, ty: ty.clone() }
+    Scheme {
+        vars,
+        ty: ty.clone(),
+    }
 }
 
 impl Inferer {
@@ -238,7 +247,10 @@ impl Inferer {
 fn substitute_vars(ty: &Type, map: &HashMap<u32, Type>) -> Type {
     match ty {
         Type::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
-        Type::Function { params, return_type } => Type::Function {
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
             params: params.iter().map(|p| substitute_vars(p, map)).collect(),
             return_type: Box::new(substitute_vars(return_type, map)),
         },
@@ -270,25 +282,33 @@ impl Inferer {
         &self.subst
     }
 
+    /// Look up the inferred type of a name in the env. Useful
+    /// for tests that need to inspect the result of inference
+    /// without accessing the private `env` field directly.
+    pub fn env_type(&self, name: &str) -> Option<&Type> {
+        self.env.get(name)
+    }
+
     /// RES-120 entry point.
     ///
     /// Walks the body of a `Node::Function`, seeding the env
     /// from declared parameter types and collecting + solving
     /// type constraints. Returns the final substitution or a
     /// non-empty `Vec<Diagnostic>` on failure.
-    pub fn infer_function(
-        &mut self,
-        func: &Node,
-    ) -> Result<Substitution, Vec<Diagnostic>> {
+    pub fn infer_function(&mut self, func: &Node) -> Result<Substitution, Vec<Diagnostic>> {
         let (parameters, body) = match func {
-            Node::Function { parameters, body, .. } => (parameters, body),
+            Node::Function {
+                parameters, body, ..
+            } => (parameters, body),
             _ => {
-                return Err(vec![Diagnostic::new(
-                    Severity::Error,
-                    Span::default(),
-                    "infer_function expects a Node::Function",
-                )
-                .with_code(T0006_UNSUPPORTED.clone())]);
+                return Err(vec![
+                    Diagnostic::new(
+                        Severity::Error,
+                        Span::default(),
+                        "infer_function expects a Node::Function",
+                    )
+                    .with_code(T0006_UNSUPPORTED.clone()),
+                ]);
             }
         };
 
@@ -321,7 +341,12 @@ impl Inferer {
                     self.infer_stmt(s, errs);
                 }
             }
-            Node::LetStatement { name, value, type_annot, span } => {
+            Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                span,
+            } => {
                 let value_ty = match self.infer_expr(value) {
                     Ok(t) => t,
                     Err(e) => {
@@ -338,10 +363,7 @@ impl Inferer {
                     errs.push(unify_error_to_diag(
                         e,
                         *span,
-                        format!(
-                            "let {}: {} — annotation doesn't match value",
-                            name, ann
-                        ),
+                        format!("let {}: {} — annotation doesn't match value", name, ann),
                     ));
                 }
                 // Non-primitive annotations are ignored by the
@@ -360,7 +382,12 @@ impl Inferer {
                     errs.push(e);
                 }
             }
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 match self.infer_expr(condition) {
                     Ok(ct) => {
                         if let Err(e) = self.subst.unify(&ct, &Type::Bool) {
@@ -378,7 +405,9 @@ impl Inferer {
                     self.infer_stmt(a, errs);
                 }
             }
-            Node::WhileStatement { condition, body, .. } => {
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
                 match self.infer_expr(condition) {
                     Ok(ct) => {
                         if let Err(e) = self.subst.unify(&ct, &Type::Bool) {
@@ -410,24 +439,29 @@ impl Inferer {
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
             Node::StringLiteral { .. } => Ok(Type::String),
-            Node::Identifier { name, span } => self
-                .env
-                .get(name)
-                .cloned()
-                .ok_or_else(|| {
-                    Diagnostic::new(
-                        Severity::Error,
-                        *span,
-                        format!("identifier `{}` not in scope", name),
-                    )
-                    .with_code(T0005_UNBOUND.clone())
-                }),
-            Node::InfixExpression { left, operator, right, span } => {
+            Node::Identifier { name, span } => self.env.get(name).cloned().ok_or_else(|| {
+                Diagnostic::new(
+                    Severity::Error,
+                    *span,
+                    format!("identifier `{}` not in scope", name),
+                )
+                .with_code(T0005_UNBOUND.clone())
+            }),
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                span,
+            } => {
                 let lt = self.infer_expr(left)?;
                 let rt = self.infer_expr(right)?;
                 self.infer_infix_op(&lt, &rt, operator, *span)
             }
-            Node::PrefixExpression { operator, right, span } => {
+            Node::PrefixExpression {
+                operator,
+                right,
+                span,
+            } => {
                 let rt = self.infer_expr(right)?;
                 self.infer_prefix_op(&rt, operator, *span)
             }
@@ -502,18 +536,10 @@ impl Inferer {
             // Bitwise + shifts: both operands Int; result Int.
             "&" | "|" | "^" | "<<" | ">>" => {
                 self.subst.unify(lt, &Type::Int).map_err(|e| {
-                    unify_error_to_diag(
-                        e,
-                        span,
-                        format!("operator `{}` requires int operands", op),
-                    )
+                    unify_error_to_diag(e, span, format!("operator `{}` requires int operands", op))
                 })?;
                 self.subst.unify(rt, &Type::Int).map_err(|e| {
-                    unify_error_to_diag(
-                        e,
-                        span,
-                        format!("operator `{}` requires int operands", op),
-                    )
+                    unify_error_to_diag(e, span, format!("operator `{}` requires int operands", op))
                 })?;
                 Ok(Type::Int)
             }
@@ -526,20 +552,11 @@ impl Inferer {
         }
     }
 
-    fn infer_prefix_op(
-        &mut self,
-        rt: &Type,
-        op: &str,
-        span: Span,
-    ) -> Result<Type, Diagnostic> {
+    fn infer_prefix_op(&mut self, rt: &Type, op: &str, span: Span) -> Result<Type, Diagnostic> {
         match op {
             "!" => {
                 self.subst.unify(rt, &Type::Bool).map_err(|e| {
-                    unify_error_to_diag(
-                        e,
-                        span,
-                        "prefix `!` requires a bool operand".into(),
-                    )
+                    unify_error_to_diag(e, span, "prefix `!` requires a bool operand".into())
                 })?;
                 Ok(Type::Bool)
             }
@@ -729,11 +746,10 @@ mod tests {
 
     #[test]
     fn int_plus_float_fails_unification() {
-        let errs = infer_err(
-            "fn f(int a, float b) { let s = a + b; return s; }\n",
-        );
+        let errs = infer_err("fn f(int a, float b) { let s = a + b; return s; }\n");
         assert!(
-            errs.iter().any(|d| d.code == Some(T0002_PRIMITIVE_MISMATCH)),
+            errs.iter()
+                .any(|d| d.code == Some(T0002_PRIMITIVE_MISMATCH)),
             "expected T0002, got {:?}",
             errs,
         );
@@ -741,9 +757,7 @@ mod tests {
 
     #[test]
     fn int_plus_bool_fails() {
-        let errs = infer_err(
-            "fn f(int a, bool b) { let s = a + b; return s; }\n",
-        );
+        let errs = infer_err("fn f(int a, bool b) { let s = a + b; return s; }\n");
         assert!(!errs.is_empty());
     }
 
@@ -751,16 +765,12 @@ mod tests {
 
     #[test]
     fn bool_and_bool_returns_bool() {
-        let _ = infer_ok(
-            "fn f(bool a, bool b) { let r = a && b; return r; }\n",
-        );
+        let _ = infer_ok("fn f(bool a, bool b) { let r = a && b; return r; }\n");
     }
 
     #[test]
     fn int_and_bool_fails() {
-        let errs = infer_err(
-            "fn f(int a, bool b) { let r = a && b; return r; }\n",
-        );
+        let errs = infer_err("fn f(int a, bool b) { let r = a && b; return r; }\n");
         assert!(!errs.is_empty());
     }
 
@@ -768,8 +778,7 @@ mod tests {
 
     #[test]
     fn int_equal_int_returns_bool() {
-        let src =
-            "fn f(int a, int b) { let r = a == b; return r; }\n";
+        let src = "fn f(int a, int b) { let r = a == b; return r; }\n";
         let func = first_function(src);
         let mut inf = Inferer::new();
         inf.infer_function(&func).expect("ok");
@@ -778,9 +787,7 @@ mod tests {
 
     #[test]
     fn int_lt_string_fails() {
-        let errs = infer_err(
-            "fn f(int a, string b) { let r = a < b; return r; }\n",
-        );
+        let errs = infer_err("fn f(int a, string b) { let r = a < b; return r; }\n");
         assert!(!errs.is_empty());
     }
 
@@ -797,9 +804,7 @@ mod tests {
 
     #[test]
     fn bitwise_on_bool_fails() {
-        let errs = infer_err(
-            "fn f(bool a, bool b) { let r = a & b; return r; }\n",
-        );
+        let errs = infer_err("fn f(bool a, bool b) { let r = a & b; return r; }\n");
         assert!(!errs.is_empty());
     }
 
@@ -839,7 +844,8 @@ mod tests {
     fn let_annotation_conflicts_with_value() {
         let errs = infer_err("fn f() { let x: int = true; return x; }\n");
         assert!(
-            errs.iter().any(|d| d.code == Some(T0002_PRIMITIVE_MISMATCH)),
+            errs.iter()
+                .any(|d| d.code == Some(T0002_PRIMITIVE_MISMATCH)),
             "expected primitive-mismatch T0002, got {:?}",
             errs,
         );
@@ -849,17 +855,13 @@ mod tests {
 
     #[test]
     fn if_condition_must_be_bool() {
-        let errs = infer_err(
-            "fn f(int x) { if x { return 1; } else { return 2; } }\n",
-        );
+        let errs = infer_err("fn f(int x) { if x { return 1; } else { return 2; } }\n");
         assert!(!errs.is_empty());
     }
 
     #[test]
     fn while_condition_must_be_bool() {
-        let errs = infer_err(
-            "fn f(int x) { while x { let y = 1; } return 0; }\n",
-        );
+        let errs = infer_err("fn f(int x) { while x { let y = 1; } return 0; }\n");
         assert!(!errs.is_empty());
     }
 
@@ -923,10 +925,7 @@ mod tests {
 
     #[test]
     fn free_type_vars_collects_var_id() {
-        assert_eq!(
-            free_type_vars(&Type::Var(3)),
-            [3].into_iter().collect(),
-        );
+        assert_eq!(free_type_vars(&Type::Var(3)), [3].into_iter().collect(),);
     }
 
     #[test]
@@ -1008,7 +1007,10 @@ mod tests {
         // the same var — but distinct across instantiations.
         fn unwrap_fn(t: &Type) -> (&Type, &Type) {
             match t {
-                Type::Function { params, return_type } => (&params[0], return_type),
+                Type::Function {
+                    params,
+                    return_type,
+                } => (&params[0], return_type),
                 _ => panic!("expected Fn, got {:?}", t),
             }
         }
@@ -1043,7 +1045,11 @@ mod tests {
         };
         let mut inf = Inferer::new();
         let t = inf.instantiate(&scheme);
-        if let Type::Function { params, return_type } = t {
+        if let Type::Function {
+            params,
+            return_type,
+        } = t
+        {
             // Var(2) survives unchanged.
             assert_eq!(params[1], Type::Var(2));
             // Var(1) becomes a fresh var (matches
@@ -1069,7 +1075,10 @@ mod tests {
         let mut inf = Inferer::new();
         let inst = inf.instantiate(&scheme);
         match inst {
-            Type::Function { ref params, ref return_type } => {
+            Type::Function {
+                ref params,
+                ref return_type,
+            } => {
                 assert_eq!(params.len(), 1);
                 // Structure preserved.
                 assert_eq!(&params[0], return_type.as_ref());

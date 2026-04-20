@@ -22,7 +22,7 @@
 //! Those are intentional follow-ups; this is the foundation.
 
 use crate::span::Spanned;
-use crate::{parse, Node};
+use crate::{Node, parse};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -123,6 +123,47 @@ fn load_and_parse(path: &Path) -> Result<Node, String> {
         ));
     }
     Ok(program)
+}
+
+/// RES-228: collect all source files that the watch mode should
+/// observe for changes. Returns `src` itself plus every file
+/// that is transitively `use`d from it.
+///
+/// On any I/O error the offending path is silently skipped — watch
+/// mode degrades gracefully (it may miss a re-run, but it never
+/// crashes).
+pub fn collect_watched_paths(src: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    collect_recursive(src, &mut out, &mut visited);
+    out
+}
+
+fn collect_recursive(src: &Path, out: &mut Vec<PathBuf>, visited: &mut HashSet<PathBuf>) {
+    let canon = canonicalize_or_self(src);
+    if !visited.insert(canon.clone()) {
+        return; // already visited — no cycle
+    }
+    out.push(src.to_path_buf());
+
+    let text = match fs::read_to_string(src) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let (program, _errs) = parse(&text);
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return,
+    };
+    let base = src.parent().unwrap_or(Path::new("."));
+    for stmt in &stmts {
+        if let Node::Use { path, .. } = &stmt.node {
+            let dep = base.join(path);
+            if dep.exists() {
+                collect_recursive(&dep, out, visited);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
