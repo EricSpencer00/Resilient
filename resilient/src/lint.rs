@@ -22,7 +22,7 @@
 //! - The module exports `check(program, source) -> Vec<Lint>`.
 //!   Main wires that into the `lint <file>` subcommand.
 
-use crate::{span::Span, Node, Pattern};
+use crate::{Node, Pattern, span::Span};
 
 /// RES-198: one lint hit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +110,9 @@ pub fn format_lint(l: &Lint, path: &str) -> String {
 // shadow-aware analysis is a follow-up.
 
 fn run_l0001_unused_local(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for spanned in stmts {
         if let Node::Function { body, .. } = &spanned.node {
             let mut lets: Vec<(String, Span)> = Vec::new();
@@ -118,8 +120,7 @@ fn run_l0001_unused_local(program: &Node, out: &mut Vec<Lint>) {
             if lets.is_empty() {
                 continue;
             }
-            let mut used: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
             collect_identifier_reads_in(body, &mut used);
             for (name, span) in &lets {
                 if name.starts_with('_') {
@@ -144,11 +145,15 @@ fn run_l0001_unused_local(program: &Node, out: &mut Vec<Lint>) {
 
 fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
     match node {
-        Node::LetStatement { name, value, span, .. } => {
+        Node::LetStatement {
+            name, value, span, ..
+        } => {
             out.push((name.clone(), *span));
             collect_lets_in(value, out);
         }
-        Node::StaticLet { name, value, span, .. } => {
+        Node::StaticLet {
+            name, value, span, ..
+        } => {
             out.push((name.clone(), *span));
             collect_lets_in(value, out);
         }
@@ -157,14 +162,21 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
                 collect_lets_in(s, out);
             }
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             collect_lets_in(condition, out);
             collect_lets_in(consequence, out);
             if let Some(a) = alternative {
                 collect_lets_in(a, out);
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             collect_lets_in(condition, out);
             collect_lets_in(body, out);
         }
@@ -173,7 +185,9 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
             collect_lets_in(body, out);
         }
         Node::LiveBlock { body, .. } => collect_lets_in(body, out),
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             collect_lets_in(scrutinee, out);
             for (_, guard, arm_body) in arms {
                 if let Some(g) = guard {
@@ -186,16 +200,12 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
     }
 }
 
-fn collect_identifier_reads_in(
-    node: &Node,
-    out: &mut std::collections::HashSet<String>,
-) {
+fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<String>) {
     match node {
         Node::Identifier { name, .. } => {
             out.insert(name.clone());
         }
-        Node::LetStatement { value, .. }
-        | Node::StaticLet { value, .. } => {
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
             collect_identifier_reads_in(value, out);
         }
         Node::ReturnStatement { value: Some(v), .. } => {
@@ -208,14 +218,21 @@ fn collect_identifier_reads_in(
         Node::ExpressionStatement { expr, .. } => {
             collect_identifier_reads_in(expr, out);
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             collect_identifier_reads_in(condition, out);
             collect_identifier_reads_in(consequence, out);
             if let Some(a) = alternative {
                 collect_identifier_reads_in(a, out);
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             collect_identifier_reads_in(condition, out);
             collect_identifier_reads_in(body, out);
         }
@@ -228,7 +245,9 @@ fn collect_identifier_reads_in(
                 collect_identifier_reads_in(s, out);
             }
         }
-        Node::LiveBlock { body, invariants, .. } => {
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
             collect_identifier_reads_in(body, out);
             for inv in invariants {
                 collect_identifier_reads_in(inv, out);
@@ -241,7 +260,11 @@ fn collect_identifier_reads_in(
         Node::PrefixExpression { right, .. } => {
             collect_identifier_reads_in(right, out);
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             collect_identifier_reads_in(function, out);
             for a in arguments {
                 collect_identifier_reads_in(a, out);
@@ -254,7 +277,12 @@ fn collect_identifier_reads_in(
             collect_identifier_reads_in(target, out);
             collect_identifier_reads_in(index, out);
         }
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             collect_identifier_reads_in(target, out);
             collect_identifier_reads_in(index, out);
             collect_identifier_reads_in(value, out);
@@ -276,7 +304,9 @@ fn collect_identifier_reads_in(
                 collect_identifier_reads_in(v, out);
             }
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             collect_identifier_reads_in(scrutinee, out);
             for (_, guard, arm_body) in arms {
                 if let Some(g) = guard {
@@ -303,6 +333,22 @@ fn collect_identifier_reads_in(
 // A `_` nested inside a `Pattern::Or` branch doesn't itself
 // render the rest of the match unreachable (each branch of the
 // Or tests independently); only a top-level wildcard arm does.
+//
+// RES-232: `Pattern::Bind` whose inner pattern is a default (e.g.
+// `n @ _`, `n @ m`) also catches every value — treat as catch-all.
+
+/// RES-232: mirrors `typechecker::pattern_is_default`. Returns `true`
+/// when the pattern matches every value (wildcard, bare identifier,
+/// bind whose inner is default, or-pattern with at least one default
+/// branch).
+fn pattern_is_default_for_lint(p: &Pattern) -> bool {
+    match p {
+        Pattern::Wildcard | Pattern::Identifier(_) => true,
+        Pattern::Literal(_) => false,
+        Pattern::Or(branches) => branches.iter().any(pattern_is_default_for_lint),
+        Pattern::Bind(_, inner) => pattern_is_default_for_lint(inner),
+    }
+}
 
 fn run_l0002_unreachable_arm(program: &Node, out: &mut Vec<Lint>) {
     walk_matches(program, out);
@@ -321,7 +367,9 @@ fn walk_matches(node: &Node, out: &mut Vec<Lint>) {
                 walk_matches(s, out);
             }
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             // Find the first arm whose pattern is a bare wildcard.
             // Report subsequent arms at the arm body's span (the
             // closest accessible position — `Pattern` itself
@@ -340,33 +388,40 @@ fn walk_matches(node: &Node, out: &mut Vec<Lint>) {
                 if saw_wild {
                     let arm_span = span_of(arm_body);
                     let (line, col) = match arm_span {
-                        Some(s) if s.start.line > 0 => {
-                            (s.start.line as u32, s.start.column as u32)
-                        }
+                        Some(s) if s.start.line > 0 => (s.start.line as u32, s.start.column as u32),
                         _ => (scrut_line, scrut_col),
                     };
                     out.push(Lint {
                         code: "L0002".into(),
                         severity: Severity::Warning,
-                        message: "arm is unreachable — an earlier `_` arm already matches everything".into(),
+                        message:
+                            "arm is unreachable — an earlier `_` arm already matches everything"
+                                .into(),
                         line,
                         column: col,
                     });
                 }
                 walk_matches(arm_body, out);
-                if matches!(pat, Pattern::Wildcard) {
+                if pattern_is_default_for_lint(pat) {
                     saw_wild = true;
                 }
             }
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             walk_matches(condition, out);
             walk_matches(consequence, out);
             if let Some(a) = alternative {
                 walk_matches(a, out);
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             walk_matches(condition, out);
             walk_matches(body, out);
         }
@@ -377,7 +432,9 @@ fn walk_matches(node: &Node, out: &mut Vec<Lint>) {
         Node::LiveBlock { body, .. } => walk_matches(body, out),
         Node::LetStatement { value, .. }
         | Node::StaticLet { value, .. }
-        | Node::ReturnStatement { value: Some(value), .. } => {
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
             walk_matches(value, out);
         }
         Node::ExpressionStatement { expr, .. } => walk_matches(expr, out),
@@ -386,7 +443,11 @@ fn walk_matches(node: &Node, out: &mut Vec<Lint>) {
             walk_matches(right, out);
         }
         Node::PrefixExpression { right, .. } => walk_matches(right, out),
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             walk_matches(function, out);
             for a in arguments {
                 walk_matches(a, out);
@@ -411,12 +472,15 @@ fn run_l0003_self_comparison(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_self_comparisons(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::InfixExpression { left, operator, right, span } = node
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
         && (operator == "==" || operator == "!=")
-        && let (
-            Node::Identifier { name: ln, .. },
-            Node::Identifier { name: rn, .. },
-        ) = (left.as_ref(), right.as_ref())
+        && let (Node::Identifier { name: ln, .. }, Node::Identifier { name: rn, .. }) =
+            (left.as_ref(), right.as_ref())
         && ln == rn
     {
         let always = if operator == "==" {
@@ -427,10 +491,7 @@ fn walk_self_comparisons(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0003".into(),
             severity: Severity::Warning,
-            message: format!(
-                "comparing `{}` to itself is {} (likely a typo)",
-                ln, always
-            ),
+            message: format!("comparing `{}` to itself is {} (likely a typo)", ln, always),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -455,7 +516,13 @@ fn run_l0004_mixed_and_or(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn walk_and_or(node: &Node, out: &mut Vec<Lint>) {
-    if let Node::InfixExpression { left, operator, right, span } = node {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
+    {
         let opposite = match operator.as_str() {
             "&&" => Some("||"),
             "||" => Some("&&"),
@@ -528,12 +595,15 @@ fn span_of(node: &Node) -> Option<Span> {
 // returns today).
 
 fn run_l0005_redundant_return(program: &Node, out: &mut Vec<Lint>) {
-    let Node::Program(stmts) = program else { return };
+    let Node::Program(stmts) = program else {
+        return;
+    };
     for spanned in stmts {
         if let Node::Function { body, .. } = &spanned.node
-            && let Node::Block { stmts: body_stmts, .. } = body.as_ref()
-            && let Some(Node::ReturnStatement { value: None, span }) =
-                body_stmts.last()
+            && let Node::Block {
+                stmts: body_stmts, ..
+            } = body.as_ref()
+            && let Some(Node::ReturnStatement { value: None, span }) = body_stmts.last()
         {
             out.push(Lint {
                 code: "L0005".into(),
@@ -558,7 +628,12 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
                 f(&s.node);
             }
         }
-        Node::Function { body, requires, ensures, .. } => {
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
             f(body);
             for r in requires {
                 f(r);
@@ -572,19 +647,25 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
                 f(s);
             }
         }
-        Node::LetStatement { value, .. }
-        | Node::StaticLet { value, .. } => f(value),
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => f(value),
         Node::ReturnStatement { value: Some(v), .. } => f(v),
         Node::Assignment { value, .. } => f(value),
         Node::ExpressionStatement { expr, .. } => f(expr),
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             f(condition);
             f(consequence);
             if let Some(a) = alternative {
                 f(a);
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             f(condition);
             f(body);
         }
@@ -592,7 +673,9 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             f(iterable);
             f(body);
         }
-        Node::LiveBlock { body, invariants, .. } => {
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
             f(body);
             for inv in invariants {
                 f(inv);
@@ -603,14 +686,20 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             f(right);
         }
         Node::PrefixExpression { right, .. } => f(right),
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             f(function);
             for a in arguments {
                 f(a);
             }
         }
         Node::TryExpression { expr, .. } => f(expr),
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             f(scrutinee);
             for (_, guard, arm_body) in arms {
                 if let Some(g) = guard {
@@ -623,7 +712,12 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             f(target);
             f(index);
         }
-        Node::IndexAssignment { target, index, value, .. } => {
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
             f(target);
             f(index);
             f(value);
@@ -662,15 +756,14 @@ fn collect_allow_comments(source: &str) -> std::collections::HashSet<(u32, Strin
     let mut out = std::collections::HashSet::new();
     for (i, raw) in source.lines().enumerate() {
         let line_no = (i as u32) + 1;
-        let Some(pos) = raw.find("// resilient: allow") else { continue };
+        let Some(pos) = raw.find("// resilient: allow") else {
+            continue;
+        };
         let tail = &raw[pos + "// resilient: allow".len()..];
         // Collect every LXXXX token on the rest of the line.
         for word in tail.split(|c: char| c == ',' || c.is_whitespace()) {
             let w = word.trim();
-            if w.starts_with('L')
-                && w.len() == 5
-                && w.chars().skip(1).all(|c| c.is_ascii_digit())
-            {
+            if w.starts_with('L') && w.len() == 5 && w.chars().skip(1).all(|c| c.is_ascii_digit()) {
                 out.insert((line_no + 1, w.to_string()));
             }
         }
@@ -727,13 +820,15 @@ mod tests {
 
     #[test]
     fn l0002_fires_on_arm_after_wildcard() {
-        let src = "fn f(int n) {\n    return match n {\n        _ => 0,\n        1 => 1,\n    };\n}\n";
+        let src =
+            "fn f(int n) {\n    return match n {\n        _ => 0,\n        1 => 1,\n    };\n}\n";
         assert!(codes(src).contains(&"L0002".to_string()));
     }
 
     #[test]
     fn l0002_silent_when_wildcard_is_last() {
-        let src = "fn f(int n) {\n    return match n {\n        1 => 1,\n        _ => 0,\n    };\n}\n";
+        let src =
+            "fn f(int n) {\n    return match n {\n        1 => 1,\n        _ => 0,\n    };\n}\n";
         assert!(!codes(src).contains(&"L0002".to_string()));
     }
 
@@ -744,6 +839,38 @@ mod tests {
         // arm, not above the `match` keyword.
         let src = "fn f(int n) {\n    return match n {\n        _ => 0,\n        // resilient: allow L0002\n        1 => 1,\n    };\n}\n";
         assert!(!codes(src).contains(&"L0002".to_string()));
+    }
+
+    // ---------- L0002 / RES-232: Pattern::Bind as catch-all ----------
+
+    #[test]
+    fn l0002_fires_on_bind_with_wildcard_inner() {
+        // `n @ _` is a catch-all; the arm after it is unreachable.
+        let src = "fn f(int n) {\n    return match n {\n        n @ _ => 1,\n        0 => 2,\n    };\n}\n";
+        assert!(
+            codes(src).contains(&"L0002".to_string()),
+            "expected L0002 for bind-with-wildcard-inner"
+        );
+    }
+
+    #[test]
+    fn l0002_fires_on_bind_with_identifier_inner() {
+        // `n @ m` — inner is an identifier, also a catch-all.
+        let src = "fn f(int n) {\n    return match n {\n        n @ m => 1,\n        0 => 2,\n    };\n}\n";
+        assert!(
+            codes(src).contains(&"L0002".to_string()),
+            "expected L0002 for bind-with-identifier-inner"
+        );
+    }
+
+    #[test]
+    fn l0002_silent_on_bind_with_literal_inner() {
+        // `n @ 5` is NOT a catch-all — it only matches the value 5.
+        let src = "fn f(int n) {\n    return match n {\n        n @ 5 => 1,\n        0 => 2,\n    };\n}\n";
+        assert!(
+            !codes(src).contains(&"L0002".to_string()),
+            "L0002 must not fire for bind-with-literal-inner"
+        );
     }
 
     // ---------- L0003: x == x ----------
@@ -776,13 +903,15 @@ mod tests {
 
     #[test]
     fn l0004_fires_on_and_or_mix() {
-        let src = "fn f(bool a, bool b, bool c) {\n    if a && b || c { return 1; }\n    return 0;\n}\n";
+        let src =
+            "fn f(bool a, bool b, bool c) {\n    if a && b || c { return 1; }\n    return 0;\n}\n";
         assert!(codes(src).contains(&"L0004".to_string()));
     }
 
     #[test]
     fn l0004_silent_on_same_op() {
-        let src = "fn f(bool a, bool b, bool c) {\n    if a && b && c { return 1; }\n    return 0;\n}\n";
+        let src =
+            "fn f(bool a, bool b, bool c) {\n    if a && b && c { return 1; }\n    return 0;\n}\n";
         assert!(!codes(src).contains(&"L0004".to_string()));
     }
 
@@ -863,12 +992,14 @@ mod tests {
 
     #[test]
     fn lints_sorted_by_line_column() {
-        let src = "fn f(int x) {\n    if x == x { return 1; }\n    let unused = 42;\n    return 0;\n}\n";
+        let src =
+            "fn f(int x) {\n    if x == x { return 1; }\n    let unused = 42;\n    return 0;\n}\n";
         let out = lint(src);
         for pair in out.windows(2) {
             assert!(
                 (pair[0].line, pair[0].column) <= (pair[1].line, pair[1].column),
-                "lint order: {:?}", out,
+                "lint order: {:?}",
+                out,
             );
         }
     }
