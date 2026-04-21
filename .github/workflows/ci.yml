@@ -41,12 +41,8 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --locked -- -D warnings
 
-      # Optional: check formatting. Non-blocking for now since we haven't
-      # committed to a rustfmt style; flip `continue-on-error` off when
-      # we do.
       - name: cargo fmt --check
         run: cargo fmt --check
-        continue-on-error: true
 
   z3:
     name: build / test with --features z3
