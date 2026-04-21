@@ -91,23 +91,29 @@ impl Substitution {
     /// Idempotent: `apply(apply(ty)) == apply(ty)`.
     pub fn apply(&self, ty: &Type) -> Type {
         match ty {
-            Type::Var(id) => {
+            Type::Var(id, origin_span) => {
                 // Follow the chain; break on cycles defensively
                 // (shouldn't happen — `unify`'s occurs check prevents
                 // cycles — but a bug elsewhere shouldn't deadlock).
                 let mut seen: Vec<u32> = Vec::new();
                 let mut cur_id = *id;
+                // Preserve the origin span (type-hole position) through
+                // chain following so Display can still show "type hole at X:Y".
+                let mut cur_span = *origin_span;
                 loop {
                     if seen.contains(&cur_id) {
                         // Broken invariant — return the original var
                         // rather than loop forever.
-                        return Type::Var(cur_id);
+                        return Type::Var(cur_id, cur_span);
                     }
                     seen.push(cur_id);
                     match self.inner.get(&cur_id) {
-                        None => return Type::Var(cur_id),
-                        Some(Type::Var(next_id)) => {
+                        None => return Type::Var(cur_id, cur_span),
+                        Some(Type::Var(next_id, next_span)) => {
                             cur_id = *next_id;
+                            if cur_span.is_none() {
+                                cur_span = *next_span;
+                            }
                         }
                         Some(other) => return self.apply(other),
                     }
@@ -138,6 +144,10 @@ impl Substitution {
     /// bindings required. On error, `self` is left in whatever
     /// partial state the unification reached — callers that care
     /// about rollback should clone before calling.
+    // `UnifyError::Mismatch` carries two `Type` values; `Type::Var` grew when
+    // RES-125 added `Option<Span>` for type-hole origin tracking.  The Err
+    // path is rare and allocation-light in practice, so suppress the lint.
+    #[allow(clippy::result_large_err)]
     pub fn unify(&mut self, a: &Type, b: &Type) -> Result<(), UnifyError> {
         let a = self.apply(a);
         let b = self.apply(b);
@@ -157,9 +167,9 @@ impl Substitution {
             // prototype can coexist with the RES-053 nominal checker.
             (Type::Any, _) | (_, Type::Any) => Ok(()),
             // Var-on-either-side: bind (with occurs check).
-            (Type::Var(a), Type::Var(b)) if a == b => Ok(()),
-            (Type::Var(v), other) => self.bind(v, other),
-            (other, Type::Var(v)) => self.bind(v, other),
+            (Type::Var(a, _), Type::Var(b, _)) if a == b => Ok(()),
+            (Type::Var(v, _), other) => self.bind(v, other),
+            (other, Type::Var(v, _)) => self.bind(v, other),
             // Function: unify arities and then per-component.
             (
                 Type::Function {
@@ -210,8 +220,9 @@ impl Substitution {
 
     /// Bind `Var(v)` to `ty`, running the occurs check first.
     /// `ty` is already the `apply` image (so the check is meaningful).
+    #[allow(clippy::result_large_err)]
     fn bind(&mut self, v: u32, ty: Type) -> Result<(), UnifyError> {
-        if let Type::Var(v2) = ty
+        if let Type::Var(v2, _) = ty
             && v == v2
         {
             return Ok(());
@@ -227,7 +238,7 @@ impl Substitution {
     /// current substitution).
     fn occurs(&self, v: u32, ty: &Type) -> bool {
         match ty {
-            Type::Var(id) => {
+            Type::Var(id, _) => {
                 if *id == v {
                     return true;
                 }
@@ -270,23 +281,23 @@ mod tests {
     #[test]
     fn var_unifies_to_prim() {
         let mut s = Substitution::new();
-        s.unify(&Type::Var(0), &Type::Int).unwrap();
-        assert_eq!(s.apply(&Type::Var(0)), Type::Int);
+        s.unify(&Type::Var(0, None), &Type::Int).unwrap();
+        assert_eq!(s.apply(&Type::Var(0, None)), Type::Int);
     }
 
     #[test]
     fn var_unifies_to_var_and_then_to_prim() {
         let mut s = Substitution::new();
-        s.unify(&Type::Var(0), &Type::Var(1)).unwrap();
-        s.unify(&Type::Var(1), &Type::Bool).unwrap();
-        assert_eq!(s.apply(&Type::Var(0)), Type::Bool);
-        assert_eq!(s.apply(&Type::Var(1)), Type::Bool);
+        s.unify(&Type::Var(0, None), &Type::Var(1, None)).unwrap();
+        s.unify(&Type::Var(1, None), &Type::Bool).unwrap();
+        assert_eq!(s.apply(&Type::Var(0, None)), Type::Bool);
+        assert_eq!(s.apply(&Type::Var(1, None)), Type::Bool);
     }
 
     #[test]
     fn var_equal_to_itself_is_noop() {
         let mut s = Substitution::new();
-        s.unify(&Type::Var(7), &Type::Var(7)).unwrap();
+        s.unify(&Type::Var(7, None), &Type::Var(7, None)).unwrap();
         assert!(s.as_map().is_empty());
     }
 
@@ -295,11 +306,11 @@ mod tests {
         // Construct `Fn(Var(0)) -> Int`, then try to unify `Var(0)`
         // with it. Occurs-check must reject.
         let recursive = Type::Function {
-            params: vec![Type::Var(0)],
+            params: vec![Type::Var(0, None)],
             return_type: Box::new(Type::Int),
         };
         let mut s = Substitution::new();
-        let err = s.unify(&Type::Var(0), &recursive).unwrap_err();
+        let err = s.unify(&Type::Var(0, None), &recursive).unwrap_err();
         assert_eq!(err, UnifyError::Occurs(0, recursive));
     }
 
@@ -308,12 +319,12 @@ mod tests {
         // 0 -> 1, then try to unify 1 with Fn(Var(0)) -> Int.
         // Occurs check walks the chain and refuses.
         let mut s = Substitution::new();
-        s.unify(&Type::Var(0), &Type::Var(1)).unwrap();
+        s.unify(&Type::Var(0, None), &Type::Var(1, None)).unwrap();
         let recursive = Type::Function {
-            params: vec![Type::Var(0)],
+            params: vec![Type::Var(0, None)],
             return_type: Box::new(Type::Int),
         };
-        let err = s.unify(&Type::Var(1), &recursive).unwrap_err();
+        let err = s.unify(&Type::Var(1, None), &recursive).unwrap_err();
         // The bound form of the failing var is what the error reports.
         match err {
             UnifyError::Occurs(v, _) => assert_eq!(v, 1),
@@ -326,10 +337,10 @@ mod tests {
         // 0 -> 1, 1 -> 2, 2 -> Int. Applying to Var(0) should give
         // Int, and applying again should still give Int.
         let mut s = Substitution::new();
-        s.unify(&Type::Var(0), &Type::Var(1)).unwrap();
-        s.unify(&Type::Var(1), &Type::Var(2)).unwrap();
-        s.unify(&Type::Var(2), &Type::Int).unwrap();
-        let once = s.apply(&Type::Var(0));
+        s.unify(&Type::Var(0, None), &Type::Var(1, None)).unwrap();
+        s.unify(&Type::Var(1, None), &Type::Var(2, None)).unwrap();
+        s.unify(&Type::Var(2, None), &Type::Int).unwrap();
+        let once = s.apply(&Type::Var(0, None));
         let twice = s.apply(&once);
         assert_eq!(once, Type::Int);
         assert_eq!(twice, once);
@@ -338,11 +349,11 @@ mod tests {
     #[test]
     fn apply_recurses_into_function_types() {
         let mut s = Substitution::new();
-        s.unify(&Type::Var(0), &Type::Int).unwrap();
-        s.unify(&Type::Var(1), &Type::Bool).unwrap();
+        s.unify(&Type::Var(0, None), &Type::Int).unwrap();
+        s.unify(&Type::Var(1, None), &Type::Bool).unwrap();
         let fun = Type::Function {
-            params: vec![Type::Var(0)],
-            return_type: Box::new(Type::Var(1)),
+            params: vec![Type::Var(0, None)],
+            return_type: Box::new(Type::Var(1, None)),
         };
         let applied = s.apply(&fun);
         assert_eq!(
@@ -357,8 +368,8 @@ mod tests {
     #[test]
     fn unify_function_types_elementwise() {
         let a = Type::Function {
-            params: vec![Type::Var(0), Type::Bool],
-            return_type: Box::new(Type::Var(1)),
+            params: vec![Type::Var(0, None), Type::Bool],
+            return_type: Box::new(Type::Var(1, None)),
         };
         let b = Type::Function {
             params: vec![Type::Int, Type::Bool],
@@ -366,14 +377,14 @@ mod tests {
         };
         let mut s = Substitution::new();
         s.unify(&a, &b).unwrap();
-        assert_eq!(s.apply(&Type::Var(0)), Type::Int);
-        assert_eq!(s.apply(&Type::Var(1)), Type::Float);
+        assert_eq!(s.apply(&Type::Var(0, None)), Type::Int);
+        assert_eq!(s.apply(&Type::Var(1, None)), Type::Float);
     }
 
     #[test]
     fn unify_function_arity_mismatch_errors() {
         let a = Type::Function {
-            params: vec![Type::Var(0)],
+            params: vec![Type::Var(0, None)],
             return_type: Box::new(Type::Int),
         };
         let b = Type::Function {
@@ -392,23 +403,25 @@ mod tests {
         // composed: 0 -> Int (because we apply `other` first to get
         // Var(1), then self to get Int), 1 -> Int (self's binding).
         let mut other = Substitution::new();
-        other.unify(&Type::Var(0), &Type::Var(1)).unwrap();
+        other
+            .unify(&Type::Var(0, None), &Type::Var(1, None))
+            .unwrap();
         let mut me = Substitution::new();
-        me.unify(&Type::Var(1), &Type::Int).unwrap();
+        me.unify(&Type::Var(1, None), &Type::Int).unwrap();
         let composed = me.compose(&other);
-        assert_eq!(composed.apply(&Type::Var(0)), Type::Int);
-        assert_eq!(composed.apply(&Type::Var(1)), Type::Int);
+        assert_eq!(composed.apply(&Type::Var(0, None)), Type::Int);
+        assert_eq!(composed.apply(&Type::Var(1, None)), Type::Int);
     }
 
     #[test]
     fn compose_preserves_self_bindings_for_unrelated_vars() {
         let mut other = Substitution::new();
-        other.unify(&Type::Var(0), &Type::Int).unwrap();
+        other.unify(&Type::Var(0, None), &Type::Int).unwrap();
         let mut me = Substitution::new();
-        me.unify(&Type::Var(9), &Type::Bool).unwrap();
+        me.unify(&Type::Var(9, None), &Type::Bool).unwrap();
         let composed = me.compose(&other);
-        assert_eq!(composed.apply(&Type::Var(0)), Type::Int);
-        assert_eq!(composed.apply(&Type::Var(9)), Type::Bool);
+        assert_eq!(composed.apply(&Type::Var(0, None)), Type::Int);
+        assert_eq!(composed.apply(&Type::Var(9, None)), Type::Bool);
     }
 
     #[test]

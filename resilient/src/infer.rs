@@ -153,7 +153,7 @@ pub fn free_type_vars(ty: &Type) -> std::collections::HashSet<u32> {
 
 fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
     match ty {
-        Type::Var(v) => {
+        Type::Var(v, _) => {
             out.insert(*v);
         }
         Type::Function {
@@ -246,7 +246,7 @@ impl Inferer {
 /// single fresh var.
 fn substitute_vars(ty: &Type, map: &HashMap<u32, Type>) -> Type {
     match ty {
-        Type::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Var(v, _) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
         Type::Function {
             params,
             return_type,
@@ -268,9 +268,18 @@ impl Inferer {
     }
 
     /// Mint a fresh type variable. Each call returns a distinct
-    /// `Type::Var(n)`.
+    /// `Type::Var(n, None)`.
     pub fn fresh(&mut self) -> Type {
-        let v = Type::Var(self.next_var);
+        let v = Type::Var(self.next_var, None);
+        self.next_var += 1;
+        v
+    }
+
+    /// Mint a fresh type variable tagged with the source span of the
+    /// `_` type hole that originated it (RES-125 deferred AC).
+    /// Display renders it as "type hole at line:col".
+    pub fn fresh_hole(&mut self, span: Span) -> Type {
+        let v = Type::Var(self.next_var, Some(span));
         self.next_var += 1;
         v
     }
@@ -309,7 +318,13 @@ impl Inferer {
         // non-primitive annotations get a fresh var so downstream
         // unification can still make progress.
         for (ty_name, name) in parameters {
-            let ty = parse_primitive_type(ty_name).unwrap_or_else(|| self.fresh());
+            let ty = parse_primitive_type(ty_name).unwrap_or_else(|| {
+                if let Some(hole_span) = parse_hole_span(ty_name) {
+                    self.fresh_hole(hole_span)
+                } else {
+                    self.fresh()
+                }
+            });
             self.env.insert(name.clone(), ty);
         }
 
@@ -596,6 +611,19 @@ fn expr_span(node: &Node) -> Span {
         | Node::TryExpression { span, .. } => *span,
         _ => Span::default(),
     }
+}
+
+/// RES-125: parse the encoded type-hole annotation produced by
+/// `parse_type_annotation` when it encounters `_`.  The format
+/// is `"_@LINE:COL"` where LINE and COL are 1-indexed.  Returns
+/// the origin `Span` on success, `None` for any other annotation.
+fn parse_hole_span(ann: &str) -> Option<Span> {
+    let rest = ann.strip_prefix("_@")?;
+    let (line_str, col_str) = rest.split_once(':')?;
+    let line = line_str.parse::<usize>().ok()?;
+    let col = col_str.parse::<usize>().ok()?;
+    let pos = crate::span::Pos::new(line, col, 0);
+    Some(Span::point(pos))
 }
 
 /// Map a `UnifyError` to a `Diagnostic` with the right code +
@@ -918,14 +946,17 @@ mod tests {
 
     #[test]
     fn free_type_vars_collects_var_id() {
-        assert_eq!(free_type_vars(&Type::Var(3)), [3].into_iter().collect(),);
+        assert_eq!(
+            free_type_vars(&Type::Var(3, None)),
+            [3].into_iter().collect(),
+        );
     }
 
     #[test]
     fn free_type_vars_descends_into_fn_types() {
         let fn_ty = Type::Function {
-            params: vec![Type::Var(1), Type::Int],
-            return_type: Box::new(Type::Var(2)),
+            params: vec![Type::Var(1, None), Type::Int],
+            return_type: Box::new(Type::Var(2, None)),
         };
         let ftv = free_type_vars(&fn_ty);
         assert_eq!(ftv, [1, 2].into_iter().collect());
@@ -937,8 +968,8 @@ mod tests {
         // quantified.
         let env = HashMap::new();
         let ty = Type::Function {
-            params: vec![Type::Var(0)],
-            return_type: Box::new(Type::Var(1)),
+            params: vec![Type::Var(0, None)],
+            return_type: Box::new(Type::Var(1, None)),
         };
         let scheme = generalize(&env, &ty);
         assert_eq!(scheme.vars, vec![0, 1]);
@@ -950,10 +981,10 @@ mod tests {
         // Env binds `x: Var(0)`, so ty's Var(0) is NOT
         // quantified — it's free in the outer scope.
         let mut env = HashMap::new();
-        env.insert("x".to_string(), Type::Var(0));
+        env.insert("x".to_string(), Type::Var(0, None));
         let ty = Type::Function {
-            params: vec![Type::Var(0)],
-            return_type: Box::new(Type::Var(1)),
+            params: vec![Type::Var(0, None)],
+            return_type: Box::new(Type::Var(1, None)),
         };
         let scheme = generalize(&env, &ty);
         assert_eq!(scheme.vars, vec![1]);
@@ -976,9 +1007,9 @@ mod tests {
 
     #[test]
     fn scheme_new_preserves_fields() {
-        let s = Scheme::new(vec![0, 2], Type::Var(0));
+        let s = Scheme::new(vec![0, 2], Type::Var(0, None));
         assert_eq!(s.vars, vec![0, 2]);
-        assert_eq!(s.ty, Type::Var(0));
+        assert_eq!(s.ty, Type::Var(0, None));
     }
 
     #[test]
@@ -989,8 +1020,8 @@ mod tests {
         let scheme = Scheme {
             vars: vec![0],
             ty: Type::Function {
-                params: vec![Type::Var(0)],
-                return_type: Box::new(Type::Var(0)),
+                params: vec![Type::Var(0, None)],
+                return_type: Box::new(Type::Var(0, None)),
             },
         };
         let mut inf = Inferer::new();
@@ -1032,8 +1063,8 @@ mod tests {
         let scheme = Scheme {
             vars: vec![1],
             ty: Type::Function {
-                params: vec![Type::Var(1), Type::Var(2)],
-                return_type: Box::new(Type::Var(1)),
+                params: vec![Type::Var(1, None), Type::Var(2, None)],
+                return_type: Box::new(Type::Var(1, None)),
             },
         };
         let mut inf = Inferer::new();
@@ -1044,10 +1075,10 @@ mod tests {
         } = t
         {
             // Var(2) survives unchanged.
-            assert_eq!(params[1], Type::Var(2));
+            assert_eq!(params[1], Type::Var(2, None));
             // Var(1) becomes a fresh var (matches
             // return_type); fresh var is NOT Var(2).
-            assert_ne!(params[0], Type::Var(2));
+            assert_ne!(params[0], Type::Var(2, None));
             assert_eq!(&params[0], return_type.as_ref());
         } else {
             panic!("expected Fn, got {:?}", t);
@@ -1061,8 +1092,8 @@ mod tests {
         // instantiate → fresh Var, same shape.
         let env = HashMap::new();
         let inferred = Type::Function {
-            params: vec![Type::Var(0)],
-            return_type: Box::new(Type::Var(0)),
+            params: vec![Type::Var(0, None)],
+            return_type: Box::new(Type::Var(0, None)),
         };
         let scheme = generalize(&env, &inferred);
         let mut inf = Inferer::new();
@@ -1077,6 +1108,32 @@ mod tests {
                 assert_eq!(&params[0], return_type.as_ref());
             }
             other => panic!("expected Fn, got {:?}", other),
+        }
+    }
+
+    // ---------- RES-125 deferred AC: type hole display ----------
+
+    #[test]
+    fn fresh_hole_creates_var_with_span() {
+        use crate::span::{Pos, Span};
+        let pos = Pos::new(5, 3, 0);
+        let span = Span::point(pos);
+        let mut inf = Inferer::new();
+        let ty = inf.fresh_hole(span);
+        assert_eq!(ty.to_string(), "type hole at 5:3");
+    }
+
+    #[test]
+    fn underscore_parameter_annotation_gets_hole_var() {
+        // fn f(_ x) — `_` type hole at parse time should give x a
+        // Var with an attached origin span.
+        let src = "fn f(_ x) { return 0; }\n";
+        let func = first_function(src);
+        let mut inf = Inferer::new();
+        inf.infer_function(&func).ok();
+        match inf.env.get("x") {
+            Some(Type::Var(_, Some(_))) => {}
+            other => panic!("expected Var with hole span, got {:?}", other),
         }
     }
 }

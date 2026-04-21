@@ -52,10 +52,15 @@ pub enum Type {
     /// globally-unique id minted from a monotonic counter; IDs have
     /// no intrinsic meaning beyond identity.
     ///
+    /// The optional `Span` records the source position of a `_` type
+    /// hole that originated this variable (RES-125 deferred AC).
+    /// `None` for inference variables that don't come from explicit
+    /// holes. Display renders the hole form as "type hole at line:col".
+    ///
     /// Currently only the `unify` module's unit tests construct this
     /// variant; the `dead_code` allow goes away when RES-120 lands.
     #[allow(dead_code)]
-    Var(u32),
+    Var(u32, Option<Span>),
 }
 
 impl std::fmt::Display for Type {
@@ -84,7 +89,10 @@ impl std::fmt::Display for Type {
             Type::Struct(n) => write!(f, "{}", n),
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
-            Type::Var(id) => write!(f, "?t{}", id),
+            Type::Var(_, Some(span)) => {
+                write!(f, "type hole at {}:{}", span.start.line, span.start.column)
+            }
+            Type::Var(id, None) => write!(f, "?t{}", id),
         }
     }
 }
@@ -1392,7 +1400,7 @@ impl TypeChecker {
                     // (shouldn't happen for a let, but guard
                     // against it) or `Var` (inference artifact
                     // that shouldn't leak to users).
-                    if !matches!(value_type, Type::Any | Type::Void | Type::Var(_)) {
+                    if !matches!(value_type, Type::Any | Type::Void | Type::Var(..)) {
                         self.let_type_hints.push(LetTypeHint {
                             span: *span,
                             name_len_chars: name.chars().count(),
@@ -3017,5 +3025,25 @@ mod purity_tests {
         assert_eq!(tc.stats.fn_effects.get("noisy"), Some(&true));
         assert_eq!(tc.stats.fn_effects.get("quiet"), Some(&false));
         assert_eq!(tc.stats.fn_effects.get("main"), Some(&true));
+    }
+}
+
+#[cfg(test)]
+mod type_hole_display_tests {
+    use super::*;
+    use crate::span::{Pos, Span};
+
+    #[test]
+    fn var_with_span_displays_as_type_hole() {
+        let pos = Pos::new(3, 7, 0);
+        let span = Span::point(pos);
+        let ty = Type::Var(0, Some(span));
+        assert_eq!(ty.to_string(), "type hole at 3:7");
+    }
+
+    #[test]
+    fn var_without_span_displays_as_qt() {
+        let ty = Type::Var(0, None);
+        assert_eq!(ty.to_string(), "?t0");
     }
 }
