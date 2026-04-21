@@ -160,6 +160,26 @@ fn l0001_check_body(body: &Node, out: &mut Vec<Lint>) {
     }
 }
 
+/// RES-259: push match-arm pattern bindings into `out` so L0001 can
+/// flag unused names. Only `Pattern::Identifier` and `Pattern::Bind`
+/// introduce new local bindings; the others are silent.
+fn collect_pattern_bindings(pattern: &Pattern, span: Span, out: &mut Vec<(String, Span)>) {
+    match pattern {
+        Pattern::Identifier(name) => {
+            out.push((name.clone(), span));
+        }
+        Pattern::Bind(name, _inner) => {
+            out.push((name.clone(), span));
+        }
+        Pattern::Or(branches) => {
+            if let Some(first) = branches.first() {
+                collect_pattern_bindings(first, span, out);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
+    }
+}
+
 fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
     match node {
         Node::LetStatement {
@@ -202,11 +222,19 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
             collect_lets_in(body, out);
         }
         Node::LiveBlock { body, .. } => collect_lets_in(body, out),
+        // Descend into expression and return statements so that match
+        // expressions used as statements or return values are also walked.
+        Node::ExpressionStatement { expr, .. } => collect_lets_in(expr, out),
+        Node::ReturnStatement { value: Some(v), .. } => collect_lets_in(v, out),
         Node::Match {
-            scrutinee, arms, ..
+            scrutinee,
+            arms,
+            span,
+            ..
         } => {
             collect_lets_in(scrutinee, out);
-            for (_, guard, arm_body) in arms {
+            for (pattern, guard, arm_body) in arms {
+                collect_pattern_bindings(pattern, *span, out);
                 if let Some(g) = guard {
                     collect_lets_in(g, out);
                 }
@@ -946,6 +974,47 @@ mod tests {
     fn l0001_suppressed_by_allow_comment() {
         let src = "fn f(int a) {\n    // resilient: allow L0001\n    let unused = 42;\n    return a;\n}\n";
         assert!(!codes(src).contains(&"L0001".to_string()));
+    }
+
+    // ---------- L0001: match-arm bindings (RES-259) ----------
+
+    #[test]
+    fn l0001_fires_on_unused_match_arm_binding() {
+        // `y` is bound in the arm pattern but the arm body is `1` (never uses `y`).
+        let src = "fn f(int x) -> int {\n    return match x {\n        y => 1,\n    };\n}\n";
+        assert!(
+            codes(src).contains(&"L0001".to_string()),
+            "L0001 must fire for match-arm binding `y` that is never used"
+        );
+    }
+
+    #[test]
+    fn l0001_silent_when_match_arm_binding_is_used() {
+        // `y` is bound and used as the arm result expression.
+        let src = "fn f(int x) -> int {\n    return match x {\n        y => y,\n    };\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire when match-arm binding `y` is used in the arm body"
+        );
+    }
+
+    #[test]
+    fn l0001_silent_for_underscore_prefixed_match_arm_binding() {
+        let src = "fn f(int x) -> int {\n    return match x {\n        _y => 1,\n    };\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire for underscore-prefixed match-arm binding `_y`"
+        );
+    }
+
+    #[test]
+    fn l0001_fires_on_unused_bind_pattern_name() {
+        // `n @ 5` — `n` is bound but the arm body `0` never uses it.
+        let src = "fn f(int x) -> int {\n    return match x {\n        n @ 5 => 0,\n        _ => 1,\n    };\n}\n";
+        assert!(
+            codes(src).contains(&"L0001".to_string()),
+            "L0001 must fire for `n` in `n @ 5` when `n` is never used"
+        );
     }
 
     // ---------- L0002: unreachable arm after _ ----------

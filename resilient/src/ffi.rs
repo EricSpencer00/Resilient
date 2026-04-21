@@ -383,21 +383,11 @@ mod tests {
     #[test]
     fn signature_accepts_opaque_ptr() {
         // RES-215: OpaquePtr is a real FFI type in signatures.
-        let d = decl(
-            "alloc_point",
-            "alloc_point",
-            vec![],
-            "OpaquePtr",
-        );
+        let d = decl("alloc_point", "alloc_point", vec![], "OpaquePtr");
         let sig = ForeignSignature::from_decl(&d).expect("OpaquePtr must parse");
         assert_eq!(sig.ret, FfiType::OpaquePtr);
 
-        let d = decl(
-            "free_point",
-            "free_point",
-            vec![("OpaquePtr", "p")],
-            "Void",
-        );
+        let d = decl("free_point", "free_point", vec![("OpaquePtr", "p")], "Void");
         let sig = ForeignSignature::from_decl(&d).expect("OpaquePtr arg must parse");
         assert_eq!(sig.params, vec![FfiType::OpaquePtr]);
         assert_eq!(sig.ret, FfiType::Void);

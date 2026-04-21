@@ -5,9 +5,10 @@
 //! and publish diagnostics with source ranges derived from
 //! RES-077's per-statement `Spanned<Node>` wrappers.
 //!
-//! Nothing else yet — no hover, no completion, no go-to-definition.
-//! Those are dedicated follow-up tickets. This ticket is the
-//! scaffolding that makes an editor light up with red squiggles.
+//! Shipped capabilities: hover (RES-181a), go-to-definition (RES-182),
+//! find-references (RES-183), completion, and semantic tokens.
+//! This module is the scaffolding that makes an editor light up with
+//! red squiggles and drives the full language-server feature set.
 //!
 //! The `mod lsp_server;` declaration in `main.rs` is already
 //! gated on `cfg(feature = "lsp")`, so this file is only compiled
@@ -56,7 +57,7 @@ pub(crate) struct WorkspaceSymbolEntry {
 /// on every request.
 ///
 /// RES-186: the `workspace_index` is a pre-computed list of every
-/// `*.rs` file's top-level symbols in the workspace root. Built
+/// `*.res` file's top-level symbols in the workspace root. Built
 /// lazily on first `workspace/symbol` request (cheaper than
 /// walking at `initialize` time when the workspace might be huge),
 /// cached, and refreshed per-file on `did_save`.
@@ -818,7 +819,7 @@ pub(crate) fn document_symbols_for_program(program: &Node) -> Vec<DocumentSymbol
 
 /// RES-186: rebuild helpers. The workspace index is a flat
 /// HashMap<Url, Vec<entries>>; `rebuild_workspace_index` walks
-/// the root, `index_file` handles one `*.rs` at a time,
+/// the root, `index_file` handles one `*.res` at a time,
 /// `filter_workspace_symbols` applies the query + cap.
 impl Backend {
     fn rebuild_workspace_index(&self) {
@@ -843,7 +844,7 @@ impl Backend {
     }
 }
 
-/// RES-186: recursive `*.rs` walker. Skips `target/` and any
+/// RES-186: recursive `*.res` walker. Skips `target/` and any
 /// dot-prefixed directory (`.git/`, `.board/`, etc.) so we don't
 /// index build artifacts or management metadata.
 fn walk_resilient_files(root: &Path) -> Vec<PathBuf> {
@@ -1273,7 +1274,7 @@ impl LanguageServer for Backend {
                 // would let us opt into work-done progress reporting,
                 // which we don't need for files this small.
                 document_symbol_provider: Some(OneOf::Left(true)),
-                // RES-186: workspace-symbol search across all .rs
+                // RES-186: workspace-symbol search across all .res
                 // files in the workspace root.
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 // RES-187: full-file semantic tokens. Delta is a
@@ -1411,7 +1412,7 @@ impl LanguageServer for Backend {
     }
 
     /// RES-186: workspace-symbol search. Lazy-builds the per-file
-    /// index on first call (walks the workspace root for `*.rs`
+    /// index on first call (walks the workspace root for `*.res`
     /// files, skipping `target/` and dotfiles), then filters by
     /// substring match (case-insensitive) and caps at 50 entries
     /// per the ticket's budget.
