@@ -416,6 +416,15 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
             Op::LoadUpvalue(_) => {
                 return Err(VmError::Unsupported("LoadUpvalue"));
             }
+            // FFI v2: placeholder dispatch stub — full implementation in Task 4.
+            #[cfg(feature = "ffi")]
+            Op::CallForeign(_) => {
+                return Err(VmError::Unsupported("CallForeign (not yet wired — Task 4)"));
+            }
+            #[cfg(not(feature = "ffi"))]
+            Op::CallForeign(_) => {
+                return Err(VmError::Unsupported("CallForeign (build without --features ffi)"));
+            }
             // ---- RES-171a: array ops ----
             Op::MakeArray { len } => {
                 // Pop `len` values. The source literal `[a, b, c]`
@@ -502,6 +511,7 @@ mod tests {
         Program {
             main,
             functions: Vec::new(),
+            ..Program::default()
         }
     }
 
@@ -667,6 +677,7 @@ mod tests {
         let p = Program {
             main,
             functions: vec![runaway],
+            ..Program::default()
         };
         let err = run(&p).unwrap_err();
         assert_eq!(err.kind(), &VmError::CallStackOverflow);

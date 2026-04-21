@@ -186,6 +186,16 @@ pub struct ForeignSymbol {
     pub sig: ForeignSignature,
 }
 
+impl std::fmt::Debug for ForeignSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForeignSymbol")
+            .field("name", &self.name)
+            .field("ptr", &format_args!("{:p}", self.ptr))
+            .field("sig", &self.sig)
+            .finish()
+    }
+}
+
 // SAFETY: ForeignSymbol holds a raw C function pointer that outlives
 // the Library it came from (we also hold the Library in the loader
 // so it never drops while symbols are in use). The pointer itself

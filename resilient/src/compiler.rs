@@ -137,7 +137,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     crate::peephole::optimize(&mut main)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
 
-    Ok(Program { main, functions })
+    Ok(Program {
+        main,
+        functions,
+        ..Program::default()
+    })
 }
 
 /// Compile a top-level (main-chunk) statement. Bare expression
