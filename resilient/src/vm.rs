@@ -55,6 +55,8 @@ pub enum VmError {
         index: i64,
         len: usize,
     },
+    /// FFI v2: the trampoline returned an error string.
+    ForeignCallFailed(String),
 }
 
 impl VmError {
@@ -88,6 +90,7 @@ impl std::fmt::Display for VmError {
                 index, len
             ),
             VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
+            VmError::ForeignCallFailed(msg) => write!(f, "ffi call failed: {}", msg),
         }
     }
 }
@@ -416,10 +419,23 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
             Op::LoadUpvalue(_) => {
                 return Err(VmError::Unsupported("LoadUpvalue"));
             }
-            // FFI v2: placeholder dispatch stub — full implementation in Task 4.
             #[cfg(feature = "ffi")]
-            Op::CallForeign(_) => {
-                return Err(VmError::Unsupported("CallForeign (not yet wired — Task 4)"));
+            Op::CallForeign(idx) => {
+                let sym = program
+                    .foreign_syms
+                    .get(idx as usize)
+                    .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                let arity = sym.sig.params.len();
+                if stack.len() < arity {
+                    return Err(VmError::EmptyStack);
+                }
+                // Args were pushed left-to-right; pop rightmost first, then reverse.
+                let mut args: Vec<crate::Value> =
+                    (0..arity).map(|_| stack.pop().expect("checked above")).collect();
+                args.reverse();
+                let result = crate::ffi_trampolines::call_foreign(sym, &args)
+                    .map_err(VmError::ForeignCallFailed)?;
+                stack.push(result);
             }
             #[cfg(not(feature = "ffi"))]
             Op::CallForeign(_) => {
@@ -1127,5 +1143,42 @@ mod tests {
             err.kind(),
             VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }
         ));
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn vm_calls_foreign_via_call_foreign_opcode() {
+        use crate::bytecode::{Chunk, Function, Op, Program};
+        use crate::ffi::{FfiType, ForeignSignature, ForeignSymbol};
+
+        extern "C" fn double_it(x: i64) -> i64 {
+            x * 2
+        }
+
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int],
+            ret: FfiType::Int,
+        };
+        let sym = std::sync::Arc::new(ForeignSymbol {
+            name: "double_it".into(),
+            ptr: double_it as *const (),
+            sig,
+        });
+
+        // Build a tiny program: push 21, CallForeign(0), Return.
+        let mut main = Chunk::new();
+        main.constants.push(crate::Value::Int(21));
+        main.emit(Op::Const(0), 1);
+        main.emit(Op::CallForeign(0), 1);
+        main.emit(Op::Return, 1);
+
+        let prog = Program {
+            main,
+            functions: vec![],
+            foreign_syms: vec![sym],
+        };
+
+        let result = run(&prog).expect("vm run");
+        assert!(matches!(result, crate::Value::Int(42)), "got {:?}", result);
     }
 }
