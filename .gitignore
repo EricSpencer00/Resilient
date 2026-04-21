@@ -15,3 +15,4 @@ benchmarks/sum/sum_native
 
 # Ralph-loop session state (local to each Claude Code run)
 .claude/
+.worktrees/
