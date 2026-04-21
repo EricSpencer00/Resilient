@@ -87,10 +87,12 @@ jobs:
       - name: Post / update PR comment
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
+        env:
+          COMMENT_BODY: ${{ steps.compare.outputs.body }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const body = `${{ steps.compare.outputs.body }}`;
+            const body = process.env.COMMENT_BODY;
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
             // Look for a prior comment from this action to update
