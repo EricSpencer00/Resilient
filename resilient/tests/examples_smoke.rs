@@ -571,7 +571,15 @@ fn imports_missing_file_errors_cleanly() {
     // RES-073: a `use "missing.rs";` against a non-existent path must
     // produce a clean diagnostic and a non-zero exit, not a panic.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join("res_073_missing_use.rs");
+    let tmp = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "res_073_missing_use_{}_{}.rs",
+            std::process::id(),
+            CTR.fetch_add(1, Ordering::Relaxed),
+        ))
+    };
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp file");
         writeln!(
