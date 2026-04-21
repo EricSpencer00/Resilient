@@ -149,6 +149,20 @@ assert(fuel >= 0, "Fuel must be non-negative");
 //   - condition -5 >= 0 was false
 ```
 
+### Runtime assumptions
+
+`assume(expr)` is like `assert` but communicates intent to the
+verifier rather than enforcing a check on every execution path.
+At runtime it traps if `expr` is false, just like `assert`.
+When built with `--features z3`, the SMT verifier treats the
+expression as an **axiom** — it is assumed to hold rather than
+proved (verifier integration planned in RES-235).
+
+```rust
+assume(x > 0);               // asserts x is positive; verifier treats as axiom
+assume(x > 0, "must be positive");  // optional message shown on trap
+```
+
 ---
 
 ## Data types
@@ -266,6 +280,22 @@ match n {
     default => "other",   // same as `_ => "other"`
 }
 ```
+
+### Bind patterns (`name @ inner`)
+
+A `name @ inner` pattern simultaneously binds the matched value to
+`name` and tests it against `inner`. This is useful when the arm body
+needs both the whole value and the confirmation that it matched:
+
+```rust
+match n {
+    val @ 1..=10 => println("in range: " + val),
+    _            => println("out of range"),
+}
+```
+
+The `inner` pattern can be a literal, a range, a wildcard, or any
+other valid sub-pattern.
 
 ---
 

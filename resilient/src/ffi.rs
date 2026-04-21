@@ -229,20 +229,22 @@ mod dynamic {
                     library: library.to_string(),
                 });
             }
-            if !self.libs.contains_key(library) {
-                // SAFETY: Loading a dynamic library by path. The library must
-                // remain loaded for the lifetime of any symbols we extract from
-                // it; we enforce this by keeping the Library in `self.libs` for
-                // the lifetime of the ForeignLoader.
-                let lib = unsafe { libloading::Library::new(library) }.map_err(|e| {
-                    FfiError::LibNotFound {
-                        library: library.to_string(),
-                        underlying: e.to_string(),
-                    }
-                })?;
-                self.libs.insert(library.to_string(), lib);
-            }
-            let lib = self.libs.get(library).expect("inserted above");
+            let lib = match self.libs.entry(library.to_string()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    // SAFETY: Loading a dynamic library by path. The library must
+                    // remain loaded for the lifetime of any symbols we extract from
+                    // it; we enforce this by keeping the Library in `self.libs` for
+                    // the lifetime of the ForeignLoader.
+                    let lib = unsafe { libloading::Library::new(library) }.map_err(|err| {
+                        FfiError::LibNotFound {
+                            library: library.to_string(),
+                            underlying: err.to_string(),
+                        }
+                    })?;
+                    e.insert(lib)
+                }
+            };
             for d in decls {
                 let sig = ForeignSignature::from_decl(d)?;
                 // SAFETY: We look up the symbol by its C name as a byte string.

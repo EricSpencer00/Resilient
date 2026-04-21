@@ -248,9 +248,9 @@ fn bytes_lit(lex: &mut logos::Lexer<Tok>) -> Vec<u8> {
                     let lo = chars.next();
                     let nibble = |c: Option<char>| -> Option<u8> {
                         match c {
-                            Some('0'..='9') => Some(c.unwrap() as u8 - b'0'),
-                            Some('a'..='f') => Some(c.unwrap() as u8 - b'a' + 10),
-                            Some('A'..='F') => Some(c.unwrap() as u8 - b'A' + 10),
+                            Some(d @ '0'..='9') => Some(d as u8 - b'0'),
+                            Some(d @ 'a'..='f') => Some(d as u8 - b'a' + 10),
+                            Some(d @ 'A'..='F') => Some(d as u8 - b'A' + 10),
                             _ => None,
                         }
                     };

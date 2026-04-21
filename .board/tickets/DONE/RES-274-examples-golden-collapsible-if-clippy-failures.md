@@ -6,6 +6,7 @@ priority: P2
 goalpost: G7
 created: 2026-04-20
 owner: executor
+claimed-by: Claude
 ---
 
 ## Summary

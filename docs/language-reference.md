@@ -101,7 +101,7 @@ identifier scanning is tightened.
 Keywords cannot appear as identifiers. The complete set:
 
 ```
-fn       let      live     assert   if       else
+fn       let      live     assert   assume   if       else
 return   static   while    for      in       requires
 ensures  invariant struct  new      match    use
 impl     type     default  true     false    _
@@ -460,7 +460,8 @@ MatchExpr      ::= "match" Expression "{" MatchArm { "," MatchArm } [","] "}"
 MatchArm       ::= Pattern [ "if" Expression ] "=>" Expression
 Pattern        ::= OrPattern
 OrPattern      ::= SubPattern { "|" SubPattern }
-SubPattern     ::= Literal | Identifier | "_" | "default"
+SubPattern     ::= BindPattern | Literal | Identifier | "_" | "default"
+BindPattern    ::= Identifier "@" SubPattern
 ```
 
 ### `if` as expression
@@ -837,6 +838,7 @@ wall clock (reported to stderr so the user can pin the next run).
 | Name                        | Signature     | Errors | Notes                     |
 |:----------------------------|:--------------|:-------|:--------------------------|
 | `assert(cond, msg?)`        | `(bool, string?) -> void` | halts on `cond = false` | second arg optional |
+| `assume(cond, msg?)`        | `(bool, string?) -> void` | halts on `cond = false` | verifier treats as axiom; see [Syntax → Runtime assumptions](syntax#runtime-assumptions) |
 | `live_retries()`            | `() -> int`   | —      | current retry count of innermost `live` block |
 | `live_total_retries()`      | `() -> int`   | —      | process-wide live retry counter |
 | `live_total_exhaustions()`  | `() -> int`   | —      | process-wide live exhaustion counter |
