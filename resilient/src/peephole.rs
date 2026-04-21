@@ -13,6 +13,13 @@
 //!    → `IncLocal(x)`
 //! 3. `Jump(0)`                             → drop (fall-through)
 //! 4. `Not; JumpIfFalse(off)`               → `JumpIfTrue(off)`
+//! 5. `Const(k==1); Mul`                    → drop both (×1 identity)
+//! 6. `Const(k==0); Mul`                    → drop both + push Const(0)
+//!    (only when preceding op is a pure load: LoadLocal or Const)
+//!
+//! Strength-reduction rules for power-of-two constants (Mul→Shl,
+//! Div→Shr, Mod→BitAnd) are deferred: the opcodes Shl, Shr, and
+//! BitAnd do not yet exist in bytecode.rs.
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -109,6 +116,27 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         // Rule 4 — fold `Not; JumpIfFalse(off)` → `JumpIfTrue(off)`.
         if let Some(off) = rule_not_jif_to_jit(chunk, i, &targets) {
             new_code.push(Op::JumpIfTrue(off));
+            new_line_info.push(chunk.line_info[i]);
+            i += 2;
+            continue;
+        }
+        // Rule 5 — drop `Const(k==1); Mul` (×1 identity).
+        if rule_mul_one_identity(chunk, i, &targets) {
+            i += 2;
+            continue;
+        }
+        // Rule 6 — `Const(k==0); Mul` → `Const(0)` when the preceding
+        // load is pure (LoadLocal or Const). Replaces three ops with one.
+        if rule_mul_zero(chunk, i, &targets, &new_code) {
+            // Pop the preceding pure load from the output we already emitted.
+            new_code.pop();
+            new_line_info.pop();
+            // Push Const(0) — reuse the same constant-pool index we already
+            // have in the pattern (the zero constant at chunk.code[i]).
+            let Op::Const(zero_k) = chunk.code[i] else {
+                unreachable!()
+            };
+            new_code.push(Op::Const(zero_k));
             new_line_info.push(chunk.line_info[i]);
             i += 2;
             continue;
@@ -290,6 +318,61 @@ pub(crate) fn rule_not_jif_to_jit(chunk: &Chunk, i: usize, targets: &[bool]) -> 
         return None;
     }
     Some(off)
+}
+
+/// Rule 5: drop `Const(k==1); Mul` — multiplying by one is a no-op.
+/// Skips if `Mul` is a jump target.
+pub(crate) fn rule_mul_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Mul) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(1))) {
+        return false;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    true
+}
+
+/// Rule 6: fold `<pure-load>; Const(k==0); Mul` → `Const(0)`.
+///
+/// A "pure load" is any op that pushes exactly one value onto the stack
+/// without side-effects: `LoadLocal(_)` or `Const(_)`. If the op at
+/// `i-1` in the already-emitted new_code (i.e., `new_code.last()`) is
+/// such a load, AND the window `Const(0); Mul` is at `[i, i+1]`, we
+/// can replace all three ops with a single `Const(0)`.
+///
+/// Skips if `Mul` (at `i+1`) is a jump target.
+pub(crate) fn rule_mul_zero(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    new_code: &[Op],
+) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Mul) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return false;
+    }
+    // The preceding emitted op must be a pure (side-effect-free) load.
+    matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
 }
 
 #[cfg(test)]
@@ -547,5 +630,145 @@ mod tests {
         // Verify that `optimize` returns `Ok(())` for a basic valid chunk.
         let mut chunk = mk_chunk(&[Op::Const(0), Op::Return], vec![Value::Int(42)], &[1, 1]);
         assert!(optimize(&mut chunk).is_ok());
+    }
+
+    // ---------- Rule 5: Const(1); Mul identity ----------
+
+    #[test]
+    fn rule5_fires_on_const_one_mul() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Mul], vec![Value::Int(1)], &[1, 1]);
+        assert!(rule_mul_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule5_skips_when_const_is_not_one() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Mul], vec![Value::Int(2)], &[1, 1]);
+        assert!(!rule_mul_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule5_skips_when_mul_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Mul], vec![Value::Int(1)], &[1, 1]);
+        let mut targets = vec![false; 3];
+        targets[1] = true;
+        assert!(!rule_mul_one_identity(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule5_drops_mul_one_in_full_pass() {
+        // LoadLocal(0) * 1 should reduce to just LoadLocal(0).
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Mul, Op::Return],
+            vec![Value::Int(1)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+        assert_eq!(chunk.line_info, vec![1, 2]);
+    }
+
+    // ---------- Rule 6: Const(0); Mul → Const(0) (pure preceding load) ----------
+
+    #[test]
+    fn rule6_fires_when_preceding_emit_is_load_local() {
+        let chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Mul],
+            vec![Value::Int(0)],
+            &[1, 1, 1],
+        );
+        // Simulate that we have already emitted LoadLocal(0).
+        let emitted = vec![Op::LoadLocal(0)];
+        // The pattern window starts at i=1 (Const(0); Mul).
+        assert!(rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
+    }
+
+    #[test]
+    fn rule6_fires_when_preceding_emit_is_const() {
+        // constants[0]=Int(42), constants[1]=Int(0)
+        // code: [Const(0), Const(1), Mul]  — so at i=1 we have Const(1) → Int(0)
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Mul],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1, 1],
+        );
+        let emitted = vec![Op::Const(0)];
+        assert!(rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
+    }
+
+    #[test]
+    fn rule6_skips_when_preceding_emit_is_not_pure() {
+        // If the previous emitted op was Add (a side-effect op that pops two
+        // values and pushes one), we don't know whether the stack result is
+        // the only value we'd be discarding, so the rule must not fire.
+        let chunk = mk_chunk(
+            &[Op::Add, Op::Const(0), Op::Mul],
+            vec![Value::Int(0)],
+            &[1, 1, 1],
+        );
+        let emitted = vec![Op::Add];
+        assert!(!rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
+    }
+
+    #[test]
+    fn rule6_skips_when_const_is_not_zero() {
+        let chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Mul],
+            vec![Value::Int(5)],
+            &[1, 1, 1],
+        );
+        let emitted = vec![Op::LoadLocal(0)];
+        assert!(!rule_mul_zero(&chunk, 1, &[false; 4], &emitted));
+    }
+
+    #[test]
+    fn rule6_skips_when_mul_is_jump_target() {
+        let chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Mul],
+            vec![Value::Int(0)],
+            &[1, 1, 1],
+        );
+        let emitted = vec![Op::LoadLocal(0)];
+        let mut targets = vec![false; 4];
+        targets[2] = true; // Mul at pc=2 is a jump target
+        assert!(!rule_mul_zero(&chunk, 1, &targets, &emitted));
+    }
+
+    #[test]
+    fn rule6_folds_load_mul_zero_in_full_pass() {
+        // LoadLocal(0) * 0 → Const(0)
+        // chunk: [LoadLocal(0), Const(0), Mul, Return]
+        // constants: [Int(0)]
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Mul, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::Const(0), Op::Return]);
+        assert_eq!(chunk.line_info.len(), chunk.code.len());
+    }
+
+    #[test]
+    fn rule6_folds_const_mul_zero_in_full_pass() {
+        // Const(42) * 0 → Const(0)
+        // constants[0]=Int(42), constants[1]=Int(0)
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+            vec![Value::Int(42), Value::Int(0)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        // Result: Const(1) (the zero), Return
+        assert_eq!(chunk.code.len(), 2);
+        assert!(matches!(chunk.code[0], Op::Const(_)));
+        assert!(matches!(chunk.code[1], Op::Return));
+        // The Const must refer to the zero.
+        if let Op::Const(k) = chunk.code[0] {
+            assert!(
+                matches!(chunk.constants[k as usize], Value::Int(0)),
+                "expected constant to be Int(0)"
+            );
+        }
+        assert_eq!(chunk.line_info.len(), chunk.code.len());
     }
 }
