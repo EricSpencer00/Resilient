@@ -4872,7 +4872,7 @@ impl std::fmt::Display for Value {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{} -> {}", k, m.get(k).expect("key is from map"))?;
+                    write!(f, "{} -> {}", k, &m[k])?;
                 }
                 write!(f, "}}")
             }
