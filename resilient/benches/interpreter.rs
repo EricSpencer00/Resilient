@@ -142,7 +142,9 @@ let n = len(s);
 fn bench_fib(c: &mut Criterion) {
     let src_path = write_tmp_source("fib25", FIB_SRC);
     let mut group = c.benchmark_group("tree_walker");
-    group.sample_size(10).measurement_time(Duration::from_secs(10));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(10));
     group.bench_function("fib_25", |b| b.iter(|| run_source(&src_path)));
     group.finish();
     let _ = std::fs::remove_file(&src_path);
@@ -152,7 +154,9 @@ fn bench_bubble_sort(c: &mut Criterion) {
     let src = bubble_sort_src();
     let src_path = write_tmp_source("bubble50", &src);
     let mut group = c.benchmark_group("tree_walker");
-    group.sample_size(10).measurement_time(Duration::from_secs(10));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(10));
     group.bench_function("bubble_sort_50", |b| b.iter(|| run_source(&src_path)));
     group.finish();
     let _ = std::fs::remove_file(&src_path);
@@ -161,11 +165,18 @@ fn bench_bubble_sort(c: &mut Criterion) {
 fn bench_string_processing(c: &mut Criterion) {
     let src_path = write_tmp_source("string200", STRING_SRC);
     let mut group = c.benchmark_group("tree_walker");
-    group.sample_size(10).measurement_time(Duration::from_secs(10));
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(10));
     group.bench_function("string_concat_200", |b| b.iter(|| run_source(&src_path)));
     group.finish();
     let _ = std::fs::remove_file(&src_path);
 }
 
-criterion_group!(benches, bench_fib, bench_bubble_sort, bench_string_processing);
+criterion_group!(
+    benches,
+    bench_fib,
+    bench_bubble_sort,
+    bench_string_processing
+);
 criterion_main!(benches);

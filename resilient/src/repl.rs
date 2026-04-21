@@ -154,7 +154,7 @@ impl EnhancedREPL {
             }
             "clear" => {
                 print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
-                io::stdout().flush().unwrap();
+                let _ = io::stdout().flush();
                 return;
             }
             "typecheck" => {

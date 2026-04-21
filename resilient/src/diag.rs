@@ -251,11 +251,7 @@ impl Diagnostic {
 
     /// Fluent builder: append a secondary note with its own
     /// span. Chainable; called once per note.
-    pub fn with_note(
-        mut self,
-        span: Span,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn with_note(mut self, span: Span, message: impl Into<String>) -> Self {
         self.notes.push((span, message.into()));
         self
     }
@@ -293,10 +289,7 @@ pub fn format_diagnostic_terminal(src: &str, diag: &Diagnostic) -> String {
     // shaped. Without a code, drop the brackets.
     match &diag.code {
         Some(code) => {
-            out.push_str(&format!(
-                "{}[{}]: {}\n",
-                diag.severity, code, diag.message
-            ));
+            out.push_str(&format!("{}[{}]: {}\n", diag.severity, code, diag.message));
         }
         None => {
             out.push_str(&format!("{}: {}\n", diag.severity, diag.message));
@@ -325,11 +318,7 @@ fn render_span_snippet(src: &str, span: Span) -> String {
     // The first line is "`:` " (level empty + msg empty collapses
     // to "`: `"); drop it. If for any reason the helper returns
     // something unexpected, fall back to the raw output.
-    full.lines()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
+    full.lines().skip(1).collect::<Vec<_>>().join("\n") + "\n"
 }
 
 #[cfg(test)]
@@ -463,11 +452,7 @@ mod tests {
 
     #[test]
     fn diagnostic_new_leaves_optional_fields_empty() {
-        let d = Diagnostic::new(
-            Severity::Error,
-            span(1, 1, 1, 2),
-            "oops",
-        );
+        let d = Diagnostic::new(Severity::Error, span(1, 1, 1, 2), "oops");
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.message, "oops");
         assert!(d.code.is_none());
@@ -490,28 +475,22 @@ mod tests {
     #[test]
     fn terminal_renderer_includes_severity_code_and_message() {
         let src = "let x = 1\n";
-        let d = Diagnostic::new(
-            Severity::Error,
-            span(1, 10, 1, 10),
-            "expected `;`",
-        )
-        .with_code(DiagCode::new("E0007"));
+        let d = Diagnostic::new(Severity::Error, span(1, 10, 1, 10), "expected `;`")
+            .with_code(DiagCode::new("E0007"));
         let out = format_diagnostic_terminal(src, &d);
-        assert!(out.contains("error[E0007]: expected `;`"),
-            "header wrong: {}", out);
-        assert!(out.contains("let x = 1"),
-            "source context missing: {}", out);
+        assert!(
+            out.contains("error[E0007]: expected `;`"),
+            "header wrong: {}",
+            out
+        );
+        assert!(out.contains("let x = 1"), "source context missing: {}", out);
         assert!(out.contains("^"), "caret missing: {}", out);
     }
 
     #[test]
     fn terminal_renderer_without_code_drops_brackets() {
         let src = "let x = 1\n";
-        let d = Diagnostic::new(
-            Severity::Warning,
-            span(1, 1, 1, 3),
-            "unused binding",
-        );
+        let d = Diagnostic::new(Severity::Warning, span(1, 1, 1, 3), "unused binding");
         let out = format_diagnostic_terminal(src, &d);
         assert!(
             out.starts_with("warning: unused binding"),
@@ -531,20 +510,26 @@ mod tests {
         let src = "let x = 1;\nlet x = 2;\n";
         let primary = span(2, 5, 2, 6);
         let note_span = span(1, 5, 1, 6);
-        let d = Diagnostic::new(
-            Severity::Error,
-            primary,
-            "shadows previous binding",
-        )
-        .with_note(note_span, "previous definition here");
+        let d = Diagnostic::new(Severity::Error, primary, "shadows previous binding")
+            .with_note(note_span, "previous definition here");
         let out = format_diagnostic_terminal(src, &d);
-        assert!(out.contains("error: shadows previous binding"),
-            "primary header missing: {}", out);
-        assert!(out.contains("note: previous definition here"),
-            "note header missing: {}", out);
+        assert!(
+            out.contains("error: shadows previous binding"),
+            "primary header missing: {}",
+            out
+        );
+        assert!(
+            out.contains("note: previous definition here"),
+            "note header missing: {}",
+            out
+        );
         // Both source lines should appear (primary + note
         // snippets).
-        assert!(out.contains("let x = 2;"), "primary snippet missing: {}", out);
+        assert!(
+            out.contains("let x = 2;"),
+            "primary snippet missing: {}",
+            out
+        );
         assert!(out.contains("let x = 1;"), "note snippet missing: {}", out);
     }
 
@@ -557,8 +542,11 @@ mod tests {
             "consider renaming to `_x`",
         );
         let out = format_diagnostic_terminal(src, &d);
-        assert!(out.starts_with("hint: consider renaming to `_x`"),
-            "header wrong: {}", out);
+        assert!(
+            out.starts_with("hint: consider renaming to `_x`"),
+            "header wrong: {}",
+            out
+        );
     }
 
     #[test]
@@ -566,12 +554,8 @@ mod tests {
         // Clone + PartialEq derives exercised — matters for
         // downstream tests that want to assert on the full
         // Diagnostic value shape.
-        let d1 = Diagnostic::new(
-            Severity::Warning,
-            span(1, 1, 1, 5),
-            "x",
-        )
-        .with_code(DiagCode::new("W0001"));
+        let d1 = Diagnostic::new(Severity::Warning, span(1, 1, 1, 5), "x")
+            .with_code(DiagCode::new("W0001"));
         let d2 = d1.clone();
         assert_eq!(d1, d2);
     }
@@ -722,8 +706,7 @@ mod codes_tests {
     fn res206a_codes_are_distinct_strings() {
         // Sanity: no two codes accidentally share a string.
         let all = codes::all();
-        let mut seen: Vec<String> =
-            all.iter().map(|c| c.as_str().to_string()).collect();
+        let mut seen: Vec<String> = all.iter().map(|c| c.as_str().to_string()).collect();
         let before = seen.len();
         seen.sort();
         seen.dedup();
@@ -778,14 +761,13 @@ mod codes_tests {
         // parse / identifier / type / runtime / contract bands
         // must all remain represented.
         let all = codes::all();
-        let strs: Vec<String> =
-            all.iter().map(|c| c.as_str().to_string()).collect();
+        let strs: Vec<String> = all.iter().map(|c| c.as_str().to_string()).collect();
         for expected in &[
             "E0001", "E0002", "E0003", // parse
             "E0004", "E0005", "E0006", // name resolution
-            "E0007",                   // type
-            "E0008", "E0009",          // runtime
-            "E0010",                   // contracts
+            "E0007", // type
+            "E0008", "E0009", // runtime
+            "E0010", // contracts
         ] {
             assert!(
                 strs.iter().any(|s| s == expected),

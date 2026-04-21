@@ -17,12 +17,8 @@ fn bin() -> &'static str {
 fn tmp_file(tag: &str, body: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "res_198_{}_{}_{}.rs",
-        tag,
-        std::process::id(),
-        n
-    ));
+    let path =
+        std::env::temp_dir().join(format!("res_198_{}_{}_{}.rs", tag, std::process::id(), n));
     std::fs::write(&path, body).expect("write scratch");
     path
 }
@@ -126,10 +122,7 @@ fn lint_rejects_unknown_deny_code() {
         .expect("spawn lint");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("unknown lint code"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("unknown lint code"), "stderr: {stderr}");
     let _ = std::fs::remove_file(&src);
 }
 

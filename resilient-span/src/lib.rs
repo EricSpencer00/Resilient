@@ -32,7 +32,11 @@ pub struct Pos {
 
 impl Pos {
     pub const fn new(line: usize, column: usize, offset: usize) -> Self {
-        Self { line, column, offset }
+        Self {
+            line,
+            column,
+            offset,
+        }
     }
 }
 
@@ -60,14 +64,25 @@ impl Span {
     /// that don't correspond to anything in the source (e.g. an
     /// implicit `return ();` injected at end-of-block).
     pub const fn point(pos: Pos) -> Self {
-        Self { start: pos, end: pos }
+        Self {
+            start: pos,
+            end: pos,
+        }
     }
 
     /// Span covering both `self` and `other`. The result starts at the
     /// earlier of the two starts and ends at the later of the two ends.
     pub fn union(self, other: Span) -> Span {
-        let start = if self.start.offset <= other.start.offset { self.start } else { other.start };
-        let end = if self.end.offset >= other.end.offset { self.end } else { other.end };
+        let start = if self.start.offset <= other.start.offset {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if self.end.offset >= other.end.offset {
+            self.end
+        } else {
+            other.end
+        };
         Span { start, end }
     }
 
@@ -84,7 +99,11 @@ impl Span {
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.start.line == self.end.line {
-            write!(f, "{}:{}-{}", self.start.line, self.start.column, self.end.column)
+            write!(
+                f,
+                "{}:{}-{}",
+                self.start.line, self.start.column, self.end.column
+            )
         } else {
             write!(f, "{}-{}", self.start, self.end)
         }
@@ -105,11 +124,17 @@ impl<T> Spanned<T> {
     }
 
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Spanned<U> {
-        Spanned { node: f(self.node), span: self.span }
+        Spanned {
+            node: f(self.node),
+            span: self.span,
+        }
     }
 
     pub fn as_ref(&self) -> Spanned<&T> {
-        Spanned { node: &self.node, span: self.span }
+        Spanned {
+            node: &self.node,
+            span: self.span,
+        }
     }
 }
 

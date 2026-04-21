@@ -181,17 +181,20 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
             }
 
             // ---- RES-215: OpaquePtr arms (arity 0 and 1) ----
-            (&[], OpaquePtr) => Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
-                std::mem::transmute::<*const (), extern "C" fn() -> *mut core::ffi::c_void>(
-                    sym.ptr,
-                )(),
-            )),
-            (&[OpaquePtr], OpaquePtr) => Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
-                std::mem::transmute::<
+            (&[], OpaquePtr) => {
+                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn() -> *mut core::ffi::c_void,
+                >(sym.ptr)()))
+            }
+            (&[OpaquePtr], OpaquePtr) => {
+                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
                     *const (),
                     extern "C" fn(*mut core::ffi::c_void) -> *mut core::ffi::c_void,
-                >(sym.ptr)(ptrs[0]),
-            )),
+                >(sym.ptr)(
+                    ptrs[0]
+                )))
+            }
             (&[OpaquePtr], Int) => Value::Int(std::mem::transmute::<
                 *const (),
                 extern "C" fn(*mut core::ffi::c_void) -> i64,
@@ -329,8 +332,7 @@ mod tests {
             sig,
         };
         let sentinel = 0x1234_5678_usize as *mut core::ffi::c_void;
-        let out =
-            call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
+        let out = call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
         match out {
             Value::OpaquePtr(h) => assert_eq!(h.0, sentinel),
             other => panic!("expected OpaquePtr, got {:?}", other),
@@ -351,8 +353,7 @@ mod tests {
             sig,
         };
         let sentinel = 0x42_usize as *mut core::ffi::c_void;
-        let out =
-            call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
+        let out = call_foreign(&sym, &[Value::OpaquePtr(OpaquePtrHandle(sentinel))]).expect("ok");
         assert!(matches!(out, Value::Int(0x42)), "got {:?}", out);
     }
 
