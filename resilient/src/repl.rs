@@ -1,9 +1,14 @@
 // Enhanced REPL for Resilient language
 use crate::typechecker;
 use crate::{Lexer, Parser, Value};
+use rustyline::completion::Completer;
 use rustyline::config::Config;
 use rustyline::error::ReadlineError;
-use rustyline::{Editor, Result as RustylineResult};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{Editor, Helper, Result as RustylineResult};
+use std::borrow::Cow;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -19,6 +24,97 @@ const GREEN: &str = "\x1B[32m";
 const YELLOW: &str = "\x1B[33m";
 const BLUE: &str = "\x1B[34m";
 const CYAN: &str = "\x1B[36m";
+
+/// RES-257: rustyline helper that validates bracket/brace balance so the REPL
+/// shows a `.. ` continuation prompt for incomplete blocks.
+///
+/// Counts `{`/`}`, `[`/`]`, and `(`/`)` depth while skipping characters
+/// inside string literals (`"..."`) and single-line comments (`// ...`).
+/// Returns `ValidationResult::Incomplete` when the depth is positive at
+/// end-of-input; `ValidationResult::Valid` when balanced.
+#[derive(Default)]
+pub struct ResilientValidator;
+
+impl ResilientValidator {
+    fn brace_depth(input: &str) -> i32 {
+        let mut depth: i32 = 0;
+        let mut chars = input.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => {
+                    // Skip string literal contents.
+                    loop {
+                        match chars.next() {
+                            Some('\\') => {
+                                // Consume the escaped character.
+                                chars.next();
+                            }
+                            Some('"') | None => break,
+                            _ => {}
+                        }
+                    }
+                }
+                '\'' => {
+                    // Skip character literal contents.
+                    loop {
+                        match chars.next() {
+                            Some('\\') => {
+                                chars.next();
+                            }
+                            Some('\'') | None => break,
+                            _ => {}
+                        }
+                    }
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    // Skip to end of line for single-line comments.
+                    for c2 in chars.by_ref() {
+                        if c2 == '\n' {
+                            break;
+                        }
+                    }
+                }
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        depth
+    }
+}
+
+// Completer, Hinter, Highlighter all have trivial default bodies — we only
+// need Validator behaviour.
+
+impl Completer for ResilientValidator {
+    type Candidate = rustyline::completion::Pair;
+}
+
+impl Hinter for ResilientValidator {
+    type Hint = String;
+}
+
+impl Highlighter for ResilientValidator {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        Cow::Borrowed(line)
+    }
+    fn highlight_char(&self, _line: &str, _pos: usize) -> bool {
+        false
+    }
+}
+
+impl Validator for ResilientValidator {
+    fn validate(&self, ctx: &mut ValidationContext) -> RustylineResult<ValidationResult> {
+        let depth = Self::brace_depth(ctx.input());
+        if depth > 0 {
+            Ok(ValidationResult::Incomplete)
+        } else {
+            Ok(ValidationResult::Valid(None))
+        }
+    }
+}
+
+impl Helper for ResilientValidator {}
 
 pub struct EnhancedREPL {
     interpreter: crate::Interpreter,
@@ -67,10 +163,12 @@ impl EnhancedREPL {
         let config = Config::builder()
             .max_history_size(HISTORY_MAX_ENTRIES)?
             .build();
-        let mut rl = Editor::<(), rustyline::history::DefaultHistory>::with_history(
-            config,
-            rustyline::history::DefaultHistory::new(),
-        )?;
+        let mut rl =
+            Editor::<ResilientValidator, rustyline::history::DefaultHistory>::with_history(
+                config,
+                rustyline::history::DefaultHistory::new(),
+            )?;
+        rl.set_helper(Some(ResilientValidator));
 
         // RES-224: Load persisted history; silently skip if file is absent.
         if self.history_path.exists()
@@ -478,5 +576,56 @@ mod tests {
     #[test]
     fn history_max_entries_constant_is_1000() {
         assert_eq!(HISTORY_MAX_ENTRIES, 1000);
+    }
+
+    // -- RES-257: ResilientValidator brace-depth --------------------------
+
+    #[test]
+    fn validator_incomplete_for_unclosed_brace() {
+        assert_eq!(ResilientValidator::brace_depth("fn f() {"), 1);
+    }
+
+    #[test]
+    fn validator_valid_for_balanced_expression() {
+        assert_eq!(ResilientValidator::brace_depth("let x = 1;"), 0);
+    }
+
+    #[test]
+    fn validator_valid_for_balanced_braces() {
+        assert_eq!(ResilientValidator::brace_depth("fn f() { return 1; }"), 0);
+    }
+
+    #[test]
+    fn validator_incomplete_for_unclosed_bracket() {
+        assert_eq!(ResilientValidator::brace_depth("let v = [1, 2"), 1);
+    }
+
+    #[test]
+    fn validator_incomplete_for_unclosed_paren() {
+        assert_eq!(ResilientValidator::brace_depth("println(\"hi\""), 1);
+    }
+
+    #[test]
+    fn validator_skips_braces_in_string_literals() {
+        // A `{` inside a string must not count toward depth.
+        assert_eq!(ResilientValidator::brace_depth("let s = \"{\";"), 0);
+    }
+
+    #[test]
+    fn validator_skips_braces_in_line_comments() {
+        // A `{` after `//` must not count toward depth.
+        assert_eq!(ResilientValidator::brace_depth("let x = 1; // {"), 0);
+    }
+
+    #[test]
+    fn validator_handles_multiline_incomplete() {
+        let input = "fn f(int x) {\n    let y = x + 1;";
+        assert_eq!(ResilientValidator::brace_depth(input), 1);
+    }
+
+    #[test]
+    fn validator_handles_multiline_complete() {
+        let input = "fn f(int x) {\n    return x + 1;\n}";
+        assert_eq!(ResilientValidator::brace_depth(input), 0);
     }
 }

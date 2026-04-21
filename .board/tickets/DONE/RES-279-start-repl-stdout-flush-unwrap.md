@@ -1,12 +1,13 @@
 ---
 id: RES-279
 title: "main.rs: start_repl() has io::stdout().flush().unwrap() in production REPL clear handler"
-state: IN_PROGRESS
+state: DONE
 priority: P4
 goalpost: G11
 created: 2026-04-20
 owner: executor
-Claimed-by: Claude
+Claimed-by: Claude Sonnet 4.6
+Closed-by: fca05a0
 ---
 
 ## Summary
