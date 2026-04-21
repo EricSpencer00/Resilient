@@ -38,14 +38,13 @@ a snippet stops working, CI notices.
 Code blocks marked ```resilient are runnable as-is:
 
 ```bash
-resilient path/to/snippet.rs
+resilient path/to/snippet.rz
 ```
 
-Copy-paste any one of them into a `.rs` file and run it. (Yes,
-we borrow Rust's `.rs` extension — Resilient source lives in
-`.rs` files so editors pick up Rust-ish syntax highlighting for
-free. See the [syntax reference]({{ site.baseurl }}/syntax) for
-the actual grammar, which is not Rust.)
+Copy-paste any one of them into a `.rz` file and run it.
+Install the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=fromamerica.resilient-vscode)
+for syntax highlighting and one-click run. See the
+[syntax reference]({{ site.baseurl }}/syntax) for the grammar.
 
 If you'd rather start with the grand tour, the
 [getting-started guide]({{ site.baseurl }}/getting-started) is

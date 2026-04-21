@@ -78,7 +78,7 @@ the compiler discharged statically versus the number it
 deferred to runtime:
 
 ```bash
-resilient --typecheck --audit your_file.rs
+resilient --typecheck --audit your_file.rz
 ```
 
 Try it on this program:

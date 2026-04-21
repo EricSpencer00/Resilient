@@ -59,7 +59,7 @@ type errors to runtime. The `--typecheck` (or `-t`) flag
 enables the static checker:
 
 ```bash
-resilient --typecheck hello.rs
+resilient --typecheck hello.rz
 ```
 
 When every binding and call is consistent, you get a green
@@ -86,7 +86,7 @@ main();
 Running with `-t`:
 
 ```
-Type error: file.rs:3:5: let bad: int — value has type string
+Type error: file.rz:3:5: let bad: int — value has type string
 Error: Type check failed
 ```
 
