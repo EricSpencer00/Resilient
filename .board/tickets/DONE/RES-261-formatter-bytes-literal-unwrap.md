@@ -1,7 +1,7 @@
 ---
 id: RES-261
 title: "formatter.rs: replace infallible `unwrap()` in BytesLiteral with `char::from`"
-state: IN_PROGRESS
+state: DONE
 priority: P4
 goalpost: tooling
 created: 2026-04-20
@@ -65,3 +65,4 @@ self.write(&format!("{}", x as char));
 
 - 2026-04-20 created by analyzer (infallible `unwrap()` in production
   formatter code; violates no-panic rule in CLAUDE.md)
+- 2026-04-20 closed by Claude Sonnet 4.6 — commit 1297f7a
