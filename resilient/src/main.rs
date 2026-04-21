@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -6559,6 +6559,76 @@ fn panic_on_fault_enabled() -> bool {
     PANIC_ON_FAULT.with(|c| c.get())
 }
 
+thread_local! {
+    static LIVE_SOURCE_BASENAME: RefCell<Option<String>> = const { RefCell::new(None) };
+    static LIVE_LOG_WRITER: RefCell<Option<BufWriter<fs::File>>> = const { RefCell::new(None) };
+}
+
+struct LiveRunTelemetryGuard;
+
+impl Drop for LiveRunTelemetryGuard {
+    fn drop(&mut self) {
+        LIVE_SOURCE_BASENAME.with(|b| *b.borrow_mut() = None);
+        LIVE_LOG_WRITER.with(|w| {
+            if let Some(mut wr) = w.borrow_mut().take() {
+                let _ = wr.flush();
+            }
+        });
+    }
+}
+
+fn install_live_run_telemetry(
+    basename: String,
+    log: Option<BufWriter<fs::File>>,
+) -> LiveRunTelemetryGuard {
+    LIVE_SOURCE_BASENAME.with(|b| *b.borrow_mut() = Some(basename));
+    LIVE_LOG_WRITER.with(|w| *w.borrow_mut() = log);
+    LiveRunTelemetryGuard
+}
+
+fn live_retry_block_label(span: span::Span) -> String {
+    LIVE_SOURCE_BASENAME.with(|b| {
+        let base = b.borrow();
+        let base = base.as_deref().unwrap_or("?");
+        format!("{}:{}", base, span.start.line)
+    })
+}
+
+fn live_retry_ts_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn maybe_emit_live_retry_telemetry(block_span: span::Span, retry: usize, error: &str) {
+    let need_file = LIVE_LOG_WRITER.with(|w| w.borrow().is_some());
+    if !need_file && !resilient_runtime::live_telemetry::has_live_telemetry_backend() {
+        return;
+    }
+    let ts_ns = live_retry_ts_ns();
+    let block = live_retry_block_label(block_span);
+    if need_file
+        && let Ok(line_val) = serde_json::to_string(&serde_json::json!({
+            "block": &block,
+            "retry": retry,
+            "reason": error,
+            "ts_ns": ts_ns,
+        }))
+    {
+        let mut line = line_val;
+        line.push('\n');
+        LIVE_LOG_WRITER.with(|w| {
+            if let Some(writer) = w.borrow_mut().as_mut() {
+                let _ = writer
+                    .write_all(line.as_bytes())
+                    .and_then(|_| writer.flush());
+            }
+        });
+    }
+    resilient_runtime::live_telemetry::emit_live_retry(&block, retry, error, ts_ns);
+}
+
 struct LiveRetryGuard;
 
 impl LiveRetryGuard {
@@ -6725,7 +6795,7 @@ impl Interpreter {
                 invariants,
                 backoff,
                 timeout,
-                ..
+                span,
             } => {
                 // RES-142: unpack the `within <duration>` clause
                 // (if any) into a flat `u64 ns` so the runtime loop
@@ -6734,7 +6804,7 @@ impl Interpreter {
                     Node::DurationLiteral { nanos, .. } => Some(*nanos),
                     _ => None,
                 });
-                self.eval_live_block(body, invariants, backoff.as_ref(), timeout_ns)
+                self.eval_live_block(body, invariants, backoff.as_ref(), timeout_ns, *span)
             }
             // RES-142: duration literals are only legal inside a
             // `live ... within <duration> { ... }` clause — the
@@ -7318,6 +7388,7 @@ impl Interpreter {
         invariants: &[Node],
         backoff: Option<&BackoffConfig>,
         timeout_ns: Option<u64>,
+        block_span: span::Span,
     ) -> RResult<Value> {
         const MAX_RETRIES: usize = 3;
         let mut retry_count = 0;
@@ -7458,6 +7529,8 @@ impl Interpreter {
                             MAX_RETRIES, depth, error
                         ));
                     }
+
+                    maybe_emit_live_retry_telemetry(block_span, retry_count, &error);
 
                     eprintln!(
                         "\x1B[36m[LIVE BLOCK] Restoring environment to last known good state\x1B[0m"
@@ -8741,6 +8814,7 @@ fn execute_file(
     use_jit: bool,
     verifier_timeout_ms: u32,
     warn_unverified: bool,
+    live_log: Option<&Path>,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
@@ -8893,6 +8967,20 @@ fn execute_file(
         }
         return Ok(());
     }
+
+    let basename = Path::new(filename)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| filename.to_string());
+    let log_writer = if let Some(p) = live_log {
+        let f = fs::File::create(p)
+            .map_err(|e| format!("could not create live telemetry log {}: {}", p.display(), e))?;
+        Some(BufWriter::new(f))
+    } else {
+        None
+    };
+    let _live_telemetry_guard = install_live_run_telemetry(basename, log_writer);
 
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
 
@@ -9873,6 +9961,7 @@ COMMON FLAGS:\n\
         --panic-on-fault         Disable live-block retry healing;\n\
                                  abort with exit 1 on the first fault\n\
         --no-panic-on-fault      Restore default retry behaviour\n\
+        --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
 \n\
@@ -9991,6 +10080,7 @@ fn main() {
     // diagnostic instead of being silently healed. Handy during
     // development — `--no-panic-on-fault` restores the default.
     let mut panic_on_fault_flag = false;
+    let mut emit_live_log: Option<PathBuf> = None;
     let mut filename = "";
 
     // Simple argument parsing
@@ -10112,6 +10202,15 @@ fn main() {
                 // retry behaviour even if an earlier arg or wrapper
                 // script set `--panic-on-fault`.
                 panic_on_fault_flag = false;
+            } else if arg == "--emit-live-log" {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --emit-live-log requires a file path");
+                    std::process::exit(2);
+                }
+                emit_live_log = Some(PathBuf::from(&args[i]));
+            } else if let Some(p) = arg.strip_prefix("--emit-live-log=") {
+                emit_live_log = Some(PathBuf::from(p));
             } else if arg == "--examples-dir" {
                 // RES-026: --examples-dir <DIR> for the REPL's
                 // `examples` command.
@@ -10254,6 +10353,7 @@ fn main() {
                 use_jit,
                 verifier_timeout_ms,
                 warn_unverified,
+                emit_live_log.as_deref(),
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run

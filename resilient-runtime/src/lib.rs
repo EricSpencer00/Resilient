@@ -53,6 +53,7 @@ extern crate alloc;
 
 // RES-180: `Sink` abstraction + global `print` / `println`
 // helpers that route through a user-installed sink.
+pub mod live_telemetry;
 pub mod sink;
 
 #[cfg(feature = "ffi-static")]
@@ -237,7 +238,10 @@ mod tests {
         assert_eq!(a.clone().add(b.clone()).unwrap(), Value::Float(4.0));
         assert_eq!(a.clone().sub(b.clone()).unwrap(), Value::Float(1.0));
         assert_eq!(a.clone().mul(b.clone()).unwrap(), Value::Float(3.75));
-        assert_eq!(Value::Float(10.0).div(Value::Float(4.0)).unwrap(), Value::Float(2.5));
+        assert_eq!(
+            Value::Float(10.0).div(Value::Float(4.0)).unwrap(),
+            Value::Float(2.5)
+        );
     }
 
     #[test]
@@ -282,11 +286,15 @@ mod tests {
     #[test]
     fn string_eq() {
         assert_eq!(
-            Value::String(String::from("x")).eq(Value::String(String::from("x"))).unwrap(),
+            Value::String(String::from("x"))
+                .eq(Value::String(String::from("x")))
+                .unwrap(),
             Value::Bool(true)
         );
         assert_eq!(
-            Value::String(String::from("x")).eq(Value::String(String::from("y"))).unwrap(),
+            Value::String(String::from("x"))
+                .eq(Value::String(String::from("y")))
+                .unwrap(),
             Value::Bool(false)
         );
     }
@@ -294,7 +302,9 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn string_does_not_subtract() {
-        let err = Value::String(String::from("a")).sub(Value::String(String::from("b"))).unwrap_err();
+        let err = Value::String(String::from("a"))
+            .sub(Value::String(String::from("b")))
+            .unwrap_err();
         assert_eq!(err, RuntimeError::TypeMismatch("sub"));
     }
 
