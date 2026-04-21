@@ -9648,6 +9648,210 @@ fn run_z3_on(cert_path: &Path) -> RResult<bool> {
     Ok(first_line == "unsat")
 }
 
+/// RES-370: `resilient disasm <file.res> [--json]` — compile a
+/// Resilient source file and print its VM bytecode in human-readable
+/// (default) or structured JSON form.
+///
+/// Exit codes:
+/// - 0 — success.
+/// - 1 — compile or I/O error.
+/// - 2 — usage error (missing path, unknown flag).
+///
+/// Returns `None` when the first arg isn't `disasm`.
+fn dispatch_disasm_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("disasm") {
+        return None;
+    }
+
+    let mut json_mode = false;
+    let mut file: Option<PathBuf> = None;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--json" {
+            json_mode = true;
+        } else if file.is_none() {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to disasm", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!("Error: `resilient disasm <file.res> [--json]` requires a file path");
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", path.display(), e);
+            return Some(1);
+        }
+    };
+
+    let (program, parse_errs) = parse(&src);
+    if !parse_errs.is_empty() {
+        for e in &parse_errs {
+            eprintln!("Parser error: {}", e);
+        }
+        return Some(1);
+    }
+
+    let mut resolved = program;
+    let base_dir = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let mut loaded = std::collections::HashSet::new();
+    if let Err(e) = imports::expand_uses(&mut resolved, &base_dir, &mut loaded) {
+        eprintln!("Error: {}", e);
+        return Some(1);
+    }
+
+    let prog = match compiler::compile(&resolved) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Error: compile failed: {:?}", e);
+            return Some(1);
+        }
+    };
+
+    if json_mode {
+        println!("{}", disasm_json(&prog));
+    } else {
+        let mut buf = String::new();
+        disasm::disassemble(&prog, &mut buf).expect("String write is infallible");
+        print!("{}", buf);
+    }
+    Some(0)
+}
+
+/// RES-370: serialise a `Program` to a JSON string with no extra
+/// dependencies. Emits `{"chunks":[...]}` where each chunk has
+/// `"name"`, `"constants"`, and `"ops"` fields. Each op entry has
+/// `"offset"`, `"line"`, `"op"`, and `"operands"` fields.
+fn disasm_json(prog: &crate::bytecode::Program) -> String {
+    use std::fmt::Write as _;
+
+    fn json_value(v: &Value) -> String {
+        match v {
+            Value::Int(n) => format!("{}", n),
+            Value::Float(f) => format!("{}", f),
+            Value::Bool(b) => format!("{}", b),
+            Value::String(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{}\"", escaped)
+            }
+            other => format!("\"{}\"", other),
+        }
+    }
+
+    fn json_chunk(chunk: &crate::bytecode::Chunk, name: &str, fn_names: &[&str], out: &mut String) {
+        write!(out, "{{\"name\":\"{}\"", name).unwrap();
+
+        // constants array
+        out.push_str(",\"constants\":[");
+        for (ci, v) in chunk.constants.iter().enumerate() {
+            if ci > 0 {
+                out.push(',');
+            }
+            out.push_str(&json_value(v));
+        }
+        out.push(']');
+
+        // ops array
+        out.push_str(",\"ops\":[");
+        for (pc, op) in chunk.code.iter().enumerate() {
+            if pc > 0 {
+                out.push(',');
+            }
+            let line = chunk.line_info.get(pc).copied().unwrap_or(0);
+            let (op_name, operands) = op_json_fields(op, pc, chunk, fn_names);
+            write!(
+                out,
+                "{{\"offset\":{},\"line\":{},\"op\":\"{}\",\"operands\":{}}}",
+                pc, line, op_name, operands
+            )
+            .unwrap();
+        }
+        out.push_str("]}");
+    }
+
+    fn op_json_fields(
+        op: &crate::bytecode::Op,
+        pc: usize,
+        _chunk: &crate::bytecode::Chunk,
+        fn_names: &[&str],
+    ) -> (&'static str, String) {
+        use crate::bytecode::Op;
+        match *op {
+            Op::Const(idx) => ("Const", format!("[{}]", idx)),
+            Op::Add => ("Add", "[]".into()),
+            Op::Sub => ("Sub", "[]".into()),
+            Op::Mul => ("Mul", "[]".into()),
+            Op::Div => ("Div", "[]".into()),
+            Op::Mod => ("Mod", "[]".into()),
+            Op::Neg => ("Neg", "[]".into()),
+            Op::LoadLocal(idx) => ("LoadLocal", format!("[{}]", idx)),
+            Op::StoreLocal(idx) => ("StoreLocal", format!("[{}]", idx)),
+            Op::IncLocal(idx) => ("IncLocal", format!("[{}]", idx)),
+            Op::Call(idx) => {
+                let name_val = fn_names
+                    .get(idx as usize)
+                    .map(|n| format!(",\"{}\"", n))
+                    .unwrap_or_default();
+                ("Call", format!("[{}{}]", idx, name_val))
+            }
+            Op::ReturnFromCall => ("ReturnFromCall", "[]".into()),
+            Op::Jump(offset) => {
+                let target = (pc as isize + 1) + offset as isize;
+                ("Jump", format!("[{}]", target.max(0) as usize))
+            }
+            Op::JumpIfFalse(offset) => {
+                let target = (pc as isize + 1) + offset as isize;
+                ("JumpIfFalse", format!("[{}]", target.max(0) as usize))
+            }
+            Op::JumpIfTrue(offset) => {
+                let target = (pc as isize + 1) + offset as isize;
+                ("JumpIfTrue", format!("[{}]", target.max(0) as usize))
+            }
+            Op::Eq => ("Eq", "[]".into()),
+            Op::Neq => ("Neq", "[]".into()),
+            Op::Lt => ("Lt", "[]".into()),
+            Op::Le => ("Le", "[]".into()),
+            Op::Gt => ("Gt", "[]".into()),
+            Op::Ge => ("Ge", "[]".into()),
+            Op::Not => ("Not", "[]".into()),
+            Op::Return => ("Return", "[]".into()),
+            Op::MakeClosure {
+                fn_idx,
+                upvalue_count,
+            } => ("MakeClosure", format!("[{},{}]", fn_idx, upvalue_count)),
+            Op::LoadUpvalue(idx) => ("LoadUpvalue", format!("[{}]", idx)),
+            Op::MakeArray { len } => ("MakeArray", format!("[{}]", len)),
+            Op::LoadIndex => ("LoadIndex", "[]".into()),
+            Op::StoreIndex => ("StoreIndex", "[]".into()),
+        }
+    }
+
+    let fn_names: Vec<&str> = prog.functions.iter().map(|f| f.name.as_str()).collect();
+    let mut out = String::from("{\"chunks\":[");
+    json_chunk(&prog.main, "main", &fn_names, &mut out);
+    for func in &prog.functions {
+        out.push(',');
+        let header = format!(
+            "fn {} (arity={}, locals={})",
+            func.name, func.arity, func.local_count
+        );
+        json_chunk(&func.chunk, &header, &fn_names, &mut out);
+    }
+    out.push_str("]}");
+    out
+}
+
 /// RES-198: `resilient lint <file> [--deny LCODE]* [--allow LCODE]*`.
 ///
 /// Parses `<file>`, runs the typechecker (so type errors surface
@@ -9891,11 +10095,12 @@ COMMON FLAGS:\n\
         --lsp                    Run the LSP server on stdio\n\
 \n\
 SUBCOMMANDS:\n\
-    pkg <verb>          Package manager operations (RES-205)\n\
-    fmt <file>          Canonical source formatter\n\
-    lint <file>         Run the starter lints\n\
-    verify-cert <dir>   Verify an RES-071 certificate directory\n\
-    verify-all <dir>    Re-check every obligation in a manifest\n\
+    pkg <verb>                   Package manager operations (RES-205)\n\
+    fmt <file>                   Canonical source formatter\n\
+    lint <file>                  Run the starter lints\n\
+    disasm <file> [--json]       Print VM bytecode disassembly\n\
+    verify-cert <dir>            Verify an RES-071 certificate directory\n\
+    verify-all <dir>             Re-check every obligation in a manifest\n\
 \n\
 See SYNTAX.md for the language reference."
     );
@@ -9957,6 +10162,11 @@ fn main() {
     // RES-198: `lint <file>` — parse + run the 5 starter lints
     // with `// resilient: allow`-comment suppression.
     if let Some(code) = dispatch_lint_subcommand(&args) {
+        std::process::exit(code);
+    }
+
+    // RES-370: `disasm <file> [--json]` — compile and print bytecode.
+    if let Some(code) = dispatch_disasm_subcommand(&args) {
         std::process::exit(code);
     }
 
@@ -18198,6 +18408,44 @@ mod tests {
         // First token starts at column 0 of line 0.
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
+    }
+
+    // RES-370: disasm subcommand — verify disassemble() produces
+    // a Const op for an integer literal.
+    #[test]
+    fn disasm_produces_const_op_for_integer_literal() {
+        let src = "let x = 42;";
+        let (ast, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let prog = compiler::compile(&ast).unwrap();
+        let mut out = String::new();
+        disasm::disassemble(&prog, &mut out).unwrap();
+        assert!(
+            out.contains("Const"),
+            "expected Const in disasm output, got:\n{}",
+            out
+        );
+    }
+
+    // RES-370: disasm --json path — verify JSON output contains the
+    // Const op name for an integer literal.
+    #[test]
+    fn disasm_json_produces_const_op_for_integer_literal() {
+        let src = "let x = 42;";
+        let (ast, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let prog = compiler::compile(&ast).unwrap();
+        let json = disasm_json(&prog);
+        assert!(
+            json.contains("\"Const\""),
+            "expected \"Const\" in JSON disasm output, got:\n{}",
+            json
+        );
+        assert!(
+            json.contains("\"chunks\""),
+            "expected \"chunks\" key in JSON output, got:\n{}",
+            json
+        );
     }
 }
 
