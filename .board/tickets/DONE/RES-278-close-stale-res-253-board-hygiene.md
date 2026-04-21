@@ -1,7 +1,7 @@
 ---
 id: RES-278
 title: "Board hygiene: close stale RES-253 — its acceptance criteria are already met"
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G12
 created: 2026-04-20
@@ -55,3 +55,4 @@ RES-161-match-bind-subpattern.md
 
 - 2026-04-20 created by analyzer (RES-253 open in OPEN/ but RES-133 and RES-161
   are already in DONE/ as of commit bcdbb6f; criteria satisfied, ticket stale)
+closed-by: RES-253 already closed in commit f43c882
