@@ -74,6 +74,7 @@ proptest = ["dep:proptest"]
 # thin `pub use resilient_span::*;` shim; `resilient-runtime`
 # does *not* take this dep (it stays no_std-clean).
 resilient-span = { path = "../resilient-span" }
+resilient-runtime = { path = "../resilient-runtime" }
 clap = { version = "4.4", features = ["derive"] }
 libloading = { version = "0.8", optional = true }
 logos = { version = "0.14", optional = true }
