@@ -1,338 +1,321 @@
 # Contributing to Resilient
 
-Welcome — and thank you for your interest in Resilient! Contributions from
-humans, AI agents, and automated tooling are all equally welcome. Every
-improvement, no matter how small, helps push the language forward.
+Welcome! Resilient is an open project for safety-critical embedded systems. Contributions from both humans and AI agents are first-class. This guide covers the development workflow from setup through submission.
 
-New here? Skip to [Good first issues](#good-first-issues) for a handful of
-tickets sized for a first PR.
+## Table of Contents
 
----
-
-## Quick Start
-
-```bash
-# 1. Clone
-git clone https://github.com/EricSpencer00/Resilient.git
-cd Resilient
-
-# 2. Build the compiler (default features — no z3, no lsp, no jit)
-cargo build --manifest-path resilient/Cargo.toml
-
-# 3. Run the compiler test suite
-cargo test --manifest-path resilient/Cargo.toml
-
-# 4. Build the embedded runtime
-cargo build --manifest-path resilient-runtime/Cargo.toml
-cargo test  --manifest-path resilient-runtime/Cargo.toml
-
-# 5. Run an example
-cargo run --manifest-path resilient/Cargo.toml -- resilient/examples/hello.rs
-```
-
-If all four commands succeed, you have a working dev environment.
+- [Development Environment Setup](#development-environment-setup)
+- [Picking and Claiming a Ticket](#picking-and-claiming-a-ticket)
+- [Commit Message Format](#commit-message-format)
+- [Running Tests Locally](#running-tests-locally)
+- [Code Style](#code-style)
+- [Pull Request Checklist](#pull-request-checklist)
+- [Golden Files and Expected Output](#golden-files-and-expected-output)
+- [Agent Contributors](#agent-contributors)
 
 ---
 
-## Setting Up the Development Environment
+## Development Environment Setup
 
-### Prerequisites
+### Required
 
-- **Rust** (stable toolchain) — install via [rustup.rs](https://rustup.rs/).
-  Edition 2024 is required; any recent stable rustc will do.
-- **z3** (optional, only if you work on verifier code with `--features z3`)
-  - macOS: `brew install z3`
-  - Linux: `sudo apt-get install libz3-dev z3`
-- **Cross-compile targets** (optional, for `resilient-runtime` cross builds):
+1. **Rust toolchain**: Install from [rustup.rs](https://rustup.rs/)
+   - The project requires Rust 1.70+
+   - Check: `rustc --version`
 
-  ```bash
-  rustup target add thumbv7em-none-eabihf   # Cortex-M4F
-  rustup target add thumbv6m-none-eabi      # Cortex-M0/M0+
-  rustup target add riscv32imac-unknown-none-elf
-  ```
+2. **Clone the repository**
+   ```bash
+   git clone https://github.com/EricSpencer00/Resilient.git
+   cd Resilient
+   ```
 
-### Feature flags
+### Optional
 
-The `resilient` crate has several opt-in features; pick only what you need.
+- **Z3 (SMT solver)**: For symbolic contract verification
+  - Install: `brew install z3` (macOS) or `apt-get install libz3-dev` (Linux)
+  - Compile with: `cargo build --features z3`
 
-| Feature | Flag                     | What it enables                                                    |
-|---------|--------------------------|--------------------------------------------------------------------|
-| `z3`    | `cargo build --features z3`  | Z3-backed SMT verification (requires libz3).                   |
-| `lsp`   | `cargo build --features lsp` | Language server over stdio (`resilient --lsp`).                |
-| `jit`   | `cargo build --features jit` | Cranelift JIT backend (heavy deps; off by default).            |
-| `ffi`   | `cargo build --features ffi` | Dynamic FFI via `extern "lib" { ... }` in the tree walker.     |
+- **LLVM**: For the JIT backend (advanced feature)
+  - Install: `brew install llvm` (macOS) or `apt-get install llvm-dev` (Linux)
+  - Compile with: `cargo build --features jit`
 
-The `resilient-runtime` crate has its own feature set — notably
-`--features alloc` (heap types) and `--features ffi-static` (static FFI
-registry). See its `Cargo.toml` for the full list.
+- **LSP support**: Language server for IDE integration
+  - Compile with: `cargo build --features lsp`
 
-### Building
+---
 
-```bash
-# Compiler / CLI driver
-cargo build --manifest-path resilient/Cargo.toml
+## Picking and Claiming a Ticket
 
-# With Z3 support
-cargo build --manifest-path resilient/Cargo.toml --features z3
+1. Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
+2. Look for issues labeled `agent-ready` or without any assignment
+3. Comment on the issue: `"I'll take this"` (or similar)
+4. Create a branch named `res-NNN-short-title` (e.g., `res-376-contributing-guide`)
+   - `NNN` is the issue number
+   - Use lowercase with hyphens for multi-word titles
+5. Open a **draft PR** early with `Closes #NNN` in the description
+   - This signals that the ticket is taken and prevents duplicate work
+   - Convert to ready-for-review when you're done
 
-# With the LSP server
-cargo build --manifest-path resilient/Cargo.toml --features lsp
+---
 
-# Embedded runtime
-cargo build --manifest-path resilient-runtime/Cargo.toml
-cargo build --manifest-path resilient-runtime/Cargo.toml --features alloc
-cargo build --manifest-path resilient-runtime/Cargo.toml --features ffi-static
+## Commit Message Format
 
-# Cross-compile check
-cargo build --manifest-path resilient-runtime/Cargo.toml --target thumbv7em-none-eabihf
+All commits must follow this format:
+
+```
+RES-NNN: short description (≤72 characters)
+
+Optional longer explanation if the commit warrants it.
+Wrap at ~72 characters.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ```
 
-### Running tests
+### Examples
+
+```
+RES-376: CONTRIBUTING.md documentation
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+```
+RES-150: fix clippy warning in type checker
+
+The pattern matching on Token could be simplified by using
+unreachable_patterns. Applied the suggestion.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+### Notes
+
+- The issue number `NNN` is **required**
+- First line must be ≤72 characters (git standard)
+- Include the `Co-Authored-By` trailer for all commits
+- **Push immediately** after each commit — don't accumulate local commits
+
+---
+
+## Running Tests Locally
+
+### Full test suite
 
 ```bash
-# Compiler + interpreter tests (default)
 cargo test --manifest-path resilient/Cargo.toml
+```
 
-# With Z3 integration tests
-cargo test --manifest-path resilient/Cargo.toml --features z3
+### Runtime tests
 
-# With FFI tests (tree walker)
-cargo test --manifest-path resilient/Cargo.toml --features ffi
-
-# Embedded runtime — default (no_std, alloc-free)
+```bash
 cargo test --manifest-path resilient-runtime/Cargo.toml
-
-# With alloc feature
-cargo test --manifest-path resilient-runtime/Cargo.toml --features alloc
-
-# Static FFI registry
-cargo test --manifest-path resilient-runtime/Cargo.toml --features ffi-static
 ```
 
-### Formatting and lints
+### Specific test
+
+```bash
+cargo test --manifest-path resilient/Cargo.toml <test_name>
+```
+
+### With Z3 (contract verification)
+
+```bash
+cargo test --features z3
+```
+
+### With JIT backend
+
+```bash
+cargo test --features jit
+```
+
+### All features
+
+```bash
+cargo test --all-features
+```
+
+---
+
+## Code Style
+
+### Format
+
+All code must be formatted with `cargo fmt`:
 
 ```bash
 cargo fmt --all
+```
+
+This is **required** before submitting a PR. CI will reject unformatted code.
+
+### Clippy Lints
+
+All compiler warnings must be clean:
+
+```bash
 cargo clippy --all-targets -- -D warnings
 ```
 
-Both must pass before a PR can merge; CI enforces them.
+Common fixes:
 
----
+- Use descriptive variable names instead of `_x`, `_temp`
+- Replace `unwrap()` with `?` or proper error handling (except in tests)
+- Use `matches!` macro for simple pattern matching
+- Prefer `if let` over `match` with a single arm
 
-## Project Structure
+### Panics
 
+- **`resilient/` (compiler)**: Zero panics except in `main()` setup and tests
+  - Use `Result`/`Option` for error handling
+  - Parser and type checker must return typed errors
+- **`resilient-runtime/`**: Zero panics in default (no_std) build
+  - Every `unwrap()` and `expect()` is a bug
+  - Use `Result`/`Option` exclusively
+- **Tests**: Panics are acceptable in test code
+
+### Comments
+
+Add comments only when the **why** is non-obvious. Don't explain what the code does — use well-named identifiers instead.
+
+Example (bad):
+
+```rust
+// Increment x by 1
+x = x + 1;
 ```
-Resilient/
-├── resilient/                      # Compiler, REPL, and CLI driver
-│   ├── src/                        # Lexer, parser, type checker, VM, JIT, builtins
-│   └── examples/                   # Example programs (each with .expected.txt sidecar)
-├── resilient-runtime/              # no_std-compatible embedded runtime crate
-│   └── src/                        # Value types, ops, sink abstraction, FFI registry
-├── resilient-runtime-cortex-m-demo/# Cortex-M4F cross-compile demo (size-gated in CI)
-├── docs/                           # Static site source (published to GitHub Pages)
-├── benchmarks/                     # Benchmark scripts and RESULTS.md
-├── self-host/                      # Self-hosting bootstrap experiments
-├── scripts/                        # Helper shell scripts (CI, size gate, etc.)
-├── STABILITY.md                    # Pre-1.0 stability policy (read before upgrading)
-├── ROADMAP.md                      # Goalpost ladder (G1–G20+)
-└── .github/workflows/              # CI workflow definitions
+
+Example (good):
+
+```rust
+// Align buffer to 8-byte boundary for DMA.
+x = (x + 7) & !7;
 ```
-
----
-
-## The GitHub Issues Workflow
-
-Resilient tracks all work in [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues).
-Each issue carries a unique `RES-NNN` identifier, a clear goal, and concrete
-acceptance criteria.
-
-### Picking up a ticket
-
-1. Browse [open issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen)
-   and pick one. New contributors — look for issues tagged `good first issue`.
-2. **Claim it** by commenting on the issue, then create a branch:
-
-   ```bash
-   git checkout -b res-NNN-short-title
-   ```
-
-3. Open a **draft PR** early with `Closes #N` in the body — this signals to
-   others that the ticket is taken.
-4. When the PR merges, the issue closes automatically via the `Closes #N` link.
-
-### Good first issues
-
-New contributors: the `good first issue` label on GitHub marks issues that
-are well-scoped for a first PR. They come with clear acceptance criteria and
-generally don't require deep knowledge of the compiler internals.
-
-Browse them at:
-<https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22>
-
----
-
-## Commit Format
-
-- **Ticket work**: `RES-NNN: short description`
-  Example: `RES-207: add struct literal syntax to parser`
-- **Multi-ticket change**: join the ticket IDs with `/`.
-  Example: `RES-209/214: stability policy doc + contributing guide overhaul`
-- **Other fixes / chores**: free-form, but keep the first line under 72 chars.
-  Example: `Fix typo in CONTRIBUTING.md`
-- **Multi-line bodies** are welcome for complex changes — explain *why*, not
-  just *what*.
-- AI-agent-authored commits should include a `Co-Authored-By:` trailer so
-  authorship is transparent. Example:
-
-  ```
-  Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-  ```
-
----
-
-## Coding Standards
-
-### General
-
-- Run `cargo fmt --all` before committing.
-- Run `cargo clippy --all-targets -- -D warnings` and fix every warning —
-  CI rejects clippy warnings.
-- Every new language feature must have tests. Every new example program must
-  have a `.expected.txt` golden-output sidecar in `resilient/examples/`.
-
-### `resilient-runtime/`
-
-- Must remain `#![no_std]` compatible in the default feature set.
-- **Zero use of `std` types** (no `Vec`, `String`, `Box`, etc.) outside of
-  `#[cfg(feature = "alloc")]` gates.
-- **Zero panics**: use `Result` / `Option` and propagate errors. Every
-  `unwrap()` or `expect()` is a bug.
-
-### `resilient/` (compiler / CLI)
-
-- **Zero panics in the parser and lexer.** Every error path must return a
-  typed `Error` and be surfaced as a clean diagnostic. A panic is a bug.
-- Diagnostics carry `line:col:` source positions. Don't add bare `println!`
-  or `eprintln!` debug output — use the existing diagnostic infrastructure.
-- New built-in functions go in the builtins table with a doc-comment and a
-  test.
-
-### Tests
-
-- Unit tests live next to the code they test (`#[cfg(test)]` modules).
-- Integration / example tests use the golden `.expected.txt` sidecar pattern:
-  run `cargo run -- examples/foo.rs` and diff stdout against
-  `examples/foo.expected.txt`.
-- Tests that require z3 must be gated with `#[cfg(feature = "z3")]` or placed
-  under `cargo test --features z3`.
-
-### Stability-sensitive changes
-
-Before changing anything listed as **stable** in [STABILITY.md](STABILITY.md),
-read that file's "How Breaking Changes Land" section. Breaking changes to
-stable surface require a deprecation plan in the ticket.
 
 ---
 
 ## Pull Request Checklist
 
-Before marking a PR ready for review:
+Before requesting review, ensure:
 
-- [ ] Linked GitHub issue in the PR body (`Closes #N` / `Fixes #N`).
-- [ ] Commit subject follows `RES-NNN: short description`.
-- [ ] `cargo fmt --all` clean.
-- [ ] `cargo clippy --all-targets -- -D warnings` clean.
-- [ ] `cargo test` passes on the crates you touched (with relevant features).
-- [ ] New behaviour has tests (unit or `.expected.txt` golden).
-- [ ] Documentation updated if user-visible behaviour changed (README,
-      SYNTAX.md, docs/, STABILITY.md CHANGELOG).
-- [ ] GitHub Issue closed via `Closes #N` in the PR body.
+- [ ] **Branch is up-to-date** with `main`
+  ```bash
+  git fetch origin
+  git rebase origin/main
+  ```
 
-CI gates PRs on all of the above plus:
+- [ ] **All tests pass locally**
+  ```bash
+  cargo test --manifest-path resilient/Cargo.toml
+  cargo test --manifest-path resilient-runtime/Cargo.toml
+  ```
 
-- Cross-compile for `thumbv7em-none-eabihf`, `thumbv6m-none-eabi`, and
-  `riscv32imac-unknown-none-elf`.
-- Size gate (`.text` ≤ 64 KiB for the Cortex-M4F demo).
-- Performance gate (`cargo bench` regression check).
+- [ ] **Code is formatted**
+  ```bash
+  cargo fmt --all
+  ```
 
-Keep PRs small and focused — one ticket per PR is ideal.
+- [ ] **Clippy is clean**
+  ```bash
+  cargo clippy --all-targets -- -D warnings
+  ```
+
+- [ ] **PR title and description are clear**
+  - Title: `RES-NNN: short description`
+  - Body includes what changed and why
+
+- [ ] **All CI jobs are green**
+  - The PR will show CI status; all checks must pass
+  - Do not request review while CI is still running
+
+- [ ] **Commits are in order**
+  - Each commit has a clear message in the `RES-NNN:` format
+  - History is clean (no fixup commits left behind)
 
 ---
 
-## Releases
+## Golden Files and Expected Output
 
-Releases are cut by pushing a semver tag (`vMAJOR.MINOR.PATCH`) to `main`:
+When a compiler change intentionally alters output (new language features, refactored error messages), you must update the golden `.expected.txt` files.
 
-```bash
-git tag v0.3.0
-git push origin v0.3.0
+### Finding golden files
+
+Golden files live alongside their test inputs in `resilient/examples/`:
+
+```
+resilient/examples/
+├── feature_name.res          # Input source
+└── feature_name.expected.txt # Expected output
 ```
 
-This triggers two workflows automatically:
-- **release** — builds native binaries for Linux (amd64 + arm64) and macOS (amd64 + arm64), creates a GitHub Release with auto-generated notes and attached archives.
-- **release-image** — builds and pushes a multi-arch Docker image to `ghcr.io/ericspencer00/resilient`.
+### Regenerating golden files
 
-Pre-releases use a tag like `v0.3.0-alpha.1` — the Docker image gets tagged but not promoted to `latest`.
+1. Run the test to see the actual output:
+   ```bash
+   cargo test --manifest-path resilient/Cargo.toml <test_name> -- --nocapture
+   ```
+
+2. Review the diff carefully to ensure it's correct
+
+3. Update the golden file with the new output:
+   ```bash
+   cargo test --manifest-path resilient/Cargo.toml <test_name> -- --nocapture | tail -n +2 > resilient/examples/feature_name.expected.txt
+   ```
+
+4. Re-run the test to confirm it passes:
+   ```bash
+   cargo test --manifest-path resilient/Cargo.toml <test_name>
+   ```
+
+### In your PR
+
+When you modify golden files:
+
+1. Call it out explicitly in the PR description under a **"Test changes"** section with a one-line rationale per file:
+
+   ```markdown
+   ## Test changes
+
+   - `feature_name.expected.txt`: Updated output for new language feature
+   - `error_case.expected.txt`: Improved error message formatting
+   ```
+
+2. Do **not** delete tests to make a PR green — fix the code instead
+3. Lowering or removing an assertion in a test requires the same approval as modifying the test
 
 ---
 
-## For AI Agent Contributors
+## Agent Contributors
 
-AI agents (Claude Code, OpenHands, Codex, Devin, and others) are first-class
-contributors. The same rules apply as for humans, plus a few agent-specific
-notes to help you orient quickly.
+### Ticket Lifecycle
 
-### Quick Start for agents
+The issue board uses a simple workflow:
 
-1. **Find work** — Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready)
-   filtered by `agent-ready`. Each `agent-ready` issue was filed with the
-   *Agent-Ready Ticket* template and includes a Goal, explicit Acceptance
-   Criteria, and a list of files to touch — everything you need to start
-   without further clarification.
+- **OPEN**: Ticket is available; nobody is actively working on it
+- **IN_PROGRESS**: An agent or human has claimed it (comment + draft PR)
+- **DONE**: PR is merged; the issue closes automatically when you add `Closes #NNN` in the PR body
 
-2. **Claim it** — Comment on the issue, then create a branch:
-   ```bash
-   git checkout -b res-NNN-short-title
-   ```
+### Workflow
 
-3. **Implement** — Read the issue's "Files / modules to touch" list. Run the
-   acceptance criteria commands as you go.
+1. **Claim** the ticket by commenting with intent
+2. **Create a draft PR** immediately with `Closes #NNN` in the body
+3. **Push after every commit** — don't accumulate local commits
+4. **Mark ready for review** once all CI is green and the implementation is complete
+5. **Monitor for feedback** via the PR comment subscription
+6. Merge is automatic once approved; the issue closes
 
-4. **Verify before pushing**:
-   ```bash
-   cargo fmt --all
-   cargo clippy --all-targets -- -D warnings
-   cargo test --manifest-path resilient/Cargo.toml
-   cargo test --manifest-path resilient-runtime/Cargo.toml
-   ```
+### Special Notes
 
-5. **Open a PR** — Target `main`. Use `Closes #N` in the body to auto-close
-   the GitHub Issue.
-
-6. **Trailer** — Include a `Co-Authored-By:` line so authorship is transparent:
-   ```
-   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-   ```
-
-### Filing new work
-
-If you identify a gap or improvement not already tracked, file a GitHub Issue
-using the **Agent-Ready Ticket** template. Fill in Goal and Acceptance Criteria
-precisely, and add the `agent-ready` label so other agents can pick it up.
-
-### Core rules (same as humans)
-
-- Follow the commit format (`RES-NNN: short description` for ticket work).
-- Open PRs against `main`; never force-push.
-- Keep PRs focused — one ticket, one concern.
-- All CI checks must pass before requesting a merge.
-- Include a `Co-Authored-By:` trailer on any agent-assisted commit.
+- **Test protection**: Modifying existing tests requires maintainer approval (see [CLAUDE.md](./CLAUDE.md) for details)
+- **Security**: Changes to `unsafe` blocks or breaking language features require explicit review
+- **Dependencies**: Patch-level Cargo.toml updates are free; major/minor require approval
 
 ---
 
-## Code of Conduct
+## Questions or Blockers?
 
-This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
-By participating you agree to uphold it. Please report unacceptable behavior to
-[ericspencer1450@gmail.com](mailto:ericspencer1450@gmail.com).
+- For setup issues, open a GitHub Discussion or issue
+- For questions about a specific ticket, comment on the issue
+- For security concerns, reach out to the maintainers privately
+
+Thank you for contributing to Resilient! 🚀
