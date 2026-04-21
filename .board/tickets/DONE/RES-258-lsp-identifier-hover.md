@@ -1,11 +1,12 @@
 ---
 id: RES-258
 title: "LSP: identifier hover (RES-181b) — show fn signature / type on cursor"
-state: OPEN
+state: DONE
 priority: P2
 goalpost: G17
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary

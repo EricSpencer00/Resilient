@@ -5,9 +5,12 @@
 //! and publish diagnostics with source ranges derived from
 //! RES-077's per-statement `Spanned<Node>` wrappers.
 //!
-//! Nothing else yet — no hover, no completion, no go-to-definition.
-//! Those are dedicated follow-up tickets. This ticket is the
-//! scaffolding that makes an editor light up with red squiggles.
+//! Subsequent tickets added: hover (literal types RES-181a, fn signatures
+//! RES-258), document symbols (RES-185), workspace symbols (RES-186),
+//! semantic tokens (RES-187), inlay hints (RES-189), go-to-definition
+//! (RES-182a), find-references (RES-183), rename (RES-184), and
+//! completion (RES-188a). This file is the scaffolding that makes an
+//! editor light up with red squiggles and IDE features.
 //!
 //! The `mod lsp_server;` declaration in `main.rs` is already
 //! gated on `cfg(feature = "lsp")`, so this file is only compiled
@@ -622,6 +625,47 @@ fn walk_call_sites(node: &Node, target: &str, out: &mut Vec<Range>) {
         // TypeAlias, StructDecl, LetDestructureStruct, AssumeStatement, etc.
         _ => {}
     }
+}
+
+/// RES-258: build a human-readable fn signature string from a
+/// `Node::Function` node, e.g. `fn add(int a, int b) -> int`.
+/// Returns `None` when `node` is not a `Node::Function`.
+pub(crate) fn fn_signature_string(node: &Node) -> Option<String> {
+    let (name, parameters, return_type) = match node {
+        Node::Function {
+            name,
+            parameters,
+            return_type,
+            ..
+        } => (name.as_str(), parameters.as_slice(), return_type.as_deref()),
+        _ => return None,
+    };
+    let params: Vec<String> = parameters
+        .iter()
+        .map(|(ty, pname)| format!("{} {}", ty, pname))
+        .collect();
+    let ret = match return_type {
+        Some(rt) => format!(" -> {}", rt),
+        None => String::new(),
+    };
+    Some(format!("fn {}({}){}", name, params.join(", "), ret))
+}
+
+/// RES-258: find the `Node::Function` with the given name in the program.
+/// Returns a reference to the `Node` if found, `None` otherwise.
+pub(crate) fn find_fn_node<'a>(program: &'a Node, name: &str) -> Option<&'a Node> {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return None,
+    };
+    for spanned in stmts {
+        if let Node::Function { name: fn_name, .. } = &spanned.node
+            && fn_name == name
+        {
+            return Some(&spanned.node);
+        }
+    }
+    None
 }
 
 /// RES-188a: hard cap on the completion list. Large lists hurt
@@ -1464,24 +1508,22 @@ impl LanguageServer for Backend {
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
-    /// RES-181a: respond to `textDocument/hover` — today, only
-    /// literal positions yield a result. A literal under the
-    /// cursor returns its Resilient-surface type name (`Int`,
-    /// `Float`, `String`, `Bool`, `Bytes`); any other position
-    /// returns `Ok(None)` so the client renders nothing.
+    /// RES-181a + RES-258: respond to `textDocument/hover`.
     ///
-    /// Implementation drives the lexer directly against the
-    /// cached source text (not the AST), because the parser's
-    /// per-leaf spans record `last_token_*` AFTER the lexer
-    /// advances — unreliable for literal positions. See the
-    /// module-level comment on `hover_literal_at` for the
-    /// rationale.
+    /// Priority order:
+    /// 1. Literal token (Int / Float / String / Bool / Bytes) → return
+    ///    the Resilient type name (`Int`, `Float`, etc.) — RES-181a.
+    /// 2. Identifier token that names a top-level `fn` in the cached
+    ///    AST → return the fn's signature as a Markdown code block —
+    ///    RES-258 (identifier hover).
+    /// 3. Identifier token that does NOT resolve to a known top-level fn
+    ///    → return `"unknown"` so the client shows something rather than
+    ///    nothing. Panics and internal errors are not surfaced.
+    /// 4. Anything else (keyword, operator, out-of-range) → `Ok(None)`.
     ///
-    /// RES-181b will extend this to identifier positions once
-    /// RES-120 exposes a per-position inferred-type table. The
-    /// plumbing here (document lookup, capability advertisement,
-    /// Hover response shape) is the shared scaffolding that
-    /// ticket will build on.
+    /// Implementation drives the lexer directly against the cached source
+    /// text (not the AST) for token-position accuracy; see `hover_literal_at`
+    /// for the rationale.
     async fn hover(&self, params: HoverParams) -> JsonResult<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
@@ -1492,15 +1534,44 @@ impl LanguageServer for Backend {
         let Some(text) = text else {
             return Ok(None);
         };
-        let Some((type_name, range)) = hover_literal_at(&text, pos) else {
+
+        // Priority 1: literal hover (RES-181a) — unchanged behaviour.
+        if let Some((type_name, range)) = hover_literal_at(&text, pos) {
+            return Ok(Some(Hover {
+                contents: HoverContents::Scalar(MarkedString::String(type_name.to_string())),
+                range: Some(range),
+            }));
+        }
+
+        // Priority 2 & 3: identifier hover (RES-258).
+        let Some((name, range)) = identifier_at(&text, pos) else {
+            // Non-identifier token (keyword, operator, etc.) → no hover.
             return Ok(None);
         };
-        // `MarkedString::String` keeps the bubble universal —
-        // both markdown-rendering and plain-text clients display
-        // it identically. Type name alone is the body; no extra
-        // prose.
+
+        // Look up the identifier in the cached AST.
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+
+        let content = if let Some(fn_node) = find_fn_node(&program, &name) {
+            // Known top-level fn: format the signature.
+            match fn_signature_string(fn_node) {
+                Some(sig) => sig,
+                None => "unknown".to_string(),
+            }
+        } else {
+            // Identifier does not resolve to a known fn — return "unknown"
+            // rather than nothing so the user knows we tried.
+            "unknown".to_string()
+        };
+
         Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(type_name.to_string())),
+            contents: HoverContents::Scalar(MarkedString::String(content)),
             range: Some(range),
         }))
     }
@@ -2665,6 +2736,72 @@ mod tests {
         let sp = Span::new(Pos::new(2, 1, 0), Pos::new(2, 5, 4));
         assert!(!lex_span_contains_lsp_position(sp, Position::new(0, 1)));
         assert!(!lex_span_contains_lsp_position(sp, Position::new(5, 1)));
+    }
+
+    // ============================================================
+    // RES-258: identifier hover helpers
+    // ============================================================
+
+    #[test]
+    fn hover_on_fn_name_returns_signature() {
+        // `fn add(int a, int b) -> int` — cursor on `add` at col 3 (LSP).
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let prog = {
+            let (p, _) = parse(src);
+            p
+        };
+        // `add` starts at col 4 (1-indexed) = LSP col 3.
+        let sig = fn_signature_string(find_fn_node(&prog, "add").expect("fn add not found"));
+        assert_eq!(sig, Some("fn add(int a, int b) -> int".to_string()));
+    }
+
+    #[test]
+    fn hover_on_fn_name_no_return_type() {
+        // Function without explicit return type: no `-> <ret>` in output.
+        let src = "fn hello() { return 0; }";
+        let (prog, _) = parse(src);
+        let sig = fn_signature_string(find_fn_node(&prog, "hello").expect("fn hello not found"));
+        assert_eq!(sig, Some("fn hello()".to_string()));
+    }
+
+    #[test]
+    fn hover_on_multi_param_fn_signature_format() {
+        // Multi-param fn: each param is `type name`, joined with `, `.
+        let src = "fn f(int x, bool flag, string msg) -> string { return msg; }";
+        let (prog, _) = parse(src);
+        let sig = fn_signature_string(find_fn_node(&prog, "f").expect("fn f not found"));
+        assert_eq!(
+            sig,
+            Some("fn f(int x, bool flag, string msg) -> string".to_string())
+        );
+    }
+
+    #[test]
+    fn hover_on_unknown_identifier_returns_unknown_string() {
+        // Identifier not in the program's top-level defs → find_fn_node returns None.
+        let src = "fn foo() { return 1; }";
+        let (prog, _) = parse(src);
+        assert!(find_fn_node(&prog, "bar").is_none());
+    }
+
+    #[test]
+    fn hover_fn_signature_string_on_non_fn_node_returns_none() {
+        // Non-Function node passed to fn_signature_string → None.
+        let node = Node::IntegerLiteral {
+            value: 42,
+            span: crate::span::Span::default(),
+        };
+        assert!(fn_signature_string(&node).is_none());
+    }
+
+    #[test]
+    fn hover_identifier_at_returns_none_for_keyword() {
+        // `fn` keyword is not an identifier token → None.
+        let r = identifier_at("fn foo() { return 0; }", Position::new(0, 0));
+        assert!(
+            r.is_none(),
+            "fn keyword should not be returned by identifier_at"
+        );
     }
 
     // ============================================================

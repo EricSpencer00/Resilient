@@ -1,11 +1,12 @@
 ---
 id: RES-254
 title: "`resilient fmt` silently drops `extern` blocks"
-state: OPEN
+state: DONE
 priority: P2
 goalpost: tooling
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
