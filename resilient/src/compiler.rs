@@ -34,6 +34,42 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         _ => return Err(CompileError::Unsupported("non-Program root")),
     };
 
+    // Pre-pass 0 (FFI v2): resolve all extern blocks so foreign symbols
+    // are available before any call-site compilation. Builds an
+    // ffi_index: name → u16 parallel to fn_index.
+    #[cfg(feature = "ffi")]
+    let mut ffi_loader = crate::ffi::ForeignLoader::new();
+    #[cfg(feature = "ffi")]
+    let mut ffi_index: HashMap<String, u16> = HashMap::new();
+    #[cfg(feature = "ffi")]
+    let mut foreign_syms: Vec<std::sync::Arc<crate::ffi::ForeignSymbol>> = Vec::new();
+    #[cfg(feature = "ffi")]
+    {
+        for spanned in stmts {
+            if let Node::Extern { library, decls, .. } = &spanned.node {
+                ffi_loader
+                    .resolve_block(library, decls)
+                    .map_err(|e| CompileError::FfiError(e.to_string()))?;
+                for d in decls {
+                    if let Some(sym) = ffi_loader.lookup(&d.resilient_name) {
+                        if ffi_index.len() >= u16::MAX as usize {
+                            return Err(CompileError::Unsupported(
+                                "too many foreign symbols (>65535)",
+                            ));
+                        }
+                        let idx = foreign_syms.len() as u16;
+                        ffi_index.insert(d.resilient_name.clone(), idx);
+                        foreign_syms.push(sym);
+                    }
+                }
+            }
+        }
+    }
+    // On non-ffi builds, ffi_index is empty — call sites fall through to
+    // the normal fn_index lookup and surface a "function not found" error.
+    #[cfg(not(feature = "ffi"))]
+    let ffi_index: HashMap<String, u16> = HashMap::new();
+
     // Pre-pass: function name → index in the `functions` table.
     let mut fn_index: HashMap<String, u16> = HashMap::new();
     let mut next_fn_idx: u16 = 0;
@@ -94,6 +130,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     &mut locals,
                     &mut next_local,
                     &fn_index,
+                    &ffi_index,
                     line,
                 )?;
             }
@@ -118,8 +155,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     let mut main_locals: HashMap<String, u16> = HashMap::new();
     let mut main_next_local: u16 = 0;
     for spanned in stmts {
-        // Skip fn decls — they were compiled in pass 2.
-        if matches!(spanned.node, Node::Function { .. }) {
+        // Skip fn/extern decls — handled in earlier passes.
+        if matches!(spanned.node, Node::Function { .. } | Node::Extern { .. }) {
             continue;
         }
         let line = spanned.span.start.line as u32;
@@ -129,6 +166,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             &mut main_locals,
             &mut main_next_local,
             &fn_index,
+            &ffi_index,
             line,
         )?;
     }
@@ -137,7 +175,12 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     crate::peephole::optimize(&mut main)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
 
-    Ok(Program { main, functions })
+    Ok(Program {
+        main,
+        functions,
+        #[cfg(feature = "ffi")]
+        foreign_syms,
+    })
 }
 
 /// Compile a top-level (main-chunk) statement. Bare expression
@@ -150,11 +193,12 @@ fn compile_stmt(
     locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, fn_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -165,7 +209,7 @@ fn compile_stmt(
             Ok(())
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            compile_expr(v, chunk, locals, fn_index, line)?;
+            compile_expr(v, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::Return, line);
             Ok(())
         }
@@ -174,15 +218,15 @@ fn compile_stmt(
             Ok(())
         }
         Node::ExpressionStatement { expr: inner, .. } => {
-            compile_expr(inner, chunk, locals, fn_index, line)
+            compile_expr(inner, chunk, locals, fn_index, ffi_index, line)
         }
         Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block { .. } => {
-            compile_control_flow(node, chunk, locals, next_local, fn_index, line)
+            compile_control_flow(node, chunk, locals, next_local, fn_index, ffi_index, line)
         }
         Node::Assignment { name, value, .. } => {
             // RES-083: re-bind an existing local. Compile the RHS,
             // StoreLocal to the known slot. Unknown name is an error.
-            compile_expr(value, chunk, locals, fn_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
@@ -217,17 +261,17 @@ fn compile_stmt(
                 .get(&local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(index, chunk, locals, fn_index, line)?;
-            compile_expr(value, chunk, locals, fn_index, line)?;
+            compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::StoreIndex, line);
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
-        Node::Function { .. } => {
-            // Top-level fn decl already handled in pass 2. Skipping
-            // here would be a no-op, but we should never see one —
-            // the caller filters them out before calling us.
-            Err(CompileError::Unsupported("nested function decl"))
+        Node::Function { .. } | Node::Extern { .. } => {
+            // Top-level fn/extern decls already handled in passes 1/2.
+            // Skipping here would be a no-op, but we should never see
+            // them — the caller filters them out before calling us.
+            Err(CompileError::Unsupported("nested function/extern decl"))
         }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
@@ -243,12 +287,13 @@ fn compile_control_flow(
     locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
         Node::Block { stmts, .. } => {
             for s in stmts {
-                compile_stmt(s, chunk, locals, next_local, fn_index, line)?;
+                compile_stmt(s, chunk, locals, next_local, fn_index, ffi_index, line)?;
             }
             Ok(())
         }
@@ -259,18 +304,26 @@ fn compile_control_flow(
             ..
         } => {
             // cond
-            compile_expr(condition, chunk, locals, fn_index, line)?;
+            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
             // JumpIfFalse to else-or-end (placeholder 0 offset)
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             // consequence
-            compile_stmt(consequence, chunk, locals, next_local, fn_index, line)?;
+            compile_stmt(
+                consequence,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                line,
+            )?;
             if let Some(alt) = alternative {
                 // Unconditional jump past the else branch
                 let jmp_end = chunk.emit(Op::Jump(0), line);
                 // JumpIfFalse lands here (start of else)
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
-                compile_stmt(alt, chunk, locals, next_local, fn_index, line)?;
+                compile_stmt(alt, chunk, locals, next_local, fn_index, ffi_index, line)?;
                 // And the skip-over-else lands here (end)
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
@@ -285,9 +338,9 @@ fn compile_control_flow(
             condition, body, ..
         } => {
             let loop_start = chunk.code.len();
-            compile_expr(condition, chunk, locals, fn_index, line)?;
+            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_stmt(body, chunk, locals, next_local, fn_index, line)?;
+            compile_stmt(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
             // Unconditional loop back to cond
             let jmp = chunk.emit(Op::Jump(0), line);
             chunk.patch_jump(jmp, loop_start)?;
@@ -310,11 +363,12 @@ fn compile_stmt_in_fn(
     locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
         Node::LetStatement { name, value, .. } => {
-            compile_expr(value, chunk, locals, fn_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             if *next_local == u16::MAX {
                 return Err(CompileError::TooManyLocals);
             }
@@ -325,7 +379,7 @@ fn compile_stmt_in_fn(
             Ok(())
         }
         Node::ReturnStatement { value: Some(v), .. } => {
-            compile_expr(v, chunk, locals, fn_index, line)?;
+            compile_expr(v, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::ReturnFromCall, line);
             Ok(())
         }
@@ -338,13 +392,13 @@ fn compile_stmt_in_fn(
             Ok(())
         }
         Node::ExpressionStatement { expr: inner, .. } => {
-            compile_expr(inner, chunk, locals, fn_index, line)
+            compile_expr(inner, chunk, locals, fn_index, ffi_index, line)
         }
         Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block { .. } => {
-            compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, line)
+            compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, ffi_index, line)
         }
         Node::Assignment { name, value, .. } => {
-            compile_expr(value, chunk, locals, fn_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             let idx = *locals
                 .get(name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(name.clone()))?;
@@ -375,8 +429,8 @@ fn compile_stmt_in_fn(
                 .get(&local_name)
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
             chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(index, chunk, locals, fn_index, line)?;
-            compile_expr(value, chunk, locals, fn_index, line)?;
+            compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::StoreIndex, line);
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
@@ -394,12 +448,13 @@ fn compile_control_flow_in_fn(
     locals: &mut HashMap<String, u16>,
     next_local: &mut u16,
     fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
         Node::Block { stmts, .. } => {
             for s in stmts {
-                compile_stmt_in_fn(s, chunk, locals, next_local, fn_index, line)?;
+                compile_stmt_in_fn(s, chunk, locals, next_local, fn_index, ffi_index, line)?;
             }
             Ok(())
         }
@@ -409,14 +464,22 @@ fn compile_control_flow_in_fn(
             alternative,
             ..
         } => {
-            compile_expr(condition, chunk, locals, fn_index, line)?;
+            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_stmt_in_fn(consequence, chunk, locals, next_local, fn_index, line)?;
+            compile_stmt_in_fn(
+                consequence,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                line,
+            )?;
             if let Some(alt) = alternative {
                 let jmp_end = chunk.emit(Op::Jump(0), line);
                 let else_target = chunk.code.len();
                 chunk.patch_jump(jif, else_target)?;
-                compile_stmt_in_fn(alt, chunk, locals, next_local, fn_index, line)?;
+                compile_stmt_in_fn(alt, chunk, locals, next_local, fn_index, ffi_index, line)?;
                 let end = chunk.code.len();
                 chunk.patch_jump(jmp_end, end)?;
             } else {
@@ -429,9 +492,9 @@ fn compile_control_flow_in_fn(
             condition, body, ..
         } => {
             let loop_start = chunk.code.len();
-            compile_expr(condition, chunk, locals, fn_index, line)?;
+            compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_stmt_in_fn(body, chunk, locals, next_local, fn_index, line)?;
+            compile_stmt_in_fn(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
             let jmp = chunk.emit(Op::Jump(0), line);
             chunk.patch_jump(jmp, loop_start)?;
             let end = chunk.code.len();
@@ -447,6 +510,7 @@ fn compile_expr(
     chunk: &mut Chunk,
     locals: &HashMap<String, u16>,
     fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
     line: u32,
 ) -> Result<(), CompileError> {
     match node {
@@ -471,7 +535,7 @@ fn compile_expr(
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "-" => {
-            compile_expr(right, chunk, locals, fn_index, line)?;
+            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::Neg, line);
             Ok(())
         }
@@ -479,7 +543,7 @@ fn compile_expr(
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "!" => {
-            compile_expr(right, chunk, locals, fn_index, line)?;
+            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::Not, line);
             Ok(())
         }
@@ -490,9 +554,9 @@ fn compile_expr(
             right,
             ..
         } if operator == "&&" => {
-            compile_expr(left, chunk, locals, fn_index, line)?;
+            compile_expr(left, chunk, locals, fn_index, ffi_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_expr(right, chunk, locals, fn_index, line)?;
+            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // false branch
             let false_target = chunk.code.len();
@@ -510,12 +574,12 @@ fn compile_expr(
             right,
             ..
         } if operator == "||" => {
-            compile_expr(left, chunk, locals, fn_index, line)?;
+            compile_expr(left, chunk, locals, fn_index, ffi_index, line)?;
             // Negate lhs so JumpIfFalse skips to "true" when lhs is truthy.
             chunk.emit(Op::Not, line);
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             // lhs was falsy → evaluate rhs
-            compile_expr(right, chunk, locals, fn_index, line)?;
+            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
             let jmp_end = chunk.emit(Op::Jump(0), line);
             // true branch
             let true_target = chunk.code.len();
@@ -532,8 +596,8 @@ fn compile_expr(
             right,
             ..
         } => {
-            compile_expr(left, chunk, locals, fn_index, line)?;
-            compile_expr(right, chunk, locals, fn_index, line)?;
+            compile_expr(left, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(right, chunk, locals, fn_index, ffi_index, line)?;
             let op = match operator.as_str() {
                 "+" => Op::Add,
                 "-" => Op::Sub,
@@ -565,13 +629,21 @@ fn compile_expr(
                 Node::Identifier { name: n, .. } => n.clone(),
                 _ => return Err(CompileError::Unsupported("indirect call")),
             };
+            // FFI v2: foreign call takes priority over user-defined functions.
+            if let Some(&idx) = ffi_index.get(&callee_name) {
+                for arg in arguments {
+                    compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+                }
+                chunk.emit(Op::CallForeign(idx), line);
+                return Ok(());
+            }
             let callee_idx = *fn_index
                 .get(&callee_name)
                 .ok_or_else(|| CompileError::UnknownFunction(callee_name.clone()))?;
             // Push args left-to-right so the VM can pop them in reverse
             // and assign to locals 0..arity in source order.
             for arg in arguments {
-                compile_expr(arg, chunk, locals, fn_index, line)?;
+                compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
             }
             chunk.emit(Op::Call(callee_idx), line);
             Ok(())
@@ -584,7 +656,7 @@ fn compile_expr(
                 return Err(CompileError::Unsupported("array literal with >65535 items"));
             }
             for item in items {
-                compile_expr(item, chunk, locals, fn_index, line)?;
+                compile_expr(item, chunk, locals, fn_index, ffi_index, line)?;
             }
             chunk.emit(
                 Op::MakeArray {
@@ -600,8 +672,8 @@ fn compile_expr(
         // `compile_expr(target)` recurses: each `IndexExpression` at
         // an inner position pushes a clone of the sub-array.
         Node::IndexExpression { target, index, .. } => {
-            compile_expr(target, chunk, locals, fn_index, line)?;
-            compile_expr(index, chunk, locals, fn_index, line)?;
+            compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
+            compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::LoadIndex, line);
             Ok(())
         }
@@ -875,6 +947,15 @@ impl StructRegistry {
 }
 
 #[cfg(test)]
+pub(crate) fn parse_and_compile(src: &str) -> Result<Program, String> {
+    let (ast, errs) = crate::parse(src);
+    if !errs.is_empty() {
+        return Err(errs.join("; "));
+    }
+    compile(&ast).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::bytecode::Op;
@@ -883,6 +964,14 @@ mod tests {
         let (program, errs) = crate::parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         program
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn extern_block_produces_foreign_sym_in_program() {
+        let src = "fn main() { return 1; }\n";
+        let prog = crate::compiler::parse_and_compile(src).expect("compiles");
+        assert!(prog.foreign_syms.is_empty());
     }
 
     #[test]

@@ -175,6 +175,8 @@ fn write_op(
         Op::MakeArray { len } => write!(out, "MakeArray {}", len)?,
         Op::LoadIndex => write!(out, "LoadIndex")?,
         Op::StoreIndex => write!(out, "StoreIndex")?,
+        // FFI v2.
+        Op::CallForeign(idx) => write!(out, "CallForeign {idx:<6}")?,
     }
     Ok(())
 }
@@ -198,6 +200,7 @@ mod tests {
         Program {
             main,
             functions: Vec::new(),
+            ..Program::default()
         }
     }
 
@@ -260,6 +263,7 @@ mod tests {
                 chunk: mk_chunk(vec![Op::Return], vec![], vec![1]),
                 local_count: 0,
             }],
+            ..Program::default()
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();
@@ -292,6 +296,7 @@ mod tests {
                     local_count: 2,
                 },
             ],
+            ..Program::default()
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();
@@ -383,6 +388,7 @@ mod tests {
                 chunk: Chunk::new(),
                 local_count: 0,
             }],
+            ..Program::default()
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();

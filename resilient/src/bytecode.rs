@@ -128,6 +128,12 @@ pub enum Op {
     /// Nested `a[i][j] = v` is RES-171c — today the compiler only
     /// lowers `a[i] = v` where `a` is a bare Identifier.
     StoreIndex,
+    /// FFI v2: call a resolved foreign (C ABI) symbol. `idx` references
+    /// `Program::foreign_syms[idx]`. The VM pops `sym.sig.params.len()`
+    /// values, calls the trampoline, and pushes the result. Gated behind
+    /// `#[cfg(feature = "ffi")]` at dispatch time but the variant exists
+    /// unconditionally so the compiler/disassembler don't need feature flags.
+    CallForeign(u16),
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
@@ -157,10 +163,26 @@ pub struct Function {
 /// RES-081: top-level compile output. `main` is the entrypoint
 /// (executed by `vm::run`), and `functions` is the call table that
 /// `Op::Call(idx)` indexes into.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Program {
     pub main: Chunk,
     pub functions: Vec<Function>,
+    /// FFI v2: resolved foreign symbols, indexed by `Op::CallForeign(u16)`.
+    /// Built during compilation from `Node::Extern` blocks. Empty when
+    /// the `ffi` feature is disabled or no extern blocks appear in the source.
+    #[cfg(feature = "ffi")]
+    pub foreign_syms: Vec<std::sync::Arc<crate::ffi::ForeignSymbol>>,
+}
+
+impl Default for Program {
+    fn default() -> Self {
+        Self {
+            main: Chunk::new(),
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        }
+    }
 }
 
 impl Chunk {
@@ -269,6 +291,8 @@ pub enum CompileError {
     /// invariant violation (e.g., a new PC with no originating
     /// old PC in the jump-relinking step).
     InternalError(&'static str),
+    /// FFI v2: foreign library or symbol resolution failed.
+    FfiError(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -309,6 +333,7 @@ impl std::fmt::Display for CompileError {
             CompileError::InternalError(msg) => {
                 write!(f, "bytecode compile: internal error: {}", msg)
             }
+            CompileError::FfiError(msg) => write!(f, "FFI error: {}", msg),
         }
     }
 }
@@ -318,6 +343,20 @@ impl std::error::Error for CompileError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_foreign_opcode_roundtrips() {
+        let mut c = Chunk::new();
+        let idx = c.emit(Op::CallForeign(3), 1);
+        assert_eq!(c.code[idx], Op::CallForeign(3));
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn program_foreign_syms_is_empty_by_default() {
+        let p = Program::default();
+        assert!(p.foreign_syms.is_empty());
+    }
 
     #[test]
     fn add_constant_dedups() {

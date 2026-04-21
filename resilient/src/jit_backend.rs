@@ -89,6 +89,14 @@ struct LowerCtx {
     /// lowering keeps `return` emitting the function-level
     /// return it always did.
     inline_return_target: Option<Block>,
+    /// FFI v2 (JIT path): foreign symbols declared with
+    /// `Linkage::Import` during Pass 1 of
+    /// `jit_run_ast_with_entries`. Looked up by `resilient_name`
+    /// at call sites before the user-function map. Empty when the
+    /// `ffi` feature is disabled or no foreign entries are
+    /// provided.
+    #[cfg(feature = "ffi")]
+    foreign_entries: Vec<ForeignJitEntry>,
 }
 
 impl LowerCtx {
@@ -103,6 +111,8 @@ impl LowerCtx {
             param_vars: Vec::new(),
             fn_asts: HashMap::new(),
             inline_return_target: None,
+            #[cfg(feature = "ffi")]
+            foreign_entries: Vec::new(),
         }
     }
 
@@ -766,6 +776,31 @@ pub(crate) struct JitBuiltinSig {
     pub addr: *const u8,
 }
 
+/// FFI v2 (JIT path): a foreign symbol pre-registered with the JITBuilder.
+/// `resilient_name` is the Resilient identifier written at the call site;
+/// `c_name` is the C symbol name passed to `JITBuilder::symbol`;
+/// `addr` is the function pointer registered there.
+/// Only integer (i64) params/return are supported in v1 JIT FFI.
+/// `func_id` is filled in during Pass 1 of `jit_run_ast_with_entries`.
+#[cfg(feature = "ffi")]
+#[derive(Clone)]
+pub(crate) struct ForeignJitEntry {
+    pub resilient_name: String,
+    pub c_name: String,
+    pub arity: usize,
+    pub addr: *const u8,
+    pub func_id: Option<cranelift_module::FuncId>,
+}
+
+// SAFETY: `ForeignJitEntry` carries a raw function pointer that is
+// only ever passed to Cranelift (which emits native `call` instructions
+// through it). The pointer is not dereferenced in safe Rust; crossing
+// thread boundaries is safe for function pointers on all supported targets.
+#[cfg(feature = "ffi")]
+unsafe impl Send for ForeignJitEntry {}
+#[cfg(feature = "ffi")]
+unsafe impl Sync for ForeignJitEntry {}
+
 // SAFETY: `JitBuiltinSig` contains a raw function pointer. It's
 // only ever read, never dereferenced directly in safe Rust — the
 // JIT hands the address to Cranelift, which emits code that
@@ -1004,6 +1039,228 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
 pub(crate) fn run_with_stats(program: &Node) -> Result<(i64, u32, u32, u32), JitError> {
     let (result, cache) = run_internal(program)?;
     Ok((result, cache.hits, cache.misses, cache.compiles))
+}
+
+/// FFI v2 (JIT path): compile a `Program` AST to native code using a
+/// pre-built `JITBuilder` (with foreign symbols already registered via
+/// `JITBuilder::symbol`) and a list of `ForeignJitEntry` descriptors.
+///
+/// Foreign entries are declared as `Linkage::Import` in Pass 1 before
+/// user-defined functions, so any user function may call a foreign fn.
+/// At call sites in `lower_expr`, foreign entries are checked before the
+/// user-function map so a foreign name shadows a user fn of the same name
+/// (consistent with the compiler's `ffi_index` taking priority).
+///
+/// Only integer (i64 → i64) foreign calls are supported in v1 JIT FFI.
+#[cfg(feature = "ffi")]
+pub(crate) fn jit_run_ast_with_entries(
+    program: &Node,
+    builder: cranelift_jit::JITBuilder,
+    mut foreign_entries: Vec<ForeignJitEntry>,
+) -> Result<i64, JitError> {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return Err(JitError::Unsupported("non-Program root")),
+    };
+
+    // Finish building the module using the caller-supplied JITBuilder
+    // which already has foreign symbols registered.
+    let mut module = cranelift_jit::JITModule::new(builder);
+    let mut cache = JitCache::new();
+
+    // ---------- Pass 0 (FFI v2): declare foreign imports ----------
+    for entry in &mut foreign_entries {
+        let mut sig = module.make_signature();
+        for _ in 0..entry.arity {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+        // SAFETY rationale: the caller registered `entry.addr` with
+        // the JITBuilder; Cranelift treats `Linkage::Import` as an
+        // externally-supplied address resolved at link time.
+        let func_id = module
+            .declare_function(&entry.c_name, Linkage::Import, &sig)
+            .map_err(|e| JitError::LinkError(e.to_string()))?;
+        entry.func_id = Some(func_id);
+    }
+
+    // ---------- Pass 1: declare user-defined functions ----------
+    let mut functions: HashMap<String, FuncId> = HashMap::new();
+    let mut function_arities: HashMap<String, usize> = HashMap::new();
+    let mut fn_asts: HashMap<String, (Vec<(String, String)>, Node)> = HashMap::new();
+    let mut primaries: Vec<String> = Vec::new();
+    for spanned in stmts {
+        if let Node::Function {
+            name,
+            parameters,
+            body,
+            requires,
+            ensures,
+            ..
+        } = &spanned.node
+        {
+            fn_asts.insert(name.clone(), (parameters.clone(), (**body).clone()));
+            let h = fn_hash(parameters, requires, ensures, body);
+            if let Some(existing) = cache.map.get(&h).copied() {
+                cache.hits += 1;
+                functions.insert(name.clone(), existing);
+                function_arities.insert(name.clone(), parameters.len());
+            } else {
+                cache.misses += 1;
+                let mut sig = module.make_signature();
+                for _ in parameters {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                let func_id = module
+                    .declare_function(name, Linkage::Local, &sig)
+                    .map_err(|e| JitError::LinkError(e.to_string()))?;
+                cache.map.insert(h, func_id);
+                functions.insert(name.clone(), func_id);
+                function_arities.insert(name.clone(), parameters.len());
+                primaries.push(name.clone());
+            }
+        }
+    }
+
+    // ---------- Pass 2: compile user function bodies ----------
+    for spanned in stmts {
+        if let Node::Function {
+            name,
+            parameters,
+            body,
+            ..
+        } = &spanned.node
+        {
+            if !primaries.contains(name) {
+                continue;
+            }
+            let func_id = functions[name];
+            compile_function_with_ffi(
+                func_id,
+                name,
+                parameters,
+                body,
+                &functions,
+                &function_arities,
+                &fn_asts,
+                &foreign_entries,
+                &mut module,
+            )?;
+            cache.compiles += 1;
+        }
+    }
+
+    // ---------- Pass 2 cont.: compile main ----------
+    let mut main_sig = module.make_signature();
+    main_sig.returns.push(AbiParam::new(types::I64));
+    let main_id = module
+        .declare_function("__resilient_main__", Linkage::Local, &main_sig)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = main_sig;
+    let mut builder_ctx = FunctionBuilderContext::new();
+    {
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let entry = bcx.create_block();
+        bcx.append_block_params_for_function_params(entry);
+        bcx.switch_to_block(entry);
+        bcx.seal_block(entry);
+
+        let mut lctx = LowerCtx::new();
+        lctx.functions = functions.clone();
+        lctx.function_arities = function_arities.clone();
+        lctx.fn_asts = fn_asts.clone();
+        lctx.foreign_entries = foreign_entries.clone();
+        compile_statements(stmts, &mut bcx, &mut lctx, &mut module)?;
+        bcx.finalize();
+    }
+
+    module
+        .define_function(main_id, &mut ctx)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    module.clear_context(&mut ctx);
+    module
+        .finalize_definitions()
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let raw = module.get_finalized_function(main_id);
+    // SAFETY: `raw` points at a freshly-finalized function with
+    // signature `extern "C" fn() -> i64`; we constructed that
+    // signature ourselves above. The JITModule keeps the code alive.
+    let f: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(raw) };
+    let result = unsafe { f() };
+    flush_cache_stats_to_globals(&cache);
+    Ok(result)
+}
+
+/// FFI v2 (JIT path): compile a single user-defined function that may
+/// call foreign entries. Mirrors `compile_function` but threads
+/// `foreign_entries` into the LowerCtx so call sites can resolve them.
+#[cfg(feature = "ffi")]
+#[allow(clippy::too_many_arguments)]
+fn compile_function_with_ffi(
+    func_id: FuncId,
+    fn_name: &str,
+    parameters: &[(String, String)],
+    body: &Node,
+    functions: &HashMap<String, FuncId>,
+    function_arities: &HashMap<String, usize>,
+    fn_asts: &FnAstMap,
+    foreign_entries: &[ForeignJitEntry],
+    module: &mut JITModule,
+) -> Result<(), JitError> {
+    let mut sig = module.make_signature();
+    for _ in parameters {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.returns.push(AbiParam::new(types::I64));
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut builder_ctx = FunctionBuilderContext::new();
+    {
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let entry = bcx.create_block();
+        bcx.append_block_params_for_function_params(entry);
+        bcx.switch_to_block(entry);
+        bcx.seal_block(entry);
+
+        let mut lctx = LowerCtx::new();
+        lctx.functions = functions.clone();
+        lctx.function_arities = function_arities.clone();
+        lctx.fn_asts = fn_asts.clone();
+        lctx.foreign_entries = foreign_entries.to_vec();
+        let block_params: Vec<Value> = bcx.block_params(entry).to_vec();
+        let mut param_vars: Vec<Variable> = Vec::with_capacity(parameters.len());
+        for ((_ty, name), pval) in parameters.iter().zip(block_params.iter()) {
+            let var = lctx.declare(name, &mut bcx);
+            bcx.def_var(var, *pval);
+            param_vars.push(var);
+        }
+
+        let body_block = bcx.create_block();
+        bcx.ins().jump(body_block, &[]);
+        bcx.switch_to_block(body_block);
+
+        lctx.current_fn = Some(fn_name.to_string());
+        lctx.tco_target = Some(body_block);
+        lctx.param_vars = param_vars;
+
+        let terminated = lower_block_or_stmt(body, &mut bcx, &mut lctx, module)?;
+        if !terminated {
+            return Err(JitError::EmptyProgram);
+        }
+        bcx.seal_block(body_block);
+        bcx.finalize();
+    }
+
+    module
+        .define_function(func_id, &mut ctx)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    module.clear_context(&mut ctx);
+    Ok(())
 }
 
 /// RES-105: compile a single user-defined function body.
@@ -1670,6 +1927,32 @@ fn lower_expr(
                     ));
                 }
             };
+            // FFI v2: foreign calls take priority over user-defined
+            // functions. Check the foreign_entries table first so
+            // an extern fn named the same as a user fn (unlikely but
+            // allowed by the language spec) resolves to the import.
+            #[cfg(feature = "ffi")]
+            if let Some(entry) = ctx
+                .foreign_entries
+                .iter()
+                .find(|e| e.resilient_name == callee_name)
+            {
+                let func_id = entry.func_id.expect(
+                    "foreign FuncId must be filled in during Pass 0 of jit_run_ast_with_entries",
+                );
+                let arity = entry.arity;
+                if arguments.len() != arity {
+                    return Err(JitError::Unsupported("foreign call arity mismatch"));
+                }
+                let mut arg_vals: Vec<Value> = Vec::with_capacity(arguments.len());
+                for arg in arguments {
+                    arg_vals.push(lower_expr(arg, bcx, ctx, module)?);
+                }
+                let local_ref = module.declare_func_in_func(func_id, bcx.func);
+                let call = bcx.ins().call(local_ref, &arg_vals);
+                return Ok(bcx.inst_results(call)[0]);
+            }
+
             let func_id = match ctx.functions.get(&callee_name).copied() {
                 Some(id) => id,
                 None => {
@@ -3491,5 +3774,103 @@ mod tests {
         // after this ticket's additional wiring.
         let p = parse_program("return 10 + 20;");
         assert_eq!(run(&p).unwrap(), 30);
+    }
+
+    // ============================================================
+    // FFI v2 JIT: Cranelift native calls for integer extern fns
+    // ============================================================
+
+    /// Test helper: compile `src` via the JIT with extra C symbols
+    /// pre-registered. Each entry in `extra_syms` is `(resilient_name,
+    /// function_ptr, arity)`. The arity must match the actual parameter
+    /// count of the `extern` declaration in `src`.
+    #[cfg(feature = "ffi")]
+    fn jit_run_with_symbols(
+        src: &str,
+        extra_syms: &[(&str, *const u8, usize)],
+    ) -> Result<i64, String> {
+        use cranelift_jit::JITBuilder;
+
+        let (program, errs) = crate::parse(src);
+        if !errs.is_empty() {
+            return Err(format!("parse errors: {:?}", errs));
+        }
+
+        // Build the foreign entries.
+        let foreign_entries: Vec<ForeignJitEntry> = extra_syms
+            .iter()
+            .map(|(name, addr, arity)| ForeignJitEntry {
+                resilient_name: name.to_string(),
+                c_name: name.to_string(),
+                arity: *arity,
+                addr: *addr,
+                func_id: None,
+            })
+            .collect();
+
+        // Build a JITBuilder with the standard runtime symbols plus
+        // our foreign symbols registered.
+        let mut flag_builder = cranelift::prelude::settings::builder();
+        flag_builder
+            .set("use_colocated_libcalls", "false")
+            .map_err(|e| e.to_string())?;
+        flag_builder
+            .set("is_pic", "false")
+            .map_err(|e| e.to_string())?;
+        let isa_builder = cranelift_native::builder().map_err(|e| e.to_string())?;
+        let isa = isa_builder
+            .finish(cranelift::prelude::settings::Flags::new(flag_builder))
+            .map_err(|e| e.to_string())?;
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // Register the standard runtime shims (array ops, builtins, etc.)
+        register_runtime_symbols(&mut builder);
+        // Register each foreign symbol.
+        for (name, addr, _arity) in extra_syms {
+            builder.symbol(*name, *addr);
+        }
+
+        jit_run_ast_with_entries(&program, builder, foreign_entries).map_err(|e| e.to_string())
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn jit_calls_foreign_int_fn() {
+        // A real C-ABI function we register as a foreign symbol.
+        extern "C" fn triple(x: i64) -> i64 {
+            x * 3
+        }
+
+        // The JIT requires a top-level `return` to produce a result.
+        // Functions declared at top level must be called from the
+        // top-level expression, not from inside `fn main()`.
+        // Note: a semicolon after the extern block is required by the
+        // top-level parser's statement-advance rhythm.
+        let src = r#"
+extern "@static" {
+    fn triple(x: Int) -> Int;
+};
+return triple(7);
+"#;
+        let result =
+            jit_run_with_symbols(src, &[("triple", triple as *const u8, 1)]).expect("jit ok");
+        assert_eq!(result, 21, "expected triple(7)=21, got {}", result);
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn jit_calls_foreign_int_fn_two_args() {
+        extern "C" fn add_two(a: i64, b: i64) -> i64 {
+            a + b
+        }
+
+        let src = r#"
+extern "@static" {
+    fn add_two(a: Int, b: Int) -> Int;
+};
+return add_two(10, 32);
+"#;
+        let result =
+            jit_run_with_symbols(src, &[("add_two", add_two as *const u8, 2)]).expect("jit ok");
+        assert_eq!(result, 42, "expected add_two(10,32)=42, got {}", result);
     }
 }
