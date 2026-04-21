@@ -1,12 +1,11 @@
 ---
 id: RES-273
 title: "repl.rs: io::stdout().flush().unwrap() in production REPL clear handler"
-state: IN_PROGRESS
+state: DONE
 priority: P4
 goalpost: G11
 created: 2026-04-20
 owner: executor
-Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
@@ -58,3 +57,4 @@ let _ = io::stdout().flush(); // best-effort; ignore flush errors
 
 - 2026-04-20 created by analyzer (repl.rs line 157 has io::stdout().flush().unwrap()
   in the production "clear" command handler; violates no-panic rule in CLAUDE.md)
+closed-by: shipped in commit 0552548 (main)

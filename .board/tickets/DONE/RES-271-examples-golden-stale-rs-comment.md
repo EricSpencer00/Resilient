@@ -1,12 +1,11 @@
 ---
 id: RES-271
 title: "examples_golden.rs: stale *.rs file extension in module doc comment"
-state: IN_PROGRESS
+state: DONE
 priority: P4
 goalpost: G17
 created: 2026-04-20
 owner: executor
-Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
@@ -48,3 +47,4 @@ covers the same class of defect in `examples_golden.rs`.
 
 - 2026-04-20 created by analyzer (examples_golden.rs line 3 says `<name>.rs`
   after the .rs→.res rename; same class as RES-260)
+closed-by: shipped in commit 0552548 (main)

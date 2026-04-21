@@ -1,7 +1,7 @@
 ---
 id: RES-253
 title: "Board hygiene: close stale IN_PROGRESS entries for RES-133 and RES-161"
-state: OPEN
+state: DONE
 priority: P1
 goalpost: G12
 created: 2026-04-20
@@ -45,3 +45,4 @@ for any executor scanning the board for claimable work.
 ## Log
 
 - 2026-04-20 created by analyzer (stale IN_PROGRESS entries found during board scan)
+closed-by: shipped in commit 0552548 (main)

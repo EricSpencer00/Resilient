@@ -1,12 +1,11 @@
 ---
 id: RES-272
 title: "imports_demo/ subdirectory is never run by the golden test harness"
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G7
 created: 2026-04-20
 owner: executor
-Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
@@ -74,3 +73,4 @@ end-to-end CLI execution that a golden test would catch.
 - 2026-04-20 created by analyzer (imports_demo/ subdirectory is silently
   excluded by list_examples() in examples_golden.rs; no golden coverage
   for the multi-file imports feature)
+closed-by: shipped in commit 0552548 (main)

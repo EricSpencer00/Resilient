@@ -1,12 +1,11 @@
 ---
 id: RES-270
 title: "peephole.rs: expect() panic in jump-relinking loop — replace with Result"
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G3
 created: 2026-04-20
 owner: executor
-Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
@@ -83,3 +82,4 @@ The same class of defect was fixed in the compiler (`patch_jump`) by RES-263.
 - 2026-04-20 created by analyzer (`peephole.rs` line 130 contains a production
   `.expect()` in the jump-relinking loop of the optimizer; same class as
   RES-263 which was fixed in `patch_jump`)
+closed-by: shipped in commit 0552548 (main)
