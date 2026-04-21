@@ -430,8 +430,9 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                     return Err(VmError::EmptyStack);
                 }
                 // Args were pushed left-to-right; pop rightmost first, then reverse.
-                let mut args: Vec<crate::Value> =
-                    (0..arity).map(|_| stack.pop().expect("checked above")).collect();
+                let mut args: Vec<crate::Value> = (0..arity)
+                    .map(|_| stack.pop().expect("checked above"))
+                    .collect();
                 args.reverse();
                 let result = crate::ffi_trampolines::call_foreign(sym, &args)
                     .map_err(VmError::ForeignCallFailed)?;
@@ -439,7 +440,9 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
             }
             #[cfg(not(feature = "ffi"))]
             Op::CallForeign(_) => {
-                return Err(VmError::Unsupported("CallForeign (build without --features ffi)"));
+                return Err(VmError::Unsupported(
+                    "CallForeign (build without --features ffi)",
+                ));
             }
             // ---- RES-171a: array ops ----
             Op::MakeArray { len } => {
@@ -1148,7 +1151,7 @@ mod tests {
     #[cfg(feature = "ffi")]
     #[test]
     fn vm_calls_foreign_via_call_foreign_opcode() {
-        use crate::bytecode::{Chunk, Function, Op, Program};
+        use crate::bytecode::{Chunk, Op, Program};
         use crate::ffi::{FfiType, ForeignSignature, ForeignSymbol};
 
         extern "C" fn double_it(x: i64) -> i64 {

@@ -2872,9 +2872,12 @@ impl Parser {
             }
         }
 
-        if matches!(self.current_token, Token::RightBrace) {
-            self.next_token();
-        }
+        // Leave current_token ON the `}` — parse_program() advances past it,
+        // consistent with the cursor protocol used by all other statement parsers
+        // (parse_block_statement, parse_function, etc.).  Calling next_token()
+        // here was the pre-existing bug that caused the token after an extern
+        // block to be skipped, making `fn foo() {` parse as an expression where
+        // `{` was misinterpreted as a map-literal opener.
 
         Some(Node::Extern {
             library,

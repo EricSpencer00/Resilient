@@ -231,22 +231,20 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                 );
                 Value::Void
             }
-            (&[Int, Int], Float) => Value::Float(
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64) -> f64>(sym.ptr)(
-                    ints[0], ints[1],
-                ),
-            ),
+            (&[Int, Int], Float) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64, i64) -> f64,
+            >(sym.ptr)(ints[0], ints[1])),
             (&[Float, Float], Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(f64, f64)>(sym.ptr)(
                     floats[0], floats[1],
                 );
                 Value::Void
             }
-            (&[Float, Float], Int) => Value::Int(
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64) -> i64>(sym.ptr)(
-                    floats[0], floats[1],
-                ),
-            ),
+            (&[Float, Float], Int) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(f64, f64) -> i64,
+            >(sym.ptr)(floats[0], floats[1])),
             (&[OpaquePtr, Int], Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64)>(
                     sym.ptr,
@@ -254,58 +252,59 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                 Value::Void
             }
             (&[Int, OpaquePtr], OpaquePtr) => {
-                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
-                    std::mem::transmute::<
-                        *const (),
-                        extern "C" fn(i64, *mut core::ffi::c_void) -> *mut core::ffi::c_void,
-                    >(sym.ptr)(ints[0], ptrs[1]),
-                ))
+                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, *mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                >(sym.ptr)(
+                    ints[0], ptrs[1]
+                )))
             }
 
             // ---- Arity 3 ----
-            (&[Int, Int, Int], Int) => Value::Int(
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64) -> i64>(sym.ptr)(
-                    ints[0], ints[1], ints[2],
-                ),
-            ),
+            (&[Int, Int, Int], Int) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64, i64, i64) -> i64,
+            >(sym.ptr)(ints[0], ints[1], ints[2])),
             (&[Int, Int, Int], Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64)>(sym.ptr)(
                     ints[0], ints[1], ints[2],
                 );
                 Value::Void
             }
-            (&[Int, Int, Int], Float) => Value::Float(
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64) -> f64>(sym.ptr)(
-                    ints[0], ints[1], ints[2],
-                ),
-            ),
-            (&[Float, Float, Float], Float) => Value::Float(
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64) -> f64>(sym.ptr)(
-                    floats[0], floats[1], floats[2],
-                ),
-            ),
+            (&[Int, Int, Int], Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64) -> f64,
+                >(sym.ptr)(ints[0], ints[1], ints[2]))
+            }
+            (&[Float, Float, Float], Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64, f64) -> f64,
+                >(sym.ptr)(floats[0], floats[1], floats[2]))
+            }
             (&[Float, Float, Float], Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64)>(sym.ptr)(
                     floats[0], floats[1], floats[2],
                 );
                 Value::Void
             }
-            (&[Int, Float, Float], Float) => Value::Float(
-                std::mem::transmute::<*const (), extern "C" fn(i64, f64, f64) -> f64>(sym.ptr)(
-                    ints[0], floats[1], floats[2],
-                ),
-            ),
-            (&[OpaquePtr, Int, Int], Int) => Value::Int(
-                std::mem::transmute::<
+            (&[Int, Float, Float], Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, f64, f64) -> f64,
+                >(sym.ptr)(ints[0], floats[1], floats[2]))
+            }
+            (&[OpaquePtr, Int, Int], Int) => {
+                Value::Int(std::mem::transmute::<
                     *const (),
                     extern "C" fn(*mut core::ffi::c_void, i64, i64) -> i64,
-                >(sym.ptr)(ptrs[0], ints[1], ints[2]),
-            ),
+                >(sym.ptr)(ptrs[0], ints[1], ints[2]))
+            }
             (&[OpaquePtr, Int, Int], Void) => {
-                std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(*mut core::ffi::c_void, i64, i64),
-                >(sym.ptr)(ptrs[0], ints[1], ints[2]);
+                std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64, i64)>(
+                    sym.ptr,
+                )(ptrs[0], ints[1], ints[2]);
                 Value::Void
             }
 
@@ -556,8 +555,11 @@ mod tests {
             ptr: three_floats_sum as *const (),
             sig,
         };
-        let out =
-            call_foreign(&sym, &[Value::Float(1.0), Value::Float(2.0), Value::Float(3.0)]).unwrap();
+        let out = call_foreign(
+            &sym,
+            &[Value::Float(1.0), Value::Float(2.0), Value::Float(3.0)],
+        )
+        .unwrap();
         assert!(
             matches!(out, Value::Float(f) if (f - 6.0).abs() < 1e-9),
             "got {:?}",

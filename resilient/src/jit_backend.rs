@@ -1942,9 +1942,7 @@ fn lower_expr(
                 );
                 let arity = entry.arity;
                 if arguments.len() != arity {
-                    return Err(JitError::Unsupported(
-                        "foreign call arity mismatch",
-                    ));
+                    return Err(JitError::Unsupported("foreign call arity mismatch"));
                 }
                 let mut arg_vals: Vec<Value> = Vec::with_capacity(arguments.len());
                 for arg in arguments {
@@ -3823,8 +3821,7 @@ mod tests {
         let isa = isa_builder
             .finish(cranelift::prelude::settings::Flags::new(flag_builder))
             .map_err(|e| e.to_string())?;
-        let mut builder =
-            JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         // Register the standard runtime shims (array ops, builtins, etc.)
         register_runtime_symbols(&mut builder);
         // Register each foreign symbol.
@@ -3832,8 +3829,7 @@ mod tests {
             builder.symbol(*name, *addr);
         }
 
-        jit_run_ast_with_entries(&program, builder, foreign_entries)
-            .map_err(|e| e.to_string())
+        jit_run_ast_with_entries(&program, builder, foreign_entries).map_err(|e| e.to_string())
     }
 
     #[cfg(feature = "ffi")]
@@ -3855,8 +3851,8 @@ extern "@static" {
 };
 return triple(7);
 "#;
-        let result = jit_run_with_symbols(src, &[("triple", triple as *const u8, 1)])
-            .expect("jit ok");
+        let result =
+            jit_run_with_symbols(src, &[("triple", triple as *const u8, 1)]).expect("jit ok");
         assert_eq!(result, 21, "expected triple(7)=21, got {}", result);
     }
 
@@ -3873,8 +3869,8 @@ extern "@static" {
 };
 return add_two(10, 32);
 "#;
-        let result = jit_run_with_symbols(src, &[("add_two", add_two as *const u8, 2)])
-            .expect("jit ok");
+        let result =
+            jit_run_with_symbols(src, &[("add_two", add_two as *const u8, 2)]).expect("jit ok");
         assert_eq!(result, 42, "expected add_two(10,32)=42, got {}", result);
     }
 }

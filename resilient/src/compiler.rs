@@ -53,7 +53,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 for d in decls {
                     if let Some(sym) = ffi_loader.lookup(&d.resilient_name) {
                         if ffi_index.len() >= u16::MAX as usize {
-                            return Err(CompileError::Unsupported("too many foreign symbols (>65535)"));
+                            return Err(CompileError::Unsupported(
+                                "too many foreign symbols (>65535)",
+                            ));
                         }
                         let idx = foreign_syms.len() as u16;
                         ffi_index.insert(d.resilient_name.clone(), idx);
@@ -306,7 +308,15 @@ fn compile_control_flow(
             // JumpIfFalse to else-or-end (placeholder 0 offset)
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
             // consequence
-            compile_stmt(consequence, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_stmt(
+                consequence,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                line,
+            )?;
             if let Some(alt) = alternative {
                 // Unconditional jump past the else branch
                 let jmp_end = chunk.emit(Op::Jump(0), line);
@@ -456,7 +466,15 @@ fn compile_control_flow_in_fn(
         } => {
             compile_expr(condition, chunk, locals, fn_index, ffi_index, line)?;
             let jif = chunk.emit(Op::JumpIfFalse(0), line);
-            compile_stmt_in_fn(consequence, chunk, locals, next_local, fn_index, ffi_index, line)?;
+            compile_stmt_in_fn(
+                consequence,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                line,
+            )?;
             if let Some(alt) = alternative {
                 let jmp_end = chunk.emit(Op::Jump(0), line);
                 let else_target = chunk.code.len();
