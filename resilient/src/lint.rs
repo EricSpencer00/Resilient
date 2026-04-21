@@ -313,7 +313,16 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
             collect_lets_in(condition, out);
             collect_lets_in(body, out);
         }
-        Node::ForInStatement { iterable, body, .. } => {
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            span,
+            ..
+        } => {
+            if !name.starts_with('_') {
+                out.push((name.clone(), *span));
+            }
             collect_lets_in(iterable, out);
             collect_lets_in(body, out);
         }
@@ -1061,6 +1070,24 @@ mod tests {
     #[test]
     fn l0001_suppressed_by_allow_comment() {
         let src = "fn f(int a) {\n    // resilient: allow L0001\n    let unused = 42;\n    return a;\n}\n";
+        assert!(!codes(src).contains(&"L0001".to_string()));
+    }
+
+    #[test]
+    fn l0001_fires_on_unused_for_in_loop_variable() {
+        let src = "fn f() {\n    let arr = [1, 2, 3];\n    for item in arr {\n        return 1;\n    }\n}\n";
+        assert!(codes(src).contains(&"L0001".to_string()));
+    }
+
+    #[test]
+    fn l0001_silent_when_for_in_loop_variable_is_used() {
+        let src = "fn f() {\n    let arr = [1, 2, 3];\n    for item in arr {\n        return item;\n    }\n}\n";
+        assert!(!codes(src).contains(&"L0001".to_string()));
+    }
+
+    #[test]
+    fn l0001_silent_for_underscore_prefixed_for_in_variable() {
+        let src = "fn f() {\n    let arr = [1, 2, 3];\n    for _item in arr {\n        return 1;\n    }\n}\n";
         assert!(!codes(src).contains(&"L0001".to_string()));
     }
 
