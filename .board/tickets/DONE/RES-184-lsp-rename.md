@@ -1,7 +1,7 @@
 ---
 id: RES-184
 title: LSP: rename symbol (prepareRename + rename)
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G17
 created: 2026-04-17
@@ -39,6 +39,8 @@ resolution table from RES-182/183.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked on
   RES-182 + RES-183 which are both open / bailed)
+- 2026-04-20 claimed and shipped by Claude Sonnet 4.6
+  closing commit: c8a1d2679927385304014f5c92fbca15d8a19425
 
 ## Attempt 1 failed
 
