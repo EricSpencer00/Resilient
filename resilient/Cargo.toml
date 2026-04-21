@@ -59,6 +59,13 @@ infer = []
 # The `ffi` module provides `ForeignLoader` which resolves extern-block
 # symbols at evaluation time so the tree-walker can dispatch in O(1).
 ffi = ["dep:libloading"]
+# RES-199: opt-in property-based parser / formatter roundtrip tests.
+# Gated so CI can run the full suite with --features proptest on merge;
+# off by default to keep the fast-path build free of proptest's dep tree.
+#
+#   cargo test --features proptest
+#
+proptest = ["dep:proptest"]
 
 [dependencies]
 # RES-115: source-position types live in their own crate so
@@ -78,6 +85,10 @@ cranelift = { version = "0.108", optional = true }
 cranelift-jit = { version = "0.108", optional = true }
 cranelift-native = { version = "0.108", optional = true }
 cranelift-module = { version = "0.108", optional = true }
+# RES-199: proptest for property-based roundtrip tests. Optional so it
+# doesn't widen the default build's dep tree; activate with
+# `--features proptest`.
+proptest = { version = "1", optional = true }
 # RES-194: Ed25519 signatures on RES-071 verification certificates.
 # `rand_core` brings in the OS RNG we use for keypair generation
 # in the test helpers (see `resilient/src/cert_sign.rs`).
