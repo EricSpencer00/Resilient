@@ -9,6 +9,47 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+/// RES-377: Return a human-readable type string for a `Value`.
+/// Functions show their full signature derived from the `parameters` field.
+/// Builtins return `<builtin>` so callers can filter them out.
+fn type_of(v: &Value) -> String {
+    match v {
+        Value::Int(_) => "Int".to_string(),
+        Value::Float(_) => "Float".to_string(),
+        Value::String(_) => "String".to_string(),
+        Value::Bool(_) => "Bool".to_string(),
+        Value::Function { parameters, .. } => {
+            let param_types: Vec<&str> = parameters.iter().map(|(ty, _name)| ty.as_str()).collect();
+            format!("fn({}) -> ?", param_types.join(", "))
+        }
+        Value::Builtin { .. } => "<builtin>".to_string(),
+        Value::Array(_) => "Array".to_string(),
+        Value::Struct { name, fields } => {
+            let field_strs: Vec<String> = fields
+                .iter()
+                .map(|(fname, fval)| format!("{}: {}", fname, type_of(fval)))
+                .collect();
+            format!("{} {{ {} }}", name, field_strs.join(", "))
+        }
+        Value::Result { ok, .. } => {
+            if *ok {
+                "Ok(?)".to_string()
+            } else {
+                "Err(?)".to_string()
+            }
+        }
+        Value::Return(inner) => type_of(inner),
+        Value::Void => "Void".to_string(),
+        Value::Map(_) => "Map".to_string(),
+        Value::Set(_) => "Set".to_string(),
+        Value::Bytes(_) => "Bytes".to_string(),
+        Value::Closure { .. } => "Closure".to_string(),
+        #[cfg(feature = "ffi")]
+        Value::Foreign { .. } => "<foreign>".to_string(),
+        Value::OpaquePtr(_) => "OpaquePtr".to_string(),
+    }
+}
+
 /// RES-224: Maximum number of history entries persisted across REPL sessions.
 const HISTORY_MAX_ENTRIES: usize = 1000;
 
@@ -184,6 +225,20 @@ impl EnhancedREPL {
             return;
         }
 
+        // RES-377: `.types` — list all in-scope user bindings with types.
+        // `.types <name>` — show the type of a single binding.
+        if input == ".types" {
+            self.show_types(None);
+            return;
+        }
+        if let Some(rest) = input.strip_prefix(".types ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                self.show_types(Some(name));
+                return;
+            }
+        }
+
         // Regular code evaluation
         let lexer = Lexer::new(input.to_string());
         let mut parser = Parser::new(lexer);
@@ -250,6 +305,14 @@ impl EnhancedREPL {
             } else {
                 format!("{}disabled{}", YELLOW, RESET)
             }
+        );
+        println!(
+            "  {}.types{}      - List all in-scope bindings and their types",
+            GREEN, RESET
+        );
+        println!(
+            "  {}.types <name>{} - Show the type of a single binding",
+            GREEN, RESET
         );
 
         println!("\n{}Resilient Language Syntax:{}", CYAN, RESET);
@@ -346,6 +409,43 @@ impl EnhancedREPL {
                     dir.display(),
                     RESET
                 );
+            }
+        }
+    }
+
+    /// RES-377: implement `.types [name]`. When `name` is `None`, prints all
+    /// user-defined bindings sorted alphabetically. When `name` is `Some`,
+    /// prints the type of that single binding or an error if it is not found.
+    ///
+    /// Builtins (identified via `crate::builtin_names()`) are excluded from
+    /// the all-bindings listing — they are noise the user did not define.
+    fn show_types(&self, name: Option<&str>) {
+        let builtin_set: std::collections::HashSet<&str> = crate::builtin_names().collect();
+
+        match name {
+            Some(n) => {
+                let pairs = self.interpreter.top_level_bindings();
+                match pairs.iter().find(|(k, _)| k == n) {
+                    Some((_, v)) => {
+                        println!("{}{}{} : {}", CYAN, n, RESET, type_of(v));
+                    }
+                    None => {
+                        eprintln!("{}error: '{}' is not in scope{}", RED, n, RESET);
+                    }
+                }
+            }
+            None => {
+                let mut pairs = self.interpreter.top_level_bindings();
+                // Remove builtins — show only what the user defined.
+                pairs.retain(|(k, _)| !builtin_set.contains(k.as_str()));
+                if pairs.is_empty() {
+                    println!("{}(no user-defined bindings in scope){}", YELLOW, RESET);
+                    return;
+                }
+                pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                for (k, v) in &pairs {
+                    println!("{}{}{} : {}", CYAN, k, RESET, type_of(v));
+                }
             }
         }
     }
@@ -478,5 +578,87 @@ mod tests {
     #[test]
     fn history_max_entries_constant_is_1000() {
         assert_eq!(HISTORY_MAX_ENTRIES, 1000);
+    }
+
+    // -- RES-377: .types command -------------------------------------------
+
+    /// Helper: evaluate a Resilient snippet in a fresh REPL and return the
+    /// top-level user bindings (builtins excluded) sorted by name.
+    fn eval_and_collect_types(src: &str) -> Vec<(String, String)> {
+        let mut repl = EnhancedREPL::with_examples_dir(None);
+        repl.process_input(src);
+        let builtin_set: std::collections::HashSet<&str> = crate::builtin_names().collect();
+        let mut pairs = repl.interpreter.top_level_bindings();
+        pairs.retain(|(k, _)| !builtin_set.contains(k.as_str()));
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        pairs
+            .into_iter()
+            .map(|(k, v)| (k, super::type_of(&v)))
+            .collect()
+    }
+
+    #[test]
+    fn types_lists_int_and_function_binding() {
+        // Define an integer and a function; both should appear in .types output.
+        let types = eval_and_collect_types("let x = 42; fn add(Int a, Int b) { return a + b; }");
+        let names: Vec<&str> = types.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            names.contains(&"x"),
+            "expected 'x' in bindings, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"add"),
+            "expected 'add' in bindings, got: {:?}",
+            names
+        );
+        // x is an Int
+        let x_type = types
+            .iter()
+            .find(|(k, _)| k == "x")
+            .map(|(_, t)| t.as_str())
+            .unwrap_or("");
+        assert_eq!(x_type, "Int", "x should have type Int, got: {}", x_type);
+        // add is a function
+        let add_type = types
+            .iter()
+            .find(|(k, _)| k == "add")
+            .map(|(_, t)| t.as_str())
+            .unwrap_or("");
+        assert!(
+            add_type.starts_with("fn("),
+            "add should have fn type, got: {}",
+            add_type
+        );
+    }
+
+    #[test]
+    fn types_output_is_sorted_alphabetically() {
+        // beta defined before alpha — output must still be alpha first.
+        let types = eval_and_collect_types("let beta = 1; let alpha = 2;");
+        let names: Vec<&str> = types.iter().map(|(k, _)| k.as_str()).collect();
+        let alpha_pos = names.iter().position(|&n| n == "alpha");
+        let beta_pos = names.iter().position(|&n| n == "beta");
+        assert!(
+            alpha_pos.is_some() && beta_pos.is_some(),
+            "both bindings must be present, got: {:?}",
+            names
+        );
+        assert!(
+            alpha_pos.unwrap() < beta_pos.unwrap(),
+            "alpha must sort before beta, got order: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn type_of_returns_correct_primitive_types() {
+        assert_eq!(super::type_of(&crate::Value::Int(0)), "Int");
+        assert_eq!(super::type_of(&crate::Value::Float(0.0)), "Float");
+        assert_eq!(
+            super::type_of(&crate::Value::String("hi".to_string())),
+            "String"
+        );
+        assert_eq!(super::type_of(&crate::Value::Bool(true)), "Bool");
     }
 }

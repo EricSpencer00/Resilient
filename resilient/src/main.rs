@@ -5049,6 +5049,27 @@ impl Environment {
             })),
         }
     }
+
+    /// RES-377: collect the key-value pairs from the top-level (outermost)
+    /// frame only. Used by the REPL `.types` command to list user bindings
+    /// without descending into nested scopes.
+    pub(crate) fn top_level_pairs(&self) -> Vec<(String, Value)> {
+        // Walk to the outermost frame (the one with no `outer`).
+        let mut env = self.clone();
+        loop {
+            let outer = env.inner.borrow().outer.clone();
+            match outer {
+                Some(o) => env = o,
+                None => break,
+            }
+        }
+        env.inner
+            .borrow()
+            .store
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
 }
 
 /// Walk a `FieldAssignment` target tree, collecting the chain of field
@@ -6776,6 +6797,12 @@ impl Interpreter {
     fn with_proven_fns(mut self, proven: HashSet<String>) -> Self {
         self.proven_fns = Rc::new(proven);
         self
+    }
+
+    /// RES-377: expose the top-level (user-defined) bindings for the
+    /// REPL `.types` command. Delegates to `Environment::top_level_pairs`.
+    pub(crate) fn top_level_bindings(&self) -> Vec<(String, Value)> {
+        self.env.top_level_pairs()
     }
 
     fn eval(&mut self, node: &Node) -> RResult<Value> {
