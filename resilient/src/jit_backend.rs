@@ -148,21 +148,26 @@ fn count_nodes(n: &Node) -> usize {
         | Node::StructDecl { .. } => 0,
         Node::PrefixExpression { right, .. } => count_nodes(right),
         Node::InfixExpression { left, right, .. } => count_nodes(left) + count_nodes(right),
-        Node::CallExpression { function, arguments, .. } => {
-            count_nodes(function) + arguments.iter().map(count_nodes).sum::<usize>()
-        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => count_nodes(function) + arguments.iter().map(count_nodes).sum::<usize>(),
         Node::ReturnStatement { value, .. } => value.as_ref().map_or(0, |v| count_nodes(v)),
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             count_nodes(condition)
                 + count_nodes(consequence)
                 + alternative.as_ref().map_or(0, |a| count_nodes(a))
         }
-        Node::WhileStatement { condition, body, .. } => {
-            count_nodes(condition) + count_nodes(body)
-        }
-        Node::ForInStatement { iterable, body, .. } => {
-            count_nodes(iterable) + count_nodes(body)
-        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => count_nodes(condition) + count_nodes(body),
+        Node::ForInStatement { iterable, body, .. } => count_nodes(iterable) + count_nodes(body),
         Node::LetStatement { value, .. }
         | Node::StaticLet { value, .. }
         | Node::Assignment { value, .. } => count_nodes(value),
@@ -196,7 +201,12 @@ fn has_disqualifying_construct(n: &Node) -> bool {
         Node::ReturnStatement { value, .. } => value
             .as_ref()
             .is_some_and(|v| has_disqualifying_construct(v)),
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             has_disqualifying_construct(condition)
                 || has_disqualifying_construct(consequence)
                 || alternative
@@ -319,18 +329,29 @@ fn write_canon_node(buf: &mut Vec<u8>, node: &Node) {
             buf.push(3);
             write_str(buf, name);
         }
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             buf.push(4);
             write_str(buf, operator);
             write_canon_node(buf, left);
             write_canon_node(buf, right);
         }
-        Node::PrefixExpression { operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
             buf.push(5);
             write_str(buf, operator);
             write_canon_node(buf, right);
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             buf.push(6);
             write_canon_node(buf, function);
             write_u32(buf, arguments.len() as u32);
@@ -348,7 +369,12 @@ fn write_canon_node(buf: &mut Vec<u8>, node: &Node) {
                 None => buf.push(0),
             }
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             buf.push(8);
             write_canon_node(buf, condition);
             write_canon_node(buf, consequence);
@@ -360,7 +386,9 @@ fn write_canon_node(buf: &mut Vec<u8>, node: &Node) {
                 None => buf.push(0),
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             buf.push(9);
             write_canon_node(buf, condition);
             write_canon_node(buf, body);
@@ -429,12 +457,9 @@ impl JitCache {
 /// Drop glue; read by `--jit-cache-stats` on program exit.
 /// Relaxed ordering — these are diagnostic counters, not a
 /// synchronization primitive.
-static GLOBAL_JIT_HITS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static GLOBAL_JIT_MISSES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static GLOBAL_JIT_COMPILES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static GLOBAL_JIT_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GLOBAL_JIT_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GLOBAL_JIT_COMPILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Read the process-wide JIT cache counters. Returns `(hits,
 /// misses, compiles)`. Called by the CLI's `--jit-cache-stats`
@@ -459,7 +484,7 @@ fn flush_cache_stats_to_globals(cache: &JitCache) {
 #[derive(Debug, Clone, PartialEq)]
 pub enum JitError {
     /// A construct outside Phase B's supported subset showed up.
-    Unsupported(&'static str),
+    Unsupported(String),
     /// `cranelift_native::builder()` failed to detect the host ISA.
     IsaInit(String),
     /// `JITModule::finalize_definitions` returned an error.
@@ -493,8 +518,7 @@ fn make_module() -> Result<JITModule, JitError> {
     flag_builder
         .set("is_pic", "false")
         .map_err(|e| JitError::IsaInit(e.to_string()))?;
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| JitError::IsaInit(e.to_string()))?;
+    let isa_builder = cranelift_native::builder().map_err(|e| JitError::IsaInit(e.to_string()))?;
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| JitError::IsaInit(e.to_string()))?;
@@ -655,22 +679,10 @@ pub(crate) mod runtime_shims {
 /// without duplicating wiring, and so RES-167 (builtin calls —
 /// `len`, `push`, etc.) can reuse the same registration seam.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    builder.symbol(
-        "res_array_new",
-        runtime_shims::res_array_new as *const u8,
-    );
-    builder.symbol(
-        "res_array_get",
-        runtime_shims::res_array_get as *const u8,
-    );
-    builder.symbol(
-        "res_array_set",
-        runtime_shims::res_array_set as *const u8,
-    );
-    builder.symbol(
-        "res_array_free",
-        runtime_shims::res_array_free as *const u8,
-    );
+    builder.symbol("res_array_new", runtime_shims::res_array_new as *const u8);
+    builder.symbol("res_array_get", runtime_shims::res_array_get as *const u8);
+    builder.symbol("res_array_set", runtime_shims::res_array_set as *const u8);
+    builder.symbol("res_array_free", runtime_shims::res_array_free as *const u8);
     // RES-167a: register the JIT-side builtin shims alongside the
     // array runtime shims. Both surfaces use the same absolute-
     // address `JITBuilder::symbol` mechanism, so piggy-backing on
@@ -775,26 +787,28 @@ pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
     // non-const bit is the `as *const u8` coercion.
     use jit_builtins::*;
     static TABLE: std::sync::OnceLock<[JitBuiltinSig; 3]> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| [
-        JitBuiltinSig {
-            name: "abs",
-            symbol: "res_jit_abs",
-            arity: 1,
-            addr: res_jit_abs as *const u8,
-        },
-        JitBuiltinSig {
-            name: "max",
-            symbol: "res_jit_max",
-            arity: 2,
-            addr: res_jit_max as *const u8,
-        },
-        JitBuiltinSig {
-            name: "min",
-            symbol: "res_jit_min",
-            arity: 2,
-            addr: res_jit_min as *const u8,
-        },
-    ])
+    TABLE.get_or_init(|| {
+        [
+            JitBuiltinSig {
+                name: "abs",
+                symbol: "res_jit_abs",
+                arity: 1,
+                addr: res_jit_abs as *const u8,
+            },
+            JitBuiltinSig {
+                name: "max",
+                symbol: "res_jit_max",
+                arity: 2,
+                addr: res_jit_max as *const u8,
+            },
+            JitBuiltinSig {
+                name: "min",
+                symbol: "res_jit_min",
+                arity: 2,
+                addr: res_jit_min as *const u8,
+            },
+        ]
+    })
 }
 
 /// RES-167a: look up a JIT builtin by the Resilient source-level
@@ -829,7 +843,7 @@ fn register_jit_builtin_symbols(builder: &mut JITBuilder) {
 fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     let stmts = match program {
         Node::Program(s) => s,
-        _ => return Err(JitError::Unsupported("non-Program root")),
+        _ => return Err(JitError::Unsupported("non-Program root".into())),
     };
 
     let mut module = make_module()?;
@@ -851,21 +865,23 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     let mut function_arities: HashMap<String, usize> = HashMap::new();
     // RES-175: per-name AST map so the leaf-fn inliner can
     // re-lower a callee's body at each qualifying call site.
-    let mut fn_asts: HashMap<String, (Vec<(String, String)>, Node)> =
-        HashMap::new();
+    let mut fn_asts: HashMap<String, (Vec<(String, String)>, Node)> = HashMap::new();
     // Names of functions whose bodies we need to compile (the
     // "primary" for each unique AST hash). Aliases skip compile.
     let mut primaries: Vec<String> = Vec::new();
     for spanned in stmts {
-        if let Node::Function { name, parameters, body, requires, ensures, .. } =
-            &spanned.node
+        if let Node::Function {
+            name,
+            parameters,
+            body,
+            requires,
+            ensures,
+            ..
+        } = &spanned.node
         {
             // RES-175: stash the AST up-front — independent of
             // whether this fn becomes a cache alias or a primary.
-            fn_asts.insert(
-                name.clone(),
-                (parameters.clone(), (**body).clone()),
-            );
+            fn_asts.insert(name.clone(), (parameters.clone(), (**body).clone()));
             let h = fn_hash(parameters, requires, ensures, body);
             if let Some(existing) = cache.map.get(&h).copied() {
                 // Cache hit — reuse the FuncId under the new name.
@@ -894,7 +910,13 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // Aliases skip this loop — their FuncId points at the primary's
     // compiled code, so calls to them dispatch to the same entry.
     for spanned in stmts {
-        if let Node::Function { name, parameters, body, .. } = &spanned.node {
+        if let Node::Function {
+            name,
+            parameters,
+            body,
+            ..
+        } = &spanned.node
+        {
             if !primaries.contains(name) {
                 continue;
             }
@@ -979,9 +1001,7 @@ pub fn run(program: &Node) -> Result<i64, JitError> {
 /// captures ONLY the numbers this run produced, so parallel
 /// test execution doesn't pollute the delta.
 #[cfg(test)]
-pub(crate) fn run_with_stats(
-    program: &Node,
-) -> Result<(i64, u32, u32, u32), JitError> {
+pub(crate) fn run_with_stats(program: &Node) -> Result<(i64, u32, u32, u32), JitError> {
     let (result, cache) = run_internal(program)?;
     Ok((result, cache.hits, cache.misses, cache.compiles))
 }
@@ -1195,12 +1215,21 @@ fn try_lower_tail_call(
     module: &mut JITModule,
 ) -> Result<bool, JitError> {
     // Bail if we're not inside a function (e.g. top-level `main`).
-    let Some(target) = ctx.tco_target else { return Ok(false); };
-    let Some(current) = ctx.current_fn.clone() else { return Ok(false); };
+    let Some(target) = ctx.tco_target else {
+        return Ok(false);
+    };
+    let Some(current) = ctx.current_fn.clone() else {
+        return Ok(false);
+    };
 
     // Shape: ReturnStatement's value must be a direct call to the
     // enclosing function with matching arity.
-    let Node::CallExpression { function, arguments, .. } = expr else {
+    let Node::CallExpression {
+        function,
+        arguments,
+        ..
+    } = expr
+    else {
         return Ok(false);
     };
     let Node::Identifier { name, .. } = function.as_ref() else {
@@ -1288,7 +1317,9 @@ fn compile_node_list(
 ) -> Result<bool, JitError> {
     for node in stmts {
         match node {
-            Node::ReturnStatement { value: Some(expr), .. } => {
+            Node::ReturnStatement {
+                value: Some(expr), ..
+            } => {
                 // RES-168: try TCO first. On a qualifying tail
                 // call, `try_lower_tail_call` emits the back-edge
                 // jump and we skip the regular `return_` below.
@@ -1307,7 +1338,12 @@ fn compile_node_list(
                 bcx.ins().return_(&[v]);
                 return Ok(true);
             }
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 let if_terminated = lower_if_statement(
                     condition,
                     consequence,
@@ -1345,7 +1381,7 @@ fn compile_node_list(
             Node::Assignment { name, value, .. } => {
                 let Some(var) = ctx.lookup(name) else {
                     return Err(JitError::Unsupported(
-                        "reassignment of undeclared identifier",
+                        "reassignment of undeclared identifier".into(),
                     ));
                 };
                 let v = lower_expr(value, bcx, ctx, module)?;
@@ -1368,10 +1404,10 @@ fn compile_node_list(
             // emitted. `body_block` and `exit_block` each have one
             // predecessor and can be sealed immediately after
             // `switch_to_block`.
-            Node::WhileStatement { condition, body, .. } => {
-                let while_terminated = lower_while_statement(
-                    condition, body, bcx, ctx, module,
-                )?;
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
+                let while_terminated = lower_while_statement(condition, body, bcx, ctx, module)?;
                 if while_terminated {
                     return Ok(true);
                 }
@@ -1551,7 +1587,12 @@ fn lower_block_or_stmt(
             let refs: Vec<&Node> = stmts.iter().collect();
             compile_node_list(&refs, bcx, ctx, module)
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             // RES-103: an if "terminates" only if both arms did.
             // Otherwise the merge block is now active and the
             // surrounding block's caller may want to keep walking.
@@ -1564,7 +1605,9 @@ fn lower_block_or_stmt(
                 module,
             )
         }
-        Node::ReturnStatement { value: Some(expr), .. } => {
+        Node::ReturnStatement {
+            value: Some(expr), ..
+        } => {
             // RES-168: same TCO hook as compile_node_list — any
             // `return <self>(args)` in a function body is lowered
             // as a back-edge jump, regardless of whether it's
@@ -1582,7 +1625,7 @@ fn lower_block_or_stmt(
             bcx.ins().return_(&[v]);
             Ok(true)
         }
-        _ => Err(JitError::Unsupported(node_kind(node))),
+        _ => Err(JitError::Unsupported(node_kind(node).into())),
     }
 }
 
@@ -1606,7 +1649,7 @@ fn lower_expr(
         // routes the right value to this use.
         Node::Identifier { name, .. } => match ctx.lookup(name) {
             Some(var) => Ok(bcx.use_var(var)),
-            None => Err(JitError::Unsupported("identifier not in scope")),
+            None => Err(JitError::Unsupported("identifier not in scope".into())),
         },
         // RES-105: direct function call. Resolve the callee name
         // → FuncId from the program-wide function map, lower
@@ -1614,33 +1657,32 @@ fn lower_expr(
         // the current builder's func, then emit `call`. Indirect
         // calls (function value, method, closure) are not yet
         // supported.
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             let callee_name = match function.as_ref() {
                 Node::Identifier { name, .. } => name.clone(),
                 _ => {
                     return Err(JitError::Unsupported(
-                        "JIT only supports direct calls (Identifier callee)",
+                        "JIT only supports direct calls (Identifier callee)".into(),
                     ));
                 }
             };
             let func_id = match ctx.functions.get(&callee_name).copied() {
                 Some(id) => id,
                 None => {
-                    // Note: we lose the actual name in the
-                    // diagnostic since JitError::Unsupported
-                    // takes &'static str. A richer diagnostic
-                    // type is a future ticket.
-                    return Err(JitError::Unsupported("call to unknown function"));
+                    return Err(JitError::Unsupported(format!(
+                        "call to unknown function: `{}`",
+                        callee_name
+                    )));
                 }
             };
-            let expected_arity = ctx
-                .function_arities
-                .get(&callee_name)
-                .copied()
-                .unwrap_or(0);
+            let expected_arity = ctx.function_arities.get(&callee_name).copied().unwrap_or(0);
             if arguments.len() != expected_arity {
                 return Err(JitError::Unsupported(
-                    "call arity mismatch (declared params vs actual args)",
+                    "call arity mismatch (declared params vs actual args)".into(),
                 ));
             }
 
@@ -1650,13 +1692,8 @@ fn lower_expr(
             // expansion), lower the body in-place instead of
             // emitting an indirect call. See
             // `try_lower_inline_call` for the mechanics.
-            if let Some((callee_params, callee_body)) =
-                ctx.fn_asts.get(&callee_name).cloned()
-                && is_trivial_leaf(
-                    &callee_body,
-                    &callee_name,
-                    ctx.current_fn.as_deref(),
-                )
+            if let Some((callee_params, callee_body)) = ctx.fn_asts.get(&callee_name).cloned()
+                && is_trivial_leaf(&callee_body, &callee_name, ctx.current_fn.as_deref())
                 && ctx.inline_return_target.is_none()
             {
                 return try_lower_inline_call(
@@ -1691,7 +1728,12 @@ fn lower_expr(
         // a future ticket should emit a runtime check that traps or
         // returns a sentinel. For now this matches what the bytecode
         // VM does WITHOUT line attribution on the JIT path.
-        Node::InfixExpression { left, operator, right, .. } => {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
             let op_str = operator.as_str();
             // Validate first so we can short-circuit Unsupported
             // before recursing into the operands.
@@ -1700,7 +1742,7 @@ fn lower_expr(
                 "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | "<=" | ">" | ">="
             ) {
                 return Err(JitError::Unsupported(
-                    "infix operator other than +,-,*,/,%,==,!=,<,<=,>,>=",
+                    "infix operator other than +,-,*,/,%,==,!=,<,<=,>,>=".into(),
                 ));
             }
             let l = lower_expr(left, bcx, ctx, module)?;
@@ -1730,7 +1772,7 @@ fn lower_expr(
                 }
             })
         }
-        _ => Err(JitError::Unsupported(node_kind(node))),
+        _ => Err(JitError::Unsupported(node_kind(node).into())),
     }
 }
 
@@ -2238,9 +2280,8 @@ mod tests {
         // Composes RES-104 (let bindings) with RES-105 (calls):
         // local feeds into the call, call result feeds into a
         // trailing arith op.
-        let p = parse_program(
-            "fn square(int x) { return x * x; } let y = 5; return square(y) + 1;",
-        );
+        let p =
+            parse_program("fn square(int x) { return x * x; } let y = 5; return square(y) + 1;");
         assert_eq!(run(&p).unwrap(), 26);
     }
 
@@ -2410,10 +2451,13 @@ mod tests {
     #[test]
     fn jit_error_display_is_descriptive() {
         assert_eq!(
-            JitError::Unsupported("test").to_string(),
+            JitError::Unsupported("test".into()).to_string(),
             "jit: unsupported: test"
         );
-        assert_eq!(JitError::EmptyProgram.to_string(), "jit: program has no top-level return");
+        assert_eq!(
+            JitError::EmptyProgram.to_string(),
+            "jit: program has no top-level return"
+        );
         assert_eq!(
             JitError::IsaInit("foo".into()).to_string(),
             "jit: ISA init failed: foo"
@@ -2436,9 +2480,7 @@ mod tests {
 
     #[test]
     fn jit_while_counts_to_ten() {
-        let p = parse_program(
-            "let i = 0; while (i < 10) { i = i + 1; } return i;",
-        );
+        let p = parse_program("let i = 0; while (i < 10) { i = i + 1; } return i;");
         assert_eq!(run(&p).unwrap(), 10);
     }
 
@@ -2538,9 +2580,7 @@ mod tests {
         // arity-mismatch error path — not TCO. Gives us a
         // regression check that TCO doesn't accidentally
         // consume these mistakes silently.
-        let p = parse_program(
-            "fn f(int n) { return f(n, 0); } return f(1);",
-        );
+        let p = parse_program("fn f(int n) { return f(n, 0); } return f(1);");
         // Regular path: declared 1 param, called with 2 → the
         // JIT's existing arity check rejects.
         match run(&p).unwrap_err() {
@@ -2578,7 +2618,9 @@ mod tests {
 
     #[test]
     fn jit_cache_hit_on_duplicate_fn_body() {
-        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = JIT_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Two fns with identical bodies (different names) should
         // produce the same AST hash, so the second declaration is
         // a cache hit — same FuncId, no second compile. Calls to
@@ -2597,7 +2639,9 @@ mod tests {
 
     #[test]
     fn jit_cache_miss_on_distinct_bodies() {
-        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = JIT_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Two fns with different bodies → no hit; both compile.
         let p = parse_program(
             "fn f(int n) { return n * 2; } \
@@ -2613,7 +2657,9 @@ mod tests {
 
     #[test]
     fn jit_cache_ignores_span_differences() {
-        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = JIT_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Spans differ across the two fn decls (the second one
         // is on a different source line), but the hash is
         // span-stripped — so they still collide and the cache
@@ -2635,7 +2681,9 @@ mod tests {
 
     #[test]
     fn jit_cache_three_way_alias() {
-        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = JIT_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Three fns, same body → first compiles, next two hit.
         let p = parse_program(
             "fn a(int n) { return n + 1; } \
@@ -2858,7 +2906,9 @@ mod tests {
 
     #[test]
     fn jit_cache_global_stats_accumulate_across_runs() {
-        let _g = JIT_CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = JIT_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Two sequential `run()` calls — the global counters
         // should reflect AT LEAST this test's contribution (1
         // hit + 2 misses + 2 compiles). Other tests in the same
@@ -2909,12 +2959,14 @@ mod tests {
     #[test]
     fn res165a_two_int_fields_have_natural_offsets() {
         // Point { int x, int y } — x@0, y@8, size 16, align 8.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct Point {
                 int x,
                 int y,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let pt = layouts.get("Point").expect("Point layout missing");
         assert_eq!(pt.fields.len(), 2);
@@ -2934,12 +2986,14 @@ mod tests {
         // S { bool b, int x } — b@0 (1 byte), then 7 bytes of
         // padding, x@8. Struct align is 8 (inherited from `int`),
         // total size 16.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct S {
                 bool b,
                 int x,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let s = layouts.get("S").expect("S layout missing");
         assert_eq!(s.fields[0].name, "b");
@@ -2958,12 +3012,14 @@ mod tests {
         // T { int x, bool b } — x@0, b@8. Struct align 8, so
         // total size rounds up from 9 to 16 for arrays-of-T to
         // tile correctly.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct T {
                 int x,
                 bool b,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let t = layouts.get("T").expect("T layout missing");
         assert_eq!(t.fields[0].offset, 0);
@@ -2976,13 +3032,15 @@ mod tests {
     fn res165a_all_bool_fields_stay_byte_aligned() {
         // B { bool a, bool b, bool c } — a@0, b@1, c@2. Align 1,
         // so no trailing padding; total size 3.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct B {
                 bool a,
                 bool b,
                 bool c,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let b = layouts.get("B").expect("B layout missing");
         assert_eq!(b.fields[0].offset, 0);
@@ -2996,12 +3054,14 @@ mod tests {
     fn res165a_float_field_uses_f64_ty() {
         // Mix of float + int.  Both are 8-byte aligned, so no
         // padding between them.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct V {
                 float x,
                 int n,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let v = layouts.get("V").expect("V layout missing");
         assert_eq!(v.fields[0].name, "x");
@@ -3017,12 +3077,14 @@ mod tests {
     #[test]
     fn res165a_i32_field_uses_i32_ty_and_4_byte_align() {
         // Two i32s pack tightly at 4-byte alignment.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct Pair32 {
                 i32 a,
                 i32 b,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let pr = layouts.get("Pair32").expect("Pair32 layout missing");
         assert_eq!(pr.fields[0].ty, types::I32);
@@ -3047,10 +3109,12 @@ mod tests {
 
     #[test]
     fn res165a_multiple_struct_decls_are_all_cached() {
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct A { int x, }
             struct B { bool flag, }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         assert_eq!(layouts.len(), 2);
         assert!(layouts.contains_key("A"));
@@ -3066,13 +3130,15 @@ mod tests {
 
     #[test]
     fn res165a_field_by_name_lookup_roundtrips() {
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct R {
                 int a,
                 int b,
                 bool c,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let r = layouts.get("R").unwrap();
         assert_eq!(r.field("a").unwrap().offset, 0);
@@ -3087,16 +3153,18 @@ mod tests {
         // user struct, an array type) maps to a machine-pointer
         // I64. Regression guard for the fallback branch in
         // `cranelift_ty_for`.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             struct Node {
                 int tag,
                 Mystery payload,
             }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         let n = layouts.get("Node").unwrap();
-        assert_eq!(n.fields[0].ty, types::I64);   // int
-        assert_eq!(n.fields[1].ty, types::I64);   // pointer fallback
+        assert_eq!(n.fields[0].ty, types::I64); // int
+        assert_eq!(n.fields[1].ty, types::I64); // pointer fallback
         assert_eq!(n.fields[1].offset, 8);
         assert_eq!(n.total_size, 16);
     }
@@ -3106,11 +3174,13 @@ mod tests {
         // A realistic program has let bindings, fn decls, and
         // struct decls intermixed at the top level. The collector
         // must pick up the struct and ignore the rest.
-        let p = parse_program(r#"
+        let p = parse_program(
+            r#"
             let start = 0;
             struct P { int x, int y, }
             fn pack(int a, int b) -> int { return a + b; }
-        "#);
+        "#,
+        );
         let layouts = collect_struct_layouts(&p);
         assert_eq!(layouts.len(), 1);
         let pt = layouts.get("P").unwrap();
@@ -3133,9 +3203,7 @@ mod tests {
     // `register_runtime_symbols` wiring to catch a regression where
     // symbol registration accidentally breaks module construction.
 
-    use super::runtime_shims::{
-        res_array_free, res_array_get, res_array_new, res_array_set,
-    };
+    use super::runtime_shims::{res_array_free, res_array_get, res_array_new, res_array_set};
 
     #[test]
     fn res166a_array_new_returns_nonnull_for_positive_len() {
@@ -3284,7 +3352,7 @@ mod tests {
     // ============================================================
 
     use super::jit_builtins::{res_jit_abs, res_jit_max, res_jit_min};
-    use super::{lookup_jit_builtin, jit_builtin_table};
+    use super::{jit_builtin_table, lookup_jit_builtin};
 
     #[test]
     fn res167a_abs_positive_is_unchanged() {
@@ -3367,7 +3435,10 @@ mod tests {
         let names: Vec<&str> = jit_builtin_table().iter().map(|b| b.name).collect();
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "jit builtin table must stay alphabetically sorted");
+        assert_eq!(
+            names, sorted,
+            "jit builtin table must stay alphabetically sorted"
+        );
     }
 
     #[test]

@@ -26,11 +26,7 @@ fn bin() -> &'static str {
 fn write_fault_program() -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "res_211_fault_{}_{}.rs",
-        std::process::id(),
-        n
-    ));
+    let path = std::env::temp_dir().join(format!("res_211_fault_{}_{}.rs", std::process::id(), n));
     let src = "\
 fn main(int _d) {\n\
     live {\n\

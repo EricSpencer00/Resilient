@@ -870,6 +870,20 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
                 f(msg);
             }
         }
+        // RES-267: descend into map/set literals and struct-destructure RHS so
+        // L0003/L0004/L0006 fire inside those constructs.
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        Node::SetLiteral { items, .. } => {
+            for item in items {
+                f(item);
+            }
+        }
+        Node::LetDestructureStruct { value, .. } => f(value),
         _ => {}
     }
 }
@@ -1172,6 +1186,29 @@ mod tests {
         assert!(
             KNOWN_CODES.contains(&"L0006"),
             "L0006 missing from KNOWN_CODES"
+        );
+    }
+
+    // ---------- RES-267: recurse_children covers MapLiteral / SetLiteral /
+    // LetDestructureStruct so L0003/L0004/L0006 fire inside those constructs.
+
+    #[test]
+    fn l0003_fires_inside_map_literal_key() {
+        // x == x as a map key should trigger L0003.
+        let src = "fn f(int x) -> Int {\n    let m = {x == x -> 1};\n    return map_len(m);\n}\n";
+        assert!(
+            codes(src).contains(&"L0003".to_string()),
+            "L0003 must fire when self-comparison appears as a map literal key"
+        );
+    }
+
+    #[test]
+    fn l0003_fires_inside_set_literal_item() {
+        // x == x as a set item should trigger L0003.
+        let src = "fn f(int x) -> Int {\n    let s = #{x == x};\n    return set_len(s);\n}\n";
+        assert!(
+            codes(src).contains(&"L0003".to_string()),
+            "L0003 must fire when self-comparison appears inside a set literal"
         );
     }
 

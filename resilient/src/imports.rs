@@ -22,7 +22,7 @@
 //! Those are intentional follow-ups; this is the foundation.
 
 use crate::span::Spanned;
-use crate::{parse, Node};
+use crate::{Node, parse};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

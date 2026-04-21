@@ -72,7 +72,9 @@ pub struct Substitution {
 impl Substitution {
     /// A fresh (identity) substitution.
     pub fn new() -> Self {
-        Self { inner: HashMap::new() }
+        Self {
+            inner: HashMap::new(),
+        }
     }
 
     /// The underlying map — exposed as `&` so tests can assert on
@@ -111,7 +113,10 @@ impl Substitution {
                     }
                 }
             }
-            Type::Function { params, return_type } => Type::Function {
+            Type::Function {
+                params,
+                return_type,
+            } => Type::Function {
                 params: params.iter().map(|p| self.apply(p)).collect(),
                 return_type: Box::new(self.apply(return_type)),
             },
@@ -157,8 +162,14 @@ impl Substitution {
             (other, Type::Var(v)) => self.bind(v, other),
             // Function: unify arities and then per-component.
             (
-                Type::Function { params: p1, return_type: r1 },
-                Type::Function { params: p2, return_type: r2 },
+                Type::Function {
+                    params: p1,
+                    return_type: r1,
+                },
+                Type::Function {
+                    params: p2,
+                    return_type: r2,
+                },
             ) => {
                 if p1.len() != p2.len() {
                     return Err(UnifyError::ArityMismatch(p1.len(), p2.len()));
@@ -226,9 +237,10 @@ impl Substitution {
                 }
                 false
             }
-            Type::Function { params, return_type } => {
-                params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, return_type)
-            }
+            Type::Function {
+                params,
+                return_type,
+            } => params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, return_type),
             _ => false,
         }
     }

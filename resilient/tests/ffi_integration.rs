@@ -128,7 +128,10 @@ main(0);"#,
     let combined = format!("{stdout}{stderr}");
     // Should fail gracefully, not panic — exit code != 0 and message mentions
     // either `symbol` (from FfiError::SymbolNotFound) or `FFI`.
-    assert!(code != 0, "expected non-zero exit, got stdout={stdout} stderr={stderr}");
+    assert!(
+        code != 0,
+        "expected non-zero exit, got stdout={stdout} stderr={stderr}"
+    );
     assert!(
         combined.contains("symbol") || combined.contains("FFI"),
         "expected FFI/symbol error, got stdout={stdout} stderr={stderr}"
