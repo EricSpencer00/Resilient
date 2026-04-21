@@ -8808,6 +8808,7 @@ fn execute_file(
     filename: &str,
     type_check: bool,
     audit: bool,
+    explain_effects: bool,
     emit_cert_dir: Option<&Path>,
     sign_cert_key: Option<&Path>,
     use_vm: bool,
@@ -8856,9 +8857,10 @@ fn execute_file(
         return Err(format!("Import error: {}", e));
     }
 
-    // Type checking if enabled. --audit and --emit-certificate both
-    // imply --typecheck (no point running them without it).
-    let want_typecheck = type_check || audit || emit_cert_dir.is_some();
+    // Type checking if enabled. --audit, --explain-effects, and
+    // --emit-certificate all imply --typecheck (no point running
+    // them without it).
+    let want_typecheck = type_check || audit || explain_effects || emit_cert_dir.is_some();
     let mut proven_fns: HashSet<String> = HashSet::new();
     if want_typecheck {
         println!("Running type checker...");
@@ -8891,6 +8893,13 @@ fn execute_file(
         proven_fns = tc.stats.fully_provable_fns();
         if audit {
             print_verification_audit(&tc.stats);
+        }
+        // RES-347: `--explain-effects` dumps a deterministic,
+        // non-colored table of inferred effects after typecheck.
+        // Printed regardless of `--audit` so tooling can consume it
+        // without grepping through the audit's colored prose.
+        if explain_effects {
+            print_effect_explanation(&tc.stats);
         }
         // RES-071: dump SMT-LIB2 certificates for every Z3-discharged
         // obligation so a downstream consumer can re-verify with
@@ -9111,6 +9120,33 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
             println!("    {:<32} {}", name, tag);
         }
     }
+}
+
+/// RES-347: deterministic, non-colored dump of the per-fn inferred
+/// effect set. Intended for tool consumption (golden tests, editor
+/// integrations, `grep`-friendly CI pipelines). The format is:
+///
+/// ```text
+/// --- Effects ---
+///   <fn_name>: @pure
+///   <fn_name>: @io
+/// --- End effects ---
+/// ```
+///
+/// Function names are sorted alphabetically so the output is stable
+/// across runs. A program with no user fns still emits the header
+/// and footer so consumers don't have to special-case the empty
+/// case.
+fn print_effect_explanation(stats: &typechecker::VerificationStats) {
+    let mut names: Vec<&String> = stats.fn_effects.keys().collect();
+    names.sort();
+    println!("--- Effects ---");
+    for name in names {
+        let has_io = stats.fn_effects.get(name).copied().unwrap_or(false);
+        let tag = if has_io { "@io" } else { "@pure" };
+        println!("  {}: {}", name, tag);
+    }
+    println!("--- End effects ---");
 }
 
 // Example programs
@@ -9950,6 +9986,8 @@ COMMON FLAGS:\n\
     -h, --help                   Show this help and exit\n\
     -t, --typecheck              Run the static type checker\n\
         --audit                  Print the verification audit trail\n\
+        --explain-effects        Print the inferred effect (@pure / @io)\n\
+                                 for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
         --vm                     Route through the bytecode VM\n\
@@ -10043,6 +10081,11 @@ fn main() {
 
     let mut type_check = false;
     let mut audit = false;
+    // RES-347: `--explain-effects` prints the inferred effect
+    // (@pure / @io) for every user fn after typechecking. Implies
+    // `--typecheck` so the fixpoint has run and `stats.fn_effects`
+    // is populated.
+    let mut explain_effects = false;
     let mut emit_cert_dir: Option<PathBuf> = None;
     // RES-194: Ed25519 signing key — when present, the driver
     // writes `cert.sig` alongside the `.smt2` files.
@@ -10092,6 +10135,10 @@ fn main() {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--explain-effects" {
+                // RES-347: dump one line per user fn with its
+                // inferred effect. Implies --typecheck.
+                explain_effects = true;
             } else if arg == "--emit-certificate" {
                 // RES-071: --emit-certificate <DIR>
                 i += 1;
@@ -10347,6 +10394,7 @@ fn main() {
                 filename,
                 type_check,
                 audit,
+                explain_effects,
                 emit_cert_dir.as_deref(),
                 sign_cert_key.as_deref(),
                 use_vm,
