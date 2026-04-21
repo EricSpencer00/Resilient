@@ -321,6 +321,42 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                 locals.truncate(popped.locals_base);
                 stack.push(ret);
             }
+            // RES-384: self-tail-call. Reuse the current frame
+            // instead of pushing a new one — O(1) call-stack depth
+            // for tail-recursive functions. Steps:
+            //   1. Look up the callee (must be the same function).
+            //   2. Pop `arity` args off the operand stack.
+            //   3. Overwrite locals[locals_base..locals_base+arity]
+            //      with the new args (in source order).
+            //   4. Reset frame.pc to 0 so the next iteration
+            //      starts the function from the top.
+            // We do NOT push a new CallFrame — the existing frame is
+            // reused with its locals slab base unchanged.
+            Op::TailCall(idx) => {
+                let func = program
+                    .functions
+                    .get(idx as usize)
+                    .ok_or(VmError::FunctionOutOfBounds(idx))?;
+                let arity = func.arity as usize;
+                if stack.len() < arity {
+                    return Err(VmError::EmptyStack);
+                }
+                // The locals slab for this frame may be larger than
+                // arity (body has let-bindings beyond params). We
+                // only reset the parameter slots; body-locals are
+                // re-initialized by StoreLocal on the next pass.
+                let base = frames[frame_idx].locals_base;
+                // Pop args in reverse order (rightmost first) and
+                // write into locals[base+0..base+arity] in source
+                // order, matching the Call path.
+                for i in (0..arity).rev() {
+                    let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                    locals[base + i] = v;
+                }
+                // Reset pc: the next loop iteration picks up at
+                // instruction 0 of this frame's chunk.
+                frames[frame_idx].pc = 0;
+            }
             Op::Jump(offset) => {
                 let new_pc = (frames[frame_idx].pc as isize) + offset as isize;
                 if new_pc < 0 || (new_pc as usize) > chunk.code.len() {
@@ -836,6 +872,94 @@ mod tests {
             panic!("expected Program");
         };
         interp.eval(&stmts[0].node).expect("eval")
+    }
+
+    // ---------- RES-384: tail-call optimisation ----------
+
+    #[test]
+    fn res384_tail_recursive_sum_does_not_overflow() {
+        // Without TCO this would exceed MAX_CALL_DEPTH (1024) at n=100_000.
+        // With TCO the call stack stays at depth 1.
+        // sum(0, 100) = 1+2+...+100 = 5050
+        let src = "fn sum(int acc, int n) { if n == 0 { return acc; } return sum(acc + n, n - 1); } sum(0, 100);";
+        assert_int(compile_run(src).unwrap(), 5050);
+    }
+
+    #[test]
+    fn res384_tail_recursive_sum_large_does_not_overflow() {
+        // 100_000 iterations — would blow the 1024-frame cap without TCO.
+        let src = r#"
+            fn sum(int acc, int n) {
+                if n == 0 { return acc; }
+                return sum(acc + n, n - 1);
+            }
+            sum(0, 100000);
+        "#;
+        // sum(0, 100_000) = 100_000 * 100_001 / 2 = 5_000_050_000
+        let result = compile_run(src).unwrap();
+        assert_int(result, 5_000_050_000i64);
+    }
+
+    #[test]
+    fn res384_tail_call_opcode_is_emitted_for_self_tail_call() {
+        // After compilation the function body should contain TailCall,
+        // not a plain Call followed by ReturnFromCall.
+        let src = "fn count(int n) { if n == 0 { return 0; } return count(n - 1); } count(5);";
+        let (ast, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&ast).unwrap();
+        let f = &prog.functions[0];
+        let has_tail_call = f
+            .chunk
+            .code
+            .iter()
+            .any(|op| matches!(op, crate::bytecode::Op::TailCall(0)));
+        assert!(
+            has_tail_call,
+            "expected TailCall(0) in fn body: {:?}",
+            f.chunk.code
+        );
+    }
+
+    #[test]
+    fn res384_non_self_call_still_uses_regular_call() {
+        // A call to a *different* function must not be promoted to TailCall.
+        let src =
+            "fn double(int n) { return n + n; } fn wrap(int n) { return double(n); } wrap(3);";
+        let (ast, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&ast).unwrap();
+        // fn wrap (index 1) calls fn double (index 0) — must remain Call(0)
+        let wrap = &prog.functions[1];
+        let has_regular_call = wrap
+            .chunk
+            .code
+            .iter()
+            .any(|op| matches!(op, crate::bytecode::Op::Call(0)));
+        assert!(
+            has_regular_call,
+            "cross-function call should remain Call, not TailCall: {:?}",
+            wrap.chunk.code
+        );
+    }
+
+    #[test]
+    fn res384_mutual_recursion_still_works_via_call() {
+        // Mutual recursion (is_even/is_odd) cannot use TailCall (different
+        // functions) — must still run correctly via regular Call.
+        let src = r#"
+            fn is_even(int n) { if n == 0 { return 1; } return is_odd(n - 1); }
+            fn is_odd(int n) { if n == 0 { return 0; } return is_even(n - 1); }
+            is_even(10);
+        "#;
+        assert_int(compile_run(src).unwrap(), 1); // 10 is even → 1
+    }
+
+    #[test]
+    fn res384_non_tail_recursive_still_works() {
+        // A non-tail-recursive function (fib) must still produce correct
+        // results — the rewriting pass must only touch self-tail-calls.
+        let src =
+            "fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(10);";
+        assert_int(compile_run(src).unwrap(), 55);
     }
 
     // ---------- RES-169a: skeleton closure-opcode dispatch ----------
