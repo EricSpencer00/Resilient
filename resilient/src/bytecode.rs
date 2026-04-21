@@ -107,6 +107,13 @@ pub enum Op {
     /// wire the actual slab; today the dispatch arm returns
     /// `VmError::Unsupported`.
     LoadUpvalue(u16),
+    /// RES-384: self-tail-call in tail position. Reuses the current
+    /// `CallFrame` instead of pushing a new one, keeping call-stack
+    /// depth O(1) for tail-recursive functions. The callee MUST be
+    /// the same function (self-recursive — cross-function TCO is out
+    /// of scope). Arity is the function's declared param count; the
+    /// VM pops that many arguments and overwrites locals 0..arity.
+    TailCall(u16),
     /// RES-171a: pop `len` values off the operand stack (rightmost
     /// first so the source-order `[a, b, c]` literal ends with `a`
     /// deepest), wrap them in a `Value::Array(Vec<Value>)`, and

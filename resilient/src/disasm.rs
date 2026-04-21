@@ -137,6 +137,13 @@ fn write_op(
             }
         }
         Op::ReturnFromCall => write!(out, "ReturnFromCall")?,
+        // RES-384: TailCall reuses the current frame (TCO).
+        Op::TailCall(idx) => {
+            write!(out, "TailCall {}", idx)?;
+            if let Some(name) = fn_names.get(idx as usize) {
+                write!(out, "       ; -> {} (tail)", name)?;
+            }
+        }
         Op::Jump(offset) => {
             let target = (pc as isize + 1) + offset as isize;
             write!(out, "Jump         -> {:04x}", target.max(0) as usize)?;
@@ -326,6 +333,40 @@ mod tests {
         disassemble(&program, &mut out).unwrap();
         assert!(out.contains("(empty)"));
         assert!(out.contains("constants: (none)"));
+    }
+
+    // ---------- RES-384: TailCall disasm ----------
+
+    #[test]
+    fn res384_tail_call_renders_with_fn_name() {
+        let program = Program {
+            main: mk_chunk(vec![Op::Return], vec![], vec![1]),
+            functions: vec![Function {
+                name: "loop_fn".to_string(),
+                arity: 1,
+                chunk: mk_chunk(
+                    vec![
+                        Op::TailCall(0),
+                        Op::Return, // unreachable tombstone
+                    ],
+                    vec![],
+                    vec![1, 1],
+                ),
+                local_count: 1,
+            }],
+        };
+        let mut out = String::new();
+        disassemble(&program, &mut out).unwrap();
+        assert!(
+            out.contains("TailCall 0") && out.contains("loop_fn"),
+            "expected `TailCall 0 ... loop_fn` in disasm, got:\n{}",
+            out
+        );
+        assert!(
+            out.contains("(tail)"),
+            "expected `(tail)` annotation in disasm, got:\n{}",
+            out
+        );
     }
 
     // ---------- RES-169a: skeleton closure-opcode disasm ----------

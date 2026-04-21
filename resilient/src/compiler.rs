@@ -135,6 +135,16 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 )?;
             }
             chunk.emit(Op::ReturnFromCall, 0);
+            // RES-384: replace self-tail-calls with TailCall. Scan
+            // for every `Call(own_idx); ReturnFromCall` pair and
+            // fold it into a single `TailCall(own_idx)`. This
+            // handles tail calls in all positions — explicit
+            // `return f(args);` statements and implicit tail
+            // returns from if-branches. Must run before the
+            // peephole pass so peephole sees the final opcode
+            // sequence.
+            let own_fn_idx = functions.len() as u16;
+            rewrite_tail_calls(&mut chunk, own_fn_idx);
             // RES-172: run the peephole optimizer over the
             // just-emitted chunk. Idempotent and linear-scan —
             // no effect on chunks that don't contain any of the
@@ -790,6 +800,58 @@ fn node_kind(n: &Node) -> &'static str {
         Node::IndexExpression { .. } => "IndexExpression",
         Node::IndexAssignment { .. } => "IndexAssignment",
         _ => "<other>",
+    }
+}
+
+// ============================================================
+// RES-384: tail-call rewriting pass
+// ============================================================
+
+/// Scan `chunk.code` for every adjacent `Call(fn_idx); ReturnFromCall`
+/// pair where `fn_idx == own_fn_idx` and replace the pair with a
+/// single `TailCall(fn_idx)`. The removed `ReturnFromCall` leaves a
+/// hole; rather than shifting the Vec (which would invalidate all
+/// existing jump targets), we overwrite the second slot of each pair
+/// with a `Jump(0)` sentinel pointing one step back so the dead op
+/// can never be reached:
+///
+/// ```text
+/// before:  [..., Call(i), ReturnFromCall, ...]
+/// after:   [..., TailCall(i), (dead/unreachable), ...]
+/// ```
+///
+/// Because `TailCall` does not fall through (it loops back to pc=0),
+/// the instruction following it is dead. We leave it as a `Return`
+/// no-op rather than a `Jump` to avoid confusing the disassembler;
+/// the VM will never execute it.
+///
+/// Jump targets are NOT shifted — this transform only touches pairs
+/// where the second op is `ReturnFromCall`, which nothing ever jumps
+/// TO (no other op emits a forward-jump into `ReturnFromCall`; all
+/// branch targets land on the instruction AFTER a block, not ON a
+/// return). This invariant holds for the patterns the compiler emits.
+fn rewrite_tail_calls(chunk: &mut crate::bytecode::Chunk, own_fn_idx: u16) {
+    let len = chunk.code.len();
+    if len < 2 {
+        return;
+    }
+    // We need indices so we can write back; collect positions first.
+    let mut positions: Vec<usize> = Vec::new();
+    for i in 0..len - 1 {
+        if chunk.code[i] == Op::Call(own_fn_idx) && chunk.code[i + 1] == Op::ReturnFromCall {
+            positions.push(i);
+        }
+    }
+    for pos in positions {
+        // Replace the Call with TailCall; mark the ReturnFromCall
+        // dead by overwriting with a no-op Return. The VM never
+        // reaches it because TailCall resets pc, but leaving a
+        // valid opcode keeps the chunk well-formed for the
+        // disassembler and any future static analyses.
+        chunk.code[pos] = Op::TailCall(own_fn_idx);
+        chunk.code[pos + 1] = Op::Return; // unreachable tombstone
+        // Preserve line info alignment by keeping the two slots;
+        // no shift needed.
     }
 }
 
