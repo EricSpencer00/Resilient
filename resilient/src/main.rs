@@ -751,19 +751,80 @@ impl Lexer {
         let mut result = String::new();
 
         while self.ch != '"' && self.ch != '\0' {
-            // Handle escape sequences
             if self.ch == '\\' && self.read_position < self.input.len() {
-                self.read_char(); // Skip the backslash
-
-                // Process escape sequence
+                self.read_char(); // consume the backslash
                 match self.ch {
                     'n' => result.push('\n'),
                     't' => result.push('\t'),
                     'r' => result.push('\r'),
                     '\\' => result.push('\\'),
                     '"' => result.push('"'),
+                    '0' => result.push('\0'),
+                    'x' => {
+                        // \xHH — exactly two hex digits.
+                        let hi = self.peek_char();
+                        self.read_char(); // self.ch == first hex digit
+                        let lo = self.peek_char();
+                        self.read_char(); // self.ch == second hex digit
+                        let nibble = |c: char| -> Option<u8> {
+                            match c {
+                                '0'..='9' => Some(c as u8 - b'0'),
+                                'a'..='f' => Some(c as u8 - b'a' + 10),
+                                'A'..='F' => Some(c as u8 - b'A' + 10),
+                                _ => None,
+                            }
+                        };
+                        match (nibble(hi), nibble(lo)) {
+                            (Some(h), Some(l)) => {
+                                let byte = (h << 4) | l;
+                                result.push(byte as char);
+                            }
+                            _ => {
+                                result.push('\\');
+                                result.push('x');
+                                if hi != '\0' {
+                                    result.push(hi);
+                                }
+                                if lo != '\0' {
+                                    result.push(lo);
+                                }
+                            }
+                        }
+                    }
+                    'u' => {
+                        // \u{HHHH} — Unicode scalar value, 1–6 hex digits.
+                        if self.peek_char() == '{' {
+                            self.read_char(); // consume '{'
+                            let mut hex = String::new();
+                            loop {
+                                let next = self.peek_char();
+                                if next == '}' {
+                                    self.read_char(); // consume '}'
+                                    break;
+                                } else if next.is_ascii_hexdigit() {
+                                    self.read_char();
+                                    hex.push(self.ch);
+                                } else {
+                                    break;
+                                }
+                            }
+                            if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                                if let Some(ch) = char::from_u32(n) {
+                                    result.push(ch);
+                                } else {
+                                    result.push_str(&format!("\\u{{{hex}}}"));
+                                }
+                            } else {
+                                result.push_str(&format!("\\u{{{hex}}}"));
+                            }
+                        } else {
+                            // `\u` not followed by `{` — preserve.
+                            result.push('\\');
+                            result.push('u');
+                        }
+                    }
                     _ => {
-                        // Invalid escape sequence, treat as literal
+                        // Unknown escape — preserve as backslash + char.
                         result.push('\\');
                         result.push(self.ch);
                     }
@@ -10722,6 +10783,93 @@ mod tests {
             has_string,
             "expected StringLiteral(\"hi\\n\") in {:?}",
             tokens
+        );
+    }
+
+    // RES-378: full string escape sequence tests (RED first, then GREEN)
+
+    #[test]
+    fn string_escape_null_byte() {
+        // `\0` inside a string literal must decode to a null byte (U+0000),
+        // not the two characters `\` and `0`.
+        let tokens = tokenize(r#"let s = "a\0b";"#);
+        let got = tokens.iter().find_map(|t| {
+            if let Token::StringLiteral(s) = t {
+                Some(s.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(got, Some("a\0b".into()), "\\0 should decode to null byte");
+    }
+
+    #[test]
+    fn string_escape_hex_lower() {
+        // `\x41` == 'A'; `\x0a` == newline.
+        let tokens = tokenize(r#"let s = "\x41\x0a";"#);
+        let got = tokens.iter().find_map(|t| {
+            if let Token::StringLiteral(s) = t {
+                Some(s.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(got, Some("A\n".into()), "\\xHH should decode hex byte");
+    }
+
+    #[test]
+    fn string_escape_hex_upper() {
+        // Uppercase hex digits must also work.
+        let tokens = tokenize(r#"let s = "\x4F\x4B";"#);
+        let got = tokens.iter().find_map(|t| {
+            if let Token::StringLiteral(s) = t {
+                Some(s.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            got,
+            Some("OK".into()),
+            "\\xHH with uppercase hex should work"
+        );
+    }
+
+    #[test]
+    fn string_escape_unicode_codepoint() {
+        // `\u{0041}` == 'A'; `\u{1F600}` == 😀
+        let tokens = tokenize(r#"let s = "\u{0041}\u{1F600}";"#);
+        let got = tokens.iter().find_map(|t| {
+            if let Token::StringLiteral(s) = t {
+                Some(s.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            got,
+            Some("A\u{1F600}".into()),
+            "\\u{{HHHH}} should decode Unicode codepoint"
+        );
+    }
+
+    #[test]
+    fn string_escape_invalid_hex_preserved() {
+        // `\xGG` is not valid hex — the two characters should be preserved
+        // as `\x` + `GG` (pass-through) so we don't silently swallow input.
+        let tokens = tokenize(r#"let s = "\xGG";"#);
+        let got = tokens.iter().find_map(|t| {
+            if let Token::StringLiteral(s) = t {
+                Some(s.clone())
+            } else {
+                None
+            }
+        });
+        // Preserved as-is (backslash + x + GG).
+        assert_eq!(
+            got,
+            Some("\\xGG".into()),
+            "invalid \\xHH should be preserved"
         );
     }
 
