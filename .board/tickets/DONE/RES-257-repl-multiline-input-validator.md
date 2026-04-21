@@ -1,12 +1,13 @@
 ---
 id: RES-257
 title: "REPL: multi-line input via rustyline `Validator` — continuation prompt for incomplete expressions"
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: tooling
 created: 2026-04-20
 owner: executor
 Claimed-by: Claude Sonnet 4.6
+Closed-by: 4015416
 ---
 
 ## Summary
