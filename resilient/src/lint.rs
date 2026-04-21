@@ -65,6 +65,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0004", // mixing `&&` and `||` without parens
     "L0005", // redundant trailing bare `return;`
     "L0006", // assume(false) vacuously discharges all verification obligations
+    "L0007", // unreachable code after unconditional `return`
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -78,6 +79,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0004_mixed_and_or(program, &mut out);
     run_l0005_redundant_return(program, &mut out);
     run_l0006_assume_false(program, &mut out);
+    run_l0007_unreachable_code(program, &mut out);
 
     // Filter via allow-comments.
     let allows = collect_allow_comments(source);
@@ -860,6 +862,105 @@ fn walk_assume_false(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0007: unreachable code after unconditional `return`
+// ============================================================
+//
+// Walk every Block node. Once a `ReturnStatement` is seen, any
+// subsequent node in the same block is unreachable. Only the
+// FIRST unreachable statement is reported (pointing to it tells
+// the user exactly where dead code begins). Nested blocks are
+// walked independently — a `return` inside an `if` branch does
+// not make statements after the `if` unreachable.
+//
+// The language does not yet have `break`/`continue` statements;
+// if those are added, this lint should be extended to treat them
+// as additional terminators.
+
+fn run_l0007_unreachable_code(program: &Node, out: &mut Vec<Lint>) {
+    walk_unreachable(program, out);
+}
+
+fn walk_unreachable(node: &Node, out: &mut Vec<Lint>) {
+    match node {
+        Node::Block { stmts, .. } => {
+            let mut saw_terminator = false;
+            for stmt in stmts {
+                if saw_terminator {
+                    if let Some(span) = span_of(stmt) {
+                        out.push(Lint {
+                            code: "L0007".into(),
+                            severity: Severity::Warning,
+                            message: "unreachable code after `return`".into(),
+                            line: span.start.line as u32,
+                            column: span.start.column as u32,
+                        });
+                    }
+                    // Report only the first unreachable statement.
+                    break;
+                }
+                if matches!(stmt, Node::ReturnStatement { .. }) {
+                    saw_terminator = true;
+                }
+                // Descend into nested blocks regardless of whether we have
+                // seen a terminator — the nested scope is independent.
+                walk_unreachable(stmt, out);
+            }
+        }
+        Node::Program(stmts) => {
+            for s in stmts {
+                walk_unreachable(&s.node, out);
+            }
+        }
+        Node::Function { body, .. } => walk_unreachable(body, out),
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                walk_unreachable(method, out);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk_unreachable(condition, out);
+            walk_unreachable(consequence, out);
+            if let Some(a) = alternative {
+                walk_unreachable(a, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            walk_unreachable(condition, out);
+            walk_unreachable(body, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            walk_unreachable(iterable, out);
+            walk_unreachable(body, out);
+        }
+        Node::LiveBlock { body, .. } => walk_unreachable(body, out),
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_unreachable(scrutinee, out);
+            for (_, guard, arm_body) in arms {
+                if let Some(g) = guard {
+                    walk_unreachable(g, out);
+                }
+                walk_unreachable(arm_body, out);
+            }
+        }
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            walk_unreachable(value, out);
+        }
+        Node::ReturnStatement { value: Some(v), .. } => walk_unreachable(v, out),
+        Node::ExpressionStatement { expr, .. } => walk_unreachable(expr, out),
+        _ => {}
+    }
+}
+
+// ============================================================
 // Shared AST walker. Not exhaustive — covers the shapes the
 // five lints actually need to descend through.
 // ============================================================
@@ -1316,6 +1417,58 @@ mod tests {
             KNOWN_CODES.contains(&"L0006"),
             "L0006 missing from KNOWN_CODES"
         );
+    }
+
+    #[test]
+    fn known_codes_contains_l0007() {
+        assert!(
+            KNOWN_CODES.contains(&"L0007"),
+            "L0007 missing from KNOWN_CODES"
+        );
+    }
+
+    // ---------- L0007: unreachable code after return ----------
+
+    #[test]
+    fn l0007_fires_on_stmt_after_return() {
+        // Two statements follow the return; only the first is flagged.
+        let src = "fn f(int x) {\n    return x;\n    let a = 1;\n    let b = 2;\n}\n";
+        let hits: Vec<_> = lint(src)
+            .into_iter()
+            .filter(|l| l.code == "L0007")
+            .collect();
+        assert_eq!(hits.len(), 1, "expected exactly one L0007 warning");
+        assert_eq!(
+            hits[0].line, 3,
+            "warning should point to the first unreachable statement"
+        );
+    }
+
+    #[test]
+    fn l0007_silent_on_normal_flow() {
+        let src = "fn f(int x) {\n    let a = x + 1;\n    return a;\n}\n";
+        assert!(!codes(src).contains(&"L0007".to_string()));
+    }
+
+    #[test]
+    fn l0007_silent_when_return_is_last() {
+        let src = "fn f() {\n    return;\n}\n";
+        assert!(!codes(src).contains(&"L0007".to_string()));
+    }
+
+    #[test]
+    fn l0007_suppressed_by_allow_comment() {
+        // The allow comment goes on the line above the first unreachable statement.
+        let src =
+            "fn f(int x) {\n    return x;\n    // resilient: allow L0007\n    let a = 1;\n}\n";
+        assert!(!codes(src).contains(&"L0007".to_string()));
+    }
+
+    #[test]
+    fn l0007_does_not_fire_for_return_inside_nested_block() {
+        // A `return` inside an `if` branch does not make code after the `if` unreachable.
+        let src = "fn f(int x) {\n    if x > 0 {\n        return x;\n    }\n    return 0;\n}\n";
+        assert!(!codes(src).contains(&"L0007".to_string()));
     }
 
     // ---------- RES-237: L0001 false-positives for Assume / MapLiteral /
