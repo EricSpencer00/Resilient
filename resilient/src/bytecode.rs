@@ -192,8 +192,8 @@ impl Chunk {
             Op::Jump(o) => *o = offset,
             Op::JumpIfFalse(o) => *o = offset,
             Op::JumpIfTrue(o) => *o = offset,
-            other => {
-                panic!("patch_jump called on non-jump op: {:?}", other);
+            _ => {
+                return Err(CompileError::InternalError("patch_jump: not a jump op"));
             }
         }
         Ok(())
@@ -265,6 +265,11 @@ pub enum CompileError {
     /// count per struct at 256, so we refuse to register a decl
     /// that exceeds that.
     TooManyFields(String),
+    /// RES-263: compiler-internal invariant violation — a code path
+    /// that should never be reached was reached. Surfaced as an error
+    /// rather than a panic so fuzz harnesses and future callers get a
+    /// typed failure instead of an abort.
+    InternalError(&'static str),
 }
 
 impl std::fmt::Display for CompileError {
@@ -281,7 +286,11 @@ impl std::fmt::Display for CompileError {
             CompileError::UnknownFunction(n) => {
                 write!(f, "bytecode compile: unknown function: {}", n)
             }
-            CompileError::ArityMismatch { callee, expected, got } => write!(
+            CompileError::ArityMismatch {
+                callee,
+                expected,
+                got,
+            } => write!(
                 f,
                 "bytecode compile: call to {} has {} args, expected {}",
                 callee, got, expected
@@ -297,6 +306,9 @@ impl std::fmt::Display for CompileError {
             }
             CompileError::TooManyFields(n) => {
                 write!(f, "bytecode compile: struct {} has > 255 fields", n)
+            }
+            CompileError::InternalError(msg) => {
+                write!(f, "bytecode compile: internal error: {}", msg)
             }
         }
     }
@@ -338,7 +350,10 @@ mod tests {
     #[test]
     fn compile_error_display_is_descriptive() {
         let e = CompileError::Unsupported("struct decl");
-        assert_eq!(e.to_string(), "bytecode compile: unsupported construct: struct decl");
+        assert_eq!(
+            e.to_string(),
+            "bytecode compile: unsupported construct: struct decl"
+        );
     }
 
     // ---------- RES-169a: skeleton closure opcodes ----------
@@ -347,8 +362,15 @@ mod tests {
     fn res169a_make_closure_constructs_with_payload() {
         // Sanity: the variant accepts both operands. Not yet
         // emitted by the compiler — RES-169b will add that.
-        let op = Op::MakeClosure { fn_idx: 7, upvalue_count: 3 };
-        if let Op::MakeClosure { fn_idx, upvalue_count } = op {
+        let op = Op::MakeClosure {
+            fn_idx: 7,
+            upvalue_count: 3,
+        };
+        if let Op::MakeClosure {
+            fn_idx,
+            upvalue_count,
+        } = op
+        {
             assert_eq!(fn_idx, 7);
             assert_eq!(upvalue_count, 3);
         } else {
@@ -370,7 +392,10 @@ mod tests {
     fn res169a_closure_ops_are_copy() {
         // `Op` derives Copy — adding new variants must not break
         // that, because the VM dispatch reads `*op` per step.
-        let a = Op::MakeClosure { fn_idx: 0, upvalue_count: 0 };
+        let a = Op::MakeClosure {
+            fn_idx: 0,
+            upvalue_count: 0,
+        };
         let b = a; // copy, not move
         assert_eq!(a, b);
     }
@@ -399,11 +424,32 @@ mod tests {
         // verbatim. No semantic expectation yet (the VM returns
         // Unsupported on dispatch); RES-169b/c make these live.
         let mut c = Chunk::new();
-        let a = c.emit(Op::MakeClosure { fn_idx: 1, upvalue_count: 2 }, 10);
+        let a = c.emit(
+            Op::MakeClosure {
+                fn_idx: 1,
+                upvalue_count: 2,
+            },
+            10,
+        );
         let b = c.emit(Op::LoadUpvalue(0), 11);
         assert_eq!(a, 0);
         assert_eq!(b, 1);
         assert_eq!(c.code.len(), 2);
         assert_eq!(c.line_info, vec![10, 11]);
+    }
+
+    // ---------- RES-263: patch_jump on non-jump op returns Err ----------
+
+    #[test]
+    fn patch_jump_on_non_jump_returns_error() {
+        let mut c = Chunk::new();
+        // Emit a non-jump op (Const) at index 0.
+        c.emit(Op::Const(0), 1);
+        let result = c.patch_jump(0, 1);
+        assert!(
+            matches!(result, Err(CompileError::InternalError(_))),
+            "expected InternalError, got: {:?}",
+            result
+        );
     }
 }

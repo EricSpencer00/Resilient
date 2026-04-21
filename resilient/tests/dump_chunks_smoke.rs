@@ -18,12 +18,8 @@ fn write_temp(contents: &str, tag: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "res_173_{}_{}_{}.rs",
-        tag,
-        std::process::id(),
-        n
-    ));
+    let path =
+        std::env::temp_dir().join(format!("res_173_{}_{}_{}.rs", tag, std::process::id(), n));
     let mut f = std::fs::File::create(&path).expect("create temp");
     f.write_all(contents.as_bytes()).expect("write temp");
     path

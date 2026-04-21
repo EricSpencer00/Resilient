@@ -616,10 +616,48 @@ fn walk_call_sites(node: &Node, target: &str, out: &mut Vec<Range>) {
                 walk_call_sites(e, target, out);
             }
         }
+        Node::Assume {
+            condition, message, ..
+        } => {
+            walk_call_sites(condition, target, out);
+            if let Some(m) = message {
+                walk_call_sites(m, target, out);
+            }
+        }
+        Node::Assert {
+            condition, message, ..
+        } => {
+            walk_call_sites(condition, target, out);
+            if let Some(m) = message {
+                walk_call_sites(m, target, out);
+            }
+        }
+        Node::LetDestructureStruct { value, .. } => {
+            walk_call_sites(value, target, out);
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            walk_call_sites(body, target, out);
+            for inv in invariants {
+                walk_call_sites(inv, target, out);
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                walk_call_sites(k, target, out);
+                walk_call_sites(v, target, out);
+            }
+        }
+        Node::SetLiteral { items, .. } => {
+            for item in items {
+                walk_call_sites(item, target, out);
+            }
+        }
         // Simple leaf nodes and forms without sub-expressions:
         // Identifier, IntegerLiteral, FloatLiteral, StringLiteral,
         // BooleanLiteral, BytesLiteral, ReturnStatement { value: None },
-        // TypeAlias, StructDecl, LetDestructureStruct, AssumeStatement, etc.
+        // TypeAlias, StructDecl, etc.
         _ => {}
     }
 }
@@ -3230,5 +3268,107 @@ fn main(int n) {\n\
         let defs = build_top_level_defs(&prog);
         let collision = find_top_level_def(&defs, "total").is_some();
         assert!(!collision, "unexpected collision for fresh name `total`");
+    }
+
+    // ============================================================
+    // RES-262: walk_call_sites — missing node coverage
+    // ============================================================
+
+    #[test]
+    fn references_finds_call_inside_assume() {
+        let src = "\
+fn helper() -> int { return 1; }\n\
+fn f(int x) { assume(helper() > 0); }\n\
+";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "helper");
+        assert_eq!(
+            sites.len(),
+            1,
+            "expected 1 call site inside assume, got {}: {sites:?}",
+            sites.len()
+        );
+        assert_eq!(sites[0].start.line, 1, "call should be on line 1");
+    }
+
+    #[test]
+    fn references_finds_call_inside_assert() {
+        let src = "\
+fn helper() -> int { return 1; }\n\
+fn f(int x) { assert(helper() == 1); }\n\
+";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "helper");
+        assert_eq!(
+            sites.len(),
+            1,
+            "expected 1 call site inside assert, got {}: {sites:?}",
+            sites.len()
+        );
+        assert_eq!(sites[0].start.line, 1, "call should be on line 1");
+    }
+
+    #[test]
+    fn references_finds_call_inside_let_destructure_rhs() {
+        let src = "\
+struct Point { int x, int y }\n\
+fn make_point() -> Point { return new Point { x: 0, y: 0 }; }\n\
+fn f() { let Point { x: a, .. } = make_point(); }\n\
+";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "make_point");
+        assert_eq!(
+            sites.len(),
+            1,
+            "expected 1 call site in let-destructure RHS, got {}: {sites:?}",
+            sites.len()
+        );
+        assert_eq!(sites[0].start.line, 2, "call should be on line 2");
+    }
+
+    #[test]
+    fn references_finds_call_inside_map_literal() {
+        let src = "\
+fn key_fn() -> int { return 1; }\n\
+fn val_fn() -> int { return 2; }\n\
+fn f() { let m = { key_fn() -> val_fn() }; }\n\
+";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let key_sites = collect_call_sites(&prog, "key_fn");
+        assert_eq!(
+            key_sites.len(),
+            1,
+            "expected 1 call site for key_fn in map literal, got {}: {key_sites:?}",
+            key_sites.len()
+        );
+        let val_sites = collect_call_sites(&prog, "val_fn");
+        assert_eq!(
+            val_sites.len(),
+            1,
+            "expected 1 call site for val_fn in map literal, got {}: {val_sites:?}",
+            val_sites.len()
+        );
+    }
+
+    #[test]
+    fn references_finds_call_inside_set_literal() {
+        let src = "\
+fn item_fn() -> int { return 1; }\n\
+fn f() { let s = #{ item_fn() }; }\n\
+";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "item_fn");
+        assert_eq!(
+            sites.len(),
+            1,
+            "expected 1 call site inside set literal, got {}: {sites:?}",
+            sites.len()
+        );
+        assert_eq!(sites[0].start.line, 1, "call should be on line 1");
     }
 }
