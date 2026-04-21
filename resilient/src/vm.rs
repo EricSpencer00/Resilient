@@ -55,6 +55,9 @@ pub enum VmError {
         index: i64,
         len: usize,
     },
+    /// RES-285: `assert()` or `assume()` fired a runtime check that
+    /// failed. Carries the user-facing error message string.
+    AssertionFailed(String),
 }
 
 impl VmError {
@@ -88,6 +91,7 @@ impl std::fmt::Display for VmError {
                 index, len
             ),
             VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
+            VmError::AssertionFailed(msg) => write!(f, "assertion failed: {}", msg),
         }
     }
 }
@@ -471,6 +475,16 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                 // compile pattern (`StoreLocal` after `StoreIndex`)
                 // can write it into the local slot.
                 stack.push(Value::Array(items));
+            }
+            // RES-285: assert/assume runtime trap. The compiler emits
+            // a message constant before this op; pop it and fail.
+            Op::RuntimeError => {
+                let msg_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let msg = match msg_val {
+                    Value::String(s) => s,
+                    other => format!("{}", other),
+                };
+                return Err(VmError::AssertionFailed(msg));
             }
         }
     }

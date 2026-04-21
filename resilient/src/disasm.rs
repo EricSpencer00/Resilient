@@ -175,6 +175,8 @@ fn write_op(
         Op::MakeArray { len } => write!(out, "MakeArray {}", len)?,
         Op::LoadIndex => write!(out, "LoadIndex")?,
         Op::StoreIndex => write!(out, "StoreIndex")?,
+        // RES-285: assert/assume runtime trap opcode.
+        Op::RuntimeError => write!(out, "RuntimeError")?,
     }
     Ok(())
 }

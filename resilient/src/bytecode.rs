@@ -128,6 +128,12 @@ pub enum Op {
     /// Nested `a[i][j] = v` is RES-171c — today the compiler only
     /// lowers `a[i] = v` where `a` is a bare Identifier.
     StoreIndex,
+    /// RES-285: pop a `Value::String` message constant from the
+    /// operand stack and halt the VM with `VmError::AssertionFailed`.
+    /// Emitted by the assert/assume lowering after the condition is
+    /// tested; the preceding `JumpIfTrue(skip)` ensures this only
+    /// executes when the condition was falsy.
+    RuntimeError,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;

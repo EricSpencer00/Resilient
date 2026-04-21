@@ -223,6 +223,13 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
+        // RES-285: lower assert/assume to a conditional runtime trap.
+        Node::Assert {
+            condition, message, ..
+        } => compile_assert_or_assume(condition, message, chunk, locals, fn_index, line, false),
+        Node::Assume {
+            condition, message, ..
+        } => compile_assert_or_assume(condition, message, chunk, locals, fn_index, line, true),
         Node::Function { .. } => {
             // Top-level fn decl already handled in pass 2. Skipping
             // here would be a no-op, but we should never see one —
@@ -381,6 +388,14 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
+        // RES-285: assert/assume inside fn bodies — same lowering as
+        // the top-level path; neither variant touches return semantics.
+        Node::Assert {
+            condition, message, ..
+        } => compile_assert_or_assume(condition, message, chunk, locals, fn_index, line, false),
+        Node::Assume {
+            condition, message, ..
+        } => compile_assert_or_assume(condition, message, chunk, locals, fn_index, line, true),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -440,6 +455,55 @@ fn compile_control_flow_in_fn(
         }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
+}
+
+/// RES-285: lower an `assert(condition[, message])` or
+/// `assume(condition[, message])` into a conditional runtime trap.
+///
+/// Emitted sequence:
+///   <condition>
+///   JumpIfTrue(skip)   — skip the trap when condition holds
+///   Const(msg_idx)     — push the failure message
+///   RuntimeError       — pop message, halt with AssertionFailed
+///   [skip target]
+///
+/// `is_assume` changes the prefix of the default message
+/// ("Assumption failed" vs "assertion failed") — semantics at
+/// runtime are identical.
+fn compile_assert_or_assume(
+    condition: &Node,
+    message: &Option<Box<Node>>,
+    chunk: &mut Chunk,
+    locals: &HashMap<String, u16>,
+    fn_index: &HashMap<String, u16>,
+    line: u32,
+    is_assume: bool,
+) -> Result<(), CompileError> {
+    // 1. Compile condition onto the stack.
+    compile_expr(condition, chunk, locals, fn_index, line)?;
+    // 2. Jump past the trap if truthy.
+    let jit = chunk.emit(Op::JumpIfTrue(0), line);
+    // 3. Push the failure message.
+    let default_msg = if is_assume {
+        "Assumption failed"
+    } else {
+        "assertion failed"
+    };
+    let msg_str = match message {
+        Some(msg_node) => match msg_node.as_ref() {
+            Node::StringLiteral { value: s, .. } => s.clone(),
+            _ => default_msg.to_string(),
+        },
+        None => default_msg.to_string(),
+    };
+    let msg_idx = chunk.add_constant(Value::String(msg_str))?;
+    chunk.emit(Op::Const(msg_idx), line);
+    // 4. Trap.
+    chunk.emit(Op::RuntimeError, line);
+    // 5. Patch the skip jump to here.
+    let skip_target = chunk.code.len();
+    chunk.patch_jump(jit, skip_target)?;
+    Ok(())
 }
 
 fn compile_expr(
@@ -1153,5 +1217,73 @@ mod tests {
         };
         let err = StructRegistry::from_program(&just_int).unwrap_err();
         assert!(matches!(err, CompileError::Unsupported(_)), "got {:?}", err);
+    }
+
+    // ---------- RES-285: assert/assume in the bytecode VM ----------
+
+    fn compile_run_vm(src: &str) -> Result<crate::Value, crate::vm::VmError> {
+        let (program, _) = crate::parse(src);
+        let prog = compile(&program).unwrap();
+        crate::vm::run(&prog)
+    }
+
+    #[test]
+    fn res285_assert_true_condition_compiles_and_runs() {
+        // assert(1 == 1) must compile and return without error.
+        let result = compile_run_vm("assert(1 == 1);");
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    }
+
+    #[test]
+    fn res285_assert_false_condition_fails_with_assertion_error() {
+        // assert(1 == 0) must fail with AssertionFailed.
+        let err = compile_run_vm("assert(1 == 0);").unwrap_err();
+        let kind = err.kind();
+        assert!(
+            matches!(kind, crate::vm::VmError::AssertionFailed(_)),
+            "expected AssertionFailed, got {:?}",
+            kind
+        );
+        // Display must mention "assertion failed".
+        let msg = format!("{}", kind);
+        assert!(
+            msg.contains("assertion failed"),
+            "message {:?} does not contain 'assertion failed'",
+            msg
+        );
+    }
+
+    #[test]
+    fn res285_assume_true_condition_compiles_and_runs() {
+        // assume(true) must compile and return without error.
+        let result = compile_run_vm("assume(true);");
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    }
+
+    #[test]
+    fn res285_assume_false_condition_fails() {
+        // assume(false) must fail with AssertionFailed.
+        let err = compile_run_vm("assume(false);").unwrap_err();
+        let kind = err.kind();
+        assert!(
+            matches!(kind, crate::vm::VmError::AssertionFailed(_)),
+            "expected AssertionFailed, got {:?}",
+            kind
+        );
+    }
+
+    #[test]
+    fn res285_assert_compiles_in_fn_body() {
+        // assert inside a function body must also work.
+        // The function ends with an explicit return so the stack is
+        // well-formed (a separate pre-existing limitation means
+        // implicit-void fn bodies need an explicit `return;`).
+        let result = compile_run_vm(
+            r#"
+            fn check(bool b) { assert(b); return; }
+            check(true);
+            "#,
+        );
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
     }
 }

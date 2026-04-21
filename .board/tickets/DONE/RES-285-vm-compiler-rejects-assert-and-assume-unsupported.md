@@ -1,7 +1,8 @@
 ---
 id: RES-285
 title: "bytecode compiler (--vm): assert() and assume() produce CompileError::Unsupported"
-state: OPEN
+state: DONE
+Claimed-by: Claude Sonnet 4.6
 priority: P3
 goalpost: G15
 created: 2026-04-20

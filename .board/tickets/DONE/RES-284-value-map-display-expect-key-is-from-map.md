@@ -1,7 +1,8 @@
 ---
 id: RES-284
 title: "Value::Map Display impl uses .expect(\"key is from map\") in production fmt code"
-state: OPEN
+state: DONE
+Claimed-by: Claude Sonnet 4.6
 priority: P4
 goalpost: G3
 created: 2026-04-20
