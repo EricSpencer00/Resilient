@@ -207,7 +207,8 @@ mod tests {
         Program {
             main,
             functions: Vec::new(),
-            ..Program::default()
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         }
     }
 
@@ -270,7 +271,8 @@ mod tests {
                 chunk: mk_chunk(vec![Op::Return], vec![], vec![1]),
                 local_count: 0,
             }],
-            ..Program::default()
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();
@@ -303,7 +305,8 @@ mod tests {
                     local_count: 2,
                 },
             ],
-            ..Program::default()
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();
@@ -429,7 +432,8 @@ mod tests {
                 chunk: Chunk::new(),
                 local_count: 0,
             }],
-            ..Program::default()
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();
