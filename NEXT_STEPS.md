@@ -1,16 +1,13 @@
 # Next Steps for Resilient Language
 
-This file used to hold a static wishlist. That wishlist is now a
-living board:
+This file used to hold a static wishlist. That wishlist is now tracked in
+GitHub Issues:
 
-- **Roadmap**: [.board/ROADMAP.md](.board/ROADMAP.md) — goalposts G1 through G20
-- **Open tickets**: [.board/tickets/OPEN/](.board/tickets/OPEN/)
-- **Completed**: [.board/tickets/DONE/](.board/tickets/DONE/)
-- **Prompts for the Manager / Executor loops**: [.board/prompts/](.board/prompts/)
+- **Roadmap**: [ROADMAP.md](ROADMAP.md) — goalposts G1 through G20+
+- **Open tickets**: [GitHub Issues (open)](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen)
+- **Completed**: [GitHub Issues (closed)](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aclosed)
 
-Each ticket has concrete, verifiable acceptance criteria. Pick one up
-by moving its markdown file into `.board/tickets/IN_PROGRESS/`, land
-the work, and move it to `.board/tickets/DONE/` when the acceptance
-criteria pass. Commit with `RES-NNN: one-line summary`.
-
-See `.board/README.md` for the full contract.
+Each issue has concrete, verifiable acceptance criteria. Claim one by
+commenting on it, create a branch named `res-NNN-short-title`, open a draft PR
+with `Closes #N` in the body, and land the work. Commit with
+`RES-NNN: one-line summary`.

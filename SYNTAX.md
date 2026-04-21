@@ -11,7 +11,7 @@
 
 This document describes the syntax of the Resilient language as of
 the current ticket set. Language features are added per-ticket —
-see `.board/tickets/DONE/` for the full ledger.
+see [closed GitHub Issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aclosed) for the full ledger.
 
 ## Function Declarations
 

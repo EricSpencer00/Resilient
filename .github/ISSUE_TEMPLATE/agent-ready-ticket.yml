@@ -10,7 +10,7 @@ body:
     id: ticket-id
     attributes:
       label: Ticket ID
-      description: Next RES-NNN number (check .board/tickets/ for the current max)
+      description: Next RES-NNN number (check existing issues for the current max)
       placeholder: "RES-NNN"
     validations:
       required: true
@@ -49,7 +49,7 @@ body:
     id: roadmap-goal
     attributes:
       label: Roadmap goal
-      description: Which roadmap goalpost does this serve? (see .board/ROADMAP.md)
+      description: Which roadmap goalpost does this serve? (see ROADMAP.md)
       options:
         - G1 — Hello World
         - G2 — Arithmetic

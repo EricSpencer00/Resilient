@@ -62,6 +62,6 @@ PRs that fail any CI test will not be merged.
 - All CI checks must be green: build, test, clippy, fmt, embedded
   cross-compile, size gate, perf gate.
 - Link the GitHub issue (`Closes #N`) in the PR body.
-- Move the `.board/` ticket from `IN_PROGRESS/` to `DONE/` in the same PR.
+- Close the GitHub Issue via `Closes #N` in the PR body.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full checklist.

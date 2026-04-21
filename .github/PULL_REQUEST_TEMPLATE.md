@@ -16,9 +16,6 @@ reviewers can read the diff for the what._
 
 Closes #<issue-number>
 
-<!-- If there is no GitHub issue but there is a .board ticket, reference it:
-Ticket: `.board/tickets/IN_PROGRESS/RES-NNN-*.md`
--->
 
 ## Acceptance criteria
 
@@ -53,8 +50,7 @@ Delete this section if it is purely internal / not surface-visible. -->
 
 - [ ] STABILITY.md CHANGELOG updated (if user-visible syntax or builtin
       changed)
-- [ ] `.board/` ticket moved from `IN_PROGRESS/` to `DONE/` (with closing
-      commit hash recorded)
+- [ ] GitHub Issue closed via `Closes #N` in the PR body
 
 ## Notes for reviewers
 

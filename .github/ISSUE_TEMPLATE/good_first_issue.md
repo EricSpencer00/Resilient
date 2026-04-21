@@ -12,7 +12,7 @@ Thanks for filing a good-first-issue! These should be:
   - Self-contained (no deep dependency on other in-flight work)
   - Clearly described (someone unfamiliar with the codebase can pick it up)
 
-Before filing, skim `.board/tickets/OPEN/` to confirm this isn't already tracked.
+Before filing, search [open issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen) to confirm this isn't already tracked.
 -->
 
 ## Context
@@ -38,7 +38,7 @@ _What should the state of the codebase be when this ticket is closed?_
 - **Where to add tests**: _e.g. `resilient/src/main.rs` under `#[cfg(test)]
   mod tests`, or a new `resilient/examples/foo.rs` with a
   `foo.expected.txt` sidecar._
-- **Relevant docs**: _links to SYNTAX.md / STABILITY.md / `.board/ROADMAP.md`
+- **Relevant docs**: _links to SYNTAX.md / STABILITY.md / ROADMAP.md
   sections that explain surrounding context._
 
 ## Out of scope

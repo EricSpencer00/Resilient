@@ -101,27 +101,16 @@ jobs:
                   if [[ $(git log -1 --pretty=%P "$sha" | wc -w) -gt 1 ]]; then
                       continue
                   fi
-                  # Require RES-NNN: prefix OR MGR: prefix.
-                  if ! echo "$msg" | grep -qE '^(RES-[0-9]+|MGR): '; then
+                  # Require RES-NNN: prefix.
+                  if ! echo "$msg" | grep -qE '^RES-[0-9]+: '; then
                       bad+="$sha $msg"$'\n'
                   fi
               done < <(git log --format='%H %s' "$base..$head")
               if [[ -n "$bad" ]]; then
-                  echo "::error::commits without RES-NNN/MGR prefix:"
+                  echo "::error::commits without RES-NNN prefix:"
                   echo "$bad"
                   exit 1
               fi
           else
               echo "push to main — skipping commit-message enforcement"
-          fi
-
-      - name: Board sanity (no ticket stuck in IN_PROGRESS)
-        shell: bash
-        run: |
-          # A ticket lingering in IN_PROGRESS across a merge is a signal
-          # of unfinished work. Tolerated but called out.
-          stuck=$(ls .board/tickets/IN_PROGRESS/*.md 2>/dev/null || true)
-          if [[ -n "$stuck" ]]; then
-              echo "::warning::ticket(s) in IN_PROGRESS at merge:"
-              echo "$stuck"
           fi

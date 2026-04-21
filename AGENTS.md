@@ -15,7 +15,7 @@ embedded systems. It is written in Rust and ships two primary crates:
 
 This is an **agent-native** repository. AI agents are first-class
 contributors and are expected to operate with high autonomy on well-scoped
-tickets from `.board/tickets/OPEN/`.
+issues from [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues).
 
 ---
 
@@ -36,10 +36,10 @@ Full setup, feature flags, and cross-compile instructions are in
 
 ## Ticket workflow
 
-1. Pick any file in `.board/tickets/OPEN/`.
-2. Move it to `.board/tickets/IN_PROGRESS/` and add `Claimed-by: <agent-id>`.
-3. Open a draft PR early.
-4. On merge, move the ticket to `.board/tickets/DONE/` with the closing hash.
+1. Browse [open issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen).
+2. Comment to claim, then create a branch `res-NNN-short-title`.
+3. Open a draft PR early with `Closes #N` in the body.
+4. On merge, the issue closes automatically.
 
 Commit format: `RES-NNN: short description` (≤72 chars).
 

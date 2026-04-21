@@ -137,7 +137,7 @@ the marker near the top of the file.
 
 ## How Breaking Changes Land
 
-1. The change is proposed as a ticket (`RES-NNN`) under `.board/tickets/`.
+1. The change is proposed as a GitHub Issue (`RES-NNN`).
 2. If the affected surface is listed as **stable** above, the ticket must
    include a deprecation plan: which version prints a warning, which version
    removes the construct.
