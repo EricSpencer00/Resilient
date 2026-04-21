@@ -4,6 +4,15 @@ Guidance for Claude Code when working in this repository. These rules
 override default Claude Code behaviour. Human contributor instructions
 (CONTRIBUTING.md, STABILITY.md) take precedence over this file.
 
+## Agent execution style
+
+**Do not ask for confirmation or approval at intermediate steps.** Pick
+the best path forward and execute it. When facing a design choice, choose
+the option that is most consistent with the existing codebase, most
+correct, and most complete — then ship it. Only surface blockers that
+genuinely cannot be resolved without human input (e.g., missing secrets,
+conflicting requirements).
+
 ---
 
 ## What is this repo?
@@ -20,9 +29,9 @@ embedded systems. The workspace contains:
 | `benchmarks/` | Performance benchmarks |
 | `fuzz/` | Fuzz harnesses |
 
-This is an **agent-native** project — AI contributors are first-class. The
-`.board/tickets/` workflow is the canonical source of work. Pick a ticket,
-claim it, ship it.
+This is an **agent-native** project — AI contributors are first-class.
+[GitHub Issues](https://github.com/EricSpencer00/Resilient/issues) are the
+canonical source of work. Pick a ticket, claim it, ship it.
 
 ---
 
@@ -52,11 +61,10 @@ Optional features: `--features z3` (SMT verifier), `--features lsp`,
 
 ## Ticket workflow
 
-1. Browse `.board/tickets/OPEN/` — pick any `RES-NNN-*.md` file.
-2. Move it to `IN_PROGRESS/` and add `Claimed-by: Claude` to the header.
-3. Open a **draft PR** early — this signals the ticket is taken.
-4. When the PR is ready, move the ticket to `DONE/` and record the closing
-   commit hash.
+1. Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues) — pick any open issue.
+2. Comment to claim it, then create a branch named `res-NNN-short-title`.
+3. Open a **draft PR** early with `Closes #N` in the body — this signals the ticket is taken.
+4. When the PR is ready, mark it ready for review; the issue closes automatically on merge.
 
 Commit format: `RES-NNN: short description` (≤72 chars on the first line).
 Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
@@ -69,7 +77,7 @@ accumulate local commits. As soon as a ticket is closed and committed, run
 
 ## Agent autonomy — what you may do freely
 
-- Claim open tickets and move them through the board lifecycle.
+- Claim open GitHub Issues and implement them end-to-end.
 - Add new source files, tests, and `.expected.txt` golden sidecars.
 - Fix compiler warnings and clippy lints anywhere in the codebase.
 - Add or expand documentation (README, docs/, SYNTAX.md, LSP.md).
