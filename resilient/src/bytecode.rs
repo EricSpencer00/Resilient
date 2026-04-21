@@ -291,6 +291,8 @@ pub enum CompileError {
     /// invariant violation (e.g., a new PC with no originating
     /// old PC in the jump-relinking step).
     InternalError(&'static str),
+    /// FFI v2: foreign library or symbol resolution failed.
+    FfiError(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -331,6 +333,7 @@ impl std::fmt::Display for CompileError {
             CompileError::InternalError(msg) => {
                 write!(f, "bytecode compile: internal error: {}", msg)
             }
+            CompileError::FfiError(msg) => write!(f, "FFI error: {}", msg),
         }
     }
 }
