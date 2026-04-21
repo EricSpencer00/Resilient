@@ -182,10 +182,7 @@ fn bytecode_jit_runs_arithmetic_program() {
     // which the JIT lowers to native code and executes. Driver
     // prints the i64 result then exits 0.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_096_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_096_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "return 7 + 14;").unwrap();
@@ -216,10 +213,7 @@ fn bytecode_jit_runs_division() {
     // `return 100 / 4;` exercises sdiv end-to-end (parse →
     // lower → cranelift → native code → driver prints).
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_099_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_099_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "return 100 / 4;").unwrap();
@@ -251,10 +245,7 @@ fn bytecode_jit_runs_comparison() {
     // back as i64. Joins the existing arith + division smokes in
     // covering the end-to-end JIT path for a third op family.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_100_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_100_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "return 7 == 7;").unwrap();
@@ -287,10 +278,7 @@ fn bytecode_jit_runs_if_else() {
     // brif → then_block → return_, plus the dead else_block →
     // return_ that the verifier still requires.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_102_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_102_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "if (3 < 7) {{ return 42; }} else {{ return 0; }}").unwrap();
@@ -322,10 +310,7 @@ fn bytecode_jit_runs_if_with_fallthrough() {
     // exercises the merge mechanic: condition false → bare-if
     // semantics via no-op else → fallthrough → trailing return.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_103_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_103_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "if (5 < 3) {{ return 7; }} return 9;").unwrap();
@@ -357,10 +342,7 @@ fn bytecode_jit_runs_let_bindings() {
     // local variables flowing into a RES-099 sdiv. Driver gets
     // 25 back as i64.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_104_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_104_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(f, "let x = 100; let y = 4; return x / y;").unwrap();
@@ -393,17 +375,10 @@ fn bytecode_jit_runs_function_call() {
     // declare double as a FuncId in Pass 1, compile its body in
     // Pass 2, lower the call site as `call(local_func_ref, &args)`.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_105_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_105_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
-        writeln!(
-            f,
-            "fn double(int x) {{ return x + x; }} return double(21);"
-        )
-        .unwrap();
+        writeln!(f, "fn double(int x) {{ return x + x; }} return double(21);").unwrap();
     }
     let output = Command::new(bin())
         .arg("--jit")
@@ -430,10 +405,7 @@ fn vm_runtime_error_includes_source_filename() {
     // <file>:<line>: so editors auto-link the location, matching
     // the typechecker's RES-080 format.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_095_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_095_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         // Line 1: fn opener; line 2: divide-by-zero; line 3: return; etc.
@@ -523,7 +495,11 @@ fn bytecode_vm_rejects_unsupported_construct_cleanly() {
         .output()
         .expect("spawn resilient");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_ne!(output.status.code(), Some(0), "unsupported VM input must fail");
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "unsupported VM input must fail"
+    );
     assert!(
         stderr.contains("VM compile error") || stderr.contains("unsupported"),
         "expected VM compile-error diagnostic; got:\n{stderr}"
@@ -560,7 +536,11 @@ fn typecheck_error_prefixes_path_and_line() {
         stderr.contains(path_str.as_ref()),
         "expected source path '{path_str}' in stderr; got:\n{stderr}"
     );
-    assert_ne!(output.status.code(), Some(0), "type-check failure must exit non-zero");
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "type-check failure must exit non-zero"
+    );
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -594,8 +574,11 @@ fn imports_missing_file_errors_cleanly() {
     let tmp = std::env::temp_dir().join("res_073_missing_use.rs");
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp file");
-        writeln!(f, "use \"definitely-not-here.rs\";\nfn main() {{}}\nmain();")
-            .expect("write tmp");
+        writeln!(
+            f,
+            "use \"definitely-not-here.rs\";\nfn main() {{}}\nmain();"
+        )
+        .expect("write tmp");
     }
     let output = Command::new(bin())
         .arg(&tmp)
@@ -621,10 +604,7 @@ fn bytecode_jit_runs_while_loop() {
     // confirming the header/body/exit block dance compiles and
     // runs end-to-end.
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_107_smoke_{}.rs",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_107_smoke_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
         writeln!(
@@ -660,11 +640,7 @@ fn bytecode_jit_runs_while_loop() {
 #[cfg(feature = "z3")]
 fn write_partial_proof_program(tag: &str) -> std::path::PathBuf {
     use std::io::Write;
-    let tmp = std::env::temp_dir().join(format!(
-        "res_217_{}_{}.rs",
-        tag,
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("res_217_{}_{}.rs", tag, std::process::id()));
     let src = "\
 fn check(int a, int b)
     requires a * a * a + b * b * b != 9 * a * b * b + 3

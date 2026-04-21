@@ -46,8 +46,8 @@ fn read_one_message<R: Read>(r: &mut R, deadline: Instant) -> Result<String, Str
         header.push(buf[0]);
         // Look for `\r\n\r\n` terminator.
         if header.ends_with(b"\r\n\r\n") {
-            let header_str = std::str::from_utf8(&header)
-                .map_err(|e| format!("bad header utf8: {}", e))?;
+            let header_str =
+                std::str::from_utf8(&header).map_err(|e| format!("bad header utf8: {}", e))?;
             for line in header_str.split("\r\n") {
                 let line = line.trim();
                 if let Some(rest) = line.strip_prefix("Content-Length:") {
@@ -61,7 +61,10 @@ fn read_one_message<R: Read>(r: &mut R, deadline: Instant) -> Result<String, Str
             if content_length.is_some() {
                 break;
             }
-            return Err(format!("LSP header missing Content-Length: {:?}", header_str));
+            return Err(format!(
+                "LSP header missing Content-Length: {:?}",
+                header_str
+            ));
         }
     }
 
@@ -100,7 +103,8 @@ fn lsp_initialize_round_trip() {
     let mut stdout = child.stdout.take().expect("piped stdout");
 
     // Step 1: initialize request. Minimal valid params.
-    let init_body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    let init_body =
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
     stdin
         .write_all(frame(init_body).as_bytes())
         .expect("write initialize");
@@ -193,7 +197,9 @@ fn lsp_did_open_publishes_diagnostics() {
 
     // Step 1: initialize handshake.
     let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
-    stdin.write_all(frame(init).as_bytes()).expect("write initialize");
+    stdin
+        .write_all(frame(init).as_bytes())
+        .expect("write initialize");
     stdin.flush().ok();
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -202,13 +208,17 @@ fn lsp_did_open_publishes_diagnostics() {
 
     // Step 2: initialized notification.
     let initialized = r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#;
-    stdin.write_all(frame(initialized).as_bytes()).expect("write initialized");
+    stdin
+        .write_all(frame(initialized).as_bytes())
+        .expect("write initialized");
 
     // Step 3: didOpen with a 3-line program where line 3 is a known
     // type error. The typechecker rejects `let bad: int = "hi";`
     // (RES-053), and RES-080 prefixes the message with `<uri>:3:5:`.
     let did_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/lsp_test.rs","languageId":"resilient","version":1,"text":"let a = 1;\nlet b = 2;\nlet bad: int = \"hi\";"}}}"#;
-    stdin.write_all(frame(did_open).as_bytes()).expect("write didOpen");
+    stdin
+        .write_all(frame(did_open).as_bytes())
+        .expect("write didOpen");
     stdin.flush().ok();
 
     // Step 4: read until publishDiagnostics arrives. Skip log
@@ -227,8 +237,7 @@ fn lsp_did_open_publishes_diagnostics() {
     );
     // Source line 3 → 0-indexed LSP line 2. Allow `"line":2` or
     // `"line": 2` (whitespace tolerance).
-    let has_line_2 = diag_body.contains(r#""line":2"#)
-        || diag_body.contains(r#""line": 2"#);
+    let has_line_2 = diag_body.contains(r#""line":2"#) || diag_body.contains(r#""line": 2"#);
     assert!(
         has_line_2,
         "expected `\"line\":2` (source line 3, 0-indexed) in: {diag_body}"
@@ -286,8 +295,7 @@ fn lsp_document_symbol_lists_outline() {
     stdin.write_all(frame(init).as_bytes()).unwrap();
     stdin.flush().ok();
     let init_deadline = Instant::now() + Duration::from_secs(5);
-    let init_resp = read_one_message(&mut stdout, init_deadline)
-        .expect("read initialize response");
+    let init_resp = read_one_message(&mut stdout, init_deadline).expect("read initialize response");
     // Capability smoke-check — the server should advertise
     // documentSymbolProvider.
     assert!(
@@ -387,17 +395,16 @@ fn lsp_workspace_symbol_searches_multiple_files() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir()
-        .join(format!("res_186_smoke_{}_{}", std::process::id(), n));
+    let root = std::env::temp_dir().join(format!("res_186_smoke_{}_{}", std::process::id(), n));
     std::fs::create_dir_all(&root).expect("mkdir scratch");
-    std::fs::write(root.join("mod_a.rs"), "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n")
-        .unwrap();
+    std::fs::write(
+        root.join("mod_a.rs"),
+        "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n",
+    )
+    .unwrap();
     std::fs::write(root.join("mod_b.rs"), "fn b_fn() { return 0; }\n").unwrap();
     // URI of the scratch dir as a file:// URL.
-    let root_uri = format!(
-        "file://{}",
-        root.to_string_lossy().replace("\\", "/")
-    );
+    let root_uri = format!("file://{}", root.to_string_lossy().replace("\\", "/"));
 
     let mut child = Command::new(bin())
         .arg("--lsp")
@@ -417,8 +424,7 @@ fn lsp_workspace_symbol_searches_multiple_files() {
     stdin.write_all(frame(&init).as_bytes()).unwrap();
     stdin.flush().ok();
     let init_deadline = Instant::now() + Duration::from_secs(5);
-    let init_resp = read_one_message(&mut stdout, init_deadline)
-        .expect("read initialize response");
+    let init_resp = read_one_message(&mut stdout, init_deadline).expect("read initialize response");
     assert!(
         init_resp.contains(r#""workspaceSymbolProvider":true"#),
         "expected workspaceSymbolProvider:true in capabilities, got:\n{}",
@@ -460,7 +466,8 @@ fn lsp_workspace_symbol_searches_multiple_files() {
     );
 
     // Now a filtered query — "struct" should match only A_Struct.
-    let req2 = r#"{"jsonrpc":"2.0","id":3,"method":"workspace/symbol","params":{"query":"struct"}}"#;
+    let req2 =
+        r#"{"jsonrpc":"2.0","id":3,"method":"workspace/symbol","params":{"query":"struct"}}"#;
     stdin.write_all(frame(req2).as_bytes()).unwrap();
     stdin.flush().ok();
     let filtered = read_until(
@@ -525,8 +532,7 @@ fn lsp_semantic_tokens_full() {
     stdin.write_all(frame(init).as_bytes()).unwrap();
     stdin.flush().ok();
     let init_deadline = Instant::now() + Duration::from_secs(5);
-    let init_resp = read_one_message(&mut stdout, init_deadline)
-        .expect("read initialize response");
+    let init_resp = read_one_message(&mut stdout, init_deadline).expect("read initialize response");
     // Capability advertised — presence of the `legend` key is
     // enough to confirm the server registered semantic tokens.
     assert!(
@@ -590,13 +596,15 @@ fn lsp_semantic_tokens_full() {
     //    the first line at column 0 — the `//` comment).
     let data_start = response.find(r#""data":["#).expect("find data array");
     let after_bracket = data_start + r#""data":["#.len();
-    let bracket_end = after_bracket + response[after_bracket..].find(']')
-        .expect("find closing ]");
+    let bracket_end = after_bracket + response[after_bracket..].find(']').expect("find closing ]");
     let nums: Vec<u32> = response[after_bracket..bracket_end]
         .split(',')
         .filter_map(|s| s.trim().parse::<u32>().ok())
         .collect();
-    assert!(!nums.is_empty(), "data array should be non-empty, got response:\n{response}");
+    assert!(
+        !nums.is_empty(),
+        "data array should be non-empty, got response:\n{response}"
+    );
     assert_eq!(
         nums.len() % 5,
         0,
@@ -652,8 +660,7 @@ fn lsp_inlay_hint_types_for_unannotated_lets() {
     stdin.write_all(frame(init).as_bytes()).unwrap();
     stdin.flush().ok();
     let init_deadline = Instant::now() + Duration::from_secs(5);
-    let init_resp = read_one_message(&mut stdout, init_deadline)
-        .expect("read initialize response");
+    let init_resp = read_one_message(&mut stdout, init_deadline).expect("read initialize response");
     assert!(
         init_resp.contains(r#""inlayHintProvider""#),
         "expected inlayHintProvider in capabilities, got:\n{}",
@@ -874,9 +881,12 @@ fn lsp_did_change_republishes_diagnostics() {
     let is_diag = |body: &str| body.contains(r#""method":"textDocument/publishDiagnostics""#);
 
     // Step 1: clean program → empty diagnostics
-    let body =
-        read_until(&mut stdout, is_diag, Instant::now() + Duration::from_secs(5))
-            .expect("read clean publishDiagnostics");
+    let body = read_until(
+        &mut stdout,
+        is_diag,
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read clean publishDiagnostics");
     assert!(
         body.contains(r#""diagnostics":[]"#),
         "expected EMPTY diagnostics for clean program; got:\n{body}"
@@ -886,12 +896,17 @@ fn lsp_did_change_republishes_diagnostics() {
     let did_change_buggy = format!(
         r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":2}},"contentChanges":[{{"text":"let bad: int = \"hi\";"}}]}}}}"#
     );
-    stdin.write_all(frame(&did_change_buggy).as_bytes()).unwrap();
+    stdin
+        .write_all(frame(&did_change_buggy).as_bytes())
+        .unwrap();
     stdin.flush().ok();
 
-    let body =
-        read_until(&mut stdout, is_diag, Instant::now() + Duration::from_secs(5))
-            .expect("read buggy publishDiagnostics");
+    let body = read_until(
+        &mut stdout,
+        is_diag,
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read buggy publishDiagnostics");
     assert!(
         !body.contains(r#""diagnostics":[]"#),
         "expected NON-empty diagnostics for buggy program; got:\n{body}"
@@ -905,12 +920,17 @@ fn lsp_did_change_republishes_diagnostics() {
     let did_change_clean = format!(
         r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}","version":3}},"contentChanges":[{{"text":"let x = 1;"}}]}}}}"#
     );
-    stdin.write_all(frame(&did_change_clean).as_bytes()).unwrap();
+    stdin
+        .write_all(frame(&did_change_clean).as_bytes())
+        .unwrap();
     stdin.flush().ok();
 
-    let body =
-        read_until(&mut stdout, is_diag, Instant::now() + Duration::from_secs(5))
-            .expect("read fixed publishDiagnostics");
+    let body = read_until(
+        &mut stdout,
+        is_diag,
+        Instant::now() + Duration::from_secs(5),
+    )
+    .expect("read fixed publishDiagnostics");
     assert!(
         body.contains(r#""diagnostics":[]"#),
         "expected EMPTY diagnostics after revert; got:\n{body}"

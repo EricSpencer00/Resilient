@@ -48,7 +48,9 @@ fn expected_path(example: &Path) -> PathBuf {
 /// missing-expected-file audit also treats them as intentional.
 fn is_interactive(example: &Path) -> bool {
     let stem = example.file_stem().and_then(|s| s.to_str()).unwrap();
-    example.with_file_name(format!("{stem}.interactive")).exists()
+    example
+        .with_file_name(format!("{stem}.interactive"))
+        .exists()
 }
 
 fn run(example: &Path) -> String {

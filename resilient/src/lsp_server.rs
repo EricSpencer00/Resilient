@@ -365,19 +365,41 @@ pub(crate) fn build_top_level_defs(program: &Node) -> Vec<TopLevelDef> {
     let mut out: Vec<TopLevelDef> = Vec::new();
     let mut seen = std::collections::HashSet::<String>::new();
     for spanned in stmts {
-        let name = match &spanned.node {
-            Node::Function { name, .. } => name.clone(),
-            Node::StructDecl { name, .. } => name.clone(),
-            Node::TypeAlias { name, .. } => name.clone(),
+        match &spanned.node {
+            Node::Function { name, .. }
+            | Node::StructDecl { name, .. }
+            | Node::TypeAlias { name, .. } => {
+                if seen.insert(name.clone()) {
+                    out.push(TopLevelDef {
+                        name: name.clone(),
+                        range: span_to_range(spanned.span),
+                    });
+                }
+            }
+            Node::ImplBlock {
+                struct_name,
+                methods,
+                ..
+            } => {
+                for method in methods {
+                    if let Node::Function { name, .. } = method {
+                        // Method names are mangled as `StructName$method`.
+                        // Display and index them as `StructName::method`.
+                        let qualified = name
+                            .strip_prefix(&format!("{}$", struct_name))
+                            .map(|m| format!("{}::{}", struct_name, m))
+                            .unwrap_or_else(|| name.replace('$', "::"));
+                        if seen.insert(qualified.clone()) {
+                            out.push(TopLevelDef {
+                                name: qualified,
+                                range: span_to_range(spanned.span),
+                            });
+                        }
+                    }
+                }
+            }
             _ => continue,
-        };
-        if !seen.insert(name.clone()) {
-            continue;
         }
-        out.push(TopLevelDef {
-            name,
-            range: span_to_range(spanned.span),
-        });
     }
     out
 }
@@ -616,10 +638,15 @@ fn walk_call_sites(node: &Node, target: &str, out: &mut Vec<Range>) {
                 walk_call_sites(e, target, out);
             }
         }
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                walk_call_sites(method, target, out);
+            }
+        }
         // Simple leaf nodes and forms without sub-expressions:
         // Identifier, IntegerLiteral, FloatLiteral, StringLiteral,
         // BooleanLiteral, BytesLiteral, ReturnStatement { value: None },
-        // TypeAlias, StructDecl, LetDestructureStruct, AssumeStatement, etc.
+        // TypeAlias, StructDecl, etc.
         _ => {}
     }
 }
@@ -727,36 +754,79 @@ pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candida
         _ => return out,
     };
     for spanned in stmts {
-        let (name, kind, detail) = match &spanned.node {
+        match &spanned.node {
             Node::Function {
                 name, parameters, ..
-            } => (
-                name.clone(),
-                CandidateKind::Function,
-                Some(format!("fn ({} params)", parameters.len())),
-            ),
-            Node::StructDecl { name, fields, .. } => (
-                name.clone(),
-                CandidateKind::Struct,
-                Some(format!("struct ({} fields)", fields.len())),
-            ),
-            Node::TypeAlias { name, .. } => (
-                name.clone(),
-                CandidateKind::TypeAlias,
-                Some("type".to_string()),
-            ),
+            } => {
+                if name.starts_with(prefix) {
+                    out.push(Candidate {
+                        label: name.clone(),
+                        kind: CandidateKind::Function,
+                        detail: Some(format!("fn ({} params)", parameters.len())),
+                    });
+                    if out.len() >= COMPLETION_LIMIT {
+                        return out;
+                    }
+                }
+            }
+            Node::StructDecl { name, fields, .. } => {
+                if name.starts_with(prefix) {
+                    out.push(Candidate {
+                        label: name.clone(),
+                        kind: CandidateKind::Struct,
+                        detail: Some(format!("struct ({} fields)", fields.len())),
+                    });
+                    if out.len() >= COMPLETION_LIMIT {
+                        return out;
+                    }
+                }
+            }
+            Node::TypeAlias { name, .. } => {
+                if name.starts_with(prefix) {
+                    out.push(Candidate {
+                        label: name.clone(),
+                        kind: CandidateKind::TypeAlias,
+                        detail: Some("type".to_string()),
+                    });
+                    if out.len() >= COMPLETION_LIMIT {
+                        return out;
+                    }
+                }
+            }
+            Node::ImplBlock {
+                struct_name,
+                methods,
+                ..
+            } => {
+                for method in methods {
+                    if let Node::Function {
+                        name, parameters, ..
+                    } = method
+                    {
+                        // Method names are mangled as `StructName$method`.
+                        // Surface them as `StructName::method` in completion.
+                        let label = name
+                            .strip_prefix(&format!("{}$", struct_name))
+                            .map(|m| format!("{}::{}", struct_name, m))
+                            .unwrap_or_else(|| name.replace('$', "::"));
+                        if label.starts_with(prefix) {
+                            out.push(Candidate {
+                                label,
+                                kind: CandidateKind::Function,
+                                detail: Some(format!(
+                                    "fn ({} params) on {}",
+                                    parameters.len(),
+                                    struct_name
+                                )),
+                            });
+                            if out.len() >= COMPLETION_LIMIT {
+                                return out;
+                            }
+                        }
+                    }
+                }
+            }
             _ => continue,
-        };
-        if !name.starts_with(prefix) {
-            continue;
-        }
-        out.push(Candidate {
-            label: name,
-            kind,
-            detail,
-        });
-        if out.len() >= COMPLETION_LIMIT {
-            return out;
         }
     }
     out
@@ -797,17 +867,37 @@ pub(crate) fn document_symbols_for_program(program: &Node) -> Vec<DocumentSymbol
     };
     let mut out = Vec::new();
     for spanned in stmts {
-        let symbol = match &spanned.node {
-            Node::Function { name, .. } => make_symbol(name, SymbolKind::FUNCTION, spanned.span),
-            Node::StructDecl { name, .. } => make_symbol(name, SymbolKind::STRUCT, spanned.span),
+        match &spanned.node {
+            Node::Function { name, .. } => {
+                out.push(make_symbol(name, SymbolKind::FUNCTION, spanned.span));
+            }
+            Node::StructDecl { name, .. } => {
+                out.push(make_symbol(name, SymbolKind::STRUCT, spanned.span));
+            }
             Node::TypeAlias { name, .. } => {
-                make_symbol(name, SymbolKind::TYPE_PARAMETER, spanned.span)
+                out.push(make_symbol(name, SymbolKind::TYPE_PARAMETER, spanned.span));
+            }
+            Node::ImplBlock {
+                struct_name,
+                methods,
+                ..
+            } => {
+                for method in methods {
+                    if let Node::Function { name, .. } = method {
+                        // Method names are mangled as `StructName$method`.
+                        // Strip the struct prefix and display as `StructName::method`.
+                        let display = name
+                            .strip_prefix(&format!("{}$", struct_name))
+                            .map(|m| format!("{}::{}", struct_name, m))
+                            .unwrap_or_else(|| name.replace('$', "::"));
+                        out.push(make_symbol(&display, SymbolKind::METHOD, spanned.span));
+                    }
+                }
             }
             // Everything else (let / static / return / while / ...)
             // is a statement, not a declaration — skip.
             _ => continue,
-        };
-        out.push(symbol);
+        }
     }
     // Stable-sort by source position. Parse order already matches
     // source order for the shapes we track, so this is usually a
@@ -1147,9 +1237,121 @@ fn walk_call_hints(node: &Node, fns: &HashMap<String, Vec<String>>, out: &mut Ve
         Node::PrefixExpression { right, .. } => {
             walk_call_hints(right, fns, out);
         }
-        // Stop recursion at simple leaves and forms we don't
-        // currently inspect. Expand cases as new AST shapes need
-        // hint coverage.
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            walk_call_hints(condition, fns, out);
+            walk_call_hints(body, fns, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            walk_call_hints(iterable, fns, out);
+            walk_call_hints(body, fns, out);
+        }
+        Node::Assignment { value, .. } => {
+            walk_call_hints(value, fns, out);
+        }
+        Node::IndexExpression {
+            target: t, index, ..
+        } => {
+            walk_call_hints(t, fns, out);
+            walk_call_hints(index, fns, out);
+        }
+        Node::IndexAssignment {
+            target: t,
+            index,
+            value,
+            ..
+        } => {
+            walk_call_hints(t, fns, out);
+            walk_call_hints(index, fns, out);
+            walk_call_hints(value, fns, out);
+        }
+        Node::FieldAccess { target: obj, .. } | Node::TryExpression { expr: obj, .. } => {
+            walk_call_hints(obj, fns, out);
+        }
+        Node::FieldAssignment {
+            target: obj, value, ..
+        } => {
+            walk_call_hints(obj, fns, out);
+            walk_call_hints(value, fns, out);
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for e in items {
+                walk_call_hints(e, fns, out);
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                walk_call_hints(v, fns, out);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_call_hints(scrutinee, fns, out);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    walk_call_hints(g, fns, out);
+                }
+                walk_call_hints(body, fns, out);
+            }
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            walk_call_hints(body, fns, out);
+            for r in requires {
+                walk_call_hints(r, fns, out);
+            }
+            for e in ensures {
+                walk_call_hints(e, fns, out);
+            }
+        }
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                walk_call_hints(method, fns, out);
+            }
+        }
+        Node::Assert {
+            condition, message, ..
+        }
+        | Node::Assume {
+            condition, message, ..
+        } => {
+            walk_call_hints(condition, fns, out);
+            if let Some(msg) = message {
+                walk_call_hints(msg, fns, out);
+            }
+        }
+        Node::LetDestructureStruct { value, .. } => {
+            walk_call_hints(value, fns, out);
+        }
+        Node::LiveBlock {
+            body, invariants, ..
+        } => {
+            walk_call_hints(body, fns, out);
+            for inv in invariants {
+                walk_call_hints(inv, fns, out);
+            }
+        }
+        Node::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                walk_call_hints(k, fns, out);
+                walk_call_hints(v, fns, out);
+            }
+        }
+        Node::SetLiteral { items, .. } => {
+            for e in items {
+                walk_call_hints(e, fns, out);
+            }
+        }
+        // Simple leaf nodes without sub-expressions:
+        // Identifier, IntegerLiteral, FloatLiteral, StringLiteral,
+        // BooleanLiteral, BytesLiteral, ReturnStatement { value: None },
+        // TypeAlias, StructDecl, DurationLiteral, etc.
         _ => {}
     }
 }
@@ -3230,5 +3432,158 @@ fn main(int n) {\n\
         let defs = build_top_level_defs(&prog);
         let collision = find_top_level_def(&defs, "total").is_some();
         assert!(!collision, "unexpected collision for fresh name `total`");
+    }
+
+    // ---------- RES-265: walk_call_sites — ImplBlock arm ----------
+
+    #[test]
+    fn references_finds_call_inside_impl_method() {
+        // Calls to `helper` inside an impl method body must be returned
+        // by find-references, not silently dropped.
+        let src = "\
+            fn helper() { return 1; }\n\
+            struct Point { int x }\n\
+            impl Point {\n\
+                fn sum(self) { return helper(); }\n\
+            }\n\
+            helper();\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&program, "helper");
+        // One call inside the impl method + one top-level call.
+        assert_eq!(
+            sites.len(),
+            2,
+            "expected 2 call sites for `helper`, got: {sites:?}"
+        );
+    }
+
+    // ---------- RES-266: ImplBlock coverage for symbols, completion, defs ----------
+
+    #[test]
+    fn document_symbols_includes_impl_method() {
+        let src = "\
+            struct Point { int x }\n\
+            impl Point {\n\
+                fn sum(self) { return 0; }\n\
+            }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let syms = document_symbols_for_program(&program);
+        let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"Point::sum"),
+            "expected `Point::sum` in symbols, got: {names:?}"
+        );
+        // The method symbol should carry METHOD kind.
+        let method = syms.iter().find(|s| s.name == "Point::sum").unwrap();
+        assert_eq!(method.kind, SymbolKind::METHOD);
+    }
+
+    #[test]
+    fn completion_includes_impl_method() {
+        let src = "\
+            struct Point { int x }\n\
+            impl Point {\n\
+                fn sum(self) { return 0; }\n\
+            }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let candidates = completion_candidates(&program, "");
+        let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Point::sum"),
+            "expected `Point::sum` in completion, got: {labels:?}"
+        );
+        let method = candidates.iter().find(|c| c.label == "Point::sum").unwrap();
+        assert_eq!(method.kind, CandidateKind::Function);
+        assert!(
+            method.detail.as_deref().unwrap_or("").contains("on Point"),
+            "expected detail to mention struct name, got: {:?}",
+            method.detail
+        );
+    }
+
+    // ---------- RES-268: walk_call_hints — missing node variants ----------
+
+    #[test]
+    fn inlay_hints_fire_inside_while_body() {
+        let src = "\
+            fn add(int a, int b) { return a + b; }\n\
+            fn main(int _d) {\n\
+                let i = 0;\n\
+                while i < 3 { i = add(i, 1); }\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let hints = collect_param_hints(&program);
+        let param_labels: Vec<&str> = hints
+            .iter()
+            .filter_map(|h| match &h.label {
+                InlayHintLabel::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            param_labels.contains(&"a: "),
+            "expected `a:` hint inside while body, got: {param_labels:?}"
+        );
+        assert!(
+            param_labels.contains(&"b: "),
+            "expected `b:` hint inside while body, got: {param_labels:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_fire_inside_for_body() {
+        let src = "\
+            fn double(int x) { return x + x; }\n\
+            fn main(int _d) {\n\
+                let arr = [1, 2, 3];\n\
+                for item in arr { let r = double(item); }\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let hints = collect_param_hints(&program);
+        let param_labels: Vec<&str> = hints
+            .iter()
+            .filter_map(|h| match &h.label {
+                InlayHintLabel::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            param_labels.contains(&"x: "),
+            "expected `x:` hint inside for-in body, got: {param_labels:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_fire_inside_match_arm() {
+        let src = "\
+            fn negate(int x) { return 0 - x; }\n\
+            fn main(int _d) {\n\
+                let r = match _d {\n\
+                    1 => negate(1),\n\
+                    _ => negate(0),\n\
+                };\n\
+                return r;\n\
+            }\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let hints = collect_param_hints(&program);
+        let param_labels: Vec<&str> = hints
+            .iter()
+            .filter_map(|h| match &h.label {
+                InlayHintLabel::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            param_labels.contains(&"x: "),
+            "expected `x:` hint inside match arm, got: {param_labels:?}"
+        );
     }
 }

@@ -12,8 +12,8 @@
 
 #![allow(dead_code)]
 
-use crate::bytecode::{Chunk, Op, Program};
 use crate::Value;
+use crate::bytecode::{Chunk, Op, Program};
 
 /// Errors the VM can surface at runtime. Like `CompileError`, the
 /// `&'static str` payloads describe the offending op without
@@ -51,7 +51,10 @@ pub enum VmError {
     /// RES-171a: array indexing ran past the array's length (or
     /// got a negative index). Carries the offending index and the
     /// array's length so the Display message is diagnostic-ready.
-    ArrayIndexOutOfBounds { index: i64, len: usize },
+    ArrayIndexOutOfBounds {
+        index: i64,
+        len: usize,
+    },
 }
 
 impl VmError {
@@ -102,7 +105,10 @@ fn err_at(line_info: &[u32], pc: usize, e: VmError) -> VmError {
     // line.
     let op_pc = pc.saturating_sub(1);
     match line_info.get(op_pc) {
-        Some(&line) if line > 0 => VmError::AtLine { line, kind: Box::new(e) },
+        Some(&line) if line > 0 => VmError::AtLine {
+            line,
+            kind: Box::new(e),
+        },
         _ => e,
     }
 }
@@ -161,10 +167,7 @@ pub fn run(program: &Program) -> Result<Value, VmError> {
 /// wrap any returned error with source-line info. `last_pc` is
 /// updated at the top of every iteration so the outer wrapper knows
 /// which instruction was about to execute when the failure fired.
-fn run_inner(
-    program: &Program,
-    last_pc: &mut (usize, usize),
-) -> Result<Value, VmError> {
+fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, VmError> {
     let mut stack: Vec<Value> = Vec::with_capacity(64);
     let mut locals: Vec<Value> = Vec::new();
     let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
@@ -361,9 +364,7 @@ fn run_inner(
             Op::IncLocal(idx) => {
                 let base = frames[frame_idx].locals_base;
                 let abs = base + idx as usize;
-                let v = locals
-                    .get(abs)
-                    .ok_or(VmError::LocalOutOfBounds(idx))?;
+                let v = locals.get(abs).ok_or(VmError::LocalOutOfBounds(idx))?;
                 let Value::Int(n) = *v else {
                     return Err(VmError::TypeMismatch("IncLocal"));
                 };
@@ -498,7 +499,10 @@ mod tests {
             main.code.push(*op);
             main.line_info.push(1);
         }
-        Program { main, functions: Vec::new() }
+        Program {
+            main,
+            functions: Vec::new(),
+        }
     }
 
     fn compile_run(src: &str) -> Result<Value, VmError> {
@@ -547,7 +551,11 @@ mod tests {
         let src = "fn unsafe_div(int n) {\n    let r = 100 / n;\n    return r;\n}\nunsafe_div(0);";
         let err = compile_run(src).unwrap_err();
         let display = err.to_string();
-        assert!(display.contains("divide by zero"), "missing kind: {}", display);
+        assert!(
+            display.contains("divide by zero"),
+            "missing kind: {}",
+            display
+        );
         assert!(
             display.contains("line 2"),
             "expected `line 2` (the body's divide line); got: {}",
@@ -656,7 +664,10 @@ mod tests {
         main.code.push(Op::Return);
         main.line_info.push(1);
         main.line_info.push(1);
-        let p = Program { main, functions: vec![runaway] };
+        let p = Program {
+            main,
+            functions: vec![runaway],
+        };
         let err = run(&p).unwrap_err();
         assert_eq!(err.kind(), &VmError::CallStackOverflow);
     }
@@ -690,7 +701,8 @@ mod tests {
     #[test]
     fn recursive_fib_ten_is_fifty_five() {
         // The payoff test — recursion + branching together.
-        let src = "fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(10);";
+        let src =
+            "fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(10);";
         assert_int(compile_run(src).unwrap(), 55);
     }
 
@@ -806,7 +818,10 @@ mod tests {
         // cleanly via `VmError::Unsupported("MakeClosure")`.
         let p = const_program(
             &[],
-            &[Op::MakeClosure { fn_idx: 0, upvalue_count: 0 }],
+            &[Op::MakeClosure {
+                fn_idx: 0,
+                upvalue_count: 0,
+            }],
         );
         let err = run(&p).unwrap_err();
         match err.kind() {
@@ -912,7 +927,12 @@ mod tests {
     fn res171a_load_index_reads_element() {
         // [10, 20, 30][1] == 20
         let p = const_program(
-            &[Value::Int(10), Value::Int(20), Value::Int(30), Value::Int(1)],
+            &[
+                Value::Int(10),
+                Value::Int(20),
+                Value::Int(30),
+                Value::Int(1),
+            ],
             &[
                 Op::Const(0),
                 Op::Const(1),
@@ -963,7 +983,10 @@ mod tests {
             ],
         );
         let err = run(&p).unwrap_err();
-        assert!(matches!(err.kind(), VmError::ArrayIndexOutOfBounds { index: -1, len: 2 }));
+        assert!(matches!(
+            err.kind(),
+            VmError::ArrayIndexOutOfBounds { index: -1, len: 2 }
+        ));
     }
 
     #[test]
@@ -1023,13 +1046,19 @@ mod tests {
             ],
         );
         let err = run(&p).unwrap_err();
-        assert!(matches!(err.kind(), VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }));
+        assert!(matches!(
+            err.kind(),
+            VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }
+        ));
     }
 
     #[test]
     fn res171a_store_index_display_is_descriptive() {
         let e = VmError::ArrayIndexOutOfBounds { index: 7, len: 3 };
-        assert_eq!(e.to_string(), "vm: array index 7 out of bounds for length 3");
+        assert_eq!(
+            e.to_string(),
+            "vm: array index 7 out of bounds for length 3"
+        );
     }
 
     // ---- RES-171a: compile + run roundtrips (integration) ----
@@ -1058,9 +1087,7 @@ mod tests {
     #[test]
     fn res171a_compile_rejects_nested_index_assignment() {
         // a[i][j] = v is RES-171c — today we emit a clean error.
-        let (program, _) = crate::parse(
-            "let a = [[1,2],[3,4]]; a[0][1] = 99; return 0;",
-        );
+        let (program, _) = crate::parse("let a = [[1,2],[3,4]]; a[0][1] = 99; return 0;");
         let err = crate::compiler::compile(&program).unwrap_err();
         match err {
             crate::bytecode::CompileError::Unsupported(msg) => {
