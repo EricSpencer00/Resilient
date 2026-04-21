@@ -1,7 +1,7 @@
 ---
 id: RES-133
 title: `assume(p);` annotation surfaces facts to the SMT context
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G9
 created: 2026-04-17
@@ -89,3 +89,4 @@ Manager, please sequence:
 Without that split, the ticket is a multi-iteration undertaking
 that would mostly duplicate RES-129's infra requirement. No
 code changes landed.
+closed-by: shipped in PR #48 (commit 6ada8e3)

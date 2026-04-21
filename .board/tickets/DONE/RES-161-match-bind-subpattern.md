@@ -1,7 +1,7 @@
 ---
 id: RES-161
 title: Bind-subpattern `case p @ Point { x, y } if x > 0 => ...`
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G13
 created: 2026-04-17
@@ -116,3 +116,4 @@ subpattern sugar doesn't justify its own ticket.
 No code changes landed — only the ticket state toggle and this
 clarification note. Committing as a ticket-only move so `main`
 stays unchanged except for the metadata.
+closed-by: shipped in PR #49 (commit 94595a5)
