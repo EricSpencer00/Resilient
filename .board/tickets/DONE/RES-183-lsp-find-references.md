@@ -1,11 +1,12 @@
 ---
 id: RES-183
 title: LSP: find-references for top-level functions
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G17
 created: 2026-04-17
 owner: executor
+claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary
@@ -35,6 +36,53 @@ of scope.
 - 2026-04-17 created by manager
 - 2026-04-17 claimed and bailed by executor (blocked on the
   same LSP infra gap that bailed RES-181 / RES-182)
+- 2026-04-20 claimed by executor — RES-182 now DONE; all four
+  LSP infra prerequisites in place. Landing the full ticket.
+- 2026-04-20 landed at commit 8ef1eaf
+
+## Resolution
+
+All acceptance criteria met:
+
+- `Backend::references` implemented in `resilient/src/lsp_server.rs`.
+  Reuses `identifier_at` + `build_top_level_defs` + `find_top_level_def`
+  from RES-182a. New: `collect_call_sites` (pure AST walker) +
+  `walk_call_sites` (recursive helper).
+- Match is AST-driven: only `Node::CallExpression { function: Node::Identifier { name, .. }, .. }`
+  nodes where `name == target` are collected. `Node::StructLiteral` nodes
+  with the same name are explicitly NOT matched.
+- `includeDeclaration: true` prepends the defining `Location` as the
+  first entry; `false` omits it.
+- `references_provider: Some(OneOf::Left(true))` added to
+  `ServerCapabilities` in `initialize`.
+- 8 unit tests (`res183_*`) in `lsp_server.rs`.
+- 1 integration test in `resilient/tests/lsp_references_smoke.rs`:
+  3-caller setup + struct literal false-positive check + keyword-
+  cursor null + includeDeclaration toggling.
+
+### Files changed
+
+- `resilient/src/lsp_server.rs`
+  - Added `ReferenceParams` to use imports.
+  - Added `references_provider: Some(OneOf::Left(true))` to capabilities.
+  - New `pub(crate) fn collect_call_sites(program, target)`.
+  - New `fn walk_call_sites(node, target, out)` — recursive AST walker.
+  - New `Backend::references` handler.
+  - 8 unit tests tagged `res183_*`.
+- `resilient/tests/lsp_references_smoke.rs` (new)
+  - End-to-end integration: initialize → didOpen → references
+    (includeDeclaration false: 3 locs) → references (includeDeclaration
+    true: 4 locs) → keyword cursor (null).
+
+### Verification
+
+```
+cargo build --features lsp                         # OK
+cargo test --features lsp res183                   # 8 passed
+cargo test --features lsp --test lsp_references_smoke  # 1 passed
+cargo clippy --features lsp -- -D warnings         # clean
+cargo fmt --check (lsp_server.rs, lsp_references_smoke.rs)  # clean
+```
 
 ## Attempt 1 failed
 

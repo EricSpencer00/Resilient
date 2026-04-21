@@ -25,16 +25,16 @@ use tower_lsp::lsp_types::{
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location,
-    MarkedString, MessageType, OneOf, Position, Range, SemanticToken, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    MarkedString, MessageType, OneOf, Position, Range, ReferenceParams, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, Url, WorkDoneProgressOptions,
     WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::{builtin_names, compute_semantic_tokens, parse, typechecker, Node};
+use crate::{Node, builtin_names, compute_semantic_tokens, parse, typechecker};
 
 /// RES-186: one workspace-level symbol entry. A flat vec of these
 /// is the backend's search index — substring filter at query time,
@@ -256,10 +256,7 @@ fn span_to_range(span: crate::span::Span) -> Range {
 /// This lookup is O(tokens). A cached-source document is small
 /// enough that re-lexing on each hover request is cheap — faster
 /// than the HashMap operation that reads it.
-pub(crate) fn hover_literal_at(
-    src: &str,
-    pos: Position,
-) -> Option<(&'static str, Range)> {
+pub(crate) fn hover_literal_at(src: &str, pos: Position) -> Option<(&'static str, Range)> {
     use crate::{Lexer, Token};
     let mut lex = Lexer::new(src.to_string());
     loop {
@@ -319,10 +316,7 @@ fn lex_span_contains_lsp_position(span: crate::span::Span, pos: Position) -> boo
 /// directly against the cached source and find the containing
 /// `Token::Identifier`. Caller uses the returned name to look up
 /// the definition in a `TopLevelDefMap`.
-pub(crate) fn identifier_at(
-    src: &str,
-    pos: Position,
-) -> Option<(String, Range)> {
+pub(crate) fn identifier_at(src: &str, pos: Position) -> Option<(String, Range)> {
     use crate::{Lexer, Token};
     let mut lex = Lexer::new(src.to_string());
     loop {
@@ -395,6 +389,192 @@ pub(crate) fn find_top_level_def<'a>(
     name: &str,
 ) -> Option<&'a TopLevelDef> {
     defs.iter().find(|d| d.name == name)
+}
+
+/// RES-183: walk the full AST and collect the `Range` of every
+/// `CallExpression` whose callee is an `Identifier` with the
+/// given name. Only `CallExpression` nodes count — `StructLiteral`
+/// nodes that happen to share the name are deliberately excluded
+/// (the AC says the match must be AST-driven, not textual).
+///
+/// The returned ranges point at the callee identifier's span
+/// within the call expression. Because `CallExpression.function`
+/// is a `Box<Node>` holding an `Identifier`, we use
+/// `expression_span` to get that identifier's span and convert it
+/// to an LSP `Range`. Calls where the callee is a non-identifier
+/// expression (method chain, higher-order call, etc.) are skipped.
+///
+/// `include_declaration`: when `true`, the caller should also
+/// append the definition site via `find_top_level_def`. This
+/// helper only ever emits CALL sites.
+pub(crate) fn collect_call_sites(program: &Node, target: &str) -> Vec<Range> {
+    let mut out = Vec::new();
+    walk_call_sites(program, target, &mut out);
+    out
+}
+
+/// Recursive helper for `collect_call_sites`. Visits every node
+/// reachable from `node`. Appends to `out` when a
+/// `CallExpression` with callee `Identifier { name == target }`
+/// is found.
+fn walk_call_sites(node: &Node, target: &str, out: &mut Vec<Range>) {
+    match node {
+        Node::Program(stmts) => {
+            for s in stmts {
+                walk_call_sites(&s.node, target, out);
+            }
+        }
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            walk_call_sites(body, target, out);
+            for r in requires {
+                walk_call_sites(r, target, out);
+            }
+            for e in ensures {
+                walk_call_sites(e, target, out);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                walk_call_sites(s, target, out);
+            }
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            // Recurse into arguments first so nested calls are captured.
+            for a in arguments {
+                walk_call_sites(a, target, out);
+            }
+            // Recurse into the callee in case it is itself a call
+            // expression (e.g. `foo()()`). We check AFTER recursion
+            // so inner calls land before outer.
+            walk_call_sites(function, target, out);
+            // Now check if THIS call's callee is the target name.
+            if let Node::Identifier { name, span } = function.as_ref()
+                && name == target
+            {
+                out.push(span_to_range(*span));
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            walk_call_sites(value, target, out);
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk_call_sites(condition, target, out);
+            walk_call_sites(consequence, target, out);
+            if let Some(a) = alternative {
+                walk_call_sites(a, target, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            walk_call_sites(condition, target, out);
+            walk_call_sites(body, target, out);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            walk_call_sites(left, target, out);
+            walk_call_sites(right, target, out);
+        }
+        Node::PrefixExpression { right, .. } => {
+            walk_call_sites(right, target, out);
+        }
+        Node::Assignment { value, .. } => {
+            walk_call_sites(value, target, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            walk_call_sites(iterable, target, out);
+            walk_call_sites(body, target, out);
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            walk_call_sites(expr, target, out);
+        }
+        Node::IndexExpression {
+            target: t, index, ..
+        } => {
+            walk_call_sites(t, target, out);
+            walk_call_sites(index, target, out);
+        }
+        Node::IndexAssignment {
+            target: t,
+            index,
+            value,
+            ..
+        } => {
+            walk_call_sites(t, target, out);
+            walk_call_sites(index, target, out);
+            walk_call_sites(value, target, out);
+        }
+        Node::FieldAccess { target: obj, .. } | Node::TryExpression { expr: obj, .. } => {
+            walk_call_sites(obj, target, out);
+        }
+        Node::FieldAssignment {
+            target: obj, value, ..
+        } => {
+            walk_call_sites(obj, target, out);
+            walk_call_sites(value, target, out);
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for e in items {
+                walk_call_sites(e, target, out);
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            // Note: `StructLiteral { name, .. }` is intentionally NOT
+            // matched as a call site — struct construction is not a fn
+            // call even if the struct shares a name with a function.
+            // Only the field VALUE expressions are descended into.
+            for (_, v) in fields {
+                walk_call_sites(v, target, out);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_call_sites(scrutinee, target, out);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    walk_call_sites(g, target, out);
+                }
+                walk_call_sites(body, target, out);
+            }
+        }
+        Node::FunctionLiteral {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
+            walk_call_sites(body, target, out);
+            for r in requires {
+                walk_call_sites(r, target, out);
+            }
+            for e in ensures {
+                walk_call_sites(e, target, out);
+            }
+        }
+        // Simple leaf nodes and forms without sub-expressions:
+        // Identifier, IntegerLiteral, FloatLiteral, StringLiteral,
+        // BooleanLiteral, BytesLiteral, ReturnStatement { value: None },
+        // TypeAlias, StructDecl, LetDestructureStruct, AssumeStatement, etc.
+        _ => {}
+    }
 }
 
 /// RES-188a: hard cap on the completion list. Large lists hurt
@@ -473,10 +653,7 @@ impl CandidateKind {
 ///
 /// When `prefix` is empty, the full candidate set (up to the cap)
 /// is returned — that's the Ctrl-Space case.
-pub(crate) fn completion_candidates(
-    program: &Node,
-    prefix: &str,
-) -> Vec<Candidate> {
+pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
 
     // Builtins — alphabetically sorted snapshot.
@@ -504,7 +681,9 @@ pub(crate) fn completion_candidates(
     };
     for spanned in stmts {
         let (name, kind, detail) = match &spanned.node {
-            Node::Function { name, parameters, .. } => (
+            Node::Function {
+                name, parameters, ..
+            } => (
                 name.clone(),
                 CandidateKind::Function,
                 Some(format!("fn ({} params)", parameters.len())),
@@ -572,12 +751,8 @@ pub(crate) fn document_symbols_for_program(program: &Node) -> Vec<DocumentSymbol
     let mut out = Vec::new();
     for spanned in stmts {
         let symbol = match &spanned.node {
-            Node::Function { name, .. } => {
-                make_symbol(name, SymbolKind::FUNCTION, spanned.span)
-            }
-            Node::StructDecl { name, .. } => {
-                make_symbol(name, SymbolKind::STRUCT, spanned.span)
-            }
+            Node::Function { name, .. } => make_symbol(name, SymbolKind::FUNCTION, spanned.span),
+            Node::StructDecl { name, .. } => make_symbol(name, SymbolKind::STRUCT, spanned.span),
             Node::TypeAlias { name, .. } => {
                 make_symbol(name, SymbolKind::TYPE_PARAMETER, spanned.span)
             }
@@ -606,8 +781,7 @@ impl Backend {
         };
         let Some(root) = root else { return };
         let files = walk_resilient_files(&root);
-        let mut new_index: HashMap<Url, Vec<WorkspaceSymbolEntry>> =
-            HashMap::new();
+        let mut new_index: HashMap<Url, Vec<WorkspaceSymbolEntry>> = HashMap::new();
         for path in files {
             if let Some(entries) = index_file(&path) {
                 let Ok(uri) = Url::from_file_path(&path) else {
@@ -627,7 +801,9 @@ impl Backend {
 /// index build artifacts or management metadata.
 fn walk_resilient_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else { return out };
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
     for e in entries.flatten() {
         let path = e.path();
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
@@ -724,7 +900,10 @@ fn semantic_tokens_legend() -> SemanticTokensLegend {
         SemanticTokenModifier::DECLARATION,
         SemanticTokenModifier::READONLY,
     ];
-    SemanticTokensLegend { token_types, token_modifiers }
+    SemanticTokensLegend {
+        token_types,
+        token_modifiers,
+    }
 }
 
 /// RES-187: the capability advertised in `initialize` — full-file
@@ -812,10 +991,12 @@ fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
     let mut out = HashMap::new();
     if let Node::Program(stmts) = program {
         for spanned in stmts {
-            if let Node::Function { name, parameters, .. } = &spanned.node {
+            if let Node::Function {
+                name, parameters, ..
+            } = &spanned.node
+            {
                 // parameters are (type, name) — only names needed.
-                let names: Vec<String> =
-                    parameters.iter().map(|(_, n)| n.clone()).collect();
+                let names: Vec<String> = parameters.iter().map(|(_, n)| n.clone()).collect();
                 out.insert(name.clone(), names);
             }
         }
@@ -827,18 +1008,19 @@ fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
 /// `node`. For each one, if the callee is a bare identifier
 /// that's in `fns` AND the arg count matches, emit one hint per
 /// positional argument.
-fn walk_call_hints(
-    node: &Node,
-    fns: &HashMap<String, Vec<String>>,
-    out: &mut Vec<InlayHint>,
-) {
+fn walk_call_hints(node: &Node, fns: &HashMap<String, Vec<String>>, out: &mut Vec<InlayHint>) {
     match node {
         Node::Program(stmts) => {
             for s in stmts {
                 walk_call_hints(&s.node, fns, out);
             }
         }
-        Node::Function { body, requires, ensures, .. } => {
+        Node::Function {
+            body,
+            requires,
+            ensures,
+            ..
+        } => {
             walk_call_hints(body, fns, out);
             for r in requires {
                 walk_call_hints(r, fns, out);
@@ -853,7 +1035,11 @@ fn walk_call_hints(
                 walk_call_hints(s, fns, out);
             }
         }
-        Node::CallExpression { function, arguments, .. } => {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
             // First recurse into the arguments so nested calls get
             // hints too.
             for a in arguments {
@@ -890,10 +1076,17 @@ fn walk_call_hints(
         }
         Node::LetStatement { value, .. }
         | Node::StaticLet { value, .. }
-        | Node::ReturnStatement { value: Some(value), .. } => {
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
             walk_call_hints(value, fns, out);
         }
-        Node::IfStatement { condition, consequence, alternative, .. } => {
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
             walk_call_hints(condition, fns, out);
             walk_call_hints(consequence, fns, out);
             if let Some(a) = alternative {
@@ -935,9 +1128,7 @@ fn position_in_range(p: Position, range: Range) -> bool {
 /// value isn't a boolean `true`. Exported pub(crate) so unit
 /// tests can exercise the parser without an LSP round-trip.
 #[allow(dead_code)]
-pub(crate) fn read_init_param_hints_flag(
-    opts: Option<&tower_lsp::lsp_types::LSPAny>,
-) -> bool {
+pub(crate) fn read_init_param_hints_flag(opts: Option<&tower_lsp::lsp_types::LSPAny>) -> bool {
     let Some(opts) = opts else { return false };
     // Flat form.
     if let Some(v) = opts.get("resilient.inlayHints.parameters")
@@ -1008,9 +1199,7 @@ impl LanguageServer for Backend {
             .map(|f| f.uri.clone())
             .or(params.root_uri.clone())
             .and_then(|u| u.to_file_path().ok());
-        if let (Ok(mut slot), Some(p)) =
-            (self.workspace_root.lock(), root_path)
-        {
+        if let (Ok(mut slot), Some(p)) = (self.workspace_root.lock(), root_path) {
             *slot = Some(p);
         }
 
@@ -1020,9 +1209,7 @@ impl LanguageServer for Backend {
         // `{"resilient": {"inlayHints": {"parameters": true}}}`
         // (nested). Either is fine; clients vary. Absent / false →
         // parameter hints stay off.
-        let params_enabled = read_init_param_hints_flag(
-            params.initialization_options.as_ref(),
-        );
+        let params_enabled = read_init_param_hints_flag(params.initialization_options.as_ref());
         if let Ok(mut slot) = self.inlay_hint_parameters.lock() {
             *slot = params_enabled;
         }
@@ -1049,12 +1236,12 @@ impl LanguageServer for Backend {
                 // options) — the server supports the feature for any
                 // document that already has a `TextDocumentSyncKind`
                 // registered above.
-                inlay_hint_provider: Some(OneOf::Right(
-                    InlayHintServerCapabilities::Options(InlayHintOptions {
+                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+                    InlayHintOptions {
                         work_done_progress_options: WorkDoneProgressOptions::default(),
                         resolve_provider: Some(false),
-                    }),
-                )),
+                    },
+                ))),
                 // RES-181a: advertise hover support. Today the handler
                 // only surfaces a type for literals (Int / Float /
                 // Bool / String / Bytes / Duration) — identifier
@@ -1070,6 +1257,12 @@ impl LanguageServer for Backend {
                 // (RES-182b, RES-182c) stay deferred until a scope-
                 // aware resolver + span-carrying-path work lands.
                 definition_provider: Some(OneOf::Left(true)),
+                // RES-183: advertise find-references. The handler
+                // collects every `CallExpression` in the current
+                // document whose callee matches the cursor's top-
+                // level fn name. Struct literals with the same name
+                // are excluded (AST-driven, not textual).
+                references_provider: Some(OneOf::Left(true)),
                 // RES-188a: advertise identifier completion. The
                 // handler seeds its candidate list from the BUILTINS
                 // table plus top-level decls in the current
@@ -1143,17 +1336,16 @@ impl LanguageServer for Backend {
     /// untouched. If the save happened before the index was
     /// built, this is still safe: the lazy-build on next
     /// `workspace/symbol` call will include the saved state.
-    async fn did_save(
-        &self,
-        params: tower_lsp::lsp_types::DidSaveTextDocumentParams,
-    ) {
+    async fn did_save(&self, params: tower_lsp::lsp_types::DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         // Re-read the file from disk. `did_save` notifications
         // carry the text only when the client opts into the
         // `TextDocumentSyncSaveOptions { include_text: true }`
         // — we registered TextDocumentSyncKind::FULL without
         // that, so walk to disk instead.
-        let Some(path) = uri.to_file_path().ok() else { return };
+        let Some(path) = uri.to_file_path().ok() else {
+            return;
+        };
         let entries = match index_file(&path) {
             Some(e) => e,
             None => return,
@@ -1309,6 +1501,97 @@ impl LanguageServer for Backend {
         })))
     }
 
+    /// RES-183: respond to `textDocument/references` — return every
+    /// call site in the current document where the top-level fn
+    /// under the cursor is invoked.
+    ///
+    /// Pipeline:
+    ///   1. Look up the cursor's identifier token via `identifier_at`.
+    ///   2. Confirm it names a top-level fn via `build_top_level_defs`
+    ///      + `find_top_level_def`. Non-fn identifiers return `Ok(None)`.
+    ///   3. Walk the cached AST with `collect_call_sites` to gather every
+    ///      `CallExpression` with that callee. Struct literals sharing
+    ///      the same name are excluded (AST-driven match).
+    ///   4. If `context.include_declaration` is `true`, prepend the
+    ///      defining span as the first `Location` in the result.
+    ///   5. Return `Ok(None)` (not an empty Vec) when nothing resolves,
+    ///      so compliant clients show "no references found" rather than
+    ///      an empty highlight list.
+    async fn references(&self, params: ReferenceParams) -> JsonResult<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let include_decl = params.context.include_declaration;
+
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let Some((name, _cursor_range)) = identifier_at(&text, pos) else {
+            return Ok(None);
+        };
+
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+
+        // Only serve references for top-level fn declarations.
+        // Struct / type-alias / local-variable references are
+        // out of scope for this ticket (see RES-183 notes).
+        let defs = build_top_level_defs(&program);
+        let Some(def) = find_top_level_def(&defs, &name) else {
+            return Ok(None);
+        };
+        // Confirm it is actually a fn (not a struct or type alias).
+        // `build_top_level_defs` collects all three, so check the AST.
+        let is_fn = if let Node::Program(stmts) = &program {
+            stmts
+                .iter()
+                .any(|s| matches!(&s.node, Node::Function { name: n, .. } if n == &name))
+        } else {
+            false
+        };
+        if !is_fn {
+            return Ok(None);
+        }
+
+        let call_ranges = collect_call_sites(&program, &name);
+
+        // An empty call list with no declaration to include means
+        // "no references found" — return None so clients display
+        // the appropriate UX rather than an empty list.
+        if call_ranges.is_empty() && !include_decl {
+            return Ok(None);
+        }
+
+        let mut locations: Vec<Location> = Vec::new();
+
+        // Declaration site first when requested (matches VS Code
+        // "Go to References" + "Include Declaration" behaviour).
+        if include_decl {
+            locations.push(Location {
+                uri: uri.clone(),
+                range: def.range,
+            });
+        }
+
+        for range in call_ranges {
+            locations.push(Location {
+                uri: uri.clone(),
+                range,
+            });
+        }
+
+        Ok(Some(locations))
+    }
+
     /// RES-188a: respond to `textDocument/completion` — return
     /// builtins + top-level decls whose names start with the
     /// prefix already typed. Scope-aware local / parameter
@@ -1324,10 +1607,7 @@ impl LanguageServer for Backend {
     ///      applies the 100-item cap.
     ///   4. Convert each `Candidate` to `CompletionItem` and wrap
     ///      as `CompletionResponse::Array`.
-    async fn completion(
-        &self,
-        params: CompletionParams,
-    ) -> JsonResult<Option<CompletionResponse>> {
+    async fn completion(&self, params: CompletionParams) -> JsonResult<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let pos = params.text_document_position.position;
         let text = match self.documents_text.lock() {
@@ -1389,10 +1669,7 @@ impl LanguageServer for Backend {
     /// Filters the output by the request's `range` so clients
     /// that ask for a viewport don't pay to render the whole
     /// file's worth.
-    async fn inlay_hint(
-        &self,
-        params: InlayHintParams,
-    ) -> JsonResult<Option<Vec<InlayHint>>> {
+    async fn inlay_hint(&self, params: InlayHintParams) -> JsonResult<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri;
         let range = params.range;
 
@@ -1409,8 +1686,7 @@ impl LanguageServer for Backend {
         // collected up to the error point.
         let mut tc = typechecker::TypeChecker::new();
         let _ = tc.check_program_with_source(&program, uri.as_str());
-        let let_hints: Vec<InlayHint> =
-            tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
+        let let_hints: Vec<InlayHint> = tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
 
         let mut out: Vec<InlayHint> = let_hints
             .into_iter()
@@ -1601,12 +1877,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "res_186_{}_{}_{}",
-            tag,
-            std::process::id(),
-            n
-        ));
+        let path =
+            std::env::temp_dir().join(format!("res_186_{}_{}_{}", tag, std::process::id(), n));
         std::fs::create_dir_all(&path).expect("create scratch dir");
         path
     }
@@ -1629,11 +1901,7 @@ mod tests {
             "fn c() { return 0; }\n",
         );
         std::fs::create_dir_all(root.join(".cache")).unwrap();
-        write_file(
-            &root.join(".cache"),
-            "d.rs",
-            "fn d() { return 0; }\n",
-        );
+        write_file(&root.join(".cache"), "d.rs", "fn d() { return 0; }\n");
         let found = walk_resilient_files(&root);
         let names: Vec<String> = found
             .iter()
@@ -1641,8 +1909,14 @@ mod tests {
             .collect();
         assert!(names.contains(&"a.rs".to_string()));
         assert!(names.contains(&"b.rs".to_string()));
-        assert!(!names.contains(&"c.rs".to_string()), "target/ must be skipped");
-        assert!(!names.contains(&"d.rs".to_string()), "dot-dirs must be skipped");
+        assert!(
+            !names.contains(&"c.rs".to_string()),
+            "target/ must be skipped"
+        );
+        assert!(
+            !names.contains(&"d.rs".to_string()),
+            "dot-dirs must be skipped"
+        );
         // Clean up.
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1675,28 +1949,19 @@ mod tests {
                 name: "alpha".into(),
                 kind: SymbolKind::FUNCTION,
                 uri: uri.clone(),
-                range: Range::new(
-                    Position::new(0, 0),
-                    Position::new(0, 0),
-                ),
+                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
             },
             WorkspaceSymbolEntry {
                 name: "AlphaBeta".into(),
                 kind: SymbolKind::FUNCTION,
                 uri: uri.clone(),
-                range: Range::new(
-                    Position::new(1, 0),
-                    Position::new(1, 0),
-                ),
+                range: Range::new(Position::new(1, 0), Position::new(1, 0)),
             },
             WorkspaceSymbolEntry {
                 name: "gamma".into(),
                 kind: SymbolKind::FUNCTION,
                 uri: uri.clone(),
-                range: Range::new(
-                    Position::new(2, 0),
-                    Position::new(2, 0),
-                ),
+                range: Range::new(Position::new(2, 0), Position::new(2, 0)),
             },
         ];
         let mut index: HashMap<Url, Vec<WorkspaceSymbolEntry>> = HashMap::new();
@@ -1734,26 +1999,47 @@ mod tests {
     fn semantic_tokens_legend_indices_match_sem_tok_constants() {
         use crate::sem_tok;
         let legend = semantic_tokens_legend();
-        assert_eq!(legend.token_types[sem_tok::KEYWORD as usize],
-                   SemanticTokenType::KEYWORD);
-        assert_eq!(legend.token_types[sem_tok::FUNCTION as usize],
-                   SemanticTokenType::FUNCTION);
-        assert_eq!(legend.token_types[sem_tok::VARIABLE as usize],
-                   SemanticTokenType::VARIABLE);
-        assert_eq!(legend.token_types[sem_tok::PARAMETER as usize],
-                   SemanticTokenType::PARAMETER);
-        assert_eq!(legend.token_types[sem_tok::TYPE as usize],
-                   SemanticTokenType::TYPE);
-        assert_eq!(legend.token_types[sem_tok::STRING as usize],
-                   SemanticTokenType::STRING);
-        assert_eq!(legend.token_types[sem_tok::NUMBER as usize],
-                   SemanticTokenType::NUMBER);
-        assert_eq!(legend.token_types[sem_tok::COMMENT as usize],
-                   SemanticTokenType::COMMENT);
-        assert_eq!(legend.token_types[sem_tok::OPERATOR as usize],
-                   SemanticTokenType::OPERATOR);
+        assert_eq!(
+            legend.token_types[sem_tok::KEYWORD as usize],
+            SemanticTokenType::KEYWORD
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::FUNCTION as usize],
+            SemanticTokenType::FUNCTION
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::VARIABLE as usize],
+            SemanticTokenType::VARIABLE
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::PARAMETER as usize],
+            SemanticTokenType::PARAMETER
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::TYPE as usize],
+            SemanticTokenType::TYPE
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::STRING as usize],
+            SemanticTokenType::STRING
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::NUMBER as usize],
+            SemanticTokenType::NUMBER
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::COMMENT as usize],
+            SemanticTokenType::COMMENT
+        );
+        assert_eq!(
+            legend.token_types[sem_tok::OPERATOR as usize],
+            SemanticTokenType::OPERATOR
+        );
         // Modifier bit positions: bit 0 = declaration, bit 1 = readonly.
-        assert_eq!(legend.token_modifiers[0], SemanticTokenModifier::DECLARATION);
+        assert_eq!(
+            legend.token_modifiers[0],
+            SemanticTokenModifier::DECLARATION
+        );
         assert_eq!(legend.token_modifiers[1], SemanticTokenModifier::READONLY);
     }
 
@@ -1811,10 +2097,12 @@ mod tests {
             hints.len(),
             3,
             "expected 3 hints (a, c, e), got {:?}",
-            hints.iter().map(|h| (h.name_len_chars, &h.ty)).collect::<Vec<_>>(),
+            hints
+                .iter()
+                .map(|h| (h.name_len_chars, &h.ty))
+                .collect::<Vec<_>>(),
         );
-        let types: Vec<String> =
-            hints.iter().map(|h| format!("{}", h.ty)).collect();
+        let types: Vec<String> = hints.iter().map(|h| format!("{}", h.ty)).collect();
         assert_eq!(types, vec!["int", "bool", "string"]);
     }
 
@@ -1961,7 +2249,11 @@ mod tests {
         // Ticket AC: pre-seed two files, invoke the query (via the
         // helper path), assert both files' symbols are returned.
         let root = tmp_workspace("multifile");
-        write_file(&root, "mod_a.rs", "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n");
+        write_file(
+            &root,
+            "mod_a.rs",
+            "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n",
+        );
         write_file(&root, "mod_b.rs", "fn b_fn() { return 0; }\n");
 
         // Walk + index the whole scratch dir, reproducing what
@@ -1972,7 +2264,9 @@ mod tests {
         let mut index: std::collections::HashMap<Url, Vec<WorkspaceSymbolEntry>> =
             std::collections::HashMap::new();
         for p in files {
-            let Ok(uri) = Url::from_file_path(&p) else { continue };
+            let Ok(uri) = Url::from_file_path(&p) else {
+                continue;
+            };
             if let Some(entries) = index_file(&p) {
                 index.insert(uri, entries);
             }
@@ -1980,8 +2274,7 @@ mod tests {
 
         // All-match query: three names across two files.
         let r = filter_workspace_symbols(&index, "", 50);
-        let names: std::collections::HashSet<&str> =
-            r.iter().map(|s| s.name.as_str()).collect();
+        let names: std::collections::HashSet<&str> = r.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains("a_fn"));
         assert!(names.contains("A_Struct"));
         assert!(names.contains("b_fn"));
@@ -2113,8 +2406,8 @@ mod tests {
     fn res181a_hover_returns_range_covering_the_token() {
         // The Range returned with the hover should span the whole
         // literal. For `42` at cols 9..11 (1-indexed) = LSP 8..10.
-        let (ty, range) = hover_literal_at("let x = 42;", Position::new(0, 8))
-            .expect("expected hover");
+        let (ty, range) =
+            hover_literal_at("let x = 42;", Position::new(0, 8)).expect("expected hover");
         assert_eq!(ty, "Int");
         assert_eq!(range.start.line, 0);
         assert_eq!(range.end.line, 0);
@@ -2278,6 +2571,123 @@ mod tests {
         let defs = build_top_level_defs(&prog);
         let def = find_top_level_def(&defs, "foo").expect("missing foo");
         assert_eq!(def.range.start.line, 1);
+    }
+
+    // ============================================================
+    // RES-183: find-references helpers
+    // ============================================================
+
+    #[test]
+    fn res183_collect_call_sites_three_callers() {
+        // AC: 3-caller setup — each direct call should produce one
+        // range; the struct literal with the same name should NOT.
+        let src = "\
+fn greet() { return 1; }\n\
+struct greet { int x, }\n\
+fn a() { return greet(); }\n\
+fn b() { return greet(); }\n\
+fn c() { return greet(); }\n\
+let _s = new greet { x: 0 };\n\
+";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "greet");
+        assert_eq!(
+            sites.len(),
+            3,
+            "expected exactly 3 call sites, got {}: {sites:?}",
+            sites.len()
+        );
+    }
+
+    #[test]
+    fn res183_collect_call_sites_struct_literal_excluded() {
+        // A struct literal `new Foo { ... }` must NOT be counted as
+        // a call site even when the struct name matches the target.
+        let src = "\
+fn Foo() { return 0; }\n\
+struct Foo { int x, }\n\
+let _s = new Foo { x: 1 };\n\
+";
+        let (prog, _) = parse(src);
+        let sites = collect_call_sites(&prog, "Foo");
+        assert!(
+            sites.is_empty(),
+            "struct literal must not appear as a call site, got: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn res183_collect_call_sites_empty_program() {
+        let (prog, _) = parse("");
+        let sites = collect_call_sites(&prog, "anything");
+        assert!(sites.is_empty());
+    }
+
+    #[test]
+    fn res183_collect_call_sites_no_match() {
+        let src = "fn foo() { return 1; }\nfoo();\n";
+        let (prog, _) = parse(src);
+        let sites = collect_call_sites(&prog, "bar");
+        assert!(sites.is_empty());
+    }
+
+    #[test]
+    fn res183_collect_call_sites_single_top_level_call() {
+        // A bare call statement at top level.
+        let src = "fn add(int a, int b) -> int { return a + b; }\nadd(1, 2);\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "add");
+        assert_eq!(sites.len(), 1, "expected 1 call site, got: {sites:?}");
+        // Call site is on line 2 (1-indexed) = LSP line 1.
+        assert_eq!(sites[0].start.line, 1);
+    }
+
+    #[test]
+    fn res183_collect_call_sites_nested_call() {
+        // `foo(foo(1))` — two call sites for `foo`.
+        let src = "fn foo(int n) { return n; }\nfoo(foo(1));\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "foo");
+        assert_eq!(
+            sites.len(),
+            2,
+            "expected 2 nested call sites, got: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn res183_collect_call_sites_inside_if_while() {
+        // Calls inside if/while bodies are captured.
+        let src = "\
+fn tick() { return 1; }\n\
+fn main(int n) {\n\
+    if n > 0 { tick(); }\n\
+    while n > 0 { tick(); n = n - 1; }\n\
+    return 0;\n\
+}\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "tick");
+        assert_eq!(sites.len(), 2, "expected 2 tick call sites: {sites:?}");
+    }
+
+    #[test]
+    fn res183_collect_call_sites_range_points_at_callee() {
+        // The range in the returned Location should be derived from the
+        // callee Identifier's AST span. The parser uses zero-width spans
+        // (known limitation per the "span unreliability" note in main.rs),
+        // so start == end. The important invariant is that the LINE is
+        // correct — it points at the call site's line, not the decl's.
+        let src = "fn foo(int n) { return n; }\nfoo(1);\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let sites = collect_call_sites(&prog, "foo");
+        assert_eq!(sites.len(), 1);
+        // `foo(1)` is on source line 2 (1-indexed) = LSP line 1.
+        assert_eq!(sites[0].start.line, 1, "call site line mismatch");
     }
 
     // ============================================================
