@@ -20,9 +20,8 @@
 //! - Numeric literals accept `_` digit separators inside hex / binary
 //!   bodies, matching the hand-rolled lexer's `read_radix_number`.
 //! - String literals go through the `string_lit` callback so escape
-//!   sequences (`\n`, `\t`, `\r`, `\\`, `\"`) are expanded in place
-//!   and unknown escapes are preserved as backslash + char, exactly
-//!   as the legacy `read_string` does.
+//!   sequences (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`, `\xHH`, `\u{HHHH}`)
+//!   are expanded in place; unknown escapes are preserved as backslash + char.
 //! - Block comments use the `block_comment` callback instead of a
 //!   skip-regex because writing the non-nesting C comment pattern in
 //!   logos's regex flavour is fiddly; the callback scans forward to
@@ -306,9 +305,65 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
                 Some('r') => out.push('\r'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
+                Some('0') => out.push('\0'),
+                Some('x') => {
+                    // \xHH — two hex digits encode a single Unicode scalar
+                    // (values 0x00–0xFF map to the matching code point).
+                    let h1 = chars.next();
+                    let h2 = chars.next();
+                    match (h1, h2) {
+                        (Some(a), Some(b)) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => {
+                            let byte = u8::from_str_radix(&format!("{a}{b}"), 16).unwrap();
+                            out.push(byte as char);
+                        }
+                        (h1, h2) => {
+                            // Not valid hex — preserve literally.
+                            out.push('\\');
+                            out.push('x');
+                            if let Some(a) = h1 {
+                                out.push(a);
+                            }
+                            if let Some(b) = h2 {
+                                out.push(b);
+                            }
+                        }
+                    }
+                }
+                Some('u') => {
+                    // \u{HHHH} — 1–6 hex digits, any valid Unicode scalar value.
+                    if chars.peek() == Some(&'{') {
+                        chars.next(); // consume '{'
+                        let mut hex = String::new();
+                        while let Some(&d) = chars.peek() {
+                            if d == '}' {
+                                chars.next();
+                                break;
+                            }
+                            if d.is_ascii_hexdigit() {
+                                hex.push(d);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                        if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                            if let Some(ch) = char::from_u32(n) {
+                                out.push(ch);
+                            } else {
+                                // Invalid code point — preserve literally.
+                                out.push_str(&format!("\\u{{{hex}}}"));
+                            }
+                        } else {
+                            out.push_str(&format!("\\u{{{hex}}}"));
+                        }
+                    } else {
+                        // `\u` not followed by `{` — preserve.
+                        out.push('\\');
+                        out.push('u');
+                    }
+                }
                 Some(other) => {
-                    // Unknown escape: preserve as backslash + char,
-                    // matching the hand-rolled `read_string`.
+                    // Unknown escape: preserve as backslash + char.
                     out.push('\\');
                     out.push(other);
                 }
