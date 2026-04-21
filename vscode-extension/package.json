@@ -2,7 +2,7 @@
   "name": "resilient-vscode",
   "displayName": "Resilient",
   "description": "Language support for Resilient — syntax highlighting + Language Server integration.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "fromamerica",
   "icon": "icon.png",
   "license": "MIT",
