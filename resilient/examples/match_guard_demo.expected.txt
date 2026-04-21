@@ -1,0 +1,5 @@
+below absolute zero
+freezing
+normal
+above boiling
+Program executed successfully

@@ -11625,6 +11625,46 @@ mod tests {
         assert!(err.contains("guard must be a boolean"), "err was: {}", err);
     }
 
+    // --- RES-381: match guard expressions (println-style tests) ---
+
+    #[test]
+    fn match_guard_fires_when_true() {
+        // Guard evaluates to true → the guarded arm body runs.
+        // `5 > 3` is true so we land on "big".
+        let src = r#"
+            match 5 {
+                n if n > 3 => "big",
+                _          => "small"
+            }
+        "#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "big"),
+            other => panic!("expected String(\"big\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guard_falls_through_when_false() {
+        // Guard evaluates to false → arm is skipped, next arm fires.
+        // `2 > 3` is false so control falls to the wildcard "small".
+        let src = r#"
+            match 2 {
+                n if n > 3 => "big",
+                _          => "small"
+            }
+        "#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "small"),
+            other => panic!("expected String(\"small\"), got {:?}", other),
+        }
+    }
+
     // --- RES-156: array comprehensions ---
 
     /// Evaluate a program returning an Int — helper for assertion
