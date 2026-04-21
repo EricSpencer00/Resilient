@@ -18,7 +18,7 @@ fn bin() -> &'static str {
 fn dump_tokens_prints_first_three_tokens_of_hello() {
     let output = Command::new(bin())
         .arg("--dump-tokens")
-        .arg("examples/hello.res")
+        .arg("examples/hello.rz")
         .output()
         .expect("spawn resilient --dump-tokens");
     assert_eq!(

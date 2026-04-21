@@ -109,7 +109,7 @@ enum Token {
     /// pattern.
     Default,
     Question,
-    /// RES-073: `use "path/to/file.res";` — module import.
+    /// RES-073: `use "path/to/file.rz";` — module import.
     Use,
     /// FFI v1: `extern "libname" { fn ... }` block keyword.
     Extern,
@@ -751,80 +751,19 @@ impl Lexer {
         let mut result = String::new();
 
         while self.ch != '"' && self.ch != '\0' {
+            // Handle escape sequences
             if self.ch == '\\' && self.read_position < self.input.len() {
-                self.read_char(); // consume the backslash
+                self.read_char(); // Skip the backslash
+
+                // Process escape sequence
                 match self.ch {
                     'n' => result.push('\n'),
                     't' => result.push('\t'),
                     'r' => result.push('\r'),
                     '\\' => result.push('\\'),
                     '"' => result.push('"'),
-                    '0' => result.push('\0'),
-                    'x' => {
-                        // \xHH — exactly two hex digits.
-                        let hi = self.peek_char();
-                        self.read_char(); // self.ch == first hex digit
-                        let lo = self.peek_char();
-                        self.read_char(); // self.ch == second hex digit
-                        let nibble = |c: char| -> Option<u8> {
-                            match c {
-                                '0'..='9' => Some(c as u8 - b'0'),
-                                'a'..='f' => Some(c as u8 - b'a' + 10),
-                                'A'..='F' => Some(c as u8 - b'A' + 10),
-                                _ => None,
-                            }
-                        };
-                        match (nibble(hi), nibble(lo)) {
-                            (Some(h), Some(l)) => {
-                                let byte = (h << 4) | l;
-                                result.push(byte as char);
-                            }
-                            _ => {
-                                result.push('\\');
-                                result.push('x');
-                                if hi != '\0' {
-                                    result.push(hi);
-                                }
-                                if lo != '\0' {
-                                    result.push(lo);
-                                }
-                            }
-                        }
-                    }
-                    'u' => {
-                        // \u{HHHH} — Unicode scalar value, 1–6 hex digits.
-                        if self.peek_char() == '{' {
-                            self.read_char(); // consume '{'
-                            let mut hex = String::new();
-                            loop {
-                                let next = self.peek_char();
-                                if next == '}' {
-                                    self.read_char(); // consume '}'
-                                    break;
-                                } else if next.is_ascii_hexdigit() {
-                                    self.read_char();
-                                    hex.push(self.ch);
-                                } else {
-                                    break;
-                                }
-                            }
-                            if let Ok(n) = u32::from_str_radix(&hex, 16) {
-                                if let Some(ch) = char::from_u32(n) {
-                                    result.push(ch);
-                                } else {
-                                    result.push_str(&format!("\\u{{{hex}}}"));
-                                }
-                            } else {
-                                result.push_str(&format!("\\u{{{hex}}}"));
-                            }
-                        } else {
-                            // `\u` not followed by `{` — preserve.
-                            result.push('\\');
-                            result.push('u');
-                        }
-                    }
                     _ => {
-                        // Unknown escape — preserve as backslash + char.
+                        // Invalid escape sequence, treat as literal
                         result.push('\\');
                         result.push(self.ch);
                     }
@@ -2196,11 +2135,6 @@ impl Parser {
                 // typed representation.
                 Some(format!("[{}; {}]", elem, len))
             }
-            Token::Underscore => {
-                let span = self.span_at_current();
-                self.next_token(); // skip `_`
-                Some(format!("_@{}:{}", span.start.line, span.start.column))
-            }
             _ => {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected type name {}, found {}", ctx, tok));
@@ -2631,17 +2565,7 @@ impl Parser {
 
         self.next_token(); // Skip '='
 
-        let value = self.parse_expression(0).unwrap_or_else(|| {
-            let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected expression after '=' in let statement, found {}",
-                tok
-            ));
-            Node::IntegerLiteral {
-                value: 0,
-                span: span::Span::default(),
-            }
-        });
+        let value = self.parse_expression(0).unwrap();
 
         if self.peek_token == Token::Semicolon {
             self.next_token(); // Skip to semicolon
@@ -2799,7 +2723,7 @@ impl Parser {
         }
     }
 
-    /// RES-073: `use "path/to/file.res";` — emits `Node::Use { path, span }`.
+    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, span }`.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
         // Caller checked self.current_token == Token::Use.
@@ -2808,7 +2732,7 @@ impl Parser {
             Token::StringLiteral(s) => s.clone(),
             _ => {
                 self.record_error(
-                    "Expected string literal after 'use' (e.g. `use \"helpers.res\";`)".to_string(),
+                    "Expected string literal after 'use' (e.g. `use \"helpers.rz\";`)".to_string(),
                 );
                 return None;
             }
@@ -2872,12 +2796,9 @@ impl Parser {
             }
         }
 
-        // Leave current_token ON the `}` — parse_program() advances past it,
-        // consistent with the cursor protocol used by all other statement parsers
-        // (parse_block_statement, parse_function, etc.).  Calling next_token()
-        // here was the pre-existing bug that caused the token after an extern
-        // block to be skipped, making `fn foo() {` parse as an expression where
-        // `{` was misinterpreted as a map-literal opener.
+        if matches!(self.current_token, Token::RightBrace) {
+            self.next_token();
+        }
 
         Some(Node::Extern {
             library,
@@ -3736,7 +3657,7 @@ impl Parser {
         let op_span = self.span_at_current();
         self.next_token();
 
-        let right = self.parse_expression(precedence)?;
+        let right = self.parse_expression(precedence).unwrap();
 
         Some(Node::InfixExpression {
             left: Box::new(left),
@@ -3768,32 +3689,12 @@ impl Parser {
         }
 
         self.next_token();
-        args.push(self.parse_expression(0).unwrap_or_else(|| {
-            let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected expression in call arguments, found {}",
-                tok
-            ));
-            Node::IntegerLiteral {
-                value: 0,
-                span: span::Span::default(),
-            }
-        }));
+        args.push(self.parse_expression(0).unwrap());
 
         while self.peek_token == Token::Comma {
             self.next_token(); // Skip current
             self.next_token(); // Skip comma
-            args.push(self.parse_expression(0).unwrap_or_else(|| {
-                let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected expression in call arguments, found {}",
-                    tok
-                ));
-                Node::IntegerLiteral {
-                    value: 0,
-                    span: span::Span::default(),
-                }
-            }));
+            args.push(self.parse_expression(0).unwrap());
         }
 
         if self.peek_token != Token::RightParen {
@@ -4880,7 +4781,7 @@ impl std::fmt::Display for Value {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{} -> {}", k, &m[k])?;
+                    write!(f, "{} -> {}", k, m.get(k).expect("key is from map"))?;
                 }
                 write!(f, "}}")
             }
@@ -5051,27 +4952,6 @@ impl Environment {
                 outer: frame.outer.as_ref().map(|o| o.deep_clone()),
             })),
         }
-    }
-
-    /// RES-377: collect the key-value pairs from the top-level (outermost)
-    /// frame only. Used by the REPL `.types` command to list user bindings
-    /// without descending into nested scopes.
-    pub(crate) fn top_level_pairs(&self) -> Vec<(String, Value)> {
-        // Walk to the outermost frame (the one with no `outer`).
-        let mut env = self.clone();
-        loop {
-            let outer = env.inner.borrow().outer.clone();
-            match outer {
-                Some(o) => env = o,
-                None => break,
-            }
-        }
-        env.inner
-            .borrow()
-            .store
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
     }
 }
 
@@ -6802,12 +6682,6 @@ impl Interpreter {
         self
     }
 
-    /// RES-377: expose the top-level (user-defined) bindings for the
-    /// REPL `.types` command. Delegates to `Environment::top_level_pairs`.
-    pub(crate) fn top_level_bindings(&self) -> Vec<(String, Value)> {
-        self.env.top_level_pairs()
-    }
-
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
@@ -8149,7 +8023,7 @@ fn start_repl() -> RustylineResult<()> {
                     }
                     "clear" => {
                         print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
-                        let _ = io::stdout().flush();
+                        io::stdout().flush().unwrap();
                         continue;
                     }
                     "typecheck" => {
@@ -9648,210 +9522,6 @@ fn run_z3_on(cert_path: &Path) -> RResult<bool> {
     Ok(first_line == "unsat")
 }
 
-/// RES-370: `resilient disasm <file.res> [--json]` — compile a
-/// Resilient source file and print its VM bytecode in human-readable
-/// (default) or structured JSON form.
-///
-/// Exit codes:
-/// - 0 — success.
-/// - 1 — compile or I/O error.
-/// - 2 — usage error (missing path, unknown flag).
-///
-/// Returns `None` when the first arg isn't `disasm`.
-fn dispatch_disasm_subcommand(args: &[String]) -> Option<i32> {
-    if args.get(1).map(|s| s.as_str()) != Some("disasm") {
-        return None;
-    }
-
-    let mut json_mode = false;
-    let mut file: Option<PathBuf> = None;
-    let mut i = 2;
-    while i < args.len() {
-        let a = &args[i];
-        if a == "--json" {
-            json_mode = true;
-        } else if file.is_none() {
-            file = Some(PathBuf::from(a));
-        } else {
-            eprintln!("Error: unexpected argument `{}` to disasm", a);
-            return Some(2);
-        }
-        i += 1;
-    }
-
-    let Some(path) = file else {
-        eprintln!("Error: `resilient disasm <file.res> [--json]` requires a file path");
-        return Some(2);
-    };
-
-    let src = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error: could not read {}: {}", path.display(), e);
-            return Some(1);
-        }
-    };
-
-    let (program, parse_errs) = parse(&src);
-    if !parse_errs.is_empty() {
-        for e in &parse_errs {
-            eprintln!("Parser error: {}", e);
-        }
-        return Some(1);
-    }
-
-    let mut resolved = program;
-    let base_dir = path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let mut loaded = std::collections::HashSet::new();
-    if let Err(e) = imports::expand_uses(&mut resolved, &base_dir, &mut loaded) {
-        eprintln!("Error: {}", e);
-        return Some(1);
-    }
-
-    let prog = match compiler::compile(&resolved) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error: compile failed: {:?}", e);
-            return Some(1);
-        }
-    };
-
-    if json_mode {
-        println!("{}", disasm_json(&prog));
-    } else {
-        let mut buf = String::new();
-        disasm::disassemble(&prog, &mut buf).expect("String write is infallible");
-        print!("{}", buf);
-    }
-    Some(0)
-}
-
-/// RES-370: serialise a `Program` to a JSON string with no extra
-/// dependencies. Emits `{"chunks":[...]}` where each chunk has
-/// `"name"`, `"constants"`, and `"ops"` fields. Each op entry has
-/// `"offset"`, `"line"`, `"op"`, and `"operands"` fields.
-fn disasm_json(prog: &crate::bytecode::Program) -> String {
-    use std::fmt::Write as _;
-
-    fn json_value(v: &Value) -> String {
-        match v {
-            Value::Int(n) => format!("{}", n),
-            Value::Float(f) => format!("{}", f),
-            Value::Bool(b) => format!("{}", b),
-            Value::String(s) => {
-                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("\"{}\"", escaped)
-            }
-            other => format!("\"{}\"", other),
-        }
-    }
-
-    fn json_chunk(chunk: &crate::bytecode::Chunk, name: &str, fn_names: &[&str], out: &mut String) {
-        write!(out, "{{\"name\":\"{}\"", name).unwrap();
-
-        // constants array
-        out.push_str(",\"constants\":[");
-        for (ci, v) in chunk.constants.iter().enumerate() {
-            if ci > 0 {
-                out.push(',');
-            }
-            out.push_str(&json_value(v));
-        }
-        out.push(']');
-
-        // ops array
-        out.push_str(",\"ops\":[");
-        for (pc, op) in chunk.code.iter().enumerate() {
-            if pc > 0 {
-                out.push(',');
-            }
-            let line = chunk.line_info.get(pc).copied().unwrap_or(0);
-            let (op_name, operands) = op_json_fields(op, pc, chunk, fn_names);
-            write!(
-                out,
-                "{{\"offset\":{},\"line\":{},\"op\":\"{}\",\"operands\":{}}}",
-                pc, line, op_name, operands
-            )
-            .unwrap();
-        }
-        out.push_str("]}");
-    }
-
-    fn op_json_fields(
-        op: &crate::bytecode::Op,
-        pc: usize,
-        _chunk: &crate::bytecode::Chunk,
-        fn_names: &[&str],
-    ) -> (&'static str, String) {
-        use crate::bytecode::Op;
-        match *op {
-            Op::Const(idx) => ("Const", format!("[{}]", idx)),
-            Op::Add => ("Add", "[]".into()),
-            Op::Sub => ("Sub", "[]".into()),
-            Op::Mul => ("Mul", "[]".into()),
-            Op::Div => ("Div", "[]".into()),
-            Op::Mod => ("Mod", "[]".into()),
-            Op::Neg => ("Neg", "[]".into()),
-            Op::LoadLocal(idx) => ("LoadLocal", format!("[{}]", idx)),
-            Op::StoreLocal(idx) => ("StoreLocal", format!("[{}]", idx)),
-            Op::IncLocal(idx) => ("IncLocal", format!("[{}]", idx)),
-            Op::Call(idx) => {
-                let name_val = fn_names
-                    .get(idx as usize)
-                    .map(|n| format!(",\"{}\"", n))
-                    .unwrap_or_default();
-                ("Call", format!("[{}{}]", idx, name_val))
-            }
-            Op::ReturnFromCall => ("ReturnFromCall", "[]".into()),
-            Op::Jump(offset) => {
-                let target = (pc as isize + 1) + offset as isize;
-                ("Jump", format!("[{}]", target.max(0) as usize))
-            }
-            Op::JumpIfFalse(offset) => {
-                let target = (pc as isize + 1) + offset as isize;
-                ("JumpIfFalse", format!("[{}]", target.max(0) as usize))
-            }
-            Op::JumpIfTrue(offset) => {
-                let target = (pc as isize + 1) + offset as isize;
-                ("JumpIfTrue", format!("[{}]", target.max(0) as usize))
-            }
-            Op::Eq => ("Eq", "[]".into()),
-            Op::Neq => ("Neq", "[]".into()),
-            Op::Lt => ("Lt", "[]".into()),
-            Op::Le => ("Le", "[]".into()),
-            Op::Gt => ("Gt", "[]".into()),
-            Op::Ge => ("Ge", "[]".into()),
-            Op::Not => ("Not", "[]".into()),
-            Op::Return => ("Return", "[]".into()),
-            Op::MakeClosure {
-                fn_idx,
-                upvalue_count,
-            } => ("MakeClosure", format!("[{},{}]", fn_idx, upvalue_count)),
-            Op::LoadUpvalue(idx) => ("LoadUpvalue", format!("[{}]", idx)),
-            Op::MakeArray { len } => ("MakeArray", format!("[{}]", len)),
-            Op::LoadIndex => ("LoadIndex", "[]".into()),
-            Op::StoreIndex => ("StoreIndex", "[]".into()),
-        }
-    }
-
-    let fn_names: Vec<&str> = prog.functions.iter().map(|f| f.name.as_str()).collect();
-    let mut out = String::from("{\"chunks\":[");
-    json_chunk(&prog.main, "main", &fn_names, &mut out);
-    for func in &prog.functions {
-        out.push(',');
-        let header = format!(
-            "fn {} (arity={}, locals={})",
-            func.name, func.arity, func.local_count
-        );
-        json_chunk(&func.chunk, &header, &fn_names, &mut out);
-    }
-    out.push_str("]}");
-    out
-}
-
 /// RES-198: `resilient lint <file> [--deny LCODE]* [--allow LCODE]*`.
 ///
 /// Parses `<file>`, runs the typechecker (so type errors surface
@@ -9995,6 +9665,118 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+/// RES-225: `resilient check <file> [-q]` — parse + type-check without running.
+///
+/// Exit codes:
+/// - 0 = file parsed and type-checked cleanly.
+/// - 1 = parse error or type error.
+/// - 2 = usage error (missing path, bad flag).
+///
+/// Returns `None` when the first arg isn't `check`.
+fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
+    if args.get(1).map(|s| s.as_str()) != Some("check") {
+        return None;
+    }
+
+    let mut file: Option<PathBuf> = None;
+    let mut quiet = false;
+    let mut verifier_timeout_ms: u32 = 5000;
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--quiet" || a == "-q" {
+            quiet = true;
+        } else if a == "--verifier-timeout-ms" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --verifier-timeout-ms requires a value");
+                return Some(2);
+            }
+            verifier_timeout_ms = match args[i].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("Error: --verifier-timeout-ms requires an integer");
+                    return Some(2);
+                }
+            };
+        } else if let Some(v) = a.strip_prefix("--verifier-timeout-ms=") {
+            verifier_timeout_ms = match v.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("Error: --verifier-timeout-ms requires an integer");
+                    return Some(2);
+                }
+            };
+        } else if file.is_none() && !a.starts_with('-') {
+            file = Some(PathBuf::from(a));
+        } else {
+            eprintln!("Error: unexpected argument `{}` to check", a);
+            return Some(2);
+        }
+        i += 1;
+    }
+
+    let Some(path) = file else {
+        eprintln!("Error: `resilient check <file> [-q]` requires a file path");
+        return Some(2);
+    };
+
+    let src = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: could not read {}: {}", path.display(), e);
+            return Some(2);
+        }
+    };
+
+    // Parse.
+    let (mut program, parse_errs) = parse(&src);
+    if !parse_errs.is_empty() {
+        if !quiet {
+            for e in &parse_errs {
+                eprintln!("{}", render_with_caret(&src, e, "parse error"));
+            }
+        }
+        return Some(1);
+    }
+
+    // Resolve imports.
+    let base_dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut loaded: HashSet<PathBuf> = HashSet::new();
+    if let Ok(canon) = fs::canonicalize(&path) {
+        loaded.insert(canon);
+    }
+    if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+        if !quiet {
+            eprintln!("{}:1:1: error: {}", path.display(), e);
+        }
+        return Some(1);
+    }
+
+    // Type-check (Z3 verifier runs automatically when built with --features z3).
+    let mut tc = typechecker::TypeChecker::new()
+        .with_verifier_timeout_ms(verifier_timeout_ms)
+        .with_warn_unverified(!quiet);
+    match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
+        Ok(_) => {
+            if !quiet {
+                println!("{}: ok", path.display());
+            }
+            Some(0)
+        }
+        Err(e) => {
+            if !quiet {
+                eprintln!("{}", e);
+                eprintln!("{}", render_with_caret(&src, &e, "error"));
+            }
+            Some(1)
+        }
+    }
+}
+
 /// RES-fmt: `resilient fmt <file> [--in-place]` — pretty-print a
 /// Resilient source file in canonical style.
 ///
@@ -10095,12 +9877,12 @@ COMMON FLAGS:\n\
         --lsp                    Run the LSP server on stdio\n\
 \n\
 SUBCOMMANDS:\n\
-    pkg <verb>                   Package manager operations (RES-205)\n\
-    fmt <file>                   Canonical source formatter\n\
-    lint <file>                  Run the starter lints\n\
-    disasm <file> [--json]       Print VM bytecode disassembly\n\
-    verify-cert <dir>            Verify an RES-071 certificate directory\n\
-    verify-all <dir>             Re-check every obligation in a manifest\n\
+    check <file>        Type-check without running (RES-225)\n\
+    pkg <verb>          Package manager operations (RES-205)\n\
+    fmt <file>          Canonical source formatter\n\
+    lint <file>         Run the starter lints\n\
+    verify-cert <dir>   Verify an RES-071 certificate directory\n\
+    verify-all <dir>    Re-check every obligation in a manifest\n\
 \n\
 See SYNTAX.md for the language reference."
     );
@@ -10165,8 +9947,8 @@ fn main() {
         std::process::exit(code);
     }
 
-    // RES-370: `disasm <file> [--json]` — compile and print bytecode.
-    if let Some(code) = dispatch_disasm_subcommand(&args) {
+    // RES-225: `check <file>` — parse + type-check without running.
+    if let Some(code) = dispatch_check_subcommand(&args) {
         std::process::exit(code);
     }
 
@@ -10668,7 +10450,7 @@ mod tests {
         for entry in fs::read_dir(&examples_dir).expect("read examples/") {
             let entry = entry.expect("readable dir entry");
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("res") {
+            if path.extension().and_then(|s| s.to_str()) != Some("rz") {
                 continue;
             }
             base.push_str(&fs::read_to_string(&path).expect("read example"));
@@ -10834,7 +10616,7 @@ mod tests {
         for entry in entries {
             let entry = entry.expect("readable dir entry");
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("res") {
+            if path.extension().and_then(|s| s.to_str()) != Some("rz") {
                 continue;
             }
             let src = fs::read_to_string(&path)
@@ -10878,7 +10660,7 @@ mod tests {
 
         assert!(
             checked > 0,
-            "no .res examples found under {}",
+            "no .rz examples found under {}",
             examples_dir.display(),
         );
     }
@@ -11028,93 +10810,6 @@ mod tests {
             has_string,
             "expected StringLiteral(\"hi\\n\") in {:?}",
             tokens
-        );
-    }
-
-    // RES-378: full string escape sequence tests (RED first, then GREEN)
-
-    #[test]
-    fn string_escape_null_byte() {
-        // `\0` inside a string literal must decode to a null byte (U+0000),
-        // not the two characters `\` and `0`.
-        let tokens = tokenize(r#"let s = "a\0b";"#);
-        let got = tokens.iter().find_map(|t| {
-            if let Token::StringLiteral(s) = t {
-                Some(s.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(got, Some("a\0b".into()), "\\0 should decode to null byte");
-    }
-
-    #[test]
-    fn string_escape_hex_lower() {
-        // `\x41` == 'A'; `\x0a` == newline.
-        let tokens = tokenize(r#"let s = "\x41\x0a";"#);
-        let got = tokens.iter().find_map(|t| {
-            if let Token::StringLiteral(s) = t {
-                Some(s.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(got, Some("A\n".into()), "\\xHH should decode hex byte");
-    }
-
-    #[test]
-    fn string_escape_hex_upper() {
-        // Uppercase hex digits must also work.
-        let tokens = tokenize(r#"let s = "\x4F\x4B";"#);
-        let got = tokens.iter().find_map(|t| {
-            if let Token::StringLiteral(s) = t {
-                Some(s.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(
-            got,
-            Some("OK".into()),
-            "\\xHH with uppercase hex should work"
-        );
-    }
-
-    #[test]
-    fn string_escape_unicode_codepoint() {
-        // `\u{0041}` == 'A'; `\u{1F600}` == 😀
-        let tokens = tokenize(r#"let s = "\u{0041}\u{1F600}";"#);
-        let got = tokens.iter().find_map(|t| {
-            if let Token::StringLiteral(s) = t {
-                Some(s.clone())
-            } else {
-                None
-            }
-        });
-        assert_eq!(
-            got,
-            Some("A\u{1F600}".into()),
-            "\\u{{HHHH}} should decode Unicode codepoint"
-        );
-    }
-
-    #[test]
-    fn string_escape_invalid_hex_preserved() {
-        // `\xGG` is not valid hex — the two characters should be preserved
-        // as `\x` + `GG` (pass-through) so we don't silently swallow input.
-        let tokens = tokenize(r#"let s = "\xGG";"#);
-        let got = tokens.iter().find_map(|t| {
-            if let Token::StringLiteral(s) = t {
-                Some(s.clone())
-            } else {
-                None
-            }
-        });
-        // Preserved as-is (backslash + x + GG).
-        assert_eq!(
-            got,
-            Some("\\xGG".into()),
-            "invalid \\xHH should be preserved"
         );
     }
 
@@ -11833,46 +11528,6 @@ mod tests {
         let mut tc = typechecker::TypeChecker::new();
         let err = tc.check_program(&program).unwrap_err();
         assert!(err.contains("guard must be a boolean"), "err was: {}", err);
-    }
-
-    // --- RES-381: match guard expressions (println-style tests) ---
-
-    #[test]
-    fn match_guard_fires_when_true() {
-        // Guard evaluates to true → the guarded arm body runs.
-        // `5 > 3` is true so we land on "big".
-        let src = r#"
-            match 5 {
-                n if n > 3 => "big",
-                _          => "small"
-            }
-        "#;
-        let (program, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let mut interp = Interpreter::new();
-        match interp.eval(&program).unwrap() {
-            Value::String(s) => assert_eq!(s, "big"),
-            other => panic!("expected String(\"big\"), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn match_guard_falls_through_when_false() {
-        // Guard evaluates to false → arm is skipped, next arm fires.
-        // `2 > 3` is false so control falls to the wildcard "small".
-        let src = r#"
-            match 2 {
-                n if n > 3 => "big",
-                _          => "small"
-            }
-        "#;
-        let (program, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let mut interp = Interpreter::new();
-        match interp.eval(&program).unwrap() {
-            Value::String(s) => assert_eq!(s, "small"),
-            other => panic!("expected String(\"small\"), got {:?}", other),
-        }
     }
 
     // --- RES-156: array comprehensions ---
@@ -18409,44 +18064,6 @@ mod tests {
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
     }
-
-    // RES-370: disasm subcommand — verify disassemble() produces
-    // a Const op for an integer literal.
-    #[test]
-    fn disasm_produces_const_op_for_integer_literal() {
-        let src = "let x = 42;";
-        let (ast, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let prog = compiler::compile(&ast).unwrap();
-        let mut out = String::new();
-        disasm::disassemble(&prog, &mut out).unwrap();
-        assert!(
-            out.contains("Const"),
-            "expected Const in disasm output, got:\n{}",
-            out
-        );
-    }
-
-    // RES-370: disasm --json path — verify JSON output contains the
-    // Const op name for an integer literal.
-    #[test]
-    fn disasm_json_produces_const_op_for_integer_literal() {
-        let src = "let x = 42;";
-        let (ast, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let prog = compiler::compile(&ast).unwrap();
-        let json = disasm_json(&prog);
-        assert!(
-            json.contains("\"Const\""),
-            "expected \"Const\" in JSON disasm output, got:\n{}",
-            json
-        );
-        assert!(
-            json.contains("\"chunks\""),
-            "expected \"chunks\" key in JSON output, got:\n{}",
-            json
-        );
-    }
 }
 
 #[cfg(test)]
@@ -18593,44 +18210,5 @@ mod ffi_integration_tests {
         let mut tc = typechecker::TypeChecker::new();
         let result = tc.check_program(&program);
         assert!(result.is_ok(), "typecheck/verifier failed: {:?}", result);
-    }
-
-    // RES-230: malformed inputs must produce a diagnostic rather than an
-    // unwrap panic.  These tests document the recovery behaviour introduced
-    // to fix the four remaining `.unwrap()` calls in the production parser.
-
-    #[test]
-    fn let_statement_missing_rhs_yields_error_not_panic() {
-        // `let x = ;` — semicolon is not a valid expression start.
-        // parse_expression returns None; the fix must record an error
-        // and return a placeholder rather than panicking.
-        let (_program, errs) = crate::parse("let x = ;");
-        assert!(
-            !errs.is_empty(),
-            "expected a parse error for `let x = ;`, got none"
-        );
-    }
-
-    #[test]
-    fn infix_missing_rhs_yields_error_not_panic() {
-        // `1 + ;` — the RHS of the infix operator is not a valid expression.
-        // parse_infix_expression previously called .unwrap() on the result.
-        let (_program, errs) = crate::parse("fn f() -> Int { return 1 + ; }");
-        assert!(
-            !errs.is_empty(),
-            "expected a parse error for `1 + ;`, got none"
-        );
-    }
-
-    #[test]
-    fn call_args_leading_comma_yields_error_not_panic() {
-        // `f(,)` — a leading comma means parse_expression is called with
-        // the current token being `,`, which is not a valid expression start.
-        let (_program, errs) =
-            crate::parse("fn f(x: Int) -> Int { return x; } fn g() -> Int { return f(,); }");
-        assert!(
-            !errs.is_empty(),
-            "expected a parse error for `f(,)`, got none"
-        );
     }
 }

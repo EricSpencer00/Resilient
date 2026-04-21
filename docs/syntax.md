@@ -433,19 +433,19 @@ For a full index of compiler error codes see the [Error Reference](errors/).
 
 ```bash
 # Run the interpreter
-resilient examples/hello.rs
+resilient examples/hello.rz
 
 # With static type checking
-resilient --typecheck examples/hello.rs
+resilient --typecheck examples/hello.rz
 
 # With the verification audit
-resilient --audit examples/hello.rs
+resilient --audit examples/hello.rz
 
 # Bytecode VM
-resilient --vm examples/hello.rs
+resilient --vm examples/hello.rz
 
 # Cranelift JIT (requires --features jit at build time)
-resilient --jit examples/hello.rs
+resilient --jit examples/hello.rz
 
 # Interactive REPL
 resilient
@@ -455,8 +455,6 @@ resilient
 
 ## File extensions
 
-The repo uses `.rs` for source files so editors with Rust
-syntax highlighting give you free coloring. The language is
-otherwise unrelated to Rust — no `unsafe`, no lifetimes, no
-ownership/borrow checker. A future ticket may switch to a
-distinct extension (`.res`?) for clarity.
+Resilient source files use the `.rz` extension. The language is
+unrelated to Rust — no `unsafe`, no lifetimes, no ownership/borrow
+checker — and carries its own extension for clarity.

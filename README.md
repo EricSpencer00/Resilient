@@ -99,7 +99,7 @@ docker run --rm ghcr.io/ericspencer00/resilient:latest --help
 
 # Run a source file by mounting it in:
 docker run --rm -v "$PWD":/work -w /work \
-    ghcr.io/ericspencer00/resilient:latest examples/hello.rs
+    ghcr.io/ericspencer00/resilient:latest examples/hello.rz
 ```
 
 The image is multi-arch (linux/amd64 + linux/arm64), built from
@@ -120,13 +120,13 @@ cargo run
 
 ```bash
 cd resilient
-cargo run -- examples/sensor_monitor.rs
+cargo run -- examples/sensor_monitor.rz
 
 # With static type checking
-cargo run -- --typecheck examples/sensor_monitor.rs
+cargo run -- --typecheck examples/sensor_monitor.rz
 
 # With verification audit (shows static-vs-runtime contract coverage)
-cargo run -- --audit examples/sensor_monitor.rs
+cargo run -- --audit examples/sensor_monitor.rz
 ```
 
 ### SMT-backed verification (optional)
@@ -140,7 +140,7 @@ optional `z3` feature to get full SMT-backed proofs:
 ```bash
 # macOS:  brew install z3
 # Linux:  sudo apt-get install libz3-dev z3
-cargo run --features z3 -- --audit prog.rs
+cargo run --features z3 -- --audit prog.rz
 ```
 
 The audit report tags clauses proven by Z3 separately so users can
@@ -154,7 +154,7 @@ re-verify it under their own solver — without trusting the Resilient
 binary:
 
 ```bash
-cargo run --features z3 -- --emit-certificate ./certs examples/cert_demo.rs
+cargo run --features z3 -- --emit-certificate ./certs examples/cert_demo.rz
 ```
 
 One file is written per discharged obligation:
@@ -181,7 +181,7 @@ set to the signer's key.
 
 ```bash
 # Sign during emit:
-resilient -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rs
+resilient -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rz
 
 # Verify against the binary's embedded public key:
 resilient verify-cert ./certs
@@ -212,7 +212,7 @@ Every `--emit-certificate <dir>` run also writes a
 
 ```json
 {
-  "program": "fib.rs",
+  "program": "fib.rz",
   "obligations": [
     {
       "fn": "fib",
@@ -484,16 +484,16 @@ All in `resilient/examples/`. Each ships with a `.expected.txt`
 sidecar so the smoke tests can verify they still produce the
 documented output.
 
-- `hello.rs` — `println("Hello, world!");`
-- `minimal.rs` — smallest working program with a top-level return
-- `int_math.rs` — arithmetic + integer operators
-- `sensor_monitor.rs` — `live { }` block reading a synthetic sensor
-- `self_healing.rs` — recovery after a transient error inside a live block
-- `nested_array_demo.rs` — multi-dimensional array indexing/assignment
-- `cert_demo.rs` — minimal program whose contract Z3 can discharge,
+- `hello.rz` — `println("Hello, world!");`
+- `minimal.rz` — smallest working program with a top-level return
+- `int_math.rz` — arithmetic + integer operators
+- `sensor_monitor.rz` — `live { }` block reading a synthetic sensor
+- `self_healing.rz` — recovery after a transient error inside a live block
+- `nested_array_demo.rz` — multi-dimensional array indexing/assignment
+- `cert_demo.rz` — minimal program whose contract Z3 can discharge,
   used by `--emit-certificate` (RES-071)
 - `imports_demo/` — multi-file import resolution
-- `file_io_demo.rs` — round-trip through `file_read` / `file_write`
+- `file_io_demo.rz` — round-trip through `file_read` / `file_write`
   (RES-143)
 
 **Safety considerations for `file_read` / `file_write` (RES-143):**
@@ -513,7 +513,7 @@ you want to see what the scanner actually emitted, without
 editing source (RES-112). Mutually exclusive with `--lsp`.
 
 ```sh
-resilient --dump-tokens examples/hello.rs
+resilient --dump-tokens examples/hello.rz
 # 2:1  Function("fn")
 # 2:4  Identifier("main")("main")
 # 2:8  LeftParen("(")
@@ -528,7 +528,7 @@ columns, and absolute jump targets (RES-173). The output reflects
 the RES-172 peephole pass, so what you see is what runs.
 
 ```sh
-resilient --dump-chunks examples/hello.rs
+resilient --dump-chunks examples/hello.rz
 # === main ===
 # constants:
 #   const[0] = "Hello, Resilient world!"
@@ -550,8 +550,8 @@ indented under the function signature). By default it prints to
 stdout; pass `--in-place` to overwrite the file.
 
 ```bash
-resilient fmt examples/hello.rs              # print to stdout
-resilient fmt --in-place src/main.rs         # overwrite
+resilient fmt examples/hello.rz              # print to stdout
+resilient fmt --in-place src/main.rz         # overwrite
 ```
 
 The formatter refuses to touch input with parse errors (exits 1).

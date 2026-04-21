@@ -597,8 +597,8 @@ unaffected by this flag.
 ## Compiling and Running
 
 ```bash
-cargo run -- examples/hello.rs         # run a program
-cargo run -- --typecheck foo.rs        # with type checking
+cargo run -- examples/hello.rz         # run a program
+cargo run -- --typecheck foo.rz        # with type checking
 cargo run                              # interactive REPL
 cargo test                             # run the test suite
 cargo test -- --ignored                # see which examples still

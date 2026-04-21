@@ -863,7 +863,7 @@ fn walk_resilient_files(root: &Path) -> Vec<PathBuf> {
         }
         if path.is_dir() {
             out.extend(walk_resilient_files(&path));
-        } else if path.extension().and_then(|s| s.to_str()) == Some("res") {
+        } else if path.extension().and_then(|s| s.to_str()) == Some("rz") {
             out.push(path);
         }
     }

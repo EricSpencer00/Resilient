@@ -220,7 +220,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
+    #[allow(clippy::manual_is_multiple_of)] // is_multiple_of is nightly-only on stable
+    if s.len() % 2 != 0 {
         return Err("odd-length hex string".to_string());
     }
     let mut out = Vec::with_capacity(s.len() / 2);

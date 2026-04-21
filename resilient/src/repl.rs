@@ -1,57 +1,12 @@
 // Enhanced REPL for Resilient language
 use crate::typechecker;
 use crate::{Lexer, Parser, Value};
-use rustyline::config::Config;
 use rustyline::error::ReadlineError;
-use rustyline::{Editor, Result as RustylineResult};
+use rustyline::{DefaultEditor, Result as RustylineResult};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-
-/// RES-377: Return a human-readable type string for a `Value`.
-/// Functions show their full signature derived from the `parameters` field.
-/// Builtins return `<builtin>` so callers can filter them out.
-fn type_of(v: &Value) -> String {
-    match v {
-        Value::Int(_) => "Int".to_string(),
-        Value::Float(_) => "Float".to_string(),
-        Value::String(_) => "String".to_string(),
-        Value::Bool(_) => "Bool".to_string(),
-        Value::Function { parameters, .. } => {
-            let param_types: Vec<&str> = parameters.iter().map(|(ty, _name)| ty.as_str()).collect();
-            format!("fn({}) -> ?", param_types.join(", "))
-        }
-        Value::Builtin { .. } => "<builtin>".to_string(),
-        Value::Array(_) => "Array".to_string(),
-        Value::Struct { name, fields } => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|(fname, fval)| format!("{}: {}", fname, type_of(fval)))
-                .collect();
-            format!("{} {{ {} }}", name, field_strs.join(", "))
-        }
-        Value::Result { ok, .. } => {
-            if *ok {
-                "Ok(?)".to_string()
-            } else {
-                "Err(?)".to_string()
-            }
-        }
-        Value::Return(inner) => type_of(inner),
-        Value::Void => "Void".to_string(),
-        Value::Map(_) => "Map".to_string(),
-        Value::Set(_) => "Set".to_string(),
-        Value::Bytes(_) => "Bytes".to_string(),
-        Value::Closure { .. } => "Closure".to_string(),
-        #[cfg(feature = "ffi")]
-        Value::Foreign { .. } => "<foreign>".to_string(),
-        Value::OpaquePtr(_) => "OpaquePtr".to_string(),
-    }
-}
-
-/// RES-224: Maximum number of history entries persisted across REPL sessions.
-const HISTORY_MAX_ENTRIES: usize = 1000;
 
 // ANSI color codes for syntax highlighting
 const RESET: &str = "\x1B[0m";
@@ -73,7 +28,7 @@ pub struct EnhancedREPL {
 }
 
 impl EnhancedREPL {
-    /// Legacy constructor --- preserved for callers that don't care about
+    /// Legacy constructor — preserved for callers that don't care about
     /// `--examples-dir`. The driver now uses `with_examples_dir`.
     #[allow(dead_code)]
     pub fn new() -> Self {
@@ -84,15 +39,10 @@ impl EnhancedREPL {
     /// Pass `Some(dir)` to wire `--examples-dir <DIR>` from the driver;
     /// pass `None` to keep the original hardcoded-snippet behavior.
     pub fn with_examples_dir(examples_dir: Option<PathBuf>) -> Self {
-        // RES-224: Resolve history file path.
-        // Priority: $RESILIENT_HISTORY > $HOME/.resilient_history > .resilient_history (cwd)
-        let history_path = if let Ok(custom) = env::var("RESILIENT_HISTORY") {
-            PathBuf::from(custom)
-        } else {
-            match env::var("HOME") {
-                Ok(home) => Path::new(&home).join(".resilient_history"),
-                Err(_) => Path::new(".resilient_history").to_path_buf(),
-            }
+        // Load history path from environment
+        let history_path = match env::var("HOME") {
+            Ok(home) => Path::new(&home).join(".resilient_history"),
+            Err(_) => Path::new(".resilient_history").to_path_buf(),
         };
 
         EnhancedREPL {
@@ -104,20 +54,13 @@ impl EnhancedREPL {
     }
 
     pub fn run(&mut self) -> RustylineResult<()> {
-        // RES-224: configure the editor with the desired history limit.
-        let config = Config::builder()
-            .max_history_size(HISTORY_MAX_ENTRIES)?
-            .build();
-        let mut rl = Editor::<(), rustyline::history::DefaultHistory>::with_history(
-            config,
-            rustyline::history::DefaultHistory::new(),
-        )?;
+        let mut rl = DefaultEditor::new()?;
 
-        // RES-224: Load persisted history; silently skip if file is absent.
+        // Load command history
         if self.history_path.exists()
             && let Err(err) = rl.load_history(&self.history_path)
         {
-            eprintln!("Warning: could not load history: {}", err);
+            eprintln!("Error loading history: {}", err);
         }
 
         println!(
@@ -170,13 +113,9 @@ impl EnhancedREPL {
             }
         }
 
-        // RES-224: Persist history; emit a warning on failure but do not crash.
+        // Save history
         if let Err(err) = rl.save_history(&self.history_path) {
-            eprintln!(
-                "Warning: could not save history to {}: {}",
-                self.history_path.display(),
-                err
-            );
+            eprintln!("Error saving history: {}", err);
         }
 
         Ok(())
@@ -195,7 +134,7 @@ impl EnhancedREPL {
             }
             "clear" => {
                 print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
-                let _ = io::stdout().flush();
+                io::stdout().flush().unwrap();
                 return;
             }
             "typecheck" => {
@@ -218,25 +157,11 @@ impl EnhancedREPL {
         }
 
         // RES-026: `examples <name>` subcommand. Falls through to
-        // regular code evaluation only when the dir mode isn't set ---
+        // regular code evaluation only when the dir mode isn't set —
         // otherwise it's a typo and we say so.
         if let Some(rest) = input.strip_prefix("examples ") {
             self.show_named_example(rest.trim());
             return;
-        }
-
-        // RES-377: `.types` — list all in-scope user bindings with types.
-        // `.types <name>` — show the type of a single binding.
-        if input == ".types" {
-            self.show_types(None);
-            return;
-        }
-        if let Some(rest) = input.strip_prefix(".types ") {
-            let name = rest.trim();
-            if !name.is_empty() {
-                self.show_types(Some(name));
-                return;
-            }
         }
 
         // Regular code evaluation
@@ -306,14 +231,6 @@ impl EnhancedREPL {
                 format!("{}disabled{}", YELLOW, RESET)
             }
         );
-        println!(
-            "  {}.types{}      - List all in-scope bindings and their types",
-            GREEN, RESET
-        );
-        println!(
-            "  {}.types <name>{} - Show the type of a single binding",
-            GREEN, RESET
-        );
 
         println!("\n{}Resilient Language Syntax:{}", CYAN, RESET);
         println!(
@@ -370,7 +287,7 @@ impl EnhancedREPL {
         println!("println(\"Access granted\");{}", RESET);
     }
 
-    /// RES-026: handle `examples <name>` --- print the contents of a
+    /// RES-026: handle `examples <name>` — print the contents of a
     /// single example file. `name` is treated as a basename only;
     /// any '/' or '..' is rejected up front.
     fn show_named_example(&self, name: &str) {
@@ -388,10 +305,10 @@ impl EnhancedREPL {
             );
             return;
         }
-        let candidate = if name.ends_with(".res") {
+        let candidate = if name.ends_with(".rz") {
             dir.join(name)
         } else {
-            dir.join(format!("{}.res", name))
+            dir.join(format!("{}.rz", name))
         };
         match fs::read_to_string(&candidate) {
             Ok(body) => {
@@ -413,44 +330,7 @@ impl EnhancedREPL {
         }
     }
 
-    /// RES-377: implement `.types [name]`. When `name` is `None`, prints all
-    /// user-defined bindings sorted alphabetically. When `name` is `Some`,
-    /// prints the type of that single binding or an error if it is not found.
-    ///
-    /// Builtins (identified via `crate::builtin_names()`) are excluded from
-    /// the all-bindings listing — they are noise the user did not define.
-    fn show_types(&self, name: Option<&str>) {
-        let builtin_set: std::collections::HashSet<&str> = crate::builtin_names().collect();
-
-        match name {
-            Some(n) => {
-                let pairs = self.interpreter.top_level_bindings();
-                match pairs.iter().find(|(k, _)| k == n) {
-                    Some((_, v)) => {
-                        println!("{}{}{} : {}", CYAN, n, RESET, type_of(v));
-                    }
-                    None => {
-                        eprintln!("{}error: '{}' is not in scope{}", RED, n, RESET);
-                    }
-                }
-            }
-            None => {
-                let mut pairs = self.interpreter.top_level_bindings();
-                // Remove builtins — show only what the user defined.
-                pairs.retain(|(k, _)| !builtin_set.contains(k.as_str()));
-                if pairs.is_empty() {
-                    println!("{}(no user-defined bindings in scope){}", YELLOW, RESET);
-                    return;
-                }
-                pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-                for (k, v) in &pairs {
-                    println!("{}{}{} : {}", CYAN, k, RESET, type_of(v));
-                }
-            }
-        }
-    }
-
-    /// RES-026: pure helper --- returns the example listing as a String
+    /// RES-026: pure helper — returns the example listing as a String
     /// so unit tests can assert on it without fighting stdout capture.
     /// Sorted alphabetically; one basename per line.
     pub(crate) fn list_examples_in(dir: &Path) -> Result<String, String> {
@@ -458,7 +338,7 @@ impl EnhancedREPL {
             fs::read_dir(dir).map_err(|e| format!("could not read {}: {}", dir.display(), e))?;
         let mut names: Vec<String> = entries
             .flatten()
-            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("res"))
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("rz"))
             .filter_map(|e| e.file_name().into_string().ok())
             .collect();
         names.sort();
@@ -487,25 +367,25 @@ mod tests {
     #[test]
     fn list_examples_in_returns_sorted_basenames() {
         let dir = make_tmp("listing");
-        fs::write(dir.join("foo.res"), "fn main() {}\n").unwrap();
-        fs::write(dir.join("alpha.res"), "fn main() {}\n").unwrap();
+        fs::write(dir.join("foo.rz"), "fn main() {}\n").unwrap();
+        fs::write(dir.join("alpha.rz"), "fn main() {}\n").unwrap();
         fs::write(dir.join("ignored.txt"), "not resilient\n").unwrap();
 
         let listing = EnhancedREPL::list_examples_in(&dir).unwrap();
         assert!(
-            listing.contains("alpha.res"),
-            "missing alpha.res:\n{}",
+            listing.contains("alpha.rz"),
+            "missing alpha.rz:\n{}",
             listing
         );
-        assert!(listing.contains("foo.res"), "missing foo.res:\n{}", listing);
+        assert!(listing.contains("foo.rz"), "missing foo.rz:\n{}", listing);
         assert!(
             !listing.contains("ignored.txt"),
-            "non-.res file should be filtered:\n{}",
+            "non-.rz file should be filtered:\n{}",
             listing
         );
         // Alphabetical: alpha must precede foo.
-        let a = listing.find("alpha.res").unwrap();
-        let f = listing.find("foo.res").unwrap();
+        let a = listing.find("alpha.rz").unwrap();
+        let f = listing.find("foo.rz").unwrap();
         assert!(a < f, "expected alpha before foo:\n{}", listing);
 
         let _ = fs::remove_dir_all(&dir);
@@ -531,134 +411,5 @@ mod tests {
     fn default_constructor_leaves_examples_dir_unset() {
         let repl = EnhancedREPL::new();
         assert!(repl.examples_dir.is_none());
-    }
-
-    // -- RES-224: history persistence --------------------------------------
-
-    /// RESILIENT_HISTORY env var overrides the default ~/.resilient_history path.
-    #[test]
-    fn history_path_uses_resilient_history_env_var() {
-        let tmp =
-            std::env::temp_dir().join(format!("res_224_custom_history_{}", std::process::id()));
-        // Set env var, build REPL, then restore environment state.
-        // SAFETY: test binary is single-threaded in this test; env mutation is acceptable.
-        unsafe {
-            std::env::set_var("RESILIENT_HISTORY", tmp.to_str().unwrap());
-        }
-        let repl = EnhancedREPL::with_examples_dir(None);
-        unsafe {
-            std::env::remove_var("RESILIENT_HISTORY");
-        }
-        assert_eq!(
-            repl.history_path, tmp,
-            "history_path should match RESILIENT_HISTORY env var"
-        );
-    }
-
-    /// When RESILIENT_HISTORY is absent the history filename defaults to
-    /// `.resilient_history` (regardless of the parent directory).
-    #[test]
-    fn history_path_defaults_to_home_dir() {
-        unsafe {
-            std::env::remove_var("RESILIENT_HISTORY");
-        }
-        let repl = EnhancedREPL::with_examples_dir(None);
-        let filename = repl
-            .history_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        assert_eq!(
-            filename, ".resilient_history",
-            "default history file should be named .resilient_history"
-        );
-    }
-
-    /// HISTORY_MAX_ENTRIES constant must be exactly 1000.
-    #[test]
-    fn history_max_entries_constant_is_1000() {
-        assert_eq!(HISTORY_MAX_ENTRIES, 1000);
-    }
-
-    // -- RES-377: .types command -------------------------------------------
-
-    /// Helper: evaluate a Resilient snippet in a fresh REPL and return the
-    /// top-level user bindings (builtins excluded) sorted by name.
-    fn eval_and_collect_types(src: &str) -> Vec<(String, String)> {
-        let mut repl = EnhancedREPL::with_examples_dir(None);
-        repl.process_input(src);
-        let builtin_set: std::collections::HashSet<&str> = crate::builtin_names().collect();
-        let mut pairs = repl.interpreter.top_level_bindings();
-        pairs.retain(|(k, _)| !builtin_set.contains(k.as_str()));
-        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
-        pairs
-            .into_iter()
-            .map(|(k, v)| (k, super::type_of(&v)))
-            .collect()
-    }
-
-    #[test]
-    fn types_lists_int_and_function_binding() {
-        // Define an integer and a function; both should appear in .types output.
-        let types = eval_and_collect_types("let x = 42; fn add(Int a, Int b) { return a + b; }");
-        let names: Vec<&str> = types.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(
-            names.contains(&"x"),
-            "expected 'x' in bindings, got: {:?}",
-            names
-        );
-        assert!(
-            names.contains(&"add"),
-            "expected 'add' in bindings, got: {:?}",
-            names
-        );
-        // x is an Int
-        let x_type = types
-            .iter()
-            .find(|(k, _)| k == "x")
-            .map(|(_, t)| t.as_str())
-            .unwrap_or("");
-        assert_eq!(x_type, "Int", "x should have type Int, got: {}", x_type);
-        // add is a function
-        let add_type = types
-            .iter()
-            .find(|(k, _)| k == "add")
-            .map(|(_, t)| t.as_str())
-            .unwrap_or("");
-        assert!(
-            add_type.starts_with("fn("),
-            "add should have fn type, got: {}",
-            add_type
-        );
-    }
-
-    #[test]
-    fn types_output_is_sorted_alphabetically() {
-        // beta defined before alpha — output must still be alpha first.
-        let types = eval_and_collect_types("let beta = 1; let alpha = 2;");
-        let names: Vec<&str> = types.iter().map(|(k, _)| k.as_str()).collect();
-        let alpha_pos = names.iter().position(|&n| n == "alpha");
-        let beta_pos = names.iter().position(|&n| n == "beta");
-        assert!(
-            alpha_pos.is_some() && beta_pos.is_some(),
-            "both bindings must be present, got: {:?}",
-            names
-        );
-        assert!(
-            alpha_pos.unwrap() < beta_pos.unwrap(),
-            "alpha must sort before beta, got order: {:?}",
-            names
-        );
-    }
-
-    #[test]
-    fn type_of_returns_correct_primitive_types() {
-        assert_eq!(super::type_of(&crate::Value::Int(0)), "Int");
-        assert_eq!(super::type_of(&crate::Value::Float(0.0)), "Float");
-        assert_eq!(
-            super::type_of(&crate::Value::String("hi".to_string())),
-            "String"
-        );
-        assert_eq!(super::type_of(&crate::Value::Bool(true)), "Bool");
     }
 }

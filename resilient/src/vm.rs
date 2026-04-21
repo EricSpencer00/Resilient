@@ -566,7 +566,8 @@ mod tests {
         Program {
             main,
             functions: Vec::new(),
-            ..Program::default()
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         }
     }
 
@@ -732,7 +733,8 @@ mod tests {
         let p = Program {
             main,
             functions: vec![runaway],
-            ..Program::default()
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         };
         let err = run(&p).unwrap_err();
         assert_eq!(err.kind(), &VmError::CallStackOverflow);

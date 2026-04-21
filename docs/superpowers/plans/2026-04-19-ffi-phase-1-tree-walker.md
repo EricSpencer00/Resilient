@@ -19,7 +19,7 @@
 - `resilient/src/ffi.rs` — loader module. Owns `FfiType`, `ForeignSignature`, `ForeignLoader`, `FfiError`, and the public entry points the driver calls at program load.
 - `resilient/src/ffi_trampolines.rs` — generated table of `extern "C" fn` shims for every (arity 0–8, return type ∈ {Int, Float, Bool, Str, Void}) combination. Hand-rolled via macros for v1; can be moved to `build.rs` codegen later.
 - `resilient-runtime/src/ffi_static.rs` — no_std static registry (`StaticRegistry`, `register_foreign`, `lookup`).
-- `resilient/examples/ffi_libm.res` + `ffi_libm.expected.txt` — end-to-end example calling `libm::sqrt`.
+- `resilient/examples/ffi_libm.rz` + `ffi_libm.expected.txt` — end-to-end example calling `libm::sqrt`.
 - `resilient/tests/ffi/lib_testhelper.c` — tiny C file compiled by a `build.rs` into `libresilient_ffi_testhelper.{so,dylib,dll}` for integration tests.
 - `resilient/build.rs` — compiles the test helper C file when `cfg(test)`.
 
@@ -1695,14 +1695,14 @@ git commit -m "FFI: resilient-runtime static registry (no_std, zero-alloc, behin
 ## Task 12: Example program + docs
 
 **Files:**
-- Create: `resilient/examples/ffi_libm.res`
+- Create: `resilient/examples/ffi_libm.rz`
 - Create: `resilient/examples/ffi_libm.expected.txt`
 - Modify: `SYNTAX.md`
 - Modify: `docs/` (Jekyll) — new page `docs/ffi.md`
 
 - [ ] **Step 1: Example program**
 
-`resilient/examples/ffi_libm.res`:
+`resilient/examples/ffi_libm.rz`:
 
 ```
 extern "libm.so.6" {
@@ -1715,7 +1715,7 @@ fn main() {
 }
 ```
 
-(macOS users will need a per-platform alternate — consider a `ffi_libm_macos.res` with `libSystem.dylib`; or leave the example Linux-only with a docs note.)
+(macOS users will need a per-platform alternate — consider a `ffi_libm_macos.rz` with `libSystem.dylib`; or leave the example Linux-only with a docs note.)
 
 `resilient/examples/ffi_libm.expected.txt`:
 
@@ -1770,7 +1770,7 @@ Expected: new example PASS on Linux; on macOS either the alt file runs or the ex
 - [ ] **Step 5: Commit**
 
 ```bash
-git add resilient/examples/ffi_libm.res resilient/examples/ffi_libm.expected.txt SYNTAX.md docs/ffi.md
+git add resilient/examples/ffi_libm.rz resilient/examples/ffi_libm.expected.txt SYNTAX.md docs/ffi.md
 git commit -m "FFI: example program (ffi_libm) + SYNTAX and docs pages"
 ```
 

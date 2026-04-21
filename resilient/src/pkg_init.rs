@@ -6,7 +6,7 @@
 //! user has something to run:
 //!
 //! - `resilient.toml`  — manifest with `[package]` and `[dependencies]`
-//! - `src/main.res`     — hello-world entry point
+//! - `src/main.rz`     — hello-world entry point
 //! - `.gitignore`      — ignore build artifacts
 //!
 //! Design rules:
@@ -180,7 +180,7 @@ pub fn scaffold_in(parent: &Path, name: &str) -> Result<Scaffold, PkgInitError> 
     // idiom examples/*.rs use — every `fn main` in this codebase
     // takes a dummy int so the caller (`main(0);`) always supplies
     // one arg.
-    let main_path = src_dir.join("main.res");
+    let main_path = src_dir.join("main.rz");
     let main_src = render_hello_world();
     fs::write(&main_path, main_src)?;
 
@@ -216,7 +216,7 @@ pub fn render_manifest(name: &str, author: &str) -> String {
     )
 }
 
-/// The hello-world `src/main.res` body. Pinned so the template
+/// The hello-world `src/main.rz` body. Pinned so the template
 /// stays deterministic across runs.
 ///
 /// Written with explicit `\n    ` rather than Rust's line-
@@ -227,7 +227,7 @@ pub fn render_hello_world() -> &'static str {
     "// Welcome to Resilient.\n\
 //\n\
 // Run with:\n\
-//   resilient src/main.res\n\
+//   resilient src/main.rz\n\
 fn main(int _d) {\n    println(\"Hello, world!\");\n    return 0;\n}\nmain(0);\n"
 }
 
@@ -304,7 +304,7 @@ pub fn read_package_name(manifest_path: &Path) -> Option<String> {
 /// RES-212: walk upward from `start` looking for a sibling
 /// `resilient.toml`. Returns the manifest path if one is found.
 ///
-/// `resilient run path/to/file.res` conventionally lives inside a
+/// `resilient run path/to/file.rz` conventionally lives inside a
 /// project; rather than require the user to be in the project root,
 /// we search `start`, `start/..`, … up to the filesystem root. This
 /// matches how cargo finds `Cargo.toml`.
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(out.wrote.len(), 3);
         // Every promised file exists.
         assert!(parent.join("my-proj/resilient.toml").exists());
-        assert!(parent.join("my-proj/src/main.res").exists());
+        assert!(parent.join("my-proj/src/main.rz").exists());
         assert!(parent.join("my-proj/.gitignore").exists());
 
         let _ = fs::remove_dir_all(&parent);
@@ -387,7 +387,7 @@ mod tests {
     fn hello_world_main_runs_via_template() {
         let parent = tmp_parent("hello");
         scaffold_in(&parent, "greetings").expect("scaffold");
-        let got = fs::read_to_string(parent.join("greetings/src/main.res")).expect("read main.res");
+        let got = fs::read_to_string(parent.join("greetings/src/main.rz")).expect("read main.rz");
         assert!(got.contains("fn main"), "expected fn main in: {got}");
         assert!(got.contains("Hello, world!"), "expected greeting in: {got}");
         let _ = fs::remove_dir_all(&parent);
