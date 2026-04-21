@@ -136,27 +136,143 @@ fn run_l0001_unused_local(program: &Node, out: &mut Vec<Lint>) {
 fn l0001_check_body(body: &Node, out: &mut Vec<Lint>) {
     let mut lets: Vec<(String, Span)> = Vec::new();
     collect_lets_in(body, &mut lets);
-    if lets.is_empty() {
-        return;
+    if !lets.is_empty() {
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        collect_identifier_reads_in(body, &mut used);
+        for (name, span) in &lets {
+            if name.starts_with('_') {
+                continue;
+            }
+            if !used.contains(name) {
+                out.push(Lint {
+                    code: "L0001".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "unused local binding `{}` — prefix with `_` to silence",
+                        name
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
     }
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
-    collect_identifier_reads_in(body, &mut used);
-    for (name, span) in &lets {
-        if name.starts_with('_') {
-            continue;
+    // RES-259: check match-arm pattern bindings (scoped per arm).
+    // This is always called, regardless of whether `let` bindings exist.
+    l0001_check_match_arms(body, out);
+}
+
+/// RES-259: collect the names bound by a pattern (one level of binding
+/// per pattern, recursing into `Or` first-branch and `Bind` inner).
+fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
+    match pattern {
+        Pattern::Identifier(name) => vec![name.clone()],
+        Pattern::Bind(name, inner) => {
+            let mut names = vec![name.clone()];
+            names.extend(collect_pattern_bindings(inner));
+            names
         }
-        if !used.contains(name) {
-            out.push(Lint {
-                code: "L0001".into(),
-                severity: Severity::Warning,
-                message: format!(
-                    "unused local binding `{}` — prefix with `_` to silence",
-                    name
-                ),
-                line: span.start.line as u32,
-                column: span.start.column as u32,
-            });
+        // Or-patterns: all branches bind the same names (parser invariant);
+        // read the first branch only to avoid duplicates.
+        Pattern::Or(branches) => {
+            if let Some(first) = branches.first() {
+                collect_pattern_bindings(first)
+            } else {
+                vec![]
+            }
         }
+        // Wildcard and Literal introduce no bindings.
+        Pattern::Wildcard | Pattern::Literal(_) => vec![],
+    }
+}
+
+/// RES-259: walk every `Node::Match` in `node` and, for each arm,
+/// check whether the arm's pattern bindings are used within that
+/// arm's guard and body. Reports L0001 for each unused binding.
+fn l0001_check_match_arms(node: &Node, out: &mut Vec<Lint>) {
+    match node {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            // Recurse into the scrutinee first.
+            l0001_check_match_arms(scrutinee, out);
+
+            for (pattern, guard, arm_body) in arms {
+                let bindings = collect_pattern_bindings(pattern);
+                if !bindings.is_empty() {
+                    // Collect reads from the guard (if any) and the arm body.
+                    let mut used: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    if let Some(g) = guard {
+                        collect_identifier_reads_in(g, &mut used);
+                    }
+                    collect_identifier_reads_in(arm_body, &mut used);
+
+                    // Use the arm body's span for the diagnostic position.
+                    let (line, col) = span_of(arm_body)
+                        .map(|s| (s.start.line as u32, s.start.column as u32))
+                        .unwrap_or((1, 1));
+
+                    for name in &bindings {
+                        if name.starts_with('_') {
+                            continue;
+                        }
+                        if !used.contains(name) {
+                            out.push(Lint {
+                                code: "L0001".into(),
+                                severity: Severity::Warning,
+                                message: format!(
+                                    "unused local binding `{}` — prefix with `_` to silence",
+                                    name
+                                ),
+                                line,
+                                column: col,
+                            });
+                        }
+                    }
+                }
+
+                // Recurse into nested match expressions inside the arm body.
+                l0001_check_match_arms(arm_body, out);
+                if let Some(g) = guard {
+                    l0001_check_match_arms(g, out);
+                }
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                l0001_check_match_arms(s, out);
+            }
+        }
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            l0001_check_match_arms(value, out);
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            l0001_check_match_arms(condition, out);
+            l0001_check_match_arms(consequence, out);
+            if let Some(a) = alternative {
+                l0001_check_match_arms(a, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            l0001_check_match_arms(condition, out);
+            l0001_check_match_arms(body, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            l0001_check_match_arms(iterable, out);
+            l0001_check_match_arms(body, out);
+        }
+        Node::LiveBlock { body, .. } => l0001_check_match_arms(body, out),
+        Node::ReturnStatement { value: Some(v), .. } => l0001_check_match_arms(v, out),
+        Node::ExpressionStatement { expr, .. } => l0001_check_match_arms(expr, out),
+        _ => {}
     }
 }
 
@@ -1263,6 +1379,48 @@ mod tests {
         assert!(
             codes(src).contains(&"L0001".to_string()),
             "L0001 must fire for unused binding inside an impl method"
+        );
+    }
+
+    // ---------- RES-259: L0001 fires on unused match-arm bindings ----------
+
+    #[test]
+    fn l0001_fires_on_unused_match_arm_binding() {
+        // `y` is bound by the pattern but never used in the arm body.
+        let src = "fn f(int x) -> int {\n    return match x {\n        y => 1,\n    };\n}\n";
+        assert!(
+            codes(src).contains(&"L0001".to_string()),
+            "L0001 must fire when a match-arm pattern binding is never used"
+        );
+    }
+
+    #[test]
+    fn l0001_silent_when_match_arm_binding_is_used() {
+        // `y` is bound and then returned from the arm body.
+        let src = "fn f(int x) -> int {\n    return match x {\n        y => y,\n    };\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire when a match-arm pattern binding is used"
+        );
+    }
+
+    #[test]
+    fn l0001_silent_for_underscore_prefixed_match_arm_binding() {
+        // `_y` starts with `_` — explicitly silenced per convention.
+        let src = "fn f(int x) -> int {\n    return match x {\n        _y => 1,\n    };\n}\n";
+        assert!(
+            !codes(src).contains(&"L0001".to_string()),
+            "L0001 must not fire for underscore-prefixed match-arm binding"
+        );
+    }
+
+    #[test]
+    fn l0001_fires_on_unused_bind_pattern_name() {
+        // `n @ _`: `n` is bound but never used in the arm body.
+        let src = "fn f(int x) -> int {\n    return match x {\n        n @ _ => 1,\n    };\n}\n";
+        assert!(
+            codes(src).contains(&"L0001".to_string()),
+            "L0001 must fire when the name in a bind pattern (name @ inner) is unused"
         );
     }
 

@@ -1,11 +1,12 @@
 ---
 id: RES-259
 title: "L0001: lint does not fire for unused match-arm bindings"
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G14
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude
 ---
 
 ## Summary
