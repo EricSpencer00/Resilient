@@ -1,11 +1,12 @@
 ---
 id: RES-184
 title: LSP: rename symbol (prepareRename + rename)
-state: OPEN
+state: IN_PROGRESS
 priority: P3
 goalpost: G17
 created: 2026-04-17
 owner: executor
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary

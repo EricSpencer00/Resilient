@@ -25,12 +25,13 @@ use tower_lsp::lsp_types::{
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location,
-    MarkedString, MessageType, OneOf, Position, Range, ReferenceParams, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url, WorkDoneProgressOptions,
-    WorkspaceSymbolParams,
+    MarkedString, MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams,
+    RenameOptions, RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions,
+    WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -389,6 +390,52 @@ pub(crate) fn find_top_level_def<'a>(
     name: &str,
 ) -> Option<&'a TopLevelDef> {
     defs.iter().find(|d| d.name == name)
+}
+
+/// RES-184: walk the token stream of `src` looking for a `fn`
+/// declaration whose name is `target`. Returns the `Range` of the
+/// name identifier token in the declaration (e.g. the `foo` span
+/// in `fn foo(...)`). Returns `None` if not found.
+///
+/// We use a two-token lookahead: on each `fn` keyword we peek at
+/// the immediately following token; if it is an `Identifier` equal
+/// to `target` we return its range. This is cheaper than re-
+/// building the AST and more precise than `build_top_level_defs`
+/// (which stores the whole-statement span, not the name span).
+pub(crate) fn find_decl_name_range(src: &str, target: &str) -> Option<Range> {
+    use crate::{Lexer, Token};
+    let mut lex = Lexer::new(src.to_string());
+    let mut prev_was_fn = false;
+    loop {
+        let (tok, span) = lex.next_token_with_span();
+        match tok {
+            Token::Eof => return None,
+            Token::Function => {
+                prev_was_fn = true;
+            }
+            Token::Identifier(ref name) if prev_was_fn && name == target => {
+                return Some(span_to_range(span));
+            }
+            _ => {
+                prev_was_fn = false;
+            }
+        }
+    }
+}
+
+/// RES-184: validate that `name` is a legal Resilient identifier.
+/// Must match `[A-Za-z_][A-Za-z0-9_]*`.  Empty strings and names
+/// that start with a digit are rejected.  Used by the rename
+/// handler to produce a clean LSP error before touching the AST.
+pub(crate) fn is_valid_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => false,
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
 }
 
 /// RES-183: walk the full AST and collect the `Range` of every
@@ -1263,6 +1310,14 @@ impl LanguageServer for Backend {
                 // level fn name. Struct literals with the same name
                 // are excluded (AST-driven, not textual).
                 references_provider: Some(OneOf::Left(true)),
+                // RES-184: advertise rename support with prepareRename
+                // guard. `prepare_provider: Some(true)` tells clients
+                // to call `textDocument/prepareRename` first so users
+                // get "cannot rename here" feedback before typing.
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 // RES-188a: advertise identifier completion. The
                 // handler seeds its candidate list from the BUILTINS
                 // table plus top-level decls in the current
@@ -1590,6 +1645,181 @@ impl LanguageServer for Backend {
         }
 
         Ok(Some(locations))
+    }
+
+    /// RES-184: respond to `textDocument/prepareRename` — the UX
+    /// guard that tells editors whether the symbol under the cursor
+    /// is renamable before the user types a new name.
+    ///
+    /// A symbol is renamable when it is a top-level fn declaration
+    /// (the same set `references` covers). Returns the identifier's
+    /// range so the editor pre-selects the current name in the
+    /// rename input box. Returns `Ok(None)` for non-renamable
+    /// positions (literals, keywords, struct names, local vars —
+    /// all deferred to later tickets).
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> JsonResult<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let pos = params.position;
+
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let Some((name, range)) = identifier_at(&text, pos) else {
+            return Ok(None);
+        };
+
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+
+        // Only top-level fn names are renamable right now.
+        let defs = build_top_level_defs(&program);
+        let is_renamable_fn = {
+            let found = find_top_level_def(&defs, &name).is_some();
+            if found {
+                if let Node::Program(stmts) = &program {
+                    stmts
+                        .iter()
+                        .any(|s| matches!(&s.node, Node::Function { name: n, .. } if n == &name))
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
+        if !is_renamable_fn {
+            return Ok(None);
+        }
+
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range,
+            placeholder: name,
+        }))
+    }
+
+    /// RES-184: respond to `textDocument/rename` — emit a
+    /// `WorkspaceEdit` that renames every reference to a top-level
+    /// fn in the current document.
+    ///
+    /// Pipeline:
+    ///   1. Validate the new name against `[A-Za-z_][A-Za-z0-9_]*`.
+    ///      Return an LSP error immediately if invalid.
+    ///   2. Look up the identifier under the cursor via `identifier_at`.
+    ///      Confirm it names a top-level fn via `build_top_level_defs`.
+    ///   3. Collision check: if the new name already names a visible
+    ///      top-level binding, return an LSP error rather than
+    ///      producing broken code.
+    ///   4. Gather every edit site: the declaration-site range from
+    ///      `build_top_level_defs` plus every call-site range from
+    ///      `collect_call_sites`.
+    ///   5. Group the `TextEdit`s by URI and return a `WorkspaceEdit`.
+    async fn rename(&self, params: RenameParams) -> JsonResult<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let pos = params.text_document_position.position;
+        let new_name = params.new_name;
+
+        // Validate identifier pattern before doing any work.
+        if !is_valid_identifier(&new_name) {
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InvalidParams,
+                message: format!(
+                    "invalid identifier `{new_name}`: must match [A-Za-z_][A-Za-z0-9_]*"
+                )
+                .into(),
+                data: None,
+            });
+        }
+
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let Some((name, _cursor_range)) = identifier_at(&text, pos) else {
+            return Ok(None);
+        };
+
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+
+        // Confirm cursor is on a top-level fn name.
+        let defs = build_top_level_defs(&program);
+        let Some(def) = find_top_level_def(&defs, &name) else {
+            return Ok(None);
+        };
+        let is_fn = if let Node::Program(stmts) = &program {
+            stmts
+                .iter()
+                .any(|s| matches!(&s.node, Node::Function { name: n, .. } if n == &name))
+        } else {
+            false
+        };
+        if !is_fn {
+            return Ok(None);
+        }
+
+        // Collision check: reject if new name already has a top-level binding.
+        if find_top_level_def(&defs, &new_name).is_some() {
+            return Err(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::InvalidParams,
+                message: format!("rename would shadow `{new_name}`").into(),
+                data: None,
+            });
+        }
+
+        // Collect all edit sites: declaration + every call site.
+        let mut edits: Vec<TextEdit> = Vec::new();
+
+        // Declaration site: use the exact fn-name-token range from
+        // the source (not the whole-statement span from `def.range`).
+        // `find_decl_name_range` scans the lexer stream for `fn <name>`
+        // and returns the identifier token's precise Range.  Fall
+        // back to `def.range` only if the lexer scan misses (shouldn't
+        // happen, but safe degradation).
+        let decl_range = find_decl_name_range(&text, &name).unwrap_or(def.range);
+        edits.push(TextEdit {
+            range: decl_range,
+            new_text: new_name.clone(),
+        });
+
+        // All call sites (callee identifier spans).
+        for range in collect_call_sites(&program, &name) {
+            edits.push(TextEdit {
+                range,
+                new_text: new_name.clone(),
+            });
+        }
+
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        changes.insert(uri, edits);
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }))
     }
 
     /// RES-188a: respond to `textDocument/completion` — return
@@ -2862,5 +3092,143 @@ fn main(int n) {\n\
         assert_eq!(item.kind, Some(CompletionItemKind::FUNCTION));
         assert_eq!(item.detail, Some("builtin".to_string()));
         assert_eq!(item.insert_text, Some("test".to_string()));
+    }
+
+    // ============================================================
+    // RES-184: rename helpers
+    // ============================================================
+
+    #[test]
+    fn res184_is_valid_identifier_accepts_simple_names() {
+        assert!(is_valid_identifier("foo"));
+        assert!(is_valid_identifier("_bar"));
+        assert!(is_valid_identifier("Foo_Bar2"));
+        assert!(is_valid_identifier("x"));
+        assert!(is_valid_identifier("_"));
+    }
+
+    #[test]
+    fn res184_is_valid_identifier_rejects_bad_names() {
+        assert!(!is_valid_identifier("")); // empty
+        assert!(!is_valid_identifier("2foo")); // starts with digit
+        assert!(!is_valid_identifier("foo-bar")); // hyphen
+        assert!(!is_valid_identifier("foo bar")); // space
+        assert!(!is_valid_identifier("foo.bar")); // dot
+    }
+
+    #[test]
+    fn res184_find_decl_name_range_locates_fn_name() {
+        // `fn foo() { return 0; }` — `foo` starts at col 4 (1-indexed)
+        // = LSP col 3, ends at col 7 = LSP col 6.
+        let src = "fn foo() { return 0; }";
+        let range = find_decl_name_range(src, "foo").expect("should find foo");
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 3); // LSP 0-indexed col of 'f' in "foo"
+        assert_eq!(range.end.character, 6);
+    }
+
+    #[test]
+    fn res184_find_decl_name_range_returns_none_for_missing() {
+        let src = "fn foo() { return 0; }";
+        assert!(find_decl_name_range(src, "bar").is_none());
+    }
+
+    #[test]
+    fn res184_find_decl_name_range_multiline_second_fn() {
+        let src = "fn first() { return 1; }\nfn second() { return 2; }";
+        let range = find_decl_name_range(src, "second").expect("should find second");
+        // `second` is on line 2 (1-indexed) = LSP line 1.
+        assert_eq!(range.start.line, 1);
+    }
+
+    #[test]
+    fn res184_collect_rename_edits_toplevel_fn() {
+        // Integration: rename `add` → `sum`.
+        // Source has declaration + 2 call sites.
+        let src = "fn add(int a, int b) -> int { return a + b; }\nadd(1, 2);\nadd(3, 4);\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+
+        // Simulate what the `rename` handler does.
+        let new_name = "sum";
+        let defs = build_top_level_defs(&prog);
+        let def = find_top_level_def(&defs, "add").expect("add should be found");
+        let decl_range = find_decl_name_range(src, "add").unwrap_or(def.range);
+        let call_ranges = collect_call_sites(&prog, "add");
+
+        // Verify: 1 declaration edit + 2 call-site edits.
+        let mut edits: Vec<TextEdit> = Vec::new();
+        edits.push(TextEdit {
+            range: decl_range,
+            new_text: new_name.to_string(),
+        });
+        for range in call_ranges {
+            edits.push(TextEdit {
+                range,
+                new_text: new_name.to_string(),
+            });
+        }
+
+        assert_eq!(
+            edits.len(),
+            3,
+            "expected 3 edits (1 decl + 2 calls): {edits:?}"
+        );
+        // All edits replace with the new name.
+        for e in &edits {
+            assert_eq!(e.new_text, "sum");
+        }
+        // Declaration edit is on line 0.
+        assert_eq!(edits[0].range.start.line, 0);
+        // Call-site edits are on lines 1 and 2.
+        let call_lines: Vec<u32> = edits[1..].iter().map(|e| e.range.start.line).collect();
+        assert!(
+            call_lines.contains(&1),
+            "missing call on line 1: {call_lines:?}"
+        );
+        assert!(
+            call_lines.contains(&2),
+            "missing call on line 2: {call_lines:?}"
+        );
+    }
+
+    #[test]
+    fn res184_rename_decl_range_is_name_token_not_whole_stmt() {
+        // The declaration edit range must cover only "add", not
+        // the whole `fn add(...) { ... }` statement.
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let range = find_decl_name_range(src, "add").expect("should find add");
+        // `add` is 3 chars wide; verify start and end are close together.
+        assert_eq!(
+            range.start.line, range.end.line,
+            "multi-line decl range unexpected"
+        );
+        let width = range.end.character - range.start.character;
+        assert_eq!(
+            width, 3,
+            "expected range to cover 3-char 'add', got width {width}"
+        );
+    }
+
+    #[test]
+    fn res184_collision_check_detects_existing_name() {
+        // If new_name already exists as a top-level decl, the handler
+        // should refuse. We test the logic directly (not through the
+        // async handler).
+        let src = "fn add(int a, int b) -> int { return a + b; }\nfn sum() { return 0; }";
+        let (prog, _) = parse(src);
+        let defs = build_top_level_defs(&prog);
+        // Renaming `add` to `sum` must be blocked.
+        let collision = find_top_level_def(&defs, "sum").is_some();
+        assert!(collision, "expected collision detection for name `sum`");
+    }
+
+    #[test]
+    fn res184_no_collision_for_fresh_name() {
+        let src = "fn add(int a, int b) -> int { return a + b; }";
+        let (prog, _) = parse(src);
+        let defs = build_top_level_defs(&prog);
+        let collision = find_top_level_def(&defs, "total").is_some();
+        assert!(!collision, "unexpected collision for fresh name `total`");
     }
 }
