@@ -913,6 +913,12 @@ enum Pattern {
     /// exist today (Literal / Identifier / Wildcard / Or); struct and
     /// tuple patterns follow in RES-161b / RES-161c.
     Bind(String, Box<Pattern>),
+    /// RES-369: `Point { x: 0, y }` or `Point { .. }` in `match`.
+    Struct {
+        struct_name: String,
+        fields: Vec<(String, Box<Pattern>)>,
+        has_rest: bool,
+    },
 }
 
 /// RES-139: exponential-backoff policy for a `live` block. Sleep
@@ -2723,6 +2729,106 @@ impl Parser {
         }
     }
 
+    /// RES-369: parse `StructName { field: pat, .. }` as a `match` pattern.
+    /// On entry `current_token` is the struct name identifier; on exit
+    /// `current_token` is the closing `}`.
+    fn parse_match_struct_pattern(&mut self, struct_name: String) -> Pattern {
+        self.next_token(); // past struct name
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `{{` after struct name in match pattern, found {}",
+                tok
+            ));
+            return Pattern::Wildcard;
+        }
+        self.next_token(); // past `{`
+        let mut fields: Vec<(String, Box<Pattern>)> = Vec::new();
+        let mut has_rest = false;
+
+        loop {
+            if self.current_token == Token::RightBrace {
+                break;
+            }
+            if self.current_token == Token::Dot {
+                if self.peek_token == Token::Dot {
+                    self.next_token();
+                    has_rest = true;
+                    self.next_token(); // past `..`
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    }
+                    if self.current_token != Token::RightBrace {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "After `..` in struct match pattern, expected `}}`, found {}",
+                            tok
+                        ));
+                    }
+                    break;
+                }
+                self.record_error(
+                    "Expected `..` (two dots) for struct rest pattern, found single `.`"
+                        .to_string(),
+                );
+                break;
+            }
+
+            let field_name = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected field name in struct match pattern, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token();
+
+            let subpat = if self.current_token == Token::Colon {
+                self.next_token();
+                let p = self.parse_pattern();
+                self.next_token();
+                p
+            } else {
+                Pattern::Identifier(field_name.clone())
+            };
+            fields.push((field_name, Box::new(subpat)));
+
+            if self.current_token == Token::Comma {
+                self.next_token();
+                continue;
+            }
+            if self.current_token == Token::RightBrace {
+                break;
+            }
+            let tok_syntax = self.current_token.display_syntax();
+            self.record_error(format!(
+                "in struct match pattern: {}",
+                format_expected(&["`,`", "`}`", "`..`"], &tok_syntax)
+            ));
+            break;
+        }
+
+        if self.current_token != Token::RightBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `}}` to close struct match pattern, found {}",
+                tok
+            ));
+        }
+        // Leave `current_token` on `}` — `parse_match_expression`
+        // advances one past the full pattern, same as other atoms.
+
+        Pattern::Struct {
+            struct_name,
+            fields,
+            has_rest,
+        }
+    }
+
     /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, span }`.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
@@ -4075,6 +4181,9 @@ impl Parser {
             }),
             Token::Identifier(name) => {
                 let name = name.clone();
+                if self.peek_token == Token::LeftBrace {
+                    return self.parse_match_struct_pattern(name);
+                }
                 // RES-161a: `name @ inner` bind-subpattern.
                 // peek_token tells us whether `@` follows. If so, consume
                 // it and parse the inner atom (not a full or-pattern — the
@@ -8016,6 +8125,36 @@ impl Interpreter {
                         Ok(Some(inner_bindings))
                     }
                 }
+            }
+            Pattern::Struct {
+                struct_name,
+                fields,
+                has_rest,
+            } => {
+                let Value::Struct {
+                    name: val_name,
+                    fields: val_fields,
+                } = value
+                else {
+                    return Ok(None);
+                };
+                if struct_name != val_name {
+                    return Ok(None);
+                }
+                if *has_rest && fields.is_empty() {
+                    return Ok(Some(vec![]));
+                }
+                let mut bindings = Vec::new();
+                for (fname, sub) in fields {
+                    let Some((_, fv)) = val_fields.iter().find(|(n, _)| n == fname) else {
+                        return Ok(None);
+                    };
+                    match self.match_pattern(sub, fv)? {
+                        None => return Ok(None),
+                        Some(mut b) => bindings.append(&mut b),
+                    }
+                }
+                Ok(Some(bindings))
             }
         }
     }
@@ -14863,6 +15002,52 @@ mod tests {
             r#"
             let n = 5;
             let r = match n { 0 => "zero", x => "other", };
+        "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn typecheck_rejects_nonexhaustive_struct_match() {
+        let err = typecheck_src(
+            r#"
+            struct Point {
+                int x,
+                int y,
+            }
+            fn main(int _d) {
+                let p = new Point { x: 1, y: 2 };
+                let _r = match p {
+                    Point { x: 0, y: 0 } => 0,
+                };
+                return 0;
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("Non-exhaustive match on struct `Point`"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_struct_match_with_rest_arm() {
+        typecheck_src(
+            r#"
+            struct Point {
+                int x,
+                int y,
+            }
+            fn main(int _d) {
+                let p = new Point { x: 1, y: 2 };
+                let _r = match p {
+                    Point { x: 0, y: 0 } => 0,
+                    Point { .. } => 1,
+                };
+                return 0;
+            }
         "#,
         )
         .unwrap();

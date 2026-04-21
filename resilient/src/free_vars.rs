@@ -366,6 +366,11 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
             bound.insert(outer.clone());
             bind_pattern(inner, bound);
         }
+        Pattern::Struct { fields, .. } => {
+            for (_, sub) in fields {
+                bind_pattern(sub.as_ref(), bound);
+            }
+        }
     }
 }
 

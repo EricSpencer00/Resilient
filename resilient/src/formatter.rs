@@ -755,6 +755,32 @@ impl Formatter {
                 self.write(" @ ");
                 self.fmt_pattern(inner);
             }
+            Pattern::Struct {
+                struct_name,
+                fields,
+                has_rest,
+            } => {
+                self.write(struct_name);
+                self.write(" { ");
+                for (i, (fname, sub)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(fname);
+                    if matches!(sub.as_ref(), Pattern::Identifier(n) if n == fname) {
+                    } else {
+                        self.write(": ");
+                        self.fmt_pattern(sub.as_ref());
+                    }
+                }
+                if *has_rest {
+                    if !fields.is_empty() {
+                        self.write(", ");
+                    }
+                    self.write("..");
+                }
+                self.write(" }");
+            }
         }
     }
 }
