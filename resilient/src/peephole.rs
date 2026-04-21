@@ -36,13 +36,29 @@
 //! even if it forgoes some optimization opportunities. A future
 //! iterative pass could relax this at the cost of analysis.
 
-use crate::bytecode::{Chunk, Op};
 use crate::Value;
+use crate::bytecode::{Chunk, Op};
+
+/// Errors that the peephole optimizer can return.
+#[derive(Debug)]
+pub enum OptimizeError {
+    InternalError(&'static str),
+}
+
+impl std::fmt::Display for OptimizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OptimizeError::InternalError(msg) => write!(f, "peephole optimizer: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for OptimizeError {}
 
 /// Top-level entry. Applies all peephole rules in one linear scan.
 /// Idempotent for the rules shipped today (no rule creates a new
 /// opportunity the same pass could re-fold).
-pub fn optimize(chunk: &mut Chunk) {
+pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
     // Precompute the set of jump-target PCs so we can skip any
     // rule site whose interior is a jump destination.
     let targets = jump_targets(chunk);
@@ -125,9 +141,11 @@ pub fn optimize(chunk: &mut Chunk) {
         // rewriting loop only inserts one new op per old
         // position (never reorders), so the first old_pc with
         // `old_to_new[old_pc] == new_pc` is the right one.
-        let old_pc = (0..chunk.code.len())
-            .find(|&p| old_to_new[p] == new_pc)
-            .expect("every new_pc has an originating old_pc");
+        let Some(old_pc) = (0..chunk.code.len()).find(|&p| old_to_new[p] == new_pc) else {
+            return Err(OptimizeError::InternalError(
+                "peephole: new_pc with no originating old_pc",
+            ));
+        };
         let Some(old_target) = orig_targets[old_pc] else {
             continue; // not actually a jump (shouldn't happen)
         };
@@ -152,6 +170,7 @@ pub fn optimize(chunk: &mut Chunk) {
 
     chunk.code = new_code;
     chunk.line_info = new_line_info;
+    Ok(())
 }
 
 /// Compute which PCs are the target of any jump in the chunk.
@@ -195,15 +214,13 @@ fn is_jump_op(op: Op) -> bool {
 
 /// Rule 1: drop `Const(k); Add` when constants[k] is Int(0).
 /// Skips if PC i+1 is a jump target.
-pub(crate) fn rule_add_zero_identity(
-    chunk: &Chunk,
-    i: usize,
-    targets: &[bool],
-) -> bool {
+pub(crate) fn rule_add_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
     }
-    let Op::Const(k) = chunk.code[i] else { return false; };
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
     if !matches!(chunk.code[i + 1], Op::Add) {
         return false;
     }
@@ -220,20 +237,22 @@ pub(crate) fn rule_add_zero_identity(
 
 /// Rule 2: fold `LoadLocal x; Const(k==1); Add; StoreLocal x` →
 /// `IncLocal(x)`. Returns `Some(x)` on a match.
-pub(crate) fn rule_inc_local(
-    chunk: &Chunk,
-    i: usize,
-    targets: &[bool],
-) -> Option<u16> {
+pub(crate) fn rule_inc_local(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<u16> {
     if i + 3 >= chunk.code.len() {
         return None;
     }
-    let Op::LoadLocal(x1) = chunk.code[i] else { return None; };
-    let Op::Const(k) = chunk.code[i + 1] else { return None; };
+    let Op::LoadLocal(x1) = chunk.code[i] else {
+        return None;
+    };
+    let Op::Const(k) = chunk.code[i + 1] else {
+        return None;
+    };
     if !matches!(chunk.code[i + 2], Op::Add) {
         return None;
     }
-    let Op::StoreLocal(x2) = chunk.code[i + 3] else { return None; };
+    let Op::StoreLocal(x2) = chunk.code[i + 3] else {
+        return None;
+    };
     if x1 != x2 {
         return None;
     }
@@ -257,11 +276,7 @@ pub(crate) fn rule_dead_jump(chunk: &Chunk, i: usize) -> bool {
 
 /// Rule 4: fold `Not; JumpIfFalse(off)` → `JumpIfTrue(off)`.
 /// Returns `Some(off)` on a match.
-pub(crate) fn rule_not_jif_to_jit(
-    chunk: &Chunk,
-    i: usize,
-    targets: &[bool],
-) -> Option<i16> {
+pub(crate) fn rule_not_jif_to_jit(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<i16> {
     if i + 1 >= chunk.code.len() {
         return None;
     }
@@ -294,31 +309,19 @@ mod tests {
 
     #[test]
     fn rule1_fires_on_const_zero_plus_add() {
-        let chunk = mk_chunk(
-            &[Op::Const(0), Op::Add],
-            vec![Value::Int(0)],
-            &[1, 1],
-        );
+        let chunk = mk_chunk(&[Op::Const(0), Op::Add], vec![Value::Int(0)], &[1, 1]);
         assert!(rule_add_zero_identity(&chunk, 0, &[false; 3]));
     }
 
     #[test]
     fn rule1_skips_when_const_is_nonzero() {
-        let chunk = mk_chunk(
-            &[Op::Const(0), Op::Add],
-            vec![Value::Int(5)],
-            &[1, 1],
-        );
+        let chunk = mk_chunk(&[Op::Const(0), Op::Add], vec![Value::Int(5)], &[1, 1]);
         assert!(!rule_add_zero_identity(&chunk, 0, &[false; 3]));
     }
 
     #[test]
     fn rule1_skips_when_add_is_jump_target() {
-        let chunk = mk_chunk(
-            &[Op::Const(0), Op::Add],
-            vec![Value::Int(0)],
-            &[1, 1],
-        );
+        let chunk = mk_chunk(&[Op::Const(0), Op::Add], vec![Value::Int(0)], &[1, 1]);
         let mut targets = vec![false; 3];
         targets[1] = true;
         assert!(!rule_add_zero_identity(&chunk, 0, &targets));
@@ -334,7 +337,7 @@ mod tests {
             vec![Value::Int(0)],
             &[1, 1, 1, 1],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::StoreLocal(0)]);
         assert_eq!(chunk.line_info, vec![1, 1]);
     }
@@ -374,11 +377,17 @@ mod tests {
     #[test]
     fn rule2_folds_in_full_pass() {
         let mut chunk = mk_chunk(
-            &[Op::LoadLocal(2), Op::Const(0), Op::Add, Op::StoreLocal(2), Op::Return],
+            &[
+                Op::LoadLocal(2),
+                Op::Const(0),
+                Op::Add,
+                Op::StoreLocal(2),
+                Op::Return,
+            ],
             vec![Value::Int(1)],
             &[7, 7, 7, 7, 8],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code, vec![Op::IncLocal(2), Op::Return]);
         // Line info: first inst of the fold's line, then the
         // Return's unchanged line.
@@ -406,7 +415,7 @@ mod tests {
             vec![Value::Int(42)],
             &[1, 1, 2],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code, vec![Op::Const(0), Op::Return]);
     }
 
@@ -414,11 +423,7 @@ mod tests {
 
     #[test]
     fn rule4_fires_on_not_jif() {
-        let chunk = mk_chunk(
-            &[Op::Not, Op::JumpIfFalse(5)],
-            vec![],
-            &[1, 1],
-        );
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfFalse(5)], vec![], &[1, 1]);
         assert_eq!(rule_not_jif_to_jit(&chunk, 0, &[false; 3]), Some(5));
     }
 
@@ -443,7 +448,7 @@ mod tests {
             vec![Value::Int(1)],
             &[1, 1, 2, 3],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         match chunk.code[0] {
             Op::JumpIfTrue(o) => assert_eq!(o, 1),
             other => panic!("expected JumpIfTrue, got {:?}", other),
@@ -463,7 +468,7 @@ mod tests {
             vec![Value::Int(0)],
             &[1, 1, 1, 2],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         // Code length unchanged: the peephole skipped the fold.
         assert_eq!(chunk.code.len(), 4);
         assert!(matches!(chunk.code[1], Op::Const(_)));
@@ -501,15 +506,14 @@ mod tests {
             vec![Value::Int(0)],
             &[1, 1, 1, 1, 2],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code.len(), 3);
         assert!(matches!(chunk.code[0], Op::LoadLocal(0)));
         assert!(matches!(chunk.code[2], Op::Return));
         match chunk.code[1] {
-            Op::JumpIfFalse(o) => assert_eq!(
-                o, 0,
-                "jump must still land on the Return at new PC 2"
-            ),
+            Op::JumpIfFalse(o) => {
+                assert_eq!(o, 0, "jump must still land on the Return at new PC 2")
+            }
             other => panic!("expected JumpIfFalse, got {:?}", other),
         }
     }
@@ -532,7 +536,16 @@ mod tests {
             vec![Value::Int(1)],
             &[1, 2, 3, 4, 5, 6, 7, 8],
         );
-        optimize(&mut chunk);
+        optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code.len(), chunk.line_info.len());
+    }
+
+    // ---------- Result return ----------
+
+    #[test]
+    fn optimize_returns_ok_for_normal_chunk() {
+        // Verify that `optimize` returns `Ok(())` for a basic valid chunk.
+        let mut chunk = mk_chunk(&[Op::Const(0), Op::Return], vec![Value::Int(42)], &[1, 1]);
+        assert!(optimize(&mut chunk).is_ok());
     }
 }
