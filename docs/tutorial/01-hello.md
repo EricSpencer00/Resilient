@@ -37,7 +37,7 @@ docker run --rm ghcr.io/ericspencer00/resilient:latest --help
 
 ## Your first program
 
-Open `hello.rs` and paste:
+Open `hello.rz` and paste:
 
 ```resilient
 fn main() {
@@ -49,7 +49,7 @@ main();
 Then run it:
 
 ```bash
-resilient hello.rs
+resilient hello.rz
 ```
 
 You should see:
@@ -61,11 +61,9 @@ Program executed successfully
 
 Two things worth calling out:
 
-- **The file ends in `.rs`.** Resilient source lives in `.rs`
-  files so editors pick up Rust-ish syntax highlighting for
-  free. The language itself is *not* Rust — see the
-  [syntax reference]({{ site.baseurl }}/syntax) — but the
-  extension collision is deliberate.
+- **The file ends in `.rz`.** Resilient source uses the `.rz`
+  extension. Install the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=fromamerica.resilient-vscode)
+  for syntax highlighting and one-click run.
 - **`main();` at the bottom.** Functions declared with `fn`
   are not auto-invoked. The last line kicks off execution.
   If you forget it, the program runs fine but doesn't print
@@ -91,13 +89,13 @@ fn main() {
 main();
 ```
 
-Save as `fib.rs` and run through each:
+Save as `fib.rz` and run through each:
 
 ```bash
-resilient fib.rs          # tree-walker (default)
-resilient --vm fib.rs     # bytecode VM
+resilient fib.rz          # tree-walker (default)
+resilient --vm fib.rz     # bytecode VM
 # JIT needs a feature-flagged build:
-cargo run --release --features jit -- --jit fib.rs
+cargo run --release --features jit -- --jit fib.rz
 ```
 
 All three print `6765`. The walker is a few hundred ms; the

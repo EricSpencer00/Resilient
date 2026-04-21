@@ -72,7 +72,7 @@ obligation:
 
 ```bash
 mkdir -p certs
-resilient --typecheck --emit-certificate certs path/to/ident_round.rs
+resilient --typecheck --emit-certificate certs path/to/ident_round.rz
 ```
 
 You'll see:
@@ -138,7 +138,7 @@ resilient verify-all certs
 ```
 
 ```
-Verifying 1 obligation(s) from path/to/ident_round.rs
+Verifying 1 obligation(s) from path/to/ident_round.rz
   fn                               kind       sha256   sig      z3
   ident_round::decl[0]             decl       ok       -        -
 verify-all: all checks passed
@@ -173,7 +173,7 @@ auditable proofs of your contracts. Next steps:
 - Read the [design philosophy]({{ site.baseurl }}/philosophy)
   for WHY the language leans into self-healing +
   verification.
-- Dig into a real example: `resilient/examples/sensor_monitor.rs`
+- Dig into a real example: `resilient/examples/sensor_monitor.rz`
   exercises the full feature set in ~70 lines.
 - Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
   to see what's next and what's in flight.
