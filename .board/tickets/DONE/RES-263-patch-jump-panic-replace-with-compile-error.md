@@ -1,11 +1,12 @@
 ---
 id: RES-263
 title: "bytecode.rs: patch_jump panics on non-jump op — replace with CompileError"
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G3
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude
 ---
 
 ## Summary

@@ -1,11 +1,12 @@
 ---
 id: RES-269
 title: "JIT: JitError::Unsupported(&'static str) loses callee name in 'call to unknown function' diagnostic"
-state: OPEN
+state: DONE
 priority: P4
 goalpost: G3
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary

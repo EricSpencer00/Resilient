@@ -1,11 +1,12 @@
 ---
 id: RES-262
 title: "LSP find-references: walk_call_sites misses Assume, Assert, LetDestructureStruct, LiveBlock, MapLiteral, SetLiteral"
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G17
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude
 ---
 
 ## Summary

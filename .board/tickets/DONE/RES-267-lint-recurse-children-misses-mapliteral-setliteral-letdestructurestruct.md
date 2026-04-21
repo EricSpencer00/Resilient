@@ -1,11 +1,12 @@
 ---
 id: RES-267
 title: "lint.rs: recurse_children misses MapLiteral, SetLiteral, LetDestructureStruct — L0003/L0004/L0006 blind spots"
-state: OPEN
+state: DONE
 priority: P3
 goalpost: G11
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude Sonnet 4.6
 ---
 
 ## Summary

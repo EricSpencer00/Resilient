@@ -6,6 +6,8 @@ priority: P3
 goalpost: G17
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude
+closed-commit: 04d966897792ef95f6a954f29213705669459b89
 ---
 
 ## Summary

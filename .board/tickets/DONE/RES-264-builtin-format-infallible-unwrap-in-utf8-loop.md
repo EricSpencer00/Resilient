@@ -1,11 +1,12 @@
 ---
 id: RES-264
 title: "builtin_format: infallible unwrap() in UTF-8 byte loop — replace with chars().next() guard"
-state: OPEN
+state: DONE
 priority: P4
 goalpost: G11
 created: 2026-04-20
 owner: executor
+Claimed-by: Claude
 ---
 
 ## Summary
