@@ -45,16 +45,14 @@ You can stack them: `cargo build --release --features "z3 lsp jit"`.
 ## Hello, world
 
 ```rust
-// hello.res — Resilient source extension is .rs in this repo
-// (we use Rust's extension to get free editor highlighting; the
-// language is unrelated)
+// hello.rz — Resilient source extension is .rz
 println("Hello, Resilient!");
 ```
 
 Run it:
 
 ```bash
-resilient hello.res
+resilient hello.rz
 # → Hello, Resilient!
 ```
 

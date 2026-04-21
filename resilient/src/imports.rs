@@ -1,6 +1,6 @@
 //! RES-073: minimum-viable module imports for Resilient.
 //!
-//! `use "path/to/other.res";` at the top level of a file imports every
+//! `use "path/to/other.rz";` at the top level of a file imports every
 //! top-level `fn` declaration of the referenced file into the current
 //! scope. Resolution is path-based and relative to the file containing
 //! the `use`. This module performs that expansion BEFORE the program
@@ -56,7 +56,7 @@ pub fn expand_uses(
             let target = resolve_use_path(base_dir, path)?;
 
             // Cycle / already-loaded check: canonicalize so that
-            // `./helpers.res` and `helpers.res` collapse to one entry.
+            // `./helpers.rz` and `helpers.rz` collapse to one entry.
             let canon = canonicalize_or_self(&target);
             if loaded.contains(&canon) {
                 // Already loaded once. Re-importing is a no-op — same
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn missing_import_is_a_clean_error_not_a_panic() {
-        let (mut program, _) = crate::parse("use \"nope-does-not-exist.res\";");
+        let (mut program, _) = crate::parse("use \"nope-does-not-exist.rz\";");
         let mut loaded = HashSet::new();
         let err = expand_uses(&mut program, Path::new("."), &mut loaded)
             .expect_err("missing file must error");

@@ -50,16 +50,14 @@ fn pkg_init_creates_project_skeleton() {
     let root = parent.join("hello_res");
     assert!(root.is_dir(), "project root {} missing", root.display());
     assert!(root.join("resilient.toml").is_file(), "manifest missing");
-    assert!(root.join("src/main.res").is_file(), "entry point missing");
+    assert!(root.join("src/main.rz").is_file(), "entry point missing");
     assert!(root.join(".gitignore").is_file(), "gitignore missing");
 
     // Manifest content — pin [package] + name + [dependencies] to
     // catch template drift.
-    let manifest = std::fs::read_to_string(root.join("resilient.toml")).expect("read manifest");
-    assert!(
-        manifest.contains("[package]"),
-        "missing [package]: {manifest}"
-    );
+    let manifest = std::fs::read_to_string(root.join("resilient.toml"))
+        .expect("read manifest");
+    assert!(manifest.contains("[package]"), "missing [package]: {manifest}");
     assert!(
         manifest.contains(r#"name = "hello_res""#),
         "missing name in: {manifest}"
@@ -82,14 +80,16 @@ fn pkg_init_creates_project_skeleton() {
     );
 
     // Entry point has the hello-world greeting.
-    let main_src = std::fs::read_to_string(root.join("src/main.res")).expect("read main.res");
+    let main_src = std::fs::read_to_string(root.join("src/main.rz"))
+        .expect("read main.rz");
     assert!(
         main_src.contains("Hello, world!"),
         "missing greeting in: {main_src}"
     );
 
     // Gitignore ignores target/ and cert/.
-    let gi = std::fs::read_to_string(root.join(".gitignore")).expect("read gitignore");
+    let gi = std::fs::read_to_string(root.join(".gitignore"))
+        .expect("read gitignore");
     assert!(gi.contains("target/"), "missing target/ in: {gi}");
     assert!(gi.contains("cert/"), "missing cert/ in: {gi}");
 
@@ -115,7 +115,8 @@ fn pkg_init_accepts_name_flag() {
         String::from_utf8_lossy(&output.stderr),
     );
     let root = parent.join("via_flag");
-    let manifest = std::fs::read_to_string(root.join("resilient.toml")).expect("read manifest");
+    let manifest = std::fs::read_to_string(root.join("resilient.toml"))
+        .expect("read manifest");
     assert!(
         manifest.contains(r#"name = "via_flag""#),
         "missing name in: {manifest}"
@@ -132,11 +133,8 @@ fn pkg_init_name_flag_equals_form() {
         .current_dir(&parent)
         .output()
         .expect("spawn resilient pkg init --name=");
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.status.success(), "stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
     assert!(parent.join("via_equals/resilient.toml").exists());
     let _ = std::fs::remove_dir_all(&parent);
 }
@@ -236,7 +234,8 @@ fn pkg_init_missing_name_errors() {
     assert!(!output.status.success(), "expected non-zero exit");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("requires a project name") || stderr.contains("<name>"),
+        stderr.contains("requires a project name")
+            || stderr.contains("<name>"),
         "expected usage hint, got: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&parent);
@@ -327,7 +326,7 @@ fn run_prefixes_errors_with_package_name() {
     )
     .unwrap();
     // Reference an undefined identifier so runtime / compile bails.
-    let src_path = proj.join("src/main.res");
+    let src_path = proj.join("src/main.rz");
     std::fs::write(
         &src_path,
         "fn main(int _d) {\n    println(not_a_real_thing);\n    return 0;\n}\nmain(0);\n",

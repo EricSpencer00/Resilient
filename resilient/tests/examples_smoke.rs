@@ -23,7 +23,7 @@ fn run_example(name: &str) -> (String, String, Option<i32>) {
 
 #[test]
 fn hello_rs_prints_greeting() {
-    let (stdout, stderr, _code) = run_example("hello.res");
+    let (stdout, stderr, _code) = run_example("hello.rz");
     assert!(
         !stderr.contains("Parser error"),
         "unexpected parser error:\n{stderr}"
@@ -37,9 +37,9 @@ fn hello_rs_prints_greeting() {
 #[test]
 fn hello_exits_zero_minimal_exits_zero() {
     // RES-027: successful runs produce exit code 0.
-    let (_s, _e, code) = run_example("hello.res");
+    let (_s, _e, code) = run_example("hello.rz");
     assert_eq!(code, Some(0), "hello.rs should exit 0");
-    let (_s, _e, code) = run_example("minimal.res");
+    let (_s, _e, code) = run_example("minimal.rz");
     assert_eq!(code, Some(0), "minimal.rs should exit 0");
 }
 
@@ -48,7 +48,7 @@ fn broken_example_exits_non_zero() {
     // sensor_example.rs has a parse error (parameterless fn w/o type).
     // Until someone fixes the example, running it must surface a
     // non-zero exit code so CI sees the failure.
-    let (_s, _e, code) = run_example("sensor_example.res");
+    let (_s, _e, code) = run_example("sensor_example.rz");
     assert_ne!(code, Some(0), "broken example should NOT exit 0");
 }
 
@@ -66,7 +66,7 @@ fn emit_certificate_writes_reverifiable_smt2() {
     let output = Command::new(bin())
         .arg("--emit-certificate")
         .arg(&tmp)
-        .arg("examples/cert_demo.res")
+        .arg("examples/cert_demo.rz")
         .output()
         .expect("spawn resilient");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -546,11 +546,11 @@ fn typecheck_error_prefixes_path_and_line() {
 
 #[test]
 fn imports_demo_resolves_use_clause() {
-    // RES-073: `use "helpers.res";` in main.res pulls in square() and
+    // RES-073: `use "helpers.rz";` in main.rz pulls in square() and
     // shout() so the program can call them as if they were declared
     // locally. Asserts both the imported function's stdout and the
     // imported helper's return value.
-    let (stdout, stderr, code) = run_example("imports_demo/main.res");
+    let (stdout, stderr, code) = run_example("imports_demo/main.rz");
     assert!(
         !stderr.contains("Parser error") && !stderr.contains("Import error"),
         "unexpected error:\nstderr={stderr}"
@@ -733,7 +733,7 @@ fn no_warn_unverified_suppresses_partial_proof_warning() {
 fn minimal_rs_runs_end_to_end() {
     // After RES-003 (println) and RES-008 (string+primitive coercion)
     // minimal.rs runs to completion.
-    let (stdout, stderr, _code) = run_example("minimal.res");
+    let (stdout, stderr, _code) = run_example("minimal.rz");
     assert!(
         !stderr.contains("Parser error"),
         "unexpected parser error:\n{stderr}"
@@ -759,7 +759,7 @@ fn ffi_libm_example_calls_sqrt() {
     // libm.so.6 is always available. Checks sqrt(16.0)=4 and sqrt(2.0)
     // round-trips through the C trampoline. Gated on feature=ffi and
     // target_os=linux; skipped silently on other platforms.
-    let (stdout, stderr, code) = run_example("ffi_libm.res");
+    let (stdout, stderr, code) = run_example("ffi_libm.rz");
     assert_eq!(
         code,
         Some(0),

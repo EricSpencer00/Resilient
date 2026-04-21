@@ -1,6 +1,6 @@
 //! Golden-file tests for example programs.
 //!
-//! For every `examples/<name>.res` that has a sibling
+//! For every `examples/<name>.rs` that has a sibling
 //! `examples/<name>.expected.txt`, this test runs the compiled
 //! `resilient` binary against it and asserts that combined stdout
 //! (plus the CLI's trailing "Program executed successfully" line)
@@ -26,52 +26,17 @@ fn examples_dir() -> PathBuf {
 }
 
 fn list_examples() -> Vec<PathBuf> {
-    let dir = examples_dir();
-    let entries: Vec<_> = fs::read_dir(&dir)
+    let mut out: Vec<PathBuf> = fs::read_dir(examples_dir())
         .expect("reading examples dir")
         .filter_map(Result::ok)
         .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rz"))
         .collect();
-
-    // Top-level `<name>.res` files.
-    let mut out: Vec<PathBuf> = entries
-        .iter()
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("res"))
-        .cloned()
-        .collect();
-
-    // RES-272: also include `<subdir>/main.res` for each subdirectory that
-    // has a sibling `<subdir>.expected.txt` at the top level. This covers
-    // multi-file examples (e.g. `imports_demo/`) that `list_examples` would
-    // otherwise silently skip because directories have no `.res` extension.
-    for entry in &entries {
-        if entry.is_dir() {
-            let main_res = entry.join("main.res");
-            if main_res.exists() {
-                let dir_name = entry.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                let expected = dir.join(format!("{dir_name}.expected.txt"));
-                if expected.exists() {
-                    out.push(main_res);
-                }
-            }
-        }
-    }
-
     out.sort();
     out
 }
 
 fn expected_path(example: &Path) -> PathBuf {
-    // RES-272: for multi-file examples (`<dir>/main.res`), the golden sidecar
-    // lives at `<parent>/<dir>.expected.txt` rather than inside the subdir.
-    let file_name = example.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if file_name == "main.res"
-        && let Some(parent) = example.parent()
-        && let Some(dir_name) = parent.file_name().and_then(|s| s.to_str())
-        && let Some(grandparent) = parent.parent()
-    {
-        return grandparent.join(format!("{dir_name}.expected.txt"));
-    }
     let stem = example.file_stem().and_then(|s| s.to_str()).unwrap();
     example.with_file_name(format!("{stem}.expected.txt"))
 }
@@ -82,20 +47,8 @@ fn expected_path(example: &Path) -> PathBuf {
 /// runtime input. The golden harness skips such examples; the
 /// missing-expected-file audit also treats them as intentional.
 fn is_interactive(example: &Path) -> bool {
-    // RES-272: for multi-file examples (`<dir>/main.res`), the interactive
-    // marker lives at `<parent>/<dir>.interactive` alongside the golden sidecar.
-    let file_name = example.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if file_name == "main.res"
-        && let Some(parent) = example.parent()
-        && let Some(dir_name) = parent.file_name().and_then(|s| s.to_str())
-        && let Some(grandparent) = parent.parent()
-    {
-        return grandparent.join(format!("{dir_name}.interactive")).exists();
-    }
     let stem = example.file_stem().and_then(|s| s.to_str()).unwrap();
-    example
-        .with_file_name(format!("{stem}.interactive"))
-        .exists()
+    example.with_file_name(format!("{stem}.interactive")).exists()
 }
 
 fn run(example: &Path) -> String {

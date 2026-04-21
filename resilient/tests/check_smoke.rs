@@ -27,7 +27,7 @@ fn tmp_dir(tag: &str) -> PathBuf {
 #[test]
 fn check_valid_file_exits_zero() {
     let output = Command::new(bin())
-        .args(["check", "examples/hello.res"])
+        .args(["check", "examples/hello.rz"])
         .output()
         .expect("spawn resilient check");
     assert_eq!(
@@ -46,7 +46,7 @@ fn check_valid_file_exits_zero() {
 #[test]
 fn check_type_error_exits_one() {
     let dir = tmp_dir("type_err");
-    let src_path = dir.join("bad.res");
+    let src_path = dir.join("bad.rz");
     // Assign a string to an int — type mismatch.
     std::fs::write(&src_path, "fn main(int _d) {\n    let x: Int = \"not an int\";\n    return 0;\n}\nmain(0);\n")
         .unwrap();
@@ -83,7 +83,7 @@ fn check_missing_path_exits_two() {
 #[test]
 fn check_quiet_suppresses_output() {
     let output = Command::new(bin())
-        .args(["check", "--quiet", "examples/hello.res"])
+        .args(["check", "--quiet", "examples/hello.rz"])
         .output()
         .expect("spawn resilient check --quiet");
     assert_eq!(
@@ -105,7 +105,7 @@ fn check_quiet_suppresses_output() {
 #[test]
 fn check_short_quiet_flag() {
     let output = Command::new(bin())
-        .args(["check", "-q", "examples/hello.res"])
+        .args(["check", "-q", "examples/hello.rz"])
         .output()
         .expect("spawn resilient check -q");
     assert_eq!(output.status.code(), Some(0));

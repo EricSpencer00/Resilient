@@ -6,7 +6,7 @@
 //! user has something to run:
 //!
 //! - `resilient.toml`  — manifest with `[package]` and `[dependencies]`
-//! - `src/main.res`     — hello-world entry point
+//! - `src/main.rz`     — hello-world entry point
 //! - `.gitignore`      — ignore build artifacts
 //!
 //! Design rules:
@@ -180,7 +180,7 @@ pub fn scaffold_in(parent: &Path, name: &str) -> Result<Scaffold, PkgInitError> 
     // idiom examples/*.rs use — every `fn main` in this codebase
     // takes a dummy int so the caller (`main(0);`) always supplies
     // one arg.
-    let main_path = src_dir.join("main.res");
+    let main_path = src_dir.join("main.rz");
     let main_src = render_hello_world();
     fs::write(&main_path, main_src)?;
 
@@ -216,7 +216,7 @@ pub fn render_manifest(name: &str, author: &str) -> String {
     )
 }
 
-/// The hello-world `src/main.res` body. Pinned so the template
+/// The hello-world `src/main.rz` body. Pinned so the template
 /// stays deterministic across runs.
 ///
 /// Written with explicit `\n    ` rather than Rust's line-
@@ -227,7 +227,7 @@ pub fn render_hello_world() -> &'static str {
     "// Welcome to Resilient.\n\
 //\n\
 // Run with:\n\
-//   resilient src/main.res\n\
+//   resilient src/main.rz\n\
 fn main(int _d) {\n    println(\"Hello, world!\");\n    return 0;\n}\nmain(0);\n"
 }
 
@@ -304,7 +304,7 @@ pub fn read_package_name(manifest_path: &Path) -> Option<String> {
 /// RES-212: walk upward from `start` looking for a sibling
 /// `resilient.toml`. Returns the manifest path if one is found.
 ///
-/// `resilient run path/to/file.res` conventionally lives inside a
+/// `resilient run path/to/file.rz` conventionally lives inside a
 /// project; rather than require the user to be in the project root,
 /// we search `start`, `start/..`, … up to the filesystem root. This
 /// matches how cargo finds `Cargo.toml`.
@@ -333,8 +333,12 @@ mod tests {
     fn tmp_parent(tag: &str) -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let p =
-            std::env::temp_dir().join(format!("res_pkg_init_{}_{}_{}", tag, std::process::id(), n));
+        let p = std::env::temp_dir().join(format!(
+            "res_pkg_init_{}_{}_{}",
+            tag,
+            std::process::id(),
+            n
+        ));
         fs::create_dir_all(&p).expect("mkdir tmp parent");
         p
     }
@@ -347,7 +351,7 @@ mod tests {
         assert_eq!(out.wrote.len(), 3);
         // Every promised file exists.
         assert!(parent.join("my-proj/resilient.toml").exists());
-        assert!(parent.join("my-proj/src/main.res").exists());
+        assert!(parent.join("my-proj/src/main.rz").exists());
         assert!(parent.join("my-proj/.gitignore").exists());
 
         let _ = fs::remove_dir_all(&parent);
@@ -357,11 +361,12 @@ mod tests {
     fn manifest_contents_match_template() {
         let parent = tmp_parent("manifest");
         scaffold_in(&parent, "cool_proj").expect("scaffold");
-        let got =
-            fs::read_to_string(parent.join("cool_proj/resilient.toml")).expect("read manifest");
+        let got = fs::read_to_string(parent.join("cool_proj/resilient.toml"))
+            .expect("read manifest");
         let expected = format!(
             "[package]\nname = \"cool_proj\"\nversion = \"0.1.0\"\nauthor = \"{}\"\nedition = \"{}\"\n\n[dependencies]\n",
-            DEFAULT_AUTHOR, DEFAULT_EDITION,
+            DEFAULT_AUTHOR,
+            DEFAULT_EDITION,
         );
         assert_eq!(got, expected);
         let _ = fs::remove_dir_all(&parent);
@@ -373,8 +378,8 @@ mod tests {
         // `[dependencies]` fails loudly rather than silently.
         let parent = tmp_parent("deps");
         scaffold_in(&parent, "projdeps").expect("scaffold");
-        let got =
-            fs::read_to_string(parent.join("projdeps/resilient.toml")).expect("read manifest");
+        let got = fs::read_to_string(parent.join("projdeps/resilient.toml"))
+            .expect("read manifest");
         assert!(
             got.contains("[dependencies]"),
             "missing [dependencies] table in: {got}"
@@ -387,7 +392,8 @@ mod tests {
     fn hello_world_main_runs_via_template() {
         let parent = tmp_parent("hello");
         scaffold_in(&parent, "greetings").expect("scaffold");
-        let got = fs::read_to_string(parent.join("greetings/src/main.res")).expect("read main.res");
+        let got = fs::read_to_string(parent.join("greetings/src/main.rz"))
+            .expect("read main.rz");
         assert!(got.contains("fn main"), "expected fn main in: {got}");
         assert!(got.contains("Hello, world!"), "expected greeting in: {got}");
         let _ = fs::remove_dir_all(&parent);
@@ -397,7 +403,8 @@ mod tests {
     fn gitignore_ignores_target_and_cert() {
         let parent = tmp_parent("gitignore");
         scaffold_in(&parent, "proj").expect("scaffold");
-        let got = fs::read_to_string(parent.join("proj/.gitignore")).expect("read gitignore");
+        let got = fs::read_to_string(parent.join("proj/.gitignore"))
+            .expect("read gitignore");
         assert!(got.contains("target/"));
         assert!(got.contains("cert/"));
         let _ = fs::remove_dir_all(&parent);
@@ -410,11 +417,11 @@ mod tests {
         fs::create_dir(&target).unwrap();
         fs::write(target.join("stray.txt"), "preexisting content").unwrap();
 
-        let err = scaffold_in(&parent, "existing").expect_err("scaffold should refuse");
+        let err = scaffold_in(&parent, "existing")
+            .expect_err("scaffold should refuse");
         assert!(
             matches!(err, PkgInitError::DirectoryNotEmpty(_)),
-            "unexpected error: {:?}",
-            err
+            "unexpected error: {:?}", err
         );
         // Guarantee: the stray file survived unchanged.
         assert_eq!(
@@ -441,11 +448,11 @@ mod tests {
         )
         .unwrap();
 
-        let err = scaffold_in(&parent, "already").expect_err("scaffold should refuse");
+        let err = scaffold_in(&parent, "already")
+            .expect_err("scaffold should refuse");
         assert!(
             matches!(err, PkgInitError::ManifestExists(_)),
-            "unexpected error: {:?}",
-            err
+            "unexpected error: {:?}", err
         );
         let _ = fs::remove_dir_all(&parent);
     }
@@ -511,8 +518,9 @@ mod tests {
     fn read_package_name_picks_up_field() {
         let parent = tmp_parent("readname");
         scaffold_in(&parent, "pkg_read_ok").expect("scaffold");
-        let name = read_package_name(&parent.join("pkg_read_ok/resilient.toml"))
-            .expect("should find name");
+        let name =
+            read_package_name(&parent.join("pkg_read_ok/resilient.toml"))
+                .expect("should find name");
         assert_eq!(name, "pkg_read_ok");
         let _ = fs::remove_dir_all(&parent);
     }
@@ -529,7 +537,10 @@ mod tests {
             "[dependencies]\nname = \"not-the-package\"\n\n[package]\nname = \"real\"\n",
         )
         .unwrap();
-        assert_eq!(read_package_name(&manifest).as_deref(), Some("real"),);
+        assert_eq!(
+            read_package_name(&manifest).as_deref(),
+            Some("real"),
+        );
         let _ = fs::remove_dir_all(&parent);
     }
 
@@ -547,7 +558,8 @@ mod tests {
         let proj = parent.join("proj");
         let nested = proj.join("src/nested");
         fs::create_dir_all(&nested).unwrap();
-        fs::write(proj.join("resilient.toml"), "[package]\nname = \"p\"\n").unwrap();
+        fs::write(proj.join("resilient.toml"), "[package]\nname = \"p\"\n")
+            .unwrap();
         let found = find_manifest_upwards(&nested).expect("should find");
         assert_eq!(found, proj.join("resilient.toml"));
         let _ = fs::remove_dir_all(&parent);
