@@ -2196,6 +2196,11 @@ impl Parser {
                 // typed representation.
                 Some(format!("[{}; {}]", elem, len))
             }
+            Token::Underscore => {
+                let span = self.span_at_current();
+                self.next_token(); // skip `_`
+                Some(format!("_@{}:{}", span.start.line, span.start.column))
+            }
             _ => {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected type name {}, found {}", ctx, tok));
