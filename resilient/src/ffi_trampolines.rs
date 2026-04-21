@@ -224,6 +224,91 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                 extern "C" fn(i64, i64) -> i64,
             >(sym.ptr)(ints[0], ints[1])),
 
+            // ---- Arity 2 (missing arms) ----
+            (&[Int, Int], Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64)>(sym.ptr)(
+                    ints[0], ints[1],
+                );
+                Value::Void
+            }
+            (&[Int, Int], Float) => Value::Float(
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64) -> f64>(sym.ptr)(
+                    ints[0], ints[1],
+                ),
+            ),
+            (&[Float, Float], Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64)>(sym.ptr)(
+                    floats[0], floats[1],
+                );
+                Value::Void
+            }
+            (&[Float, Float], Int) => Value::Int(
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64) -> i64>(sym.ptr)(
+                    floats[0], floats[1],
+                ),
+            ),
+            (&[OpaquePtr, Int], Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64)>(
+                    sym.ptr,
+                )(ptrs[0], ints[1]);
+                Value::Void
+            }
+            (&[Int, OpaquePtr], OpaquePtr) => {
+                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(
+                    std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, *mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                    >(sym.ptr)(ints[0], ptrs[1]),
+                ))
+            }
+
+            // ---- Arity 3 ----
+            (&[Int, Int, Int], Int) => Value::Int(
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64) -> i64>(sym.ptr)(
+                    ints[0], ints[1], ints[2],
+                ),
+            ),
+            (&[Int, Int, Int], Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64)>(sym.ptr)(
+                    ints[0], ints[1], ints[2],
+                );
+                Value::Void
+            }
+            (&[Int, Int, Int], Float) => Value::Float(
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64) -> f64>(sym.ptr)(
+                    ints[0], ints[1], ints[2],
+                ),
+            ),
+            (&[Float, Float, Float], Float) => Value::Float(
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64) -> f64>(sym.ptr)(
+                    floats[0], floats[1], floats[2],
+                ),
+            ),
+            (&[Float, Float, Float], Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64)>(sym.ptr)(
+                    floats[0], floats[1], floats[2],
+                );
+                Value::Void
+            }
+            (&[Int, Float, Float], Float) => Value::Float(
+                std::mem::transmute::<*const (), extern "C" fn(i64, f64, f64) -> f64>(sym.ptr)(
+                    ints[0], floats[1], floats[2],
+                ),
+            ),
+            (&[OpaquePtr, Int, Int], Int) => Value::Int(
+                std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(*mut core::ffi::c_void, i64, i64) -> i64,
+                >(sym.ptr)(ptrs[0], ints[1], ints[2]),
+            ),
+            (&[OpaquePtr, Int, Int], Void) => {
+                std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(*mut core::ffi::c_void, i64, i64),
+                >(sym.ptr)(ptrs[0], ints[1], ints[2]);
+                Value::Void
+            }
+
             // Fallback.
             _ => {
                 return Err(format!(
@@ -404,9 +489,9 @@ mod tests {
 
     #[test]
     fn call_foreign_missing_arm_errors_cleanly() {
-        // Arity 3 is not in the dispatch table yet — must error, not panic.
+        // Arity 4 is not in the dispatch table — must error, not panic.
         let sig = ForeignSignature {
-            params: vec![FfiType::Int, FfiType::Int, FfiType::Int],
+            params: vec![FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int],
             ret: FfiType::Int,
         };
         let sym = ForeignSymbol {
@@ -414,8 +499,69 @@ mod tests {
             ptr: sum_two_ints as *const (),
             sig,
         };
-        let err = call_foreign(&sym, &[Value::Int(1), Value::Int(2), Value::Int(3)])
-            .expect_err("arity 3 has no trampoline");
+        let err = call_foreign(
+            &sym,
+            &[Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)],
+        )
+        .expect_err("arity 4 has no trampoline");
         assert!(err.contains("no trampoline"), "got {}", err);
+    }
+
+    extern "C" fn three_ints_sum(a: i64, b: i64, c: i64) -> i64 {
+        a + b + c
+    }
+    extern "C" fn two_ints_void(_a: i64, _b: i64) {}
+    extern "C" fn three_floats_sum(a: f64, b: f64, c: f64) -> f64 {
+        a + b + c
+    }
+
+    #[test]
+    fn arity_3_int_int_int_to_int() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int, FfiType::Int, FfiType::Int],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "three_ints_sum".into(),
+            ptr: three_ints_sum as *const (),
+            sig,
+        };
+        let out = call_foreign(&sym, &[Value::Int(1), Value::Int(2), Value::Int(3)]).unwrap();
+        assert!(matches!(out, Value::Int(6)), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_2_int_int_void() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int, FfiType::Int],
+            ret: FfiType::Void,
+        };
+        let sym = ForeignSymbol {
+            name: "two_ints_void".into(),
+            ptr: two_ints_void as *const (),
+            sig,
+        };
+        let out = call_foreign(&sym, &[Value::Int(1), Value::Int(2)]).unwrap();
+        assert!(matches!(out, Value::Void), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_3_float_float_float_to_float() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Float, FfiType::Float, FfiType::Float],
+            ret: FfiType::Float,
+        };
+        let sym = ForeignSymbol {
+            name: "three_floats_sum".into(),
+            ptr: three_floats_sum as *const (),
+            sig,
+        };
+        let out =
+            call_foreign(&sym, &[Value::Float(1.0), Value::Float(2.0), Value::Float(3.0)]).unwrap();
+        assert!(
+            matches!(out, Value::Float(f) if (f - 6.0).abs() < 1e-9),
+            "got {:?}",
+            out
+        );
     }
 }
