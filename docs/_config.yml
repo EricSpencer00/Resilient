@@ -33,7 +33,7 @@ aux_links:
 aux_links_new_tab: true
 
 # Footer.
-footer_content: 'Resilient is built one ticket at a time. See <a href="https://github.com/EricSpencer00/Resilient/tree/main/.board">.board/</a> for the full ledger.'
+footer_content: 'Resilient is built one ticket at a time. See <a href="https://github.com/EricSpencer00/Resilient/issues">GitHub Issues</a> for the full ledger.'
 
 # Edit-on-GitHub link under each page.
 gh_edit_link: true

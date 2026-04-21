@@ -175,5 +175,5 @@ auditable proofs of your contracts. Next steps:
   verification.
 - Dig into a real example: `resilient/examples/sensor_monitor.rs`
   exercises the full feature set in ~70 lines.
-- Browse the [.board/ ticket ledger](https://github.com/EricSpencer00/Resilient/tree/main/.board)
+- Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
   to see what's next and what's in flight.

@@ -168,4 +168,4 @@ on your target if absolute numbers matter.
 - **RES-106** added the JIT row (2.8 ms): ~12× over the VM,
   ~145× over the tree walker, ~1.4× from native Rust.
 
-The full bench history is in `.board/tickets/DONE/`.
+The full bench history is in [closed GitHub Issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aclosed).

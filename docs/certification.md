@@ -399,7 +399,7 @@ section. Items below are planned, not delivered.
   `static-only` feature.
 - [Concurrency and Real-Time Scheduling](concurrency) — what the
   language currently says (and does not say) about concurrency.
-- [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
+- [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
   — the live engineering ledger, including every verification
   and certificate ticket (RES-067, RES-071, RES-131, RES-132,
   RES-136, RES-137, RES-178, RES-194, RES-195).

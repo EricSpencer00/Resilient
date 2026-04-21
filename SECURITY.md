@@ -2,31 +2,33 @@
 
 ## Supported Versions
 
-| Version | Supported |
-| ------- | --------- |
-| `main`  | ✓ (rolling) |
-
-Resilient is pre-1.0 software. Only the `main` branch receives security fixes.
+Resilient is pre-1.0 and under active development. Security fixes are applied to the `main` branch only.
 
 ## Reporting a Vulnerability
 
-**Please do not file public GitHub Issues for security vulnerabilities.**
+**Please do not report security vulnerabilities via public GitHub issues.**
 
-Email [ericspencer1450@gmail.com](mailto:ericspencer1450@gmail.com) with:
+Email **ericspencer1450@gmail.com** with:
 
-- A description of the vulnerability and its potential impact
-- Steps to reproduce or a proof-of-concept
-- Any suggested mitigations you have in mind
+- A description of the vulnerability
+- Steps to reproduce
+- Potential impact
+- Any suggested mitigations
 
-You can expect an acknowledgment within 72 hours and a status update within 7 days.
+You should receive a response within 48 hours. If you do not, please follow up to ensure the message was received.
 
 ## Scope
 
-The Resilient compiler, runtime, and tooling are the primary scope. The embedded
-`resilient-runtime` crate targets `no_std` environments where memory-safety
-guarantees are especially critical — reports in that area are particularly welcome.
+Areas of particular interest for security reports:
 
-## Out of Scope
+- **FFI trampoline** (`resilient/src/ffi.rs`) — memory safety, arbitrary code execution via crafted `.so` files
+- **Parser / lexer** — denial of service via crafted input, panics
+- **`unsafe` blocks** — soundness violations
+- **File I/O builtins** (`file_read` / `file_write`) — path traversal
+- **Compiler-emitted certificates** — signature forgery, hash collision in manifest
 
-- Vulnerabilities in third-party dependencies (report upstream)
-- Issues in example programs that do not affect the compiler or runtime
+## Security Model
+
+Resilient programs run with the ambient authority of the host process. There is no sandboxing of the interpreter or VM. Do not run untrusted Resilient programs without an OS-level sandbox (e.g., container, seccomp, chroot).
+
+The `resilient-runtime` embedded crate has no file I/O or network surface and is not in scope for most vulnerabilities.

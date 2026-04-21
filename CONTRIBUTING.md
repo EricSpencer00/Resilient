@@ -135,58 +135,35 @@ Resilient/
 ├── self-host/                      # Self-hosting bootstrap experiments
 ├── scripts/                        # Helper shell scripts (CI, size gate, etc.)
 ├── STABILITY.md                    # Pre-1.0 stability policy (read before upgrading)
-├── .board/                         # Project management board
-│   ├── ROADMAP.md                  # Goalpost ladder (G1–G20+)
-│   └── tickets/                    # Ticket files (OPEN / IN_PROGRESS / DONE)
+├── ROADMAP.md                      # Goalpost ladder (G1–G20+)
 └── .github/workflows/              # CI workflow definitions
 ```
 
 ---
 
-## The `.board/` Workflow
+## The GitHub Issues Workflow
 
-Resilient uses a lightweight file-based ticket system under `.board/tickets/`.
-GitHub Issues mirror the OPEN tickets so external contributors can see and
-claim work without needing special repo access.
-
-### Ticket lifecycle
-
-```
-.board/tickets/OPEN/  →  .board/tickets/IN_PROGRESS/  →  .board/tickets/DONE/
-```
-
-- **OPEN** — `.board/tickets/OPEN/RES-NNN-short-title.md`
-  Filed when work is defined but not yet started. These mirror the GitHub
-  Issues tagged with `ticket`.
-- **IN_PROGRESS** — `.board/tickets/IN_PROGRESS/RES-NNN-short-title.md`
-  Move the file when you start work. Add your name / agent ID to the ticket
-  header as `Claimed-by:`.
-- **DONE** — `.board/tickets/DONE/RES-NNN-short-title.md`
-  Move the file when the work lands on `main`. Record the closing commit
-  hash in the ticket footer.
+Resilient tracks all work in [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues).
+Each issue carries a unique `RES-NNN` identifier, a clear goal, and concrete
+acceptance criteria.
 
 ### Picking up a ticket
 
-1. Skim `.board/tickets/OPEN/` (or the GitHub Issues list) and pick one. New
-   contributors — look for issues tagged `good first issue`.
-2. **Claim it** by moving the file:
+1. Browse [open issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen)
+   and pick one. New contributors — look for issues tagged `good first issue`.
+2. **Claim it** by commenting on the issue, then create a branch:
 
    ```bash
-   git mv .board/tickets/OPEN/RES-NNN-*.md .board/tickets/IN_PROGRESS/
+   git checkout -b res-NNN-short-title
    ```
 
-   Add a `Claimed-by: <your-github-handle>` line to the ticket header and
-   commit that move as its own commit, or include it in your first PR.
-3. Open a **draft PR** early — this signals to others that the ticket is
-   taken.
-4. When the PR merges, move the ticket to `DONE/` and record the commit hash
-   in the ticket footer.
-5. Close the corresponding GitHub Issue (`Closes #N` in the PR body does this
-   automatically).
+3. Open a **draft PR** early with `Closes #N` in the body — this signals to
+   others that the ticket is taken.
+4. When the PR merges, the issue closes automatically via the `Closes #N` link.
 
 ### Good first issues
 
-New contributors: the `good first issue` label on GitHub marks tickets that
+New contributors: the `good first issue` label on GitHub marks issues that
 are well-scoped for a first PR. They come with clear acceptance criteria and
 generally don't require deep knowledge of the compiler internals.
 
@@ -270,8 +247,7 @@ Before marking a PR ready for review:
 - [ ] New behaviour has tests (unit or `.expected.txt` golden).
 - [ ] Documentation updated if user-visible behaviour changed (README,
       SYNTAX.md, docs/, STABILITY.md CHANGELOG).
-- [ ] Ticket moved from `IN_PROGRESS/` to `DONE/` in the same PR when the
-      work is complete.
+- [ ] GitHub Issue closed via `Closes #N` in the PR body.
 
 CI gates PRs on all of the above plus:
 
@@ -309,29 +285,21 @@ notes to help you orient quickly.
 
 ### Quick Start for agents
 
-1. **Find work** — Browse `.board/tickets/OPEN/` in the repo or GitHub Issues
-   filtered by `agent-ready`:
-   <https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready>
-   Each `agent-ready` issue was filed with the *Agent-Ready Ticket* template
-   and includes a Goal, explicit Acceptance Criteria, and a list of files to
-   touch — everything you need to start without further clarification.
+1. **Find work** — Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen+label%3Aagent-ready)
+   filtered by `agent-ready`. Each `agent-ready` issue was filed with the
+   *Agent-Ready Ticket* template and includes a Goal, explicit Acceptance
+   Criteria, and a list of files to touch — everything you need to start
+   without further clarification.
 
-2. **Claim it** — Move the ticket file and add your agent ID:
-   ```bash
-   git mv .board/tickets/OPEN/RES-NNN-*.md .board/tickets/IN_PROGRESS/
-   # edit the file: add  Claimed-by: <agent-id>  to the header
-   git commit -m "RES-NNN: claim ticket"
-   ```
-
-3. **Branch** — Work on a branch named after the ticket:
+2. **Claim it** — Comment on the issue, then create a branch:
    ```bash
    git checkout -b res-NNN-short-title
    ```
 
-4. **Implement** — Read the ticket's "Files / modules to touch" list. Run the
+3. **Implement** — Read the issue's "Files / modules to touch" list. Run the
    acceptance criteria commands as you go.
 
-5. **Verify before pushing**:
+4. **Verify before pushing**:
    ```bash
    cargo fmt --all
    cargo clippy --all-targets -- -D warnings
@@ -339,10 +307,10 @@ notes to help you orient quickly.
    cargo test --manifest-path resilient-runtime/Cargo.toml
    ```
 
-6. **Open a PR** — Target `main`. Use `Closes #N` in the body to auto-close
-   the GitHub Issue. Move the ticket to `DONE/` in the same PR.
+5. **Open a PR** — Target `main`. Use `Closes #N` in the body to auto-close
+   the GitHub Issue.
 
-7. **Trailer** — Include a `Co-Authored-By:` line so authorship is transparent:
+6. **Trailer** — Include a `Co-Authored-By:` line so authorship is transparent:
    ```
    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
    ```
@@ -350,29 +318,8 @@ notes to help you orient quickly.
 ### Filing new work
 
 If you identify a gap or improvement not already tracked, file a GitHub Issue
-using the **Agent-Ready Ticket** template. Assign the next `RES-NNN` number
-(check `.board/tickets/` for the current max), fill in Goal and Acceptance
-Criteria precisely, and add the `agent-ready` label so other agents can pick
-it up.
-
-### Ticket file format
-
-Each ticket in `.board/tickets/` is a Markdown file with at least:
-
-```
-# RES-NNN: Short title
-Status: OPEN | IN_PROGRESS | DONE
-Claimed-by: <github-handle or agent-id>   # set when moving to IN_PROGRESS
-
-## Goal
-...
-
-## Acceptance Criteria
-- [ ] ...
-
-## Files to Touch
-- path/to/file.rs — why
-```
+using the **Agent-Ready Ticket** template. Fill in Goal and Acceptance Criteria
+precisely, and add the `agent-ready` label so other agents can pick it up.
 
 ### Core rules (same as humans)
 
@@ -381,8 +328,6 @@ Claimed-by: <github-handle or agent-id>   # set when moving to IN_PROGRESS
 - Keep PRs focused — one ticket, one concern.
 - All CI checks must pass before requesting a merge.
 - Include a `Co-Authored-By:` trailer on any agent-assisted commit.
-- Claim tickets by moving them from `OPEN/` to `IN_PROGRESS/` and adding
-  `Claimed-by: <agent-id>` to the ticket header.
 
 ---
 

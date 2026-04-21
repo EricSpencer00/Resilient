@@ -75,16 +75,17 @@ the perf gate automatically.
 
 ## The ticket system
 
-Resilient tracks work in [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
-— a plain-text ticket ledger checked into the repository. Each
-ticket is a small Markdown file with a unique `RES-NNN` ID.
+Resilient tracks work in [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues).
+Each issue carries a unique `RES-NNN` identifier, a clear goal, and
+concrete acceptance criteria.
 
-- **Claiming a ticket**: comment on the GitHub issue or PR that
-  references the ticket, or add a `claimed_by` line to the file.
-- **Landing a ticket**: your PR title or commit message should
-  reference the ticket ID (e.g. `RES-042: add float division`).
-- **Opening a ticket**: file a GitHub issue with a clear problem
-  statement; a maintainer will assign it a `RES-NNN` ID.
+- **Claiming a ticket**: comment on the issue, then create a branch
+  named `res-NNN-short-title`.
+- **Landing a ticket**: open a PR with `Closes #N` in the body; the
+  commit message should reference the ticket ID
+  (e.g. `RES-042: add float division`).
+- **Opening a ticket**: file a GitHub issue using the Agent-Ready
+  Ticket template with a clear goal and acceptance criteria.
 
 ---
 

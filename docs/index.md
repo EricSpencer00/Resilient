@@ -116,10 +116,9 @@ clauses become runtime asserts.
 
 Resilient is free and open source software released under the
 **MIT License**. Contributions from humans and AI agents are
-equally welcome — the ticket system in
-[`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
-is designed to be machine-readable, and `cargo test` is the
-authoritative acceptance gate.
+equally welcome — work is tracked in
+[GitHub Issues](https://github.com/EricSpencer00/Resilient/issues),
+and `cargo test` is the authoritative acceptance gate.
 
 [Contributing guide](contributing){: .btn .btn-outline .mr-2 }
 [Community & Open Source](community){: .btn .btn-outline }
@@ -138,5 +137,5 @@ authoritative acceptance gate.
 - **DO-178C / ISO 26262 / IEC 61508 / MISRA?** → [Certification and Safety Standards](certification)
 - **Setting up your editor?** → [LSP / Editor Integration](lsp)
 - **Looking for a tool (fmt, lint, verify-cert, REPL, fuzz, ...)?** → [Tooling Reference](tooling)
-- **Contributing?** → [Contributing guide](contributing) and [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board) on GitHub
+- **Contributing?** → [Contributing guide](contributing) and [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
 - **License, community, open source?** → [Community & Open Source](community)

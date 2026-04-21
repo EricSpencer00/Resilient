@@ -176,13 +176,13 @@ guess.
 
 ## Versioning and stability
 
-Resilient is in active development under a public ledger
-([`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)).
+Resilient is in active development, tracked publicly in
+[GitHub Issues](https://github.com/EricSpencer00/Resilient/issues).
 Each commit closes one numbered ticket
 (`RES-NNN: <imperative summary>`); each ticket has concrete,
 verifiable acceptance criteria. The roadmap
-([ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/.board/ROADMAP.md))
-lists 20 numbered goalposts (G1–G20); the changelog at the
+([ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md))
+lists 20+ numbered goalposts (G1–G20+); the changelog at the
 bottom is the source of truth for what shipped when.
 
 We don't yet have a stable version number. Until we do, treat
@@ -237,5 +237,5 @@ In rough order of influence:
   first program
 - [Syntax Reference](syntax) — the full grammar
 - [Performance](performance) — the bench numbers
-- [.board/](https://github.com/EricSpencer00/Resilient/tree/main/.board)
+- [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
   — the live engineering ledger

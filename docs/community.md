@@ -64,7 +64,7 @@ The repository contains:
 |------|----------|
 | `resilient/` | Compiler and runtime source (Rust) |
 | `docs/` | This documentation site (Jekyll) |
-| `.board/` | Plain-text ticket ledger |
+| `ROADMAP.md` | Goalpost ladder (G1–G20+) |
 | `examples/` | Example `.res` programs |
 | `resilient-runtime/` | `#![no_std]` runtime crate |
 
@@ -97,9 +97,9 @@ The short version:
 - All contributions go through GitHub pull requests
 - The CI workflow (tests + fmt + clippy + perf gate) is the
   acceptance bar
-- Work is tracked through the
-  [`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
-  ticket system with `RES-NNN` identifiers
+- Work is tracked through
+  [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
+  with `RES-NNN` identifiers
 
 ---
 
@@ -113,7 +113,7 @@ workflow requires no human-only interaction beyond opening a PR.
 Agents of any kind — code generation assistants, autonomous
 coding agents, or CI bots — are welcome to:
 
-- Pick up a `good first issue` or `.board/` ticket
+- Pick up a [`good first issue`](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aopen+label%3A%22good+first+issue%22)
 - Submit a PR that passes `cargo test && cargo fmt --check && cargo clippy`
 - Report bugs by opening a GitHub issue with a reproducible example
 
@@ -132,6 +132,5 @@ The current focus is on:
 - Strengthening the Z3 contract prover
 - Improving the LSP experience
 
-Follow along in
-[`.board/`](https://github.com/EricSpencer00/Resilient/tree/main/.board)
+Follow along in [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
 or watch the repository on GitHub to stay current.

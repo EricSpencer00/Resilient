@@ -178,7 +178,7 @@ returns a scalar, Resilient treats it as a single value.
 
 ## Effect Tracking (G18 — Prerequisite for Safe Concurrency)
 
-Goalpost G18 on the [roadmap](https://github.com/EricSpencer00/Resilient/blob/main/.board/ROADMAP.md)
+Goalpost G18 on the [roadmap](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)
 is **effect tracking**: annotating every function with the set
 of effects it can perform. The planned alphabet starts small:
 
@@ -461,6 +461,7 @@ Anything richer is roadmap.
   restore / retry details and value ownership across tiers.
 - [no_std runtime](no-std) — the embedded build and its
   feature flags.
-- [.board/ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/.board/ROADMAP.md)
-  — G18 (effect tracking) and the ticket ledger for
-  everything above.
+- [ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)
+  — G18 (effect tracking) and the full goalpost ladder.
+- [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues)
+  — the ticket ledger for everything above.

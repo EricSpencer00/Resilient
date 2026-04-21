@@ -138,5 +138,5 @@ Resilient programs on bare-metal MCUs. Concretely:
 4. **Future** — `live { }` block semantics with explicit
    snapshot/restore for embedded I/O effects
 
-See [.board/ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/.board/ROADMAP.md)
+See [ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)
 goalpost G18 for status.

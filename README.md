@@ -2,11 +2,18 @@
 
 A programming language designed for extreme reliability in embedded and safety-critical systems.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub Issues](https://img.shields.io/github/issues/EricSpencer00/Resilient)](https://github.com/EricSpencer00/Resilient/issues)
+
+**Resilient is open source under the MIT license — contributions from humans and AI agents are welcome.**
+
 📖 **Docs**: [ericspencer.us/Resilient](https://ericspencer.us/Resilient/)
 &nbsp;·&nbsp; [Onboarding](https://ericspencer00.github.io/Resilient/getting-started)
 &nbsp;·&nbsp; [Design Philosophy](https://ericspencer00.github.io/Resilient/philosophy)
 &nbsp;·&nbsp; [Performance](https://ericspencer00.github.io/Resilient/performance)
 &nbsp;·&nbsp; [Memory Model](https://ericspencer00.github.io/Resilient/memory-model)
+&nbsp;·&nbsp; [Contributing](CONTRIBUTING.md)
 
 ## Core Philosophy
 
@@ -595,8 +602,8 @@ See the [SYNTAX.md](SYNTAX.md) file for detailed syntax requirements and example
 
 ## Project Status
 
-Active development happens one ticket at a time. See [.board/ROADMAP.md](.board/ROADMAP.md)
-for the goalpost ladder and [.board/tickets/DONE/](.board/tickets/DONE/) for
+Active development happens one ticket at a time. See [ROADMAP.md](ROADMAP.md)
+for the goalpost ladder and [GitHub Issues (closed)](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aclosed) for
 the full ledger. Each commit of the form `RES-NNN: summary` closes one ticket.
 
 ### What works today
