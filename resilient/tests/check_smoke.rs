@@ -18,7 +18,10 @@ fn tmp_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let p = std::env::temp_dir().join(format!(
-        "res_check_smoke_{}_{}_{}", tag, std::process::id(), n
+        "res_check_smoke_{}_{}_{}",
+        tag,
+        std::process::id(),
+        n
     ));
     std::fs::create_dir_all(&p).expect("mkdir");
     p
@@ -48,8 +51,11 @@ fn check_type_error_exits_one() {
     let dir = tmp_dir("type_err");
     let src_path = dir.join("bad.rz");
     // Assign a string to an int — type mismatch.
-    std::fs::write(&src_path, "fn main(int _d) {\n    let x: Int = \"not an int\";\n    return 0;\n}\nmain(0);\n")
-        .unwrap();
+    std::fs::write(
+        &src_path,
+        "fn main(int _d) {\n    let x: Int = \"not an int\";\n    return 0;\n}\nmain(0);\n",
+    )
+    .unwrap();
 
     let output = Command::new(bin())
         .arg("check")
@@ -93,7 +99,10 @@ fn check_quiet_suppresses_output() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.is_empty(), "expected no stdout in quiet mode; got: {stdout}");
+    assert!(
+        stdout.is_empty(),
+        "expected no stdout in quiet mode; got: {stdout}"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // seed line is printed by the normal driver, not check — should be absent
     assert!(

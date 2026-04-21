@@ -350,12 +350,7 @@ pub(crate) fn rule_mul_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -
 /// can replace all three ops with a single `Const(0)`.
 ///
 /// Skips if `Mul` (at `i+1`) is a jump target.
-pub(crate) fn rule_mul_zero(
-    chunk: &Chunk,
-    i: usize,
-    targets: &[bool],
-    new_code: &[Op],
-) -> bool {
+pub(crate) fn rule_mul_zero(chunk: &Chunk, i: usize, targets: &[bool], new_code: &[Op]) -> bool {
     if i + 1 >= chunk.code.len() {
         return false;
     }
