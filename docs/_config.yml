@@ -12,6 +12,9 @@ url: "https://ericspencer.us"
 # Pages can build it without the gem being in the safelist.
 remote_theme: just-the-docs/just-the-docs
 
+# Brand
+logo: "/assets/images/logo.jpg"
+
 # Search across pages.
 search_enabled: true
 search:
