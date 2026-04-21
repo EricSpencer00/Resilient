@@ -1,7 +1,7 @@
 ---
 id: RES-259
 title: "L0001: lint does not fire for unused match-arm bindings"
-state: IN_PROGRESS
+state: DONE
 priority: P3
 goalpost: G14
 created: 2026-04-20
@@ -81,3 +81,5 @@ The same gap exists for `Pattern::Bind` (the `name` part of `name @ inner`).
 
 - 2026-04-20 created by analyzer (`collect_lets_in` does not inspect
   Pattern::Identifier/Bind in match arms; L0001 has false negatives)
+- 2026-04-20 closed by Claude — commit aaf6c94; all 4 acceptance-criteria
+  tests pass; 723 total tests green; clippy and fmt clean.
