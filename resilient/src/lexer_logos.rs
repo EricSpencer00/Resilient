@@ -174,6 +174,8 @@ enum Tok {
     Requires,
     #[token("ensures")]
     Ensures,
+    #[token("recovers_to")]
+    RecoversTo,
     #[token("invariant")]
     Invariant,
     #[token("struct")]
@@ -193,6 +195,15 @@ enum Tok {
     // requirement as above.
     #[token("type")]
     Type,
+    // RES-385: `linear` prefix on a type annotation.
+    #[token("linear")]
+    Linear,
+    // RES-391: `region <Name>;` declaration keyword and the `mut`
+    // qualifier used inside reference types (`&mut[A] T`).
+    #[token("region")]
+    Region,
+    #[token("mut")]
+    Mut,
     #[token("true")]
     True,
     #[token("false")]
@@ -509,6 +520,7 @@ fn convert(t: Tok) -> Token {
         Tok::In => Token::In,
         Tok::Requires => Token::Requires,
         Tok::Ensures => Token::Ensures,
+        Tok::RecoversTo => Token::RecoversTo,
         Tok::Invariant => Token::Invariant,
         Tok::Struct => Token::Struct,
         Tok::New => Token::New,
@@ -516,6 +528,9 @@ fn convert(t: Tok) -> Token {
         Tok::Use => Token::Use,
         Tok::Impl => Token::Impl,
         Tok::Type => Token::Type,
+        Tok::Linear => Token::Linear,
+        Tok::Region => Token::Region,
+        Tok::Mut => Token::Mut,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,

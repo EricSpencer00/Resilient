@@ -68,6 +68,10 @@ mod free_vars;
 mod ffi;
 #[cfg(feature = "ffi")]
 mod ffi_trampolines;
+// RES-385: linear-type MVP — helpers for the `linear T` encoding
+// used in type-annotation strings, plus the single-use-enforcement
+// pass invoked from the typechecker.
+mod linear;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -93,6 +97,10 @@ enum Token {
     In,
     Requires,
     Ensures,
+    /// RES-392: `recovers_to` — crash-recovery postcondition. MVP
+    /// verifies only the final state; per-prefix bounded model
+    /// checking is tracked as a follow-up.
+    RecoversTo,
     Invariant,
     Struct,
     New,
@@ -117,6 +125,18 @@ enum Token {
     Impl,
     /// RES-128: `type <Name> = <Target>;` non-nominal alias.
     Type,
+    /// RES-385: `linear` prefix on a type annotation — marks a
+    /// resource the type checker enforces single-use on.
+    Linear,
+    /// RES-391: `region <Name>;` — declares a memory region name
+    /// used as a label on reference types (`&[Name] T`, `&mut[Name] T`)
+    /// for syntactic non-aliasing checks.
+    Region,
+    /// RES-391: `mut` qualifier on reference types (`&mut T`,
+    /// `&mut[A] T`). Only recognized inside a type position today;
+    /// outside of types the parser surfaces it as an ordinary
+    /// unexpected-token error.
+    Mut,
 
     // Literals
     Identifier(String),
@@ -222,6 +242,7 @@ impl Token {
             Token::In => "`in`".to_string(),
             Token::Requires => "`requires`".to_string(),
             Token::Ensures => "`ensures`".to_string(),
+            Token::RecoversTo => "`recovers_to`".to_string(),
             Token::Invariant => "`invariant`".to_string(),
             Token::Struct => "`struct`".to_string(),
             Token::New => "`new`".to_string(),
@@ -230,6 +251,9 @@ impl Token {
             Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
+            Token::Linear => "`linear`".to_string(),
+            Token::Region => "`region`".to_string(),
+            Token::Mut => "`mut`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -606,6 +630,7 @@ impl Lexer {
                         "in" => Token::In,
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
+                        "recovers_to" => Token::RecoversTo,
                         "invariant" => Token::Invariant,
                         "struct" => Token::Struct,
                         "new" => Token::New,
@@ -614,6 +639,9 @@ impl Lexer {
                         "use" => Token::Use,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
+                        "linear" => Token::Linear,
+                        "region" => Token::Region,
+                        "mut" => Token::Mut,
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -959,6 +987,66 @@ impl BackoffConfig {
     }
 }
 
+/// RES-389: declared effect set for a function.
+///
+/// The MVP carries two bits — `pure` and `io` — sufficient to
+/// distinguish side-effect-free code from code that may observe
+/// or mutate the outside world. `sends` (actor-model messaging)
+/// and `fails` (typed error-raising effect) are intentionally
+/// deferred: `fails` is tracked by RES-387, `sends` depends on
+/// the actor model landing first.
+///
+/// Call-site enforcement (`typechecker::check_program_effects`):
+/// a `pure` function may only call other `pure` functions; an
+/// `io` function may call `pure` or `io` functions. Functions
+/// without an explicit annotation default to `EffectSet::io()`
+/// for backward compatibility — every pre-RES-389 test continues
+/// to type-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EffectSet {
+    /// The fn is declared side-effect-free: no I/O, no
+    /// nondeterminism, no mutation of observable state. Enforced
+    /// at call sites — a `pure` caller may only reach other pure
+    /// callees.
+    pub pure: bool,
+    /// The fn may perform I/O (stdin/stdout, hardware register
+    /// reads/writes, clock, env). This is the default effect for
+    /// an unannotated fn; the permissive baseline preserves
+    /// backward compatibility.
+    pub io: bool,
+}
+
+impl EffectSet {
+    /// Construct the `pure` effect set — no effects at all.
+    pub const fn pure() -> Self {
+        EffectSet {
+            pure: true,
+            io: false,
+        }
+    }
+
+    /// Construct the `io` effect set — the permissive default for
+    /// unannotated functions.
+    pub const fn io() -> Self {
+        EffectSet {
+            pure: false,
+            io: true,
+        }
+    }
+
+    /// Human-readable tag for diagnostics (`pure`, `io`, or
+    /// `unknown` if somehow neither bit is set).
+    pub fn tag(&self) -> &'static str {
+        if self.pure {
+            "pure"
+        } else if self.io {
+            "io"
+        } else {
+            "unknown"
+        }
+    }
+}
+
 // AST nodes for our parser
 #[derive(Debug, Clone)]
 enum Node {
@@ -1000,6 +1088,14 @@ enum Node {
         /// special identifier `result` is bound to the return value
         /// inside each clause's env.
         ensures: Vec<Node>,
+        /// RES-392: optional crash-recovery postcondition. MVP
+        /// semantics: verified as a weaker postcondition over the
+        /// function's final state (same evaluation environment as
+        /// `ensures`, with `result` bound). Proper per-prefix
+        /// bounded model checking — the real "crash at any
+        /// instruction" interpretation from the ticket — is tracked
+        /// as a follow-up. A value of `None` means no clause.
+        recovers_to: Option<Box<Node>>,
         /// RES-052: optional `-> TYPE` return-type annotation. Advisory.
         #[allow(dead_code)]
         return_type: Option<String>,
@@ -1014,6 +1110,17 @@ enum Node {
         /// infers purity for unannotated fns.
         #[allow(dead_code)] // read via pattern destructure in typechecker
         pure: bool,
+        /// RES-389: effect annotations declared at the type level.
+        /// A fn may be tagged `pure fn` or `io fn` (soft keywords at
+        /// statement-start) to constrain which other fns it may
+        /// call. Unannotated fns default to `EffectSet::io()` for
+        /// backward compatibility — anything can be called from
+        /// them, and they can be called from other `io` contexts.
+        /// The type checker (see `typechecker::check_program_effects`)
+        /// enforces: `pure` fns may only call other `pure` fns;
+        /// `io` fns may call `pure` or `io`. See RES-387 for the
+        /// `fails` effect and follow-up tickets for `sends`.
+        effects: EffectSet,
         /// RES-124 (scope RES-124a): generic type parameters
         /// declared on the fn via `fn<T, U> name(...)`. Empty
         /// when the user wrote a plain monomorphic `fn`. Order
@@ -1249,6 +1356,9 @@ enum Node {
         body: Box<Node>,
         requires: Vec<Node>,
         ensures: Vec<Node>,
+        /// RES-392: optional crash-recovery postcondition. Same
+        /// MVP semantics as the named-fn variant: final-state only.
+        recovers_to: Option<Box<Node>>,
         #[allow(dead_code)]
         return_type: Option<String>,
         /// RES-088: span of the `fn` keyword. Consumed in follow-ups.
@@ -1392,6 +1502,17 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-391: `region <Name>;` top-level declaration. Introduces a
+    /// named region label used inside reference types
+    /// (`&[Name] T`, `&mut[Name] T`) for syntactic non-aliasing
+    /// checks. Region declarations carry no runtime representation —
+    /// they are metadata consumed by the borrow checker
+    /// (`check_region_aliasing`).
+    RegionDecl {
+        name: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
@@ -1498,6 +1619,22 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Option<Node> {
+        // RES-389: soft-keyword dispatch for the `pure` / `io`
+        // effect annotations. They're lexed as identifiers so
+        // existing programs that use them as names don't break;
+        // a statement-start `pure fn` / `io fn` sequence is
+        // treated as an effect-annotated function declaration.
+        if let Token::Identifier(n) = &self.current_token
+            && (n == "pure" || n == "io")
+            && self.peek_token == Token::Function
+        {
+            let effects = if n == "pure" {
+                EffectSet::pure()
+            } else {
+                EffectSet::io()
+            };
+            return Some(self.parse_effect_keyword_function(effects));
+        }
         match self.current_token {
             // RES-191: `@pure` (and future attributes) prefix a
             // function declaration. Dispatched here so the
@@ -1507,6 +1644,7 @@ impl Parser {
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
+            Token::Region => Some(self.parse_region_decl()),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -1637,10 +1775,39 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Node {
-        // Default: no `@pure` annotation. The attribute-dispatch
-        // path (see parse_attributed_item) calls
-        // `parse_function_with_pure(true)` instead.
-        self.parse_function_with_pure(false)
+        // Default: no annotation. The attribute-dispatch path
+        // (see parse_attributed_item) and the effect-keyword
+        // dispatch path (see parse_effect_keyword_function) supply
+        // an explicit `EffectSet` instead. Unannotated fns default
+        // to `io` per RES-389 for backward compatibility.
+        self.parse_function_with_effects(EffectSet::io())
+    }
+
+    /// RES-389: parse `pure fn ...` / `io fn ...`. Entered with
+    /// `current_token` positioned on the soft keyword identifier
+    /// (`pure` or `io`). Consumes the keyword and delegates to
+    /// `parse_function_with_effects`. Invalid sequences (e.g.
+    /// `pure` followed by something other than `fn`) fall back to
+    /// parsing the identifier as an expression statement so the
+    /// rest of the file still parses.
+    fn parse_effect_keyword_function(&mut self, effects: EffectSet) -> Node {
+        // Consume the `pure` / `io` identifier.
+        self.next_token();
+        if self.current_token != Token::Function {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "effect keyword `{}` must be followed by `fn`, found {}",
+                effects.tag(),
+                tok
+            ));
+            // Best-effort recovery: parse whatever follows as a
+            // normal statement so later errors don't cascade.
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+        self.parse_function_with_effects(effects)
     }
 
     /// RES-191: parse an attribute prefix (`@pure`) followed by the
@@ -1673,13 +1840,17 @@ impl Parser {
         };
         self.next_token(); // skip attribute name
 
-        let pure_flag = match attr_name.as_str() {
-            "pure" => true,
+        let (pure_flag, effects) = match attr_name.as_str() {
+            // `@pure` lights up both the legacy RES-191 strict
+            // purity checker (via `pure: bool`) and the RES-389
+            // effect-annotation checker (via `EffectSet::pure()`).
+            "pure" => (true, EffectSet::pure()),
             other => {
                 self.record_error(format!("Unknown attribute `@{}`. Known: @pure", other));
                 // Fall through — treat as if no attribute was
-                // present; the fn still parses.
-                false
+                // present; the fn still parses with the default
+                // `io` effect set and the purity flag off.
+                (false, EffectSet::io())
             }
         };
 
@@ -1699,14 +1870,43 @@ impl Parser {
             });
         }
 
-        self.parse_function_with_pure(pure_flag)
+        self.parse_function_with_pure_and_effects(pure_flag, effects)
     }
 
-    /// RES-191: shared parser for `fn ...` with an explicit `pure`
-    /// flag. Called from `parse_function` (no annotation → pure=false)
-    /// and from `parse_attributed_item` when a `@pure` prefix
-    /// precedes the `fn`.
-    fn parse_function_with_pure(&mut self, pure: bool) -> Node {
+    /// RES-191 / RES-389: shared parser for `fn ...` with an
+    /// explicit `EffectSet`. Called from `parse_function` (no
+    /// annotation → `EffectSet::io()`), from `parse_attributed_item`
+    /// when a `@pure` prefix precedes the `fn`, and from
+    /// `parse_effect_keyword_function` when the source starts with
+    /// a `pure` / `io` soft keyword.
+    fn parse_function_with_effects(&mut self, effects: EffectSet) -> Node {
+        // RES-389: the legacy `pure: bool` field drives the
+        // strict RES-191 `@pure` purity checker; we keep it
+        // distinct from the effect set so the `pure fn` keyword
+        // form (RES-389) and the `@pure` attribute (RES-191) can
+        // each fire their own diagnostics. Callers that came
+        // through the attribute-parser path set `pure_flag = true`
+        // explicitly; the keyword-dispatch path leaves it `false`.
+        self.parse_function_with_pure_and_effects(false, effects)
+    }
+
+    /// RES-389: shared implementation for both annotation paths.
+    /// `pure_flag` lights up the RES-191 strict purity checker
+    /// (used by the `@pure` attribute); `effects` drives the
+    /// RES-389 effect-annotation checker. The two are independent
+    /// and can both be set — `@pure` still implies `EffectSet::pure()`
+    /// for the new checker.
+    fn parse_function_with_pure_and_effects(
+        &mut self,
+        pure_flag: bool,
+        effects_in: EffectSet,
+    ) -> Node {
+        // `@pure` attribute path: the effect set was already
+        // `EffectSet::pure()` by construction in
+        // `parse_attributed_item`. Keyword-dispatch path: the
+        // effect set matches what the user wrote.
+        let pure = pure_flag;
+        let effects = effects_in;
         // RES-088: capture the `fn` keyword's span before advancing.
         let fn_span = self.span_at_current();
         self.next_token(); // Skip 'fn'
@@ -1752,9 +1952,11 @@ impl Parser {
                     }),
                     requires: Vec::new(),
                     ensures: Vec::new(),
+                    recovers_to: None,
                     return_type: None,
                     span: fn_span,
                     pure,
+                    effects,
                     type_params: type_params.clone(),
                 };
             }
@@ -1766,9 +1968,11 @@ impl Parser {
                 body: Box::new(body),
                 requires: Vec::new(),
                 ensures: Vec::new(),
+                recovers_to: None,
                 return_type: None,
                 span: fn_span,
                 pure,
+                effects,
                 type_params,
             };
         }
@@ -1783,7 +1987,8 @@ impl Parser {
         // RES-035: between the parameter list and the body, accept any
         // number of `requires EXPR` and `ensures EXPR` clauses, in any
         // order. Each clause parses as a single expression.
-        let (requires, ensures) = self.parse_function_contracts();
+        // RES-392: also accept an optional `recovers_to: EXPR;` clause.
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
 
         if self.current_token != Token::LeftBrace {
             self.record_error(format!(
@@ -1805,9 +2010,11 @@ impl Parser {
                     }),
                     requires,
                     ensures,
+                    recovers_to,
                     return_type,
                     span: fn_span,
                     pure,
+                    effects,
                     type_params: type_params.clone(),
                 };
             }
@@ -1821,9 +2028,11 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            recovers_to,
             return_type,
             span: fn_span,
             pure,
+            effects,
             type_params,
         }
     }
@@ -1943,7 +2152,7 @@ impl Parser {
         }
 
         let return_type = self.parse_optional_return_type();
-        let (requires, ensures) = self.parse_function_contracts();
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -1960,12 +2169,16 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            recovers_to,
             return_type,
             span: fn_span,
             // Impl methods inherit no annotation today. When
             // `@pure fn method(...)` is supported inside `impl`
             // blocks, this will take the method-level flag.
             pure: false,
+            // RES-389: impl methods default to `io` — the same
+            // permissive baseline as any unannotated top-level fn.
+            effects: EffectSet::io(),
             // RES-124: impl methods don't support `<T>` today;
             // always monomorphic. `impl<T>` is a future
             // extension.
@@ -2027,6 +2240,45 @@ impl Parser {
         }
     }
 
+    /// RES-391: parse `region <Name>;` — a top-level region
+    /// declaration. Region declarations introduce a named memory
+    /// region used as a label on reference types (`&[Name] T`,
+    /// `&mut[Name] T`) for the borrow checker's non-aliasing rule.
+    ///
+    /// Parse-error recovery mirrors `parse_type_alias`: missing name
+    /// or missing trailing `;` records a diagnostic but still emits
+    /// a `RegionDecl` so downstream passes see something
+    /// well-shaped.
+    fn parse_region_decl(&mut self) -> Node {
+        let kw_span = self.span_at_current();
+        self.next_token(); // skip `region`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Expected region name after 'region', found {}",
+                    tok
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        // Trailing `;` — match the `type` alias convention.
+        if self.current_token == Token::Semicolon {
+            // cursor on `;`; parse_program advances past it
+        } else if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::RegionDecl {
+            name,
+            span: kw_span,
+        }
+    }
+
     /// Parse an optional `-> TYPE`. If present, current_token advances
     /// past the type identifier. If absent, no tokens are consumed.
     fn parse_optional_return_type(&mut self) -> Option<String> {
@@ -2057,7 +2309,73 @@ impl Parser {
     /// a valid type annotation. `ctx` is a short phrase for error
     /// messages (e.g. `"after ':'"`, `"in struct field"`).
     fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
-        match &self.current_token {
+        // RES-385: optional `linear` prefix. `linear T` becomes the
+        // encoded string `"linear T"`; downstream (parse_type_name)
+        // strips the prefix back off and records the linearity bit
+        // in a parallel map. The string encoding keeps the existing
+        // `Vec<(String, String)>` parameter/type-annot slots
+        // untouched — essential for this MVP slice given the breadth
+        // of call sites.
+        let is_linear = if self.current_token == Token::Linear {
+            self.next_token(); // consume `linear`
+            true
+        } else {
+            false
+        };
+        let base = match &self.current_token {
+            // RES-391: reference type — `& T`, `&mut T`, `&[A] T`, or
+            // `&mut[A] T`. The optional region label `[A]` lives
+            // between `&mut`/`&` and the inner type. Encoded as a
+            // string (matching the existing single-string type
+            // convention): `"&mut[A] Int"`, `"&[A] Int"`, `"&mut Int"`,
+            // `"& Int"`. The borrow checker (`check_region_aliasing`)
+            // reparses this string to extract mutability and region.
+            Token::BitAnd => {
+                self.next_token(); // skip `&`
+                let is_mut = if self.current_token == Token::Mut {
+                    self.next_token(); // skip `mut`
+                    true
+                } else {
+                    false
+                };
+                let region = if self.current_token == Token::LeftBracket {
+                    self.next_token(); // skip `[`
+                    let label = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            let tok = other.clone();
+                            self.record_error(format!(
+                                "Expected region name inside `&{}[...]` {}, found {}",
+                                if is_mut { "mut" } else { "" },
+                                ctx,
+                                tok
+                            ));
+                            return None;
+                        }
+                    };
+                    self.next_token(); // skip region name
+                    if self.current_token != Token::RightBracket {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ']' to close region label `[{}` {}, found {}",
+                            label, ctx, tok
+                        ));
+                        return None;
+                    }
+                    self.next_token(); // skip `]`
+                    Some(label)
+                } else {
+                    None
+                };
+                let inner = self.parse_type_annotation(ctx)?;
+                let prefix = match (is_mut, region) {
+                    (true, Some(r)) => format!("&mut[{}] ", r),
+                    (false, Some(r)) => format!("&[{}] ", r),
+                    (true, None) => "&mut ".to_string(),
+                    (false, None) => "& ".to_string(),
+                };
+                Some(format!("{}{}", prefix, inner))
+            }
             Token::Identifier(t) => {
                 let ty = t.clone();
                 self.next_token(); // advance past the identifier
@@ -2146,16 +2464,34 @@ impl Parser {
                 self.record_error(format!("Expected type name {}, found {}", ctx, tok));
                 None
             }
+        };
+        // RES-385: prefix-encode the linearity bit so every existing
+        // caller slot (parameter lists, let-annotations, return types,
+        // struct fields) inherits the feature with zero field changes.
+        match (is_linear, base) {
+            (true, Some(t)) => Some(format!("linear {}", t)),
+            (false, b) => b,
+            (true, None) => None,
         }
     }
 
-    /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses. On
-    /// entry current_token is whatever followed the parameter list's
-    /// `)`; on exit it's the `{` that starts the body (or whatever
-    /// caused parsing to give up).
-    fn parse_function_contracts(&mut self) -> (Vec<Node>, Vec<Node>) {
+    /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses, and
+    /// an optional `recovers_to: EXPR;` clause (RES-392). On entry
+    /// current_token is whatever followed the parameter list's `)`;
+    /// on exit it's the `{` that starts the body (or whatever caused
+    /// parsing to give up).
+    ///
+    /// RES-392: `recovers_to` is syntactically a single expression
+    /// terminated with `;`. Multiple `recovers_to` clauses on one
+    /// function are rejected — a function has exactly one recovery
+    /// contract. The ticket's full semantics (per-prefix bounded
+    /// model check) is out of scope for the MVP; here we parse it
+    /// and carry it on the AST so the verifier can treat it as a
+    /// weaker postcondition over the function's final state.
+    fn parse_function_contracts(&mut self) -> (Vec<Node>, Vec<Node>, Option<Box<Node>>) {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
+        let mut recovers_to: Option<Box<Node>> = None;
         loop {
             match self.current_token {
                 Token::Requires => {
@@ -2176,10 +2512,43 @@ impl Parser {
                     self.next_token();
                     ensures.push(expr);
                 }
+                Token::RecoversTo => {
+                    self.next_token(); // skip `recovers_to`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `recovers_to`, found {}",
+                            tok
+                        ));
+                    } else {
+                        self.next_token(); // skip `:`
+                    }
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // move past last token of expression
+                    // Optional terminator `;` — tolerate its absence so
+                    // the clause sits cleanly alongside `requires` /
+                    // `ensures` (which are not semicolon-terminated),
+                    // while accepting the form from the ticket's
+                    // proposed syntax.
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    }
+                    if recovers_to.is_some() {
+                        self.record_error(
+                            "Multiple `recovers_to` clauses on one fn — at most one is allowed"
+                                .to_string(),
+                        );
+                    } else {
+                        recovers_to = Some(Box::new(expr));
+                    }
+                }
                 _ => break,
             }
         }
-        (requires, ensures)
+        (requires, ensures, recovers_to)
     }
 
     /// RES-124 (RES-124a): parse an optional `<T, U, ...>`
@@ -3015,7 +3384,17 @@ impl Parser {
 
         // Optional `requires EXPR` / `ensures EXPR` clauses (paren-less — Resilient
         // contract syntax; reuses parse_function_contracts).
-        let (requires, ensures) = self.parse_function_contracts();
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
+
+        // RES-392: `recovers_to` is a Resilient-defined function-level
+        // crash-recovery contract. It has no meaning on a foreign
+        // `extern` — the verifier cannot model arbitrary C state and
+        // we refuse to silently drop the clause.
+        if recovers_to.is_some() {
+            self.record_error(
+                "`recovers_to` is not supported on `extern fn` declarations".to_string(),
+            );
+        }
 
         // Terminator `;`.
         if !matches!(self.current_token, Token::Semicolon) {
@@ -4009,6 +4388,7 @@ impl Parser {
                 }),
                 requires: Vec::new(),
                 ensures: Vec::new(),
+                recovers_to: None,
                 return_type: None,
                 span: self.span_at_current(),
             };
@@ -4016,7 +4396,7 @@ impl Parser {
         self.next_token(); // skip '('
         let parameters = self.parse_function_parameters();
         let return_type = self.parse_optional_return_type();
-        let (requires, ensures) = self.parse_function_contracts();
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' in anonymous fn, found {}", tok));
@@ -4028,6 +4408,7 @@ impl Parser {
                 }),
                 requires,
                 ensures,
+                recovers_to,
                 return_type,
                 span: self.span_at_current(),
             };
@@ -4038,6 +4419,7 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            recovers_to,
             return_type,
             span: self.span_at_current(),
         }
@@ -4442,6 +4824,7 @@ impl Parser {
             body: Box::new(body_block),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: bracket_span,
         };
@@ -4646,6 +5029,11 @@ enum Value {
         /// apply_function can check them. Empty when absent.
         requires: Vec<Node>,
         ensures: Vec<Node>,
+        /// RES-392: crash-recovery postcondition (MVP: final-state
+        /// variant, evaluated after the body returns — same env as
+        /// `ensures`, with `result` bound). `None` means no clause
+        /// was declared on the function.
+        recovers_to: Option<Box<Node>>,
         /// Function name — used for better contract-violation messages.
         name: String,
     },
@@ -5284,6 +5672,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
     ("byte_at", builtin_byte_at),
+    // RES-385: explicit consumption of a linear value. At runtime
+    // `drop(v)` simply evaluates and discards its argument; the
+    // semantic weight lives in the type checker's linear-use pass,
+    // which treats a `drop` call as the single consumption that
+    // satisfies the single-use obligation.
+    ("drop", builtin_drop),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -5732,6 +6126,20 @@ fn builtin_ok(args: &[Value]) -> RResult<Value> {
             payload: Box::new(v.clone()),
         }),
         _ => Err(format!("Ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-385: `drop(v)` — consume a linear value.
+///
+/// At runtime this is a near-no-op: the argument evaluates, its
+/// value is discarded, and the call returns `Void`. The type
+/// checker's `check_linear_usage` pass is where the work happens —
+/// it counts this call as the binding's single consumption and
+/// reports any subsequent use as `linear value used after move`.
+fn builtin_drop(args: &[Value]) -> RResult<Value> {
+    match args {
+        [_] => Ok(Value::Void),
+        _ => Err(format!("drop: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -6878,6 +7286,7 @@ impl Interpreter {
                 body,
                 requires,
                 ensures,
+                recovers_to,
                 ..
             } => {
                 // RES-068: if every observed call site for this fn was
@@ -6894,6 +7303,7 @@ impl Interpreter {
                     env: self.env.clone(),
                     requires: runtime_requires,
                     ensures: ensures.clone(),
+                    recovers_to: recovers_to.clone(),
                     name: name.clone(),
                 };
                 self.env.set(name.clone(), func);
@@ -7183,6 +7593,7 @@ impl Interpreter {
                 body,
                 requires,
                 ensures,
+                recovers_to,
                 ..
             } => Ok(Value::Function {
                 parameters: parameters.clone(),
@@ -7190,6 +7601,7 @@ impl Interpreter {
                 env: self.env.clone(),
                 requires: requires.clone(),
                 ensures: ensures.clone(),
+                recovers_to: recovers_to.clone(),
                 name: "<anon>".to_string(),
             }),
             Node::TryExpression { expr: inner, .. } => {
@@ -7271,6 +7683,9 @@ impl Interpreter {
             // sees aliases — by the time `eval` runs, every use
             // site has already been resolved by the typechecker.
             Node::TypeAlias { .. } => Ok(Value::Void),
+            // RES-391: `region <Name>;` is pure compile-time metadata
+            // consumed by the borrow checker — runtime no-op.
+            Node::RegionDecl { .. } => Ok(Value::Void),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -7958,6 +8373,7 @@ impl Interpreter {
                 env,
                 requires,
                 ensures,
+                recovers_to,
                 name,
             } => {
                 // RES-050: env.clone() is now an Rc bump, not a deep
@@ -8003,7 +8419,7 @@ impl Interpreter {
 
                 // RES-035: check each `ensures` clause AFTER, with the
                 // special identifier `result` bound to the return value.
-                if !ensures.is_empty() {
+                if !ensures.is_empty() || recovers_to.is_some() {
                     interpreter
                         .env
                         .set("result".to_string(), return_value.clone());
@@ -8014,6 +8430,26 @@ impl Interpreter {
                                 "Contract violation in fn {}: ensures {} failed (result = {})",
                                 name,
                                 format_contract_expr(clause),
+                                return_value
+                            ));
+                        }
+                    }
+                    // RES-392: `recovers_to` — MVP final-state check.
+                    // Evaluated in the same post-return environment as
+                    // `ensures`, i.e. with `result` bound to the
+                    // returned value and parameters still in scope.
+                    // On refutation the diagnostic surfaces the final
+                    // state counterexample so the author can see which
+                    // concrete return value falsified the recovery
+                    // invariant.
+                    if let Some(rec) = &recovers_to {
+                        let v = interpreter.eval(rec)?;
+                        if !interpreter.is_truthy(&v) {
+                            return Err(format!(
+                                "Contract violation in fn {}: recovers_to {} failed — \
+                                 final-state counterexample: result = {}",
+                                name,
+                                format_contract_expr(rec),
                                 return_value
                             ));
                         }
@@ -8506,6 +8942,157 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     (program, errs)
 }
 
+/// RES-391: a parsed reference-type annotation. The parser encodes
+/// reference types as strings (matching the single-string type
+/// convention used for every parameter type today); this helper
+/// unpacks them back into `(mutable, region_label)`.
+///
+/// The string forms accepted:
+/// * `"&mut[NAME] T"` → `(true, Some("NAME"))`
+/// * `"&[NAME] T"`    → `(false, Some("NAME"))`
+/// * `"&mut T"`       → `(true, None)`
+/// * `"& T"`          → `(false, None)`
+/// * anything else    → `None` (not a reference type)
+fn parse_ref_type(ty: &str) -> Option<(bool, Option<String>)> {
+    let rest = ty.strip_prefix('&')?;
+    // After `&`, optional `mut`, then optional `[LABEL]`, then a
+    // mandatory space and the inner type. The inner type itself is
+    // ignored here — the borrow checker only cares about the
+    // mutability + region pair.
+    let (is_mut, rest) = if let Some(r) = rest.strip_prefix("mut") {
+        (true, r)
+    } else {
+        (false, rest)
+    };
+    let rest = rest.trim_start();
+    if let Some(after_bracket) = rest.strip_prefix('[') {
+        let close = after_bracket.find(']')?;
+        let label = after_bracket[..close].trim().to_string();
+        if label.is_empty() {
+            return Some((is_mut, None));
+        }
+        Some((is_mut, Some(label)))
+    } else {
+        Some((is_mut, None))
+    }
+}
+
+/// RES-391: syntactic non-aliasing check over every `fn` in the
+/// program. Returns a list of error strings (each already prefixed
+/// with `<file>:<line>:<col>: `).
+///
+/// The rule, mirroring the ticket's MVP slice:
+/// * A reference parameter `&[LABEL] T` or `&mut[LABEL] T` must name
+///   a region declared elsewhere in the program via `region LABEL;`.
+/// * Two `&mut` parameters in the same fn are rejected whenever they
+///   could potentially alias — i.e. when they share the same region
+///   label, or when either one is unlabeled (`&mut T` with no
+///   `[LABEL]`). Distinct, declared labels are accepted as
+///   statically disjoint.
+///
+/// Out of scope for the MVP (filed as follow-up tickets):
+///   * RES-392: Z3 fallback proof using `requires` preconditions.
+///   * RES-393: region inference for unlabeled references.
+///   * RES-394: region polymorphism (`fn<'R> ...`).
+pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<String> {
+    let mut errors: Vec<String> = Vec::new();
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return errors,
+    };
+
+    // Collect the set of declared region names.
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for stmt in stmts {
+        if let Node::RegionDecl { name, .. } = &stmt.node
+            && !name.is_empty()
+        {
+            declared.insert(name.clone());
+        }
+    }
+
+    let prefix = |span: span::Span, msg: &str| -> String {
+        if span.start.line == 0 {
+            format!("E: {}", msg)
+        } else {
+            format!(
+                "{}:{}:{}: E: {}",
+                source_path, span.start.line, span.start.column, msg
+            )
+        }
+    };
+
+    for stmt in stmts {
+        if let Node::Function {
+            name: fn_name,
+            parameters,
+            span,
+            ..
+        } = &stmt.node
+        {
+            // Per-parameter pass: every labeled reference must name
+            // a declared region.
+            let mut refs: Vec<(usize, bool, Option<String>, String)> = Vec::new();
+            for (idx, (ty, pname)) in parameters.iter().enumerate() {
+                if let Some((is_mut, label)) = parse_ref_type(ty) {
+                    if let Some(l) = &label
+                        && !declared.contains(l)
+                    {
+                        errors.push(prefix(
+                            *span,
+                            &format!(
+                                "undeclared region `{}` in parameter `{}` of fn `{}` — add a top-level `region {};`",
+                                l, pname, fn_name, l
+                            ),
+                        ));
+                    }
+                    refs.push((idx, is_mut, label, pname.clone()));
+                }
+            }
+
+            // Pairwise aliasing check over mutable references.
+            for i in 0..refs.len() {
+                for j in (i + 1)..refs.len() {
+                    let (_, i_mut, i_lbl, i_name) = &refs[i];
+                    let (_, j_mut, j_lbl, j_name) = &refs[j];
+                    // Only two mutable references can alias
+                    // destructively. Two `&[A]` shared references
+                    // pointing into the same region is fine (no
+                    // write conflict possible). A `&mut[A]` paired
+                    // with a `&[A]` is also aliasing, and rejected
+                    // here for the same reason.
+                    if !i_mut && !j_mut {
+                        continue;
+                    }
+                    let (ok, i_show, j_show) = match (i_lbl, j_lbl) {
+                        (Some(a), Some(b)) if a != b => {
+                            (true, format!("[{}]", a), format!("[{}]", b))
+                        }
+                        (Some(a), Some(b)) => (false, format!("[{}]", a), format!("[{}]", b)),
+                        (Some(a), None) => (false, format!("[{}]", a), String::new()),
+                        (None, Some(b)) => (false, String::new(), format!("[{}]", b)),
+                        (None, None) => (false, String::new(), String::new()),
+                    };
+                    if ok {
+                        continue;
+                    }
+                    let i_kind = if *i_mut { "&mut" } else { "&" };
+                    let j_kind = if *j_mut { "&mut" } else { "&" };
+                    errors.push(prefix(
+                        *span,
+                        &format!(
+                            "potential aliasing between `{}{}` parameter `{}` and `{}{}` parameter `{}` of fn `{}` — add distinct region or see docs",
+                            i_kind, i_show, i_name, j_kind, j_show, j_name, fn_name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 /// RES-187: semantic-token type indices. Must match the legend
 /// `lsp_server::SEMANTIC_TOKEN_TYPES` declares in its capability
 /// advertisement. Keep in sync — the LSP spec encodes these as
@@ -8634,6 +9221,7 @@ fn classify_lex_token(
         | Token::In
         | Token::Requires
         | Token::Ensures
+        | Token::RecoversTo
         | Token::Invariant
         | Token::Struct
         | Token::New
@@ -8994,6 +9582,24 @@ fn execute_file(
     }
     if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
         return Err(format!("Import error: {}", e));
+    }
+
+    // RES-391: syntactic non-aliasing check over reference-type
+    // parameters. Runs unconditionally — a borrow-check violation is
+    // a compile-time error regardless of `--typecheck`. The check is
+    // intentionally conservative; the Z3 fallback (RES-392 follow-up)
+    // relaxes it for programs whose `requires` preconditions prove
+    // disjointness.
+    let region_errors = check_region_aliasing(&program, filename);
+    if !region_errors.is_empty() {
+        for e in &region_errors {
+            eprintln!("\x1B[31m{}\x1B[0m", e);
+            eprintln!("{}", render_with_caret(&contents, e, "Borrow check"));
+        }
+        return Err(format!(
+            "Borrow check failed: {} error(s)",
+            region_errors.len()
+        ));
     }
 
     // Type checking if enabled. --audit, --explain-effects, and
@@ -18396,6 +19002,163 @@ mod tests {
         // First token starts at column 0 of line 0.
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
+    }
+
+    // ------------------------------------------------------------
+    // RES-391: ownership-region parser and borrow-check unit tests.
+    // ------------------------------------------------------------
+
+    #[test]
+    fn res391_parses_top_level_region_decl() {
+        let (program, errs) = parse("region A;\nregion Bank1;\n");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        assert_eq!(stmts.len(), 2);
+        match &stmts[0].node {
+            Node::RegionDecl { name, .. } => assert_eq!(name, "A"),
+            other => panic!("expected RegionDecl, got {:?}", other),
+        }
+        match &stmts[1].node {
+            Node::RegionDecl { name, .. } => assert_eq!(name, "Bank1"),
+            other => panic!("expected RegionDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res391_parses_labeled_mut_reference_param() {
+        let src = "region A; fn f(&mut[A] int x) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        let params = match &stmts[1].node {
+            Node::Function { parameters, .. } => parameters.clone(),
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "&mut[A] int");
+        assert_eq!(params[0].1, "x");
+    }
+
+    #[test]
+    fn res391_parses_shared_labeled_reference_param() {
+        let src = "region A; fn g(&[A] int y) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        let params = match &stmts[1].node {
+            Node::Function { parameters, .. } => parameters.clone(),
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(params[0].0, "&[A] int");
+    }
+
+    #[test]
+    fn res391_parses_unlabeled_mut_reference_param() {
+        let src = "fn h(&mut int z) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        let params = match &stmts[0].node {
+            Node::Function { parameters, .. } => parameters.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(params[0].0, "&mut int");
+    }
+
+    #[test]
+    fn res391_distinct_regions_are_accepted() {
+        let src = "region A; region B; fn f(&mut[A] int a, &mut[B] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.is_empty(),
+            "distinct-region fn should be accepted, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    #[test]
+    fn res391_same_region_mut_refs_rejected() {
+        let src = "region A; fn f(&mut[A] int a, &mut[A] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1, "got: {:?}", borrow_errs);
+        assert!(
+            borrow_errs[0].contains("potential aliasing")
+                && borrow_errs[0].contains("&mut[A]")
+                && borrow_errs[0].contains("add distinct region"),
+            "message shape wrong: {}",
+            borrow_errs[0]
+        );
+    }
+
+    #[test]
+    fn res391_unlabeled_mut_pair_rejected() {
+        // `&mut` with no region label is treated as possibly aliasing
+        // with any other `&mut`. The MVP rejects; the follow-up
+        // RES-393 region-inference ticket relaxes this.
+        let src = "fn f(&mut int a, &mut int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1);
+        assert!(borrow_errs[0].contains("potential aliasing"));
+    }
+
+    #[test]
+    fn res391_mixed_labeled_and_unlabeled_mut_rejected() {
+        let src = "region A; fn f(&mut[A] int a, &mut int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1, "got: {:?}", borrow_errs);
+    }
+
+    #[test]
+    fn res391_two_shared_refs_same_region_are_fine() {
+        // Two `&[A]` shared refs cannot conflict (no writes), so the
+        // borrow checker accepts them even in the same region.
+        let src = "region A; fn f(&[A] int a, &[A] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.is_empty(),
+            "two shared refs should be fine, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    #[test]
+    fn res391_undeclared_region_rejected() {
+        // Using a region label that was never declared is an error.
+        let src = "fn f(&mut[Ghost] int a) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            !borrow_errs.is_empty(),
+            "undeclared region should be rejected"
+        );
+        assert!(
+            borrow_errs.iter().any(|e| e.contains("undeclared region")),
+            "expected undeclared-region message, got: {:?}",
+            borrow_errs
+        );
     }
 }
 

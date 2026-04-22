@@ -166,7 +166,12 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     let mut main_next_local: u16 = 0;
     for spanned in stmts {
         // Skip fn/extern decls — handled in earlier passes.
-        if matches!(spanned.node, Node::Function { .. } | Node::Extern { .. }) {
+        // RES-391: `region <Name>;` is compile-time metadata only;
+        // it emits no code in either the tree-walker or the VM.
+        if matches!(
+            spanned.node,
+            Node::Function { .. } | Node::Extern { .. } | Node::RegionDecl { .. }
+        ) {
             continue;
         }
         let line = spanned.span.start.line as u32;
@@ -756,6 +761,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::StructLiteral { span, .. }
         | Node::ImplBlock { span, .. }
         | Node::TypeAlias { span, .. }
+        | Node::RegionDecl { span, .. }
         | Node::FunctionLiteral { span, .. } => span.start.line as u32,
 
         // RES-142: duration literal carries the span of its integer
@@ -799,6 +805,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::ArrayLiteral { .. } => "ArrayLiteral",
         Node::IndexExpression { .. } => "IndexExpression",
         Node::IndexAssignment { .. } => "IndexAssignment",
+        Node::RegionDecl { .. } => "RegionDecl",
         _ => "<other>",
     }
 }

@@ -675,6 +675,12 @@ impl TypeChecker {
         env.set("println".to_string(), fn_any_to_void());
         env.set("print".to_string(), fn_any_to_void());
 
+        // RES-385: `drop(v)` — explicit single-use consumption
+        // of a linear value. Accepts any type; the linearity pass
+        // (see `crate::linear`) is what enforces the single-use
+        // rule on the argument.
+        env.set("drop".to_string(), fn_any_to_void());
+
         // Math (single-arg — int/float passed as Any)
         env.set("abs".to_string(), fn_any_to_any());
         env.set("sqrt".to_string(), fn_any_to_any());
@@ -1167,6 +1173,12 @@ impl TypeChecker {
                 // above so users land on the violating site.
                 check_program_purity(statements, source_path)?;
 
+                // RES-389: effect-annotation enforcement.
+                check_program_effects(statements, source_path)?;
+
+                // RES-385: single-use enforcement for linear types.
+                crate::linear::check_linear_usage(program, source_path)?;
+
                 // RES-192: IO-effect inference. Binary lattice
                 // (pure / IO). Fixpoint over the call graph: a fn
                 // is tagged IO iff it calls an impure builtin, an
@@ -1290,6 +1302,7 @@ impl TypeChecker {
                 body,
                 requires,
                 ensures,
+                recovers_to,
                 return_type: declared_rt,
                 ..
             } => {
@@ -1379,6 +1392,46 @@ impl TypeChecker {
                             self.stats.requires_tautology += 1;
                         }
                         None => {}
+                    }
+                }
+
+                // RES-392: verify the `recovers_to` crash-recovery
+                // postcondition against its MVP semantics — treat
+                // the clause as a universal obligation over the
+                // function's parameters (and `result`, if the clause
+                // mentions it) and try to discharge it via the same
+                // static folder / Z3 path used for requires/ensures.
+                //
+                // This deliberately verifies only the FINAL state,
+                // not per-prefix crash semantics. The proper
+                // per-instruction bounded model check described in
+                // the ticket is a follow-up; when it lands, this
+                // block becomes a weaker side-obligation.
+                //
+                // A provable contradiction (`Some(false)`) is a
+                // compile error — the recovery invariant can never
+                // hold. A proven tautology (`Some(true)`) is
+                // silently discharged; an undecidable verdict is
+                // left for runtime (the runtime check fires after
+                // every return and surfaces a clear diagnostic).
+                if let Some(clause) = recovers_to {
+                    let mut verdict = fold_const_bool(clause, &no_bindings);
+                    let mut cx: Option<String> = None;
+                    if verdict.is_none() {
+                        let (v, _cert, c, _timed_out) =
+                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
+                        verdict = v;
+                        cx = c;
+                    }
+                    if matches!(verdict, Some(false)) {
+                        let base = format!(
+                            "fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
+                            name
+                        );
+                        return Err(match cx {
+                            Some(m) => format!("{} — counterexample (final state): {}", base, m),
+                            None => base,
+                        });
                     }
                 }
 
@@ -1849,6 +1902,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
+            // RES-391: `region <Name>;` is compile-time metadata
+            // consumed by the borrow checker — the typechecker just
+            // accepts it as Void. Region-scoped reference types
+            // (`&[A] T`, `&mut[A] T`) surface in parameter positions,
+            // where `parse_type_name` strips the reference prefix
+            // and yields the inner type.
+            Node::RegionDecl { .. } => Ok(Type::Void),
+
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check
             // field existence and surface typed-field errors
@@ -2305,7 +2366,13 @@ impl TypeChecker {
     }
 
     fn parse_type_name(&self, name: &str) -> Result<Type, String> {
-        self.parse_type_name_inner(name, &mut Vec::new())
+        // RES-385: the parser prefixes `linear` types with the literal
+        // string `linear `. The linearity bit is consumed by the
+        // dedicated single-use pass (`check_linear_usage`); at the
+        // plain type-equality level, `linear T` and `T` are the same
+        // type, so strip the prefix here before resolving.
+        let base = crate::linear::strip_linear(name);
+        self.parse_type_name_inner(base, &mut Vec::new())
     }
 
     /// RES-128: alias-aware parse with cycle detection. `seen`
@@ -2315,6 +2382,25 @@ impl TypeChecker {
     /// as a diagnostic instead of looping forever or stack-
     /// overflowing.
     fn parse_type_name_inner(&self, name: &str, seen: &mut Vec<String>) -> Result<Type, String> {
+        // RES-391: strip the reference prefix — `& T`, `&mut T`,
+        // `&[A] T`, `&mut[A] T` — before resolving the inner type.
+        // The borrow checker (`main::check_region_aliasing`) has
+        // already consumed the region / mutability info; downstream
+        // type resolution cares only about the pointee.
+        if let Some(rest) = name.strip_prefix('&') {
+            let rest = rest.strip_prefix("mut").unwrap_or(rest);
+            let rest = rest.trim_start();
+            let rest = if let Some(after) = rest.strip_prefix('[') {
+                // Skip to the first `]`.
+                match after.find(']') {
+                    Some(end) => after[end + 1..].trim_start(),
+                    None => rest, // malformed, fall through
+                }
+            } else {
+                rest
+            };
+            return self.parse_type_name_inner(rest, seen);
+        }
         match name {
             "int" => Ok(Type::Int),
             "float" => Ok(Type::Float),
@@ -2904,6 +2990,323 @@ fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<String, bool
     }
 }
 
+// ============================================================
+// RES-389: effect-annotation enforcement.
+// ============================================================
+//
+// Syntax (soft keywords dispatched at statement-start):
+//   pure fn f(int x) { ... }   // EffectSet::pure()
+//   io   fn g(int x) { ... }   // EffectSet::io()
+//   fn h(int x) { ... }        // EffectSet::io() (backward compat)
+//
+// Call rules:
+//   - A `pure` fn may call other `pure` fns or known-pure
+//     builtins (see `is_known_pure_builtin`).
+//   - An `io` fn (the permissive default) may call `pure` or
+//     `io` fns, plus any builtin.
+//   - Calling an `io` callee from a `pure` caller is a compile
+//     error:
+//        E: cannot call io function `X` from pure context
+//
+// The pass is deliberately coarse — the `@pure` checker (RES-191)
+// already rejects impure-builtin calls and unannotated-user-fn
+// calls from a `@pure` body. This pass layers on top so the new
+// `pure fn` / `io fn` keyword form gets its own diagnostic
+// surface separately from the `@pure` attribute.
+
+use crate::EffectSet;
+
+/// RES-389: collect each top-level fn's declared `EffectSet` by
+/// name. Unannotated fns default to `EffectSet::io()`, matching
+/// the parser. Duplicate names (rare — the typechecker elsewhere
+/// diagnoses redeclarations) keep the last one seen.
+fn collect_fn_effects(
+    statements: &[crate::span::Spanned<Node>],
+) -> std::collections::HashMap<String, EffectSet> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in statements {
+        if let Node::Function { name, effects, .. } = &stmt.node {
+            out.insert(name.clone(), *effects);
+        }
+    }
+    out
+}
+
+/// RES-389: top-level entry for the effect-annotation pass.
+/// Walks each `pure fn` body and reports the first call site that
+/// reaches an `io` callee or an indeterminate callee (method /
+/// computed).
+fn check_program_effects(
+    statements: &[crate::span::Spanned<Node>],
+    source_path: &str,
+) -> Result<(), String> {
+    let fn_effects = collect_fn_effects(statements);
+    for stmt in statements {
+        if let Node::Function {
+            name,
+            body,
+            effects,
+            ..
+        } = &stmt.node
+            && effects.pure
+            && let Err(reason) = check_body_effects(body, &fn_effects)
+        {
+            let (line, col) = (stmt.span.start.line, stmt.span.start.column);
+            return Err(if line == 0 {
+                format!("pure fn `{}`: {}", name, reason)
+            } else {
+                format!(
+                    "{}:{}:{}: pure fn `{}`: {}",
+                    source_path, line, col, name, reason
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+/// RES-389: recursive walk of a `pure` fn body. Returns
+/// `Err(<reason>)` at the first call to a non-`pure` callee, with
+/// the diagnostic text the caller will prefix with the fn span.
+fn check_body_effects(
+    node: &Node,
+    fn_effects: &std::collections::HashMap<String, EffectSet>,
+) -> Result<(), String> {
+    match node {
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                check_body_effects(s, fn_effects)?;
+            }
+        }
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            check_body_effects(value, fn_effects)?;
+        }
+        Node::ReturnStatement { value: Some(v), .. } => check_body_effects(v, fn_effects)?,
+        Node::ReturnStatement { value: None, .. } => {}
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_body_effects(condition, fn_effects)?;
+            check_body_effects(consequence, fn_effects)?;
+            if let Some(a) = alternative {
+                check_body_effects(a, fn_effects)?;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            check_body_effects(condition, fn_effects)?;
+            check_body_effects(body, fn_effects)?;
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            check_body_effects(iterable, fn_effects)?;
+            check_body_effects(body, fn_effects)?;
+        }
+        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+            check_body_effects(condition, fn_effects)?;
+        }
+        Node::LiveBlock { body, .. } => check_body_effects(body, fn_effects)?,
+        Node::InfixExpression { left, right, .. } => {
+            check_body_effects(left, fn_effects)?;
+            check_body_effects(right, fn_effects)?;
+        }
+        Node::PrefixExpression { right, .. } => check_body_effects(right, fn_effects)?,
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            for a in arguments {
+                check_body_effects(a, fn_effects)?;
+            }
+            if let Node::Identifier { name: callee, .. } = function.as_ref() {
+                // User fn with a recorded effect set — `pure`
+                // propagates cleanly; any other effect (today just
+                // `io`) is a violation.
+                if let Some(callee_effects) = fn_effects.get(callee) {
+                    if callee_effects.pure {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "cannot call io function `{}` from pure context",
+                        callee
+                    ));
+                }
+                // Builtins: pure-by-default list passes; anything
+                // flagged impure by RES-191 is also implicitly io.
+                if IMPURE_BUILTINS.contains(&callee.as_str()) {
+                    return Err(format!(
+                        "cannot call io function `{}` from pure context",
+                        callee
+                    ));
+                }
+                if is_known_pure_builtin(callee) {
+                    return Ok(());
+                }
+                // Unknown callee (not in BUILTINS and not a
+                // declared user fn) — conservatively reject so a
+                // `pure` annotation remains meaningful.
+                return Err(format!(
+                    "cannot call io function `{}` from pure context",
+                    callee
+                ));
+            }
+            // Method / computed callee — can't resolve statically;
+            // same conservative rejection as the purity pass.
+            check_body_effects(function, fn_effects)?;
+            return Err(
+                "cannot call indirect/method callee from pure context (effect unknown)".to_string(),
+            );
+        }
+        Node::FieldAccess { target, .. } => check_body_effects(target, fn_effects)?,
+        Node::FieldAssignment { target, value, .. } => {
+            check_body_effects(target, fn_effects)?;
+            check_body_effects(value, fn_effects)?;
+        }
+        Node::Assignment { value, .. } => check_body_effects(value, fn_effects)?,
+        Node::IndexExpression { target, index, .. } => {
+            check_body_effects(target, fn_effects)?;
+            check_body_effects(index, fn_effects)?;
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            check_body_effects(target, fn_effects)?;
+            check_body_effects(index, fn_effects)?;
+            check_body_effects(value, fn_effects)?;
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                check_body_effects(i, fn_effects)?;
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                check_body_effects(v, fn_effects)?;
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            check_body_effects(scrutinee, fn_effects)?;
+            for (_pat, guard, arm_body) in arms {
+                if let Some(g) = guard {
+                    check_body_effects(g, fn_effects)?;
+                }
+                check_body_effects(arm_body, fn_effects)?;
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => check_body_effects(expr, fn_effects)?,
+        Node::TryExpression { expr, .. } => check_body_effects(expr, fn_effects)?,
+        Node::Function { body, .. } => check_body_effects(body, fn_effects)?,
+        // Literals, identifier reads, durations — nothing to do.
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use crate::parse;
+
+    fn stmts(src: &str) -> Vec<crate::span::Spanned<Node>> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(s) => s,
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pure_to_pure_passes() {
+        let src = "pure fn inner(int x) { return x + 1; }\n\
+                   pure fn outer(int x) { return inner(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("pure→pure should pass");
+    }
+
+    #[test]
+    fn pure_to_io_is_rejected() {
+        let src = "io   fn noisy(int x) { return x; }\n\
+                   pure fn caller(int x) { return noisy(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("pure→io should fail");
+        assert!(
+            err.contains("cannot call io function `noisy` from pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pure_to_unannotated_is_rejected() {
+        // Unannotated fns default to `EffectSet::io()` per the
+        // RES-389 backward-compat rule.
+        let src = "fn      helper(int x) { return x + 1; }\n\
+                   pure fn caller(int x) { return helper(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("pure→unannotated should fail");
+        assert!(
+            err.contains("cannot call io function `helper` from pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn io_to_pure_passes() {
+        let src = "pure fn add1(int x) { return x + 1; }\n\
+                   io   fn caller(int x) { return add1(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("io→pure should pass");
+    }
+
+    #[test]
+    fn io_to_io_passes() {
+        let src = "io fn a(int x) { return x; }\n\
+                   io fn b(int x) { return a(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("io→io should pass");
+    }
+
+    #[test]
+    fn pure_using_pure_builtin_passes() {
+        let src = "pure fn f(int x) { return abs(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("abs is pure");
+    }
+
+    #[test]
+    fn pure_using_impure_builtin_is_rejected() {
+        let src = "pure fn f(int x) { println(x); return x; }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("println is io");
+        assert!(
+            err.contains("cannot call io function `println` from pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_includes_source_location() {
+        // When the `pure` fn has a real span, the error prefix is
+        // `<path>:<line>:<col>: …` — matching RES-080 / RES-191
+        // conventions so IDEs can anchor the message.
+        let src = "io   fn noisy(int x) { return x; }\n\
+                   pure fn caller(int x) { return noisy(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").unwrap_err();
+        assert!(err.contains("<t>:"), "missing source path: {err}");
+        assert!(err.contains(":2:"), "missing line number: {err}");
+    }
+}
+
 #[cfg(test)]
 mod purity_tests {
     use super::*;
@@ -3155,6 +3558,111 @@ mod purity_tests {
     fn empty_program_produces_empty_effects() {
         let s = stmts("");
         assert!(infer_fn_effects(&s).is_empty());
+    }
+
+    // ---------- RES-385: linear-type single-use enforcement ----------
+
+    /// AC: passing a `linear` parameter to one consumer is fine.
+    /// Passing it to a second consumer is a single-use violation.
+    #[test]
+    fn linear_value_used_twice_is_rejected() {
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn bad(linear FileHandle fh) {\n\
+                consume(fh);\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "<t>")
+            .expect_err("second use of linear fh must be rejected");
+        assert!(
+            err.contains("linear-use"),
+            "expected `linear-use` diagnostic tag, got: {err}"
+        );
+        assert!(
+            err.contains("used after move"),
+            "expected `used after move` in message, got: {err}"
+        );
+        assert!(
+            err.contains("fh"),
+            "expected binding name in message, got: {err}"
+        );
+    }
+
+    /// AC: consuming exactly once (via a call or `drop`) is fine.
+    #[test]
+    fn linear_value_used_once_is_accepted() {
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn good(linear FileHandle fh) {\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n\
+            fn dropper(linear FileHandle fh) {\n\
+                drop(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        tc.check_program_with_source(&program, "<t>")
+            .expect("one consumption (direct call or drop) must typecheck");
+    }
+
+    /// AC: `let fh: linear T = …;` binds a linear local whose double-
+    /// use is rejected just like a linear parameter.
+    #[test]
+    fn linear_let_binding_rejects_double_use() {
+        // Construct the handle via a struct literal so the RHS type
+        // matches the let annotation without needing fancy
+        // inference. The linearity bit flows through `parse_type_name`
+        // via the shared `linear` prefix-stripping helper.
+        let src = "\
+            struct FileHandle { int fd }\n\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn main() {\n\
+                let fh: linear FileHandle = new FileHandle { fd: 3 };\n\
+                consume(fh);\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "<t>")
+            .expect_err("second use of let-bound linear must be rejected");
+        assert!(
+            err.contains("linear-use"),
+            "expected `linear-use` diagnostic tag, got: {err}"
+        );
+    }
+
+    /// AC: the diagnostic is prefixed with `<file>:<line>:<col>:`
+    /// so editors can jump straight to the offending second use.
+    #[test]
+    fn linear_use_diagnostic_carries_source_position() {
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn bad(linear FileHandle fh) {\n\
+                consume(fh);\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "src/bad.rz")
+            .expect_err("should fail");
+        assert!(
+            err.starts_with("src/bad.rz:"),
+            "expected <path>:<line>:<col>: prefix, got: {err}"
+        );
     }
 
     #[test]

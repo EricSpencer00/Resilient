@@ -1,0 +1,35 @@
+// RES-392 demo — `recovers_to` postcondition (MVP: final-state variant).
+//
+// A function's `recovers_to` clause declares the invariant that must
+// hold after a crash-and-restart cycle. In the safety-critical
+// embedded setting this is the formal counterpart to Erlang/OTP's
+// supervisor restart: the verifier has to produce evidence that the
+// restarted state is safe.
+//
+// This MVP verifies only the **final state** of the function — i.e.
+// the clause is checked the way `ensures` is, with `result` in scope.
+// The full per-prefix bounded model check described in the ticket
+// (check every instruction boundary against the supervisor `init`)
+// is a deliberate follow-up. Accepting this example demonstrates:
+//
+//   1. The parser consumes `recovers_to: EXPR;` after the signature.
+//   2. The verifier treats it as a weaker postcondition.
+//   3. The runtime evaluates it after the body returns and the
+//      function exits cleanly when the invariant holds.
+//
+// The fn below always returns `0` — our stand-in for "safe default".
+// The `recovers_to` clause `result == 0` is satisfied by every exit
+// path, so the program runs to completion.
+fn init_actuator(int id) -> int
+    requires id >= 0
+    ensures result == 0
+    recovers_to: result == 0;
+{
+    return 0;
+}
+
+fn main() {
+    let mode = init_actuator(7);
+    println(mode);
+}
+main();

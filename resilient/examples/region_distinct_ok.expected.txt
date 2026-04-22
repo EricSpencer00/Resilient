@@ -1,0 +1,2 @@
+swap_buffers accepted — distinct regions A vs B
+Program executed successfully

@@ -1,0 +1,16 @@
+// RES-391: two mutable references carrying distinct region labels
+// are provably non-aliasing. The borrow checker accepts this fn
+// without complaint — region A and region B were both declared at
+// top level, and the labels are different.
+region A;
+region B;
+
+fn swap_buffers(&mut[A] int a, &mut[B] int b) {
+    println("swap_buffers accepted — distinct regions A vs B");
+}
+
+fn main() {
+    swap_buffers(1, 2);
+}
+
+main();

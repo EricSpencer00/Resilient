@@ -143,6 +143,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             body,
             requires,
             ensures,
+            recovers_to,
             ..
         } => {
             let snapshot = bound.len();
@@ -165,6 +166,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             for clause in ensures {
                 walk(clause, bound, free);
             }
+            // RES-392: `recovers_to` binds in the same env as
+            // `ensures` — `result` and the parameters are in scope.
+            if let Some(rec) = recovers_to {
+                walk(rec, bound, free);
+            }
             truncate_to(bound, pre_ensures);
             truncate_to(bound, snapshot);
         }
@@ -173,6 +179,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             body,
             requires,
             ensures,
+            recovers_to,
             ..
         } => {
             let snapshot = bound.len();
@@ -188,6 +195,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             for clause in ensures {
                 walk(clause, bound, free);
             }
+            if let Some(rec) = recovers_to {
+                walk(rec, bound, free);
+            }
             truncate_to(bound, pre_ensures);
             truncate_to(bound, snapshot);
         }
@@ -196,7 +206,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(m, bound, free);
             }
         }
-        Node::StructDecl { .. } | Node::TypeAlias { .. } => {}
+        Node::StructDecl { .. } | Node::TypeAlias { .. } | Node::RegionDecl { .. } => {}
 
         // ---- Statements ----
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
@@ -388,6 +398,13 @@ fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
         Node::TypeAlias { name, .. } => {
             bound.insert(name.clone());
         }
+        Node::RegionDecl { name, .. } => {
+            // RES-391: region declarations introduce a compile-time
+            // name (consumed by the borrow checker). No runtime
+            // binding, but treat it like other declarations for the
+            // scoping walk so sibling statements see the name.
+            bound.insert(name.clone());
+        }
         Node::LetStatement { name, .. } | Node::StaticLet { name, .. } => {
             bound.insert(name.clone());
         }
@@ -530,6 +547,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -550,6 +568,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -580,6 +599,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -669,6 +689,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -683,6 +704,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
