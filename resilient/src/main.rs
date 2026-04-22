@@ -5171,6 +5171,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_has", builtin_set_has),
     ("set_len", builtin_set_len),
     ("set_items", builtin_set_items),
+    // RES-366: pinned-width integer cast builtins.
+    ("Int8", builtin_int8),
+    ("Int16", builtin_int16),
+    ("Int32", builtin_int32),
+    ("Int64", builtin_int64),
+    ("UInt8", builtin_uint8),
+    ("UInt16", builtin_uint16),
+    ("UInt32", builtin_uint32),
+    ("UInt64", builtin_uint64),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -6127,6 +6136,55 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!("to_int: expected 1 argument, got {}", args.len())),
     }
+}
+
+/// RES-366: pinned-width integer cast builtins. Each extracts the i64
+/// value from any integer `Value`, applies the appropriate mask / cast,
+/// and returns a new `Value::Int` with the truncated bits.
+///
+/// Signed casts (`Int8` / `Int16` / `Int32` / `Int64`) sign-extend via
+/// the natural Rust `as iN as i64` round-trip. Unsigned casts mask to
+/// the bit-width and return a non-negative i64.
+///
+/// Float arguments are rejected — use `to_int(x)` first.
+fn cast_to_int_n(
+    name: &'static str,
+    args: &[Value],
+    convert: impl Fn(i64) -> i64,
+) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(convert(*i))),
+        [other] => Err(format!(
+            "{}: expected an integer argument, got {:?} — use to_int(x) to convert floats first",
+            name, other
+        )),
+        _ => Err(format!("{}: expected 1 argument, got {}", name, args.len())),
+    }
+}
+
+fn builtin_int8(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("Int8", args, |i| (i as i8) as i64)
+}
+fn builtin_int16(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("Int16", args, |i| (i as i16) as i64)
+}
+fn builtin_int32(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("Int32", args, |i| (i as i32) as i64)
+}
+fn builtin_int64(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("Int64", args, |i| i)
+}
+fn builtin_uint8(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("UInt8", args, |i| (i as u8) as i64)
+}
+fn builtin_uint16(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("UInt16", args, |i| (i as u16) as i64)
+}
+fn builtin_uint32(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("UInt32", args, |i| (i as u32) as i64)
+}
+fn builtin_uint64(args: &[Value]) -> RResult<Value> {
+    cast_to_int_n("UInt64", args, |i| (i as u64) as i64)
 }
 
 /// RES-143: `file_read(path)` — read a file as a UTF-8 string. Only

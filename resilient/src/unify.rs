@@ -136,7 +136,16 @@ impl Substitution {
             | Type::Result
             | Type::Struct(_)
             | Type::Void
-            | Type::Any => ty.clone(),
+            | Type::Any
+            // RES-366: pinned-width integer types are leaves (no sub-types).
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64
+            | Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64 => ty.clone(),
         }
     }
 
@@ -159,7 +168,16 @@ impl Substitution {
             | (Type::Bool, Type::Bool)
             | (Type::Array, Type::Array)
             | (Type::Result, Type::Result)
-            | (Type::Void, Type::Void) => Ok(()),
+            | (Type::Void, Type::Void)
+            // RES-366: pinned-width integer reflexivity.
+            | (Type::Int8, Type::Int8)
+            | (Type::Int16, Type::Int16)
+            | (Type::Int32, Type::Int32)
+            | (Type::Int64, Type::Int64)
+            | (Type::UInt8, Type::UInt8)
+            | (Type::UInt16, Type::UInt16)
+            | (Type::UInt32, Type::UInt32)
+            | (Type::UInt64, Type::UInt64) => Ok(()),
             // Nominal structs unify iff their names match.
             (Type::Struct(n1), Type::Struct(n2)) if n1 == n2 => Ok(()),
             // `Any` is the inference-ready "unknown" from the old

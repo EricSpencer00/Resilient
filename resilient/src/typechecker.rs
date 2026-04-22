@@ -22,10 +22,28 @@ pub struct LetTypeHint {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    /// Default integer — 64-bit signed. Alias for `Int64` at the type level;
+    /// kept as a distinct variant so existing code continues to compile without
+    /// touching every match arm. `Int` and `Int64` are NOT implicitly compatible
+    /// — users who want a 64-bit result should use `Int64` explicitly, or keep
+    /// using the unadorned `Int` for the common case.
     Int,
     Float,
     String,
     Bool,
+    /// RES-366: pinned-width signed integer types. Arithmetic is defined for
+    /// same-width pairs; mixing widths requires an explicit cast `IntN(expr)`.
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    /// RES-366: pinned-width unsigned integer types. Same semantics as signed
+    /// counterparts but values wrap modulo 2^N. At runtime all integers are
+    /// stored as `Value::Int(i64)`; the cast builtins handle the masking.
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
     /// RES-152: raw byte sequence, distinct from `String`. Protocol
     /// frames, register maps, packed on-the-wire structs. Unify
     /// rules mirror `String` but the two types don't interchange —
@@ -70,6 +88,14 @@ impl std::fmt::Display for Type {
             Type::Float => write!(f, "float"),
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
+            Type::Int8 => write!(f, "Int8"),
+            Type::Int16 => write!(f, "Int16"),
+            Type::Int32 => write!(f, "Int32"),
+            Type::Int64 => write!(f, "Int64"),
+            Type::UInt8 => write!(f, "UInt8"),
+            Type::UInt16 => write!(f, "UInt16"),
+            Type::UInt32 => write!(f, "UInt32"),
+            Type::UInt64 => write!(f, "UInt64"),
             Type::Bytes => write!(f, "bytes"),
             Type::Function {
                 params,
@@ -151,10 +177,34 @@ fn pattern_covers_bool(p: &Pattern, want: bool) -> bool {
     }
 }
 
+/// RES-366: returns true for any of the pinned-width integer types
+/// (Int8..Int64, UInt8..UInt64) and the base `Int` type. Used by
+/// `check_numeric_same_type` to produce a better diagnostic when the
+/// user mixes widths rather than mixing int and float.
+fn is_integer_type(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Int
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64
+            | Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64
+    )
+}
+
 /// RES-130: arithmetic operators (`+ - * / %`) require both
 /// operands to be the same numeric type — no implicit int ↔ float
 /// coercion. Any/Any fall through as Any for the inference-in-
 /// progress path.
+///
+/// RES-366: pinned-width integer types follow the same rule — two
+/// `Int8` operands produce an `Int8` result; mixing widths or mixing
+/// signed/unsigned requires an explicit cast. Users cast via the
+/// builtin `Int16(expr)`, `UInt8(expr)`, etc.
 ///
 /// Returns the result type on success or a type-error diagnostic
 /// pointing users at the explicit `to_float(x)` / `to_int(x)`
@@ -163,14 +213,35 @@ fn check_numeric_same_type(op: &str, left: &Type, right: &Type) -> Result<Type, 
     match (left, right) {
         (Type::Int, Type::Int) => Ok(Type::Int),
         (Type::Float, Type::Float) => Ok(Type::Float),
+        (Type::Int8, Type::Int8) => Ok(Type::Int8),
+        (Type::Int16, Type::Int16) => Ok(Type::Int16),
+        (Type::Int32, Type::Int32) => Ok(Type::Int32),
+        (Type::Int64, Type::Int64) => Ok(Type::Int64),
+        (Type::UInt8, Type::UInt8) => Ok(Type::UInt8),
+        (Type::UInt16, Type::UInt16) => Ok(Type::UInt16),
+        (Type::UInt32, Type::UInt32) => Ok(Type::UInt32),
+        (Type::UInt64, Type::UInt64) => Ok(Type::UInt64),
         (Type::Any, Type::Any) => Ok(Type::Any),
         // Any + Int / Any + Float — propagate the concrete side so
         // downstream inference can tighten.
         (Type::Int, Type::Any) | (Type::Any, Type::Int) => Ok(Type::Int),
         (Type::Float, Type::Any) | (Type::Any, Type::Float) => Ok(Type::Float),
+        (Type::Int8, Type::Any) | (Type::Any, Type::Int8) => Ok(Type::Int8),
+        (Type::Int16, Type::Any) | (Type::Any, Type::Int16) => Ok(Type::Int16),
+        (Type::Int32, Type::Any) | (Type::Any, Type::Int32) => Ok(Type::Int32),
+        (Type::Int64, Type::Any) | (Type::Any, Type::Int64) => Ok(Type::Int64),
+        (Type::UInt8, Type::Any) | (Type::Any, Type::UInt8) => Ok(Type::UInt8),
+        (Type::UInt16, Type::Any) | (Type::Any, Type::UInt16) => Ok(Type::UInt16),
+        (Type::UInt32, Type::Any) | (Type::Any, Type::UInt32) => Ok(Type::UInt32),
+        (Type::UInt64, Type::Any) | (Type::Any, Type::UInt64) => Ok(Type::UInt64),
         (Type::Int, Type::Float) | (Type::Float, Type::Int) => Err(format!(
             "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
             op
+        )),
+        // RES-366: reject mixed-width or mixed-sign integer arithmetic.
+        (l, r) if is_integer_type(l) && is_integer_type(r) => Err(format!(
+            "Cannot apply '{}' to {} and {} — mixing integer widths requires an explicit cast (e.g. `Int16(x)`).",
+            op, l, r
         )),
         _ => Err(format!("Cannot apply '{}' to {} and {}", op, left, right)),
     }
@@ -972,6 +1043,29 @@ impl TypeChecker {
         env.set("is_err".to_string(), fn_result_to_bool());
         env.set("unwrap".to_string(), fn_result_to_any());
         env.set("unwrap_err".to_string(), fn_result_to_any());
+
+        // RES-366: pinned-width integer cast builtins. Each accepts any
+        // integer-compatible value (Int, Int8..Int64, UInt8..UInt64) via
+        // `Any` and returns the target pinned type. At runtime the builtin
+        // masks / sign-extends the underlying i64 value.
+        for (name, ty) in &[
+            ("Int8", Type::Int8),
+            ("Int16", Type::Int16),
+            ("Int32", Type::Int32),
+            ("Int64", Type::Int64),
+            ("UInt8", Type::UInt8),
+            ("UInt16", Type::UInt16),
+            ("UInt32", Type::UInt32),
+            ("UInt64", Type::UInt64),
+        ] {
+            env.set(
+                (*name).to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(ty.clone()),
+                },
+            );
+        }
 
         TypeChecker {
             env,
@@ -1976,8 +2070,16 @@ impl TypeChecker {
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "&" | "|" | "^" | "<<" | ">>" => {
-                        // Bitwise operators are int-only.
-                        if compatible(&left_type, &Type::Int) && compatible(&right_type, &Type::Int)
+                        // Bitwise operators are int-only. RES-366: also
+                        // supported for pinned-width integer types — both
+                        // operands must be the same type.
+                        if is_integer_type(&left_type)
+                            && (left_type == right_type || matches!(right_type, Type::Any))
+                        {
+                            Ok(left_type.clone())
+                        } else if matches!(left_type, Type::Any) && is_integer_type(&right_type) {
+                            Ok(right_type.clone())
+                        } else if matches!(left_type, Type::Any) && matches!(right_type, Type::Any)
                         {
                             Ok(Type::Int)
                         } else {
@@ -2174,6 +2276,15 @@ impl TypeChecker {
             "Result" => Ok(Type::Result),
             "array" => Ok(Type::Array),
             "" => Ok(Type::Any), // Empty type name means "any" for now
+            // RES-366: pinned-width integer types.
+            "Int8" | "int8" => Ok(Type::Int8),
+            "Int16" | "int16" => Ok(Type::Int16),
+            "Int32" | "int32" => Ok(Type::Int32),
+            "Int64" | "int64" => Ok(Type::Int64),
+            "UInt8" | "uint8" => Ok(Type::UInt8),
+            "UInt16" | "uint16" => Ok(Type::UInt16),
+            "UInt32" | "uint32" => Ok(Type::UInt32),
+            "UInt64" | "uint64" => Ok(Type::UInt64),
             // RES-128: a registered alias expands transitively.
             other if self.type_aliases.contains_key(other) => {
                 if seen.iter().any(|n| n == other) {
@@ -3045,5 +3156,105 @@ mod type_hole_display_tests {
     fn var_without_span_displays_as_qt() {
         let ty = Type::Var(0, None);
         assert_eq!(ty.to_string(), "?t0");
+    }
+}
+
+// ============================================================
+// RES-366: pinned integer type tests.
+// ============================================================
+
+#[cfg(test)]
+mod pinned_int_tests {
+    use super::*;
+    use crate::parse;
+
+    fn check(src: &str) -> Result<Type, String> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog)
+    }
+
+    #[test]
+    fn uint8_type_annotation_is_recognised() {
+        check("fn f(UInt8 x) -> UInt8 { return x; }\n").expect("UInt8 annotation OK");
+    }
+
+    #[test]
+    fn int16_type_annotation_is_recognised() {
+        check("fn f(Int16 x) -> Int16 { return x; }\n").expect("Int16 annotation OK");
+    }
+
+    #[test]
+    fn same_width_arithmetic_is_allowed() {
+        // Int16 + Int16 should typecheck cleanly.
+        check("fn f(Int16 a, Int16 b) -> Int16 { return Int16(a + b); }\n")
+            .expect("same-width arithmetic OK");
+    }
+
+    #[test]
+    fn mixed_width_arithmetic_is_rejected() {
+        // Int8 + Int16 should be rejected.
+        let err =
+            check("fn f(Int8 a, Int16 b) { return a + b; }\n").expect_err("mixed-width must fail");
+        assert!(
+            err.contains("Int8") && err.contains("Int16"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cast_builtin_returns_pinned_type() {
+        // UInt8(x) must have type UInt8 in the type environment.
+        let tc = TypeChecker::new();
+        let ty = tc.env.get("UInt8").expect("UInt8 in env");
+        match ty {
+            Type::Function { return_type, .. } => {
+                assert_eq!(*return_type, Type::UInt8);
+            }
+            other => panic!("expected Function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_pinned_type_display_strings() {
+        assert_eq!(Type::Int8.to_string(), "Int8");
+        assert_eq!(Type::Int16.to_string(), "Int16");
+        assert_eq!(Type::Int32.to_string(), "Int32");
+        assert_eq!(Type::Int64.to_string(), "Int64");
+        assert_eq!(Type::UInt8.to_string(), "UInt8");
+        assert_eq!(Type::UInt16.to_string(), "UInt16");
+        assert_eq!(Type::UInt32.to_string(), "UInt32");
+        assert_eq!(Type::UInt64.to_string(), "UInt64");
+    }
+
+    #[test]
+    fn parse_type_name_recognises_all_pinned_types() {
+        let tc = TypeChecker::new();
+        assert_eq!(tc.parse_type_name("Int8").unwrap(), Type::Int8);
+        assert_eq!(tc.parse_type_name("Int16").unwrap(), Type::Int16);
+        assert_eq!(tc.parse_type_name("Int32").unwrap(), Type::Int32);
+        assert_eq!(tc.parse_type_name("Int64").unwrap(), Type::Int64);
+        assert_eq!(tc.parse_type_name("UInt8").unwrap(), Type::UInt8);
+        assert_eq!(tc.parse_type_name("UInt16").unwrap(), Type::UInt16);
+        assert_eq!(tc.parse_type_name("UInt32").unwrap(), Type::UInt32);
+        assert_eq!(tc.parse_type_name("UInt64").unwrap(), Type::UInt64);
+    }
+
+    #[test]
+    fn register_map_struct_typechecks() {
+        let src = r#"
+            struct SensorRegs {
+                UInt8 status,
+                UInt16 sample,
+                UInt32 counter,
+            }
+            fn main() {
+                let regs = new SensorRegs { status: UInt8(0), sample: UInt16(0), counter: UInt32(0) };
+                println(regs.status);
+            }
+            main();
+        "#;
+        check(src).expect("register-map struct typechecks");
     }
 }

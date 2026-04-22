@@ -1,0 +1,50 @@
+// RES-366: Pinned integer types — register-map struct demo.
+//
+// Safety-critical protocols require fixed-width fields that map directly
+// to C memory layouts. This example models a simplified sensor register
+// map with UInt8 (status byte), UInt16 (raw ADC sample), and UInt32
+// (accumulated counter) fields.
+
+struct SensorRegs {
+    UInt8 status,
+    UInt16 sample,
+    UInt32 counter,
+}
+
+fn read_status(UInt8 s) -> UInt8 {
+    // Mask off the reserved high nibble (bits 7:4).
+    return UInt8(s & UInt8(15));
+}
+
+fn accumulate(UInt32 counter, UInt16 sample) -> UInt32 {
+    // Widen the 16-bit sample to 32 bits before adding.
+    return UInt32(counter + UInt32(sample));
+}
+
+fn main() {
+    let regs = new SensorRegs { status: UInt8(165), sample: UInt16(1024), counter: UInt32(0) };
+
+    // Extract and mask the status byte.
+    let masked = read_status(regs.status);
+    println(masked);
+
+    // Accumulate the 16-bit sample into the 32-bit counter.
+    let updated = accumulate(regs.counter, regs.sample);
+    println(updated);
+
+    // Show cast overflow wrapping: 300 truncated to UInt8 wraps to 44.
+    let wrapped = UInt8(300);
+    println(wrapped);
+
+    // Signed narrowing: -1 as Int8 is -1 (two's complement identity).
+    let neg = Int8(-1);
+    println(neg);
+
+    // Int16 arithmetic: same-width operands are allowed.
+    let a = Int16(100);
+    let b = Int16(200);
+    let c = Int16(a + b);
+    println(c);
+}
+
+main();

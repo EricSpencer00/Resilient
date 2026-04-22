@@ -591,6 +591,15 @@ fn parse_primitive_type(s: &str) -> Option<Type> {
         "float" => Some(Type::Float),
         "bool" => Some(Type::Bool),
         "string" => Some(Type::String),
+        // RES-366: pinned-width integer types.
+        "Int8" | "int8" => Some(Type::Int8),
+        "Int16" | "int16" => Some(Type::Int16),
+        "Int32" | "int32" => Some(Type::Int32),
+        "Int64" | "int64" => Some(Type::Int64),
+        "UInt8" | "uint8" => Some(Type::UInt8),
+        "UInt16" | "uint16" => Some(Type::UInt16),
+        "UInt32" | "uint32" => Some(Type::UInt32),
+        "UInt64" | "uint64" => Some(Type::UInt64),
         _ => None,
     }
 }
@@ -663,7 +672,19 @@ fn unify_error_to_diag(err: UnifyError, span: Span, context: String) -> Diagnost
 fn is_primitive(t: &Type) -> bool {
     matches!(
         t,
-        Type::Int | Type::Float | Type::Bool | Type::String | Type::Bytes
+        Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::String
+            | Type::Bytes
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64
+            | Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64
     )
 }
 

@@ -1,0 +1,6 @@
+5
+1024
+44
+-1
+300
+Program executed successfully
