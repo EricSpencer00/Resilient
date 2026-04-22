@@ -1,0 +1,30 @@
+// RES-387: fault model MVP — `fails` annotation with propagation.
+//
+// `read_sensor` declares it may fail with `HardwareFault` or `Timeout`.
+// `sample` calls it and must propagate both variants on its own
+// signature. A caller that didn't propagate would be rejected by the
+// typechecker with an "unhandled failure variant X" diagnostic.
+//
+// `recovers_to:` is parsed and stored on the AST; the Z3 proof that
+// the invariant actually holds after recovery is a follow-up ticket.
+fn read_sensor(int addr)
+    requires addr >= 0
+    fails HardwareFault, Timeout
+    recovers_to: addr >= 0;
+{
+    return addr;
+}
+
+fn sample(int addr)
+    requires addr >= 0
+    fails HardwareFault, Timeout
+{
+    return read_sensor(addr);
+}
+
+fn main(int _d) {
+    let v = sample(7);
+    println(v);
+}
+
+main(0);

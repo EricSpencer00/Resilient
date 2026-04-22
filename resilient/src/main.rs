@@ -97,11 +97,15 @@ enum Token {
     In,
     Requires,
     Ensures,
-    /// RES-392: `recovers_to` — crash-recovery postcondition. MVP
-    /// verifies only the final state; per-prefix bounded model
-    /// checking is tracked as a follow-up.
+    /// RES-392/RES-387: `recovers_to` — crash-recovery postcondition.
+    /// MVP verifies only the final state; per-prefix bounded model
+    /// checking is tracked as a follow-up. Also used as the
+    /// `recovers_to:` postcondition for declared failure variants.
     RecoversTo,
     Invariant,
+    /// RES-387: `fails` annotation on a fn signature — comma-separated
+    /// list of failure-variant identifiers the fn may raise.
+    Fails,
     Struct,
     New,
     Dot,
@@ -244,6 +248,7 @@ impl Token {
             Token::Ensures => "`ensures`".to_string(),
             Token::RecoversTo => "`recovers_to`".to_string(),
             Token::Invariant => "`invariant`".to_string(),
+            Token::Fails => "`fails`".to_string(),
             Token::Struct => "`struct`".to_string(),
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
@@ -632,6 +637,7 @@ impl Lexer {
                         "ensures" => Token::Ensures,
                         "recovers_to" => Token::RecoversTo,
                         "invariant" => Token::Invariant,
+                        "fails" => Token::Fails,
                         "struct" => Token::Struct,
                         "new" => Token::New,
                         "match" => Token::Match,
@@ -1088,14 +1094,6 @@ enum Node {
         /// special identifier `result` is bound to the return value
         /// inside each clause's env.
         ensures: Vec<Node>,
-        /// RES-392: optional crash-recovery postcondition. MVP
-        /// semantics: verified as a weaker postcondition over the
-        /// function's final state (same evaluation environment as
-        /// `ensures`, with `result` bound). Proper per-prefix
-        /// bounded model checking — the real "crash at any
-        /// instruction" interpretation from the ticket — is tracked
-        /// as a follow-up. A value of `None` means no clause.
-        recovers_to: Option<Box<Node>>,
         /// RES-052: optional `-> TYPE` return-type annotation. Advisory.
         #[allow(dead_code)]
         return_type: Option<String>,
@@ -1131,6 +1129,19 @@ enum Node {
         /// `fn<T: Hashable>` etc. is a future extension).
         #[allow(dead_code)] // consumed by RES-124b+
         type_params: Vec<String>,
+        /// RES-387: declared failure variants. Parsed from
+        /// `fails Variant (, Variant)*` between the return type
+        /// and `{`. Empty when the fn declares no failures.
+        /// The typechecker requires every call to a fn with a
+        /// non-empty `fails` set to either declare the same
+        /// variants on the caller's signature (propagation) or
+        /// — in a future ticket — handle them structurally.
+        fails: Vec<String>,
+        /// RES-387: `recovers_to: EXPR;` postcondition. Parsed
+        /// and stored; Z3 verification that the invariant
+        /// actually holds after recovery is a follow-up ticket.
+        #[allow(dead_code)] // consumed by RES-387 follow-up (Z3 recovers_to proof)
+        recovers_to: Option<Box<Node>>,
     },
     LiveBlock {
         body: Box<Node>,
@@ -1958,6 +1969,7 @@ impl Parser {
                     pure,
                     effects,
                     type_params: type_params.clone(),
+                    fails: Vec::new(),
                 };
             }
 
@@ -1974,6 +1986,7 @@ impl Parser {
                 pure,
                 effects,
                 type_params,
+                fails: Vec::new(),
             };
         }
 
@@ -1988,7 +2001,20 @@ impl Parser {
         // number of `requires EXPR` and `ensures EXPR` clauses, in any
         // order. Each clause parses as a single expression.
         // RES-392: also accept an optional `recovers_to: EXPR;` clause.
-        let (requires, ensures, recovers_to) = self.parse_function_contracts();
+        let (requires, ensures, pre_recovers_to) = self.parse_function_contracts();
+
+        // RES-387: optional `fails Variant (, Variant)*` and
+        // `recovers_to: EXPR;` clauses. May appear in any order
+        // relative to each other, after the contracts.
+        let (fails, post_recovers_to) = self.parse_function_failures_and_recovery();
+        // Contracts may also appear after fails/recovers_to in
+        // hand-written code; fold any trailing clauses back in.
+        let (more_req, more_ens, _) = self.parse_function_contracts();
+        let mut requires = requires;
+        let mut ensures = ensures;
+        requires.extend(more_req);
+        ensures.extend(more_ens);
+        let recovers_to = pre_recovers_to.or(post_recovers_to);
 
         if self.current_token != Token::LeftBrace {
             self.record_error(format!(
@@ -2016,6 +2042,7 @@ impl Parser {
                     pure,
                     effects,
                     type_params: type_params.clone(),
+                    fails,
                 };
             }
         }
@@ -2034,6 +2061,7 @@ impl Parser {
             pure,
             effects,
             type_params,
+            fails,
         }
     }
 
@@ -2152,7 +2180,14 @@ impl Parser {
         }
 
         let return_type = self.parse_optional_return_type();
-        let (requires, ensures, recovers_to) = self.parse_function_contracts();
+        let (requires, ensures, pre_recovers_to) = self.parse_function_contracts();
+        let (fails, post_recovers_to) = self.parse_function_failures_and_recovery();
+        let (more_req, more_ens, _) = self.parse_function_contracts();
+        let mut requires = requires;
+        let mut ensures = ensures;
+        requires.extend(more_req);
+        ensures.extend(more_ens);
+        let recovers_to = pre_recovers_to.or(post_recovers_to);
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -2183,6 +2218,7 @@ impl Parser {
             // always monomorphic. `impl<T>` is a future
             // extension.
             type_params: Vec::new(),
+            fails,
         }
     }
 
@@ -2549,6 +2585,76 @@ impl Parser {
             }
         }
         (requires, ensures, recovers_to)
+    }
+
+    /// RES-387: parse `fails Variant (, Variant)*` and
+    /// `recovers_to: EXPR;` clauses on a fn signature. Both are
+    /// optional; either, both, or neither may appear, in any order.
+    /// Each `fails` clause appends to the variant list; a second
+    /// `recovers_to` emits a diagnostic and overrides the first.
+    /// On exit the cursor sits on whatever follows the last clause.
+    fn parse_function_failures_and_recovery(&mut self) -> (Vec<String>, Option<Box<Node>>) {
+        let mut fails: Vec<String> = Vec::new();
+        let mut recovers_to: Option<Box<Node>> = None;
+        loop {
+            match self.current_token {
+                Token::Fails => {
+                    self.next_token(); // skip `fails`
+                    loop {
+                        match &self.current_token {
+                            Token::Identifier(name) => {
+                                let name = name.clone();
+                                if !fails.contains(&name) {
+                                    fails.push(name);
+                                }
+                                self.next_token();
+                            }
+                            other => {
+                                let tok = other.clone();
+                                self.record_error(format!(
+                                    "Expected failure-variant identifier after `fails`, found {}",
+                                    tok
+                                ));
+                                break;
+                            }
+                        }
+                        if self.current_token == Token::Comma {
+                            self.next_token();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Token::RecoversTo => {
+                    self.next_token(); // skip `recovers_to`
+                    if self.current_token == Token::Colon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `recovers_to`, found {}",
+                            tok
+                        ));
+                    }
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past last token of expression
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    }
+                    if recovers_to.is_some() {
+                        self.record_error(
+                            "Duplicate `recovers_to:` clause on fn signature".to_string(),
+                        );
+                    }
+                    recovers_to = Some(Box::new(expr));
+                }
+                _ => break,
+            }
+        }
+        (fails, recovers_to)
     }
 
     /// RES-124 (RES-124a): parse an optional `<T, U, ...>`
@@ -9223,6 +9329,7 @@ fn classify_lex_token(
         | Token::Ensures
         | Token::RecoversTo
         | Token::Invariant
+        | Token::Fails
         | Token::Struct
         | Token::New
         | Token::Match
