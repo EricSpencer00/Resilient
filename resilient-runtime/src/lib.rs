@@ -51,6 +51,9 @@ compile_error!("`ffi-static-256` and `ffi-static-1024` are mutually exclusive.")
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+// RES-374: heap profiler — peak allocation tracking.
+pub mod heap;
+
 // RES-180: `Sink` abstraction + global `print` / `println`
 // helpers that route through a user-installed sink.
 pub mod live_telemetry;
