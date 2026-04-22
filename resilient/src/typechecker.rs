@@ -1167,6 +1167,16 @@ impl TypeChecker {
                 // above so users land on the violating site.
                 check_program_purity(statements, source_path)?;
 
+                // RES-389: effect-annotation enforcement. A fn
+                // declared `pure fn` may only call other `pure fn`
+                // fns (or pure builtins); `io fn` (and the
+                // backward-compat default for unannotated fns) may
+                // call both `pure` and `io`. The check runs after
+                // the purity pass so the stricter `@pure` errors
+                // fire first when both passes would flag the same
+                // call site.
+                check_program_effects(statements, source_path)?;
+
                 // RES-192: IO-effect inference. Binary lattice
                 // (pure / IO). Fixpoint over the call graph: a fn
                 // is tagged IO iff it calls an impure builtin, an
@@ -2901,6 +2911,323 @@ fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<String, bool
         Node::Function { body, .. } => body_reaches_io(body, effects),
         // Pure literals / identifier reads / etc.
         _ => false,
+    }
+}
+
+// ============================================================
+// RES-389: effect-annotation enforcement.
+// ============================================================
+//
+// Syntax (soft keywords dispatched at statement-start):
+//   pure fn f(int x) { ... }   // EffectSet::pure()
+//   io   fn g(int x) { ... }   // EffectSet::io()
+//   fn h(int x) { ... }        // EffectSet::io() (backward compat)
+//
+// Call rules:
+//   - A `pure` fn may call other `pure` fns or known-pure
+//     builtins (see `is_known_pure_builtin`).
+//   - An `io` fn (the permissive default) may call `pure` or
+//     `io` fns, plus any builtin.
+//   - Calling an `io` callee from a `pure` caller is a compile
+//     error:
+//        E: cannot call io function `X` from pure context
+//
+// The pass is deliberately coarse — the `@pure` checker (RES-191)
+// already rejects impure-builtin calls and unannotated-user-fn
+// calls from a `@pure` body. This pass layers on top so the new
+// `pure fn` / `io fn` keyword form gets its own diagnostic
+// surface separately from the `@pure` attribute.
+
+use crate::EffectSet;
+
+/// RES-389: collect each top-level fn's declared `EffectSet` by
+/// name. Unannotated fns default to `EffectSet::io()`, matching
+/// the parser. Duplicate names (rare — the typechecker elsewhere
+/// diagnoses redeclarations) keep the last one seen.
+fn collect_fn_effects(
+    statements: &[crate::span::Spanned<Node>],
+) -> std::collections::HashMap<String, EffectSet> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in statements {
+        if let Node::Function { name, effects, .. } = &stmt.node {
+            out.insert(name.clone(), *effects);
+        }
+    }
+    out
+}
+
+/// RES-389: top-level entry for the effect-annotation pass.
+/// Walks each `pure fn` body and reports the first call site that
+/// reaches an `io` callee or an indeterminate callee (method /
+/// computed).
+fn check_program_effects(
+    statements: &[crate::span::Spanned<Node>],
+    source_path: &str,
+) -> Result<(), String> {
+    let fn_effects = collect_fn_effects(statements);
+    for stmt in statements {
+        if let Node::Function {
+            name,
+            body,
+            effects,
+            ..
+        } = &stmt.node
+            && effects.pure
+            && let Err(reason) = check_body_effects(body, &fn_effects)
+        {
+            let (line, col) = (stmt.span.start.line, stmt.span.start.column);
+            return Err(if line == 0 {
+                format!("pure fn `{}`: {}", name, reason)
+            } else {
+                format!(
+                    "{}:{}:{}: pure fn `{}`: {}",
+                    source_path, line, col, name, reason
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+/// RES-389: recursive walk of a `pure` fn body. Returns
+/// `Err(<reason>)` at the first call to a non-`pure` callee, with
+/// the diagnostic text the caller will prefix with the fn span.
+fn check_body_effects(
+    node: &Node,
+    fn_effects: &std::collections::HashMap<String, EffectSet>,
+) -> Result<(), String> {
+    match node {
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                check_body_effects(s, fn_effects)?;
+            }
+        }
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
+            check_body_effects(value, fn_effects)?;
+        }
+        Node::ReturnStatement { value: Some(v), .. } => check_body_effects(v, fn_effects)?,
+        Node::ReturnStatement { value: None, .. } => {}
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            check_body_effects(condition, fn_effects)?;
+            check_body_effects(consequence, fn_effects)?;
+            if let Some(a) = alternative {
+                check_body_effects(a, fn_effects)?;
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            check_body_effects(condition, fn_effects)?;
+            check_body_effects(body, fn_effects)?;
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            check_body_effects(iterable, fn_effects)?;
+            check_body_effects(body, fn_effects)?;
+        }
+        Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
+            check_body_effects(condition, fn_effects)?;
+        }
+        Node::LiveBlock { body, .. } => check_body_effects(body, fn_effects)?,
+        Node::InfixExpression { left, right, .. } => {
+            check_body_effects(left, fn_effects)?;
+            check_body_effects(right, fn_effects)?;
+        }
+        Node::PrefixExpression { right, .. } => check_body_effects(right, fn_effects)?,
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            for a in arguments {
+                check_body_effects(a, fn_effects)?;
+            }
+            if let Node::Identifier { name: callee, .. } = function.as_ref() {
+                // User fn with a recorded effect set — `pure`
+                // propagates cleanly; any other effect (today just
+                // `io`) is a violation.
+                if let Some(callee_effects) = fn_effects.get(callee) {
+                    if callee_effects.pure {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "cannot call io function `{}` from pure context",
+                        callee
+                    ));
+                }
+                // Builtins: pure-by-default list passes; anything
+                // flagged impure by RES-191 is also implicitly io.
+                if IMPURE_BUILTINS.contains(&callee.as_str()) {
+                    return Err(format!(
+                        "cannot call io function `{}` from pure context",
+                        callee
+                    ));
+                }
+                if is_known_pure_builtin(callee) {
+                    return Ok(());
+                }
+                // Unknown callee (not in BUILTINS and not a
+                // declared user fn) — conservatively reject so a
+                // `pure` annotation remains meaningful.
+                return Err(format!(
+                    "cannot call io function `{}` from pure context",
+                    callee
+                ));
+            }
+            // Method / computed callee — can't resolve statically;
+            // same conservative rejection as the purity pass.
+            check_body_effects(function, fn_effects)?;
+            return Err(
+                "cannot call indirect/method callee from pure context (effect unknown)".to_string(),
+            );
+        }
+        Node::FieldAccess { target, .. } => check_body_effects(target, fn_effects)?,
+        Node::FieldAssignment { target, value, .. } => {
+            check_body_effects(target, fn_effects)?;
+            check_body_effects(value, fn_effects)?;
+        }
+        Node::Assignment { value, .. } => check_body_effects(value, fn_effects)?,
+        Node::IndexExpression { target, index, .. } => {
+            check_body_effects(target, fn_effects)?;
+            check_body_effects(index, fn_effects)?;
+        }
+        Node::IndexAssignment {
+            target,
+            index,
+            value,
+            ..
+        } => {
+            check_body_effects(target, fn_effects)?;
+            check_body_effects(index, fn_effects)?;
+            check_body_effects(value, fn_effects)?;
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                check_body_effects(i, fn_effects)?;
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                check_body_effects(v, fn_effects)?;
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            check_body_effects(scrutinee, fn_effects)?;
+            for (_pat, guard, arm_body) in arms {
+                if let Some(g) = guard {
+                    check_body_effects(g, fn_effects)?;
+                }
+                check_body_effects(arm_body, fn_effects)?;
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => check_body_effects(expr, fn_effects)?,
+        Node::TryExpression { expr, .. } => check_body_effects(expr, fn_effects)?,
+        Node::Function { body, .. } => check_body_effects(body, fn_effects)?,
+        // Literals, identifier reads, durations — nothing to do.
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use crate::parse;
+
+    fn stmts(src: &str) -> Vec<crate::span::Spanned<Node>> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(s) => s,
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pure_to_pure_passes() {
+        let src = "pure fn inner(int x) { return x + 1; }\n\
+                   pure fn outer(int x) { return inner(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("pure→pure should pass");
+    }
+
+    #[test]
+    fn pure_to_io_is_rejected() {
+        let src = "io   fn noisy(int x) { return x; }\n\
+                   pure fn caller(int x) { return noisy(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("pure→io should fail");
+        assert!(
+            err.contains("cannot call io function `noisy` from pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pure_to_unannotated_is_rejected() {
+        // Unannotated fns default to `EffectSet::io()` per the
+        // RES-389 backward-compat rule.
+        let src = "fn      helper(int x) { return x + 1; }\n\
+                   pure fn caller(int x) { return helper(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("pure→unannotated should fail");
+        assert!(
+            err.contains("cannot call io function `helper` from pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn io_to_pure_passes() {
+        let src = "pure fn add1(int x) { return x + 1; }\n\
+                   io   fn caller(int x) { return add1(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("io→pure should pass");
+    }
+
+    #[test]
+    fn io_to_io_passes() {
+        let src = "io fn a(int x) { return x; }\n\
+                   io fn b(int x) { return a(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("io→io should pass");
+    }
+
+    #[test]
+    fn pure_using_pure_builtin_passes() {
+        let src = "pure fn f(int x) { return abs(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("abs is pure");
+    }
+
+    #[test]
+    fn pure_using_impure_builtin_is_rejected() {
+        let src = "pure fn f(int x) { println(x); return x; }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("println is io");
+        assert!(
+            err.contains("cannot call io function `println` from pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn diagnostic_includes_source_location() {
+        // When the `pure` fn has a real span, the error prefix is
+        // `<path>:<line>:<col>: …` — matching RES-080 / RES-191
+        // conventions so IDEs can anchor the message.
+        let src = "io   fn noisy(int x) { return x; }\n\
+                   pure fn caller(int x) { return noisy(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").unwrap_err();
+        assert!(err.contains("<t>:"), "missing source path: {err}");
+        assert!(err.contains(":2:"), "missing line number: {err}");
     }
 }
 

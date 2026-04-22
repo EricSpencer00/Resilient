@@ -959,6 +959,66 @@ impl BackoffConfig {
     }
 }
 
+/// RES-389: declared effect set for a function.
+///
+/// The MVP carries two bits — `pure` and `io` — sufficient to
+/// distinguish side-effect-free code from code that may observe
+/// or mutate the outside world. `sends` (actor-model messaging)
+/// and `fails` (typed error-raising effect) are intentionally
+/// deferred: `fails` is tracked by RES-387, `sends` depends on
+/// the actor model landing first.
+///
+/// Call-site enforcement (`typechecker::check_program_effects`):
+/// a `pure` function may only call other `pure` functions; an
+/// `io` function may call `pure` or `io` functions. Functions
+/// without an explicit annotation default to `EffectSet::io()`
+/// for backward compatibility — every pre-RES-389 test continues
+/// to type-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EffectSet {
+    /// The fn is declared side-effect-free: no I/O, no
+    /// nondeterminism, no mutation of observable state. Enforced
+    /// at call sites — a `pure` caller may only reach other pure
+    /// callees.
+    pub pure: bool,
+    /// The fn may perform I/O (stdin/stdout, hardware register
+    /// reads/writes, clock, env). This is the default effect for
+    /// an unannotated fn; the permissive baseline preserves
+    /// backward compatibility.
+    pub io: bool,
+}
+
+impl EffectSet {
+    /// Construct the `pure` effect set — no effects at all.
+    pub const fn pure() -> Self {
+        EffectSet {
+            pure: true,
+            io: false,
+        }
+    }
+
+    /// Construct the `io` effect set — the permissive default for
+    /// unannotated functions.
+    pub const fn io() -> Self {
+        EffectSet {
+            pure: false,
+            io: true,
+        }
+    }
+
+    /// Human-readable tag for diagnostics (`pure`, `io`, or
+    /// `unknown` if somehow neither bit is set).
+    pub fn tag(&self) -> &'static str {
+        if self.pure {
+            "pure"
+        } else if self.io {
+            "io"
+        } else {
+            "unknown"
+        }
+    }
+}
+
 // AST nodes for our parser
 #[derive(Debug, Clone)]
 enum Node {
@@ -1014,6 +1074,17 @@ enum Node {
         /// infers purity for unannotated fns.
         #[allow(dead_code)] // read via pattern destructure in typechecker
         pure: bool,
+        /// RES-389: effect annotations declared at the type level.
+        /// A fn may be tagged `pure fn` or `io fn` (soft keywords at
+        /// statement-start) to constrain which other fns it may
+        /// call. Unannotated fns default to `EffectSet::io()` for
+        /// backward compatibility — anything can be called from
+        /// them, and they can be called from other `io` contexts.
+        /// The type checker (see `typechecker::check_program_effects`)
+        /// enforces: `pure` fns may only call other `pure` fns;
+        /// `io` fns may call `pure` or `io`. See RES-387 for the
+        /// `fails` effect and follow-up tickets for `sends`.
+        effects: EffectSet,
         /// RES-124 (scope RES-124a): generic type parameters
         /// declared on the fn via `fn<T, U> name(...)`. Empty
         /// when the user wrote a plain monomorphic `fn`. Order
@@ -1498,6 +1569,22 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Option<Node> {
+        // RES-389: soft-keyword dispatch for the `pure` / `io`
+        // effect annotations. They're lexed as identifiers so
+        // existing programs that use them as names don't break;
+        // a statement-start `pure fn` / `io fn` sequence is
+        // treated as an effect-annotated function declaration.
+        if let Token::Identifier(n) = &self.current_token
+            && (n == "pure" || n == "io")
+            && self.peek_token == Token::Function
+        {
+            let effects = if n == "pure" {
+                EffectSet::pure()
+            } else {
+                EffectSet::io()
+            };
+            return Some(self.parse_effect_keyword_function(effects));
+        }
         match self.current_token {
             // RES-191: `@pure` (and future attributes) prefix a
             // function declaration. Dispatched here so the
@@ -1637,10 +1724,39 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Node {
-        // Default: no `@pure` annotation. The attribute-dispatch
-        // path (see parse_attributed_item) calls
-        // `parse_function_with_pure(true)` instead.
-        self.parse_function_with_pure(false)
+        // Default: no annotation. The attribute-dispatch path
+        // (see parse_attributed_item) and the effect-keyword
+        // dispatch path (see parse_effect_keyword_function) supply
+        // an explicit `EffectSet` instead. Unannotated fns default
+        // to `io` per RES-389 for backward compatibility.
+        self.parse_function_with_effects(EffectSet::io())
+    }
+
+    /// RES-389: parse `pure fn ...` / `io fn ...`. Entered with
+    /// `current_token` positioned on the soft keyword identifier
+    /// (`pure` or `io`). Consumes the keyword and delegates to
+    /// `parse_function_with_effects`. Invalid sequences (e.g.
+    /// `pure` followed by something other than `fn`) fall back to
+    /// parsing the identifier as an expression statement so the
+    /// rest of the file still parses.
+    fn parse_effect_keyword_function(&mut self, effects: EffectSet) -> Node {
+        // Consume the `pure` / `io` identifier.
+        self.next_token();
+        if self.current_token != Token::Function {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "effect keyword `{}` must be followed by `fn`, found {}",
+                effects.tag(),
+                tok
+            ));
+            // Best-effort recovery: parse whatever follows as a
+            // normal statement so later errors don't cascade.
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+        self.parse_function_with_effects(effects)
     }
 
     /// RES-191: parse an attribute prefix (`@pure`) followed by the
@@ -1673,13 +1789,17 @@ impl Parser {
         };
         self.next_token(); // skip attribute name
 
-        let pure_flag = match attr_name.as_str() {
-            "pure" => true,
+        let (pure_flag, effects) = match attr_name.as_str() {
+            // `@pure` lights up both the legacy RES-191 strict
+            // purity checker (via `pure: bool`) and the RES-389
+            // effect-annotation checker (via `EffectSet::pure()`).
+            "pure" => (true, EffectSet::pure()),
             other => {
                 self.record_error(format!("Unknown attribute `@{}`. Known: @pure", other));
                 // Fall through — treat as if no attribute was
-                // present; the fn still parses.
-                false
+                // present; the fn still parses with the default
+                // `io` effect set and the purity flag off.
+                (false, EffectSet::io())
             }
         };
 
@@ -1699,14 +1819,43 @@ impl Parser {
             });
         }
 
-        self.parse_function_with_pure(pure_flag)
+        self.parse_function_with_pure_and_effects(pure_flag, effects)
     }
 
-    /// RES-191: shared parser for `fn ...` with an explicit `pure`
-    /// flag. Called from `parse_function` (no annotation → pure=false)
-    /// and from `parse_attributed_item` when a `@pure` prefix
-    /// precedes the `fn`.
-    fn parse_function_with_pure(&mut self, pure: bool) -> Node {
+    /// RES-191 / RES-389: shared parser for `fn ...` with an
+    /// explicit `EffectSet`. Called from `parse_function` (no
+    /// annotation → `EffectSet::io()`), from `parse_attributed_item`
+    /// when a `@pure` prefix precedes the `fn`, and from
+    /// `parse_effect_keyword_function` when the source starts with
+    /// a `pure` / `io` soft keyword.
+    fn parse_function_with_effects(&mut self, effects: EffectSet) -> Node {
+        // RES-389: the legacy `pure: bool` field drives the
+        // strict RES-191 `@pure` purity checker; we keep it
+        // distinct from the effect set so the `pure fn` keyword
+        // form (RES-389) and the `@pure` attribute (RES-191) can
+        // each fire their own diagnostics. Callers that came
+        // through the attribute-parser path set `pure_flag = true`
+        // explicitly; the keyword-dispatch path leaves it `false`.
+        self.parse_function_with_pure_and_effects(false, effects)
+    }
+
+    /// RES-389: shared implementation for both annotation paths.
+    /// `pure_flag` lights up the RES-191 strict purity checker
+    /// (used by the `@pure` attribute); `effects` drives the
+    /// RES-389 effect-annotation checker. The two are independent
+    /// and can both be set — `@pure` still implies `EffectSet::pure()`
+    /// for the new checker.
+    fn parse_function_with_pure_and_effects(
+        &mut self,
+        pure_flag: bool,
+        effects_in: EffectSet,
+    ) -> Node {
+        // `@pure` attribute path: the effect set was already
+        // `EffectSet::pure()` by construction in
+        // `parse_attributed_item`. Keyword-dispatch path: the
+        // effect set matches what the user wrote.
+        let pure = pure_flag;
+        let effects = effects_in;
         // RES-088: capture the `fn` keyword's span before advancing.
         let fn_span = self.span_at_current();
         self.next_token(); // Skip 'fn'
@@ -1755,6 +1904,7 @@ impl Parser {
                     return_type: None,
                     span: fn_span,
                     pure,
+                    effects,
                     type_params: type_params.clone(),
                 };
             }
@@ -1769,6 +1919,7 @@ impl Parser {
                 return_type: None,
                 span: fn_span,
                 pure,
+                effects,
                 type_params,
             };
         }
@@ -1808,6 +1959,7 @@ impl Parser {
                     return_type,
                     span: fn_span,
                     pure,
+                    effects,
                     type_params: type_params.clone(),
                 };
             }
@@ -1824,6 +1976,7 @@ impl Parser {
             return_type,
             span: fn_span,
             pure,
+            effects,
             type_params,
         }
     }
@@ -1966,6 +2119,9 @@ impl Parser {
             // `@pure fn method(...)` is supported inside `impl`
             // blocks, this will take the method-level flag.
             pure: false,
+            // RES-389: impl methods default to `io` — the same
+            // permissive baseline as any unannotated top-level fn.
+            effects: EffectSet::io(),
             // RES-124: impl methods don't support `<T>` today;
             // always monomorphic. `impl<T>` is a future
             // extension.
