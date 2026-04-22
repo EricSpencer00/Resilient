@@ -112,7 +112,11 @@ impl StaticRegistry {
 
     /// Look up a registered function by name. O(N) scan.
     pub fn lookup(&self, name: &str) -> Option<&Entry> {
-        self.slots[..self.len].iter().flatten().find(|&e| e.name == name).map(|v| v as _)
+        self.slots[..self.len]
+            .iter()
+            .flatten()
+            .find(|&e| e.name == name)
+            .map(|v| v as _)
     }
 
     /// Number of registered entries.

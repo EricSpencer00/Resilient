@@ -1043,6 +1043,10 @@ enum Node {
         /// semantics). Backoff and timeout coexist: backoff sleeps
         /// count against the budget.
         timeout: Option<Box<Node>>,
+        /// RES-359: configurable retry budget set via the
+        /// `live retries N { ... }` clause. `Some(N)` overrides the
+        /// default MAX_RETRIES=3; `None` uses the default.
+        retries: Option<u64>,
         /// RES-088: span of the `live` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -3155,13 +3159,13 @@ impl Parser {
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
 
-        // RES-139 + RES-142: optional `backoff(...)` and `within
-        // <duration>` clauses. Both are context-sensitive identifiers
-        // (no reserved words burned); either order is accepted, but
-        // neither may appear twice. Loop until we hit `invariant` or
-        // `{`.
+        // RES-139 + RES-142 + RES-359: optional `backoff(...)`, `within
+        // <duration>`, and `retries N` clauses. All are context-sensitive
+        // identifiers (no reserved words burned); any order is accepted, but
+        // none may appear twice. Loop until we hit `invariant` or `{`.
         let mut backoff: Option<BackoffConfig> = None;
         let mut timeout: Option<Box<Node>> = None;
+        let mut retries: Option<u64> = None;
         loop {
             match &self.current_token {
                 Token::Identifier(n) if n == "backoff" => {
@@ -3184,6 +3188,15 @@ impl Parser {
                     let dl = self.parse_within_clause();
                     if timeout.is_none() {
                         timeout = dl.map(Box::new);
+                    }
+                }
+                Token::Identifier(n) if n == "retries" => {
+                    if retries.is_some() {
+                        self.record_error("duplicate `retries N` clause in live block".to_string());
+                    }
+                    let r = self.parse_retries_clause();
+                    if retries.is_none() {
+                        retries = r;
                     }
                 }
                 _ => break,
@@ -3214,6 +3227,7 @@ impl Parser {
                 invariants,
                 backoff,
                 timeout,
+                retries,
                 span: self.span_at_current(),
             };
         }
@@ -3225,6 +3239,7 @@ impl Parser {
             invariants,
             backoff,
             timeout,
+            retries,
             span: self.span_at_current(),
         }
     }
@@ -3288,6 +3303,31 @@ impl Parser {
             nanos,
             span: start_span,
         })
+    }
+
+    /// RES-359: parse `retries N` into a `u64` retry budget. On entry,
+    /// `current_token` is the `retries` identifier. On exit, `current_token`
+    /// sits on whatever follows the integer literal.
+    ///
+    /// Returns `None` on parse error (integer missing, negative literal).
+    /// Errors are recorded via `record_error` so downstream parsing stays
+    /// productive.
+    fn parse_retries_clause(&mut self) -> Option<u64> {
+        self.next_token(); // skip `retries`
+
+        let budget = match &self.current_token {
+            Token::IntLiteral(n) if *n >= 0 => *n as u64,
+            other => {
+                self.record_error(format!(
+                    "Expected non-negative integer literal after `retries`, found {}",
+                    other
+                ));
+                return None;
+            }
+        };
+        self.next_token(); // skip integer literal
+
+        Some(budget)
     }
 
     /// RES-139: parse `backoff(base_ms=N, factor=K, max_ms=M)` —
@@ -6904,6 +6944,7 @@ impl Interpreter {
                 invariants,
                 backoff,
                 timeout,
+                retries,
                 span,
             } => {
                 // RES-142: unpack the `within <duration>` clause
@@ -6913,7 +6954,14 @@ impl Interpreter {
                     Node::DurationLiteral { nanos, .. } => Some(*nanos),
                     _ => None,
                 });
-                self.eval_live_block(body, invariants, backoff.as_ref(), timeout_ns, *span)
+                self.eval_live_block(
+                    body,
+                    invariants,
+                    backoff.as_ref(),
+                    timeout_ns,
+                    *retries,
+                    *span,
+                )
             }
             // RES-142: duration literals are only legal inside a
             // `live ... within <duration> { ... }` clause — the
@@ -7497,9 +7545,11 @@ impl Interpreter {
         invariants: &[Node],
         backoff: Option<&BackoffConfig>,
         timeout_ns: Option<u64>,
+        retries: Option<u64>,
         block_span: span::Span,
     ) -> RResult<Value> {
-        const MAX_RETRIES: usize = 3;
+        const DEFAULT_MAX_RETRIES: usize = 3;
+        let max_retries = retries.map(|r| r as usize).unwrap_or(DEFAULT_MAX_RETRIES);
         let mut retry_count = 0;
 
         // Create a snapshot of the environment
@@ -7574,13 +7624,13 @@ impl Interpreter {
                     // (that's the `exhaustions` counter's job).
                     // Relaxed is fine; counters are diagnostic-
                     // quality, not a synchronization primitive.
-                    if retry_count < MAX_RETRIES {
+                    if retry_count < max_retries {
                         LIVE_TOTAL_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
 
                     eprintln!(
                         "\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m",
-                        retry_count, MAX_RETRIES, error
+                        retry_count, max_retries, error
                     );
 
                     // RES-142: budget check. If the wall-clock
@@ -7600,7 +7650,7 @@ impl Interpreter {
                         _ => false,
                     };
 
-                    if retry_count >= MAX_RETRIES || timed_out {
+                    if retry_count >= max_retries || timed_out {
                         let reason = if timed_out {
                             "timed out"
                         } else {
@@ -7635,7 +7685,7 @@ impl Interpreter {
                         }
                         return Err(format!(
                             "Live block failed after {} attempts (retry depth: {}): {}",
-                            MAX_RETRIES, depth, error
+                            max_retries, depth, error
                         ));
                     }
 
@@ -7647,7 +7697,7 @@ impl Interpreter {
                     eprintln!(
                         "\x1B[36m[LIVE BLOCK] Retrying execution (attempt {}/{})\x1B[0m",
                         retry_count + 1,
-                        MAX_RETRIES
+                        max_retries
                     );
 
                     // RES-139: exponential backoff between retries.

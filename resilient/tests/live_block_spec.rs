@@ -321,3 +321,110 @@ fn case_08_static_let_survives_retry_regular_let_does_not() {
         "static let must NOT reset to 1 — that would be rollback; stdout={stdout}"
     );
 }
+
+// --- Spec test 9: custom retry budget via `retries N` ---
+
+#[test]
+fn case_09_custom_retry_budget_retries_5() {
+    // RES-359: `live retries 5 { ... }` should allow up to 5 retries
+    // before exhaustion. The body always fails, so we expect exhaustion
+    // after 5 attempts with the error message showing "failed after 5 attempts".
+    let src = "\
+        static let attempts = 0;\n\
+        fn main(int _d) {\n\
+            live retries 5 {\n\
+                attempts = attempts + 1;\n\
+                assert(false, \"always fail\");\n\
+            }\n\
+        }\n\
+        main(0);\n\
+    ";
+    let (_stdout, stderr, code) = run_src("case09", src);
+    assert_ne!(code, Some(0), "exhaustion must propagate as non-zero exit");
+    assert!(
+        stderr.contains("Live block failed after 5 attempts"),
+        "expected exhaustion with 5 attempts; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("retry depth: 1"),
+        "expected retry-depth footer; stderr={stderr}"
+    );
+}
+
+// --- Spec test 10: custom retry budget 1 exhausts immediately ---
+
+#[test]
+fn case_10_custom_retry_budget_retries_1() {
+    // RES-359: `live retries 1 { ... }` should allow only 1 retry
+    // before exhaustion (2 total attempts: initial + 1 retry).
+    let src = "\
+        static let attempts = [];\n\
+        fn main(int _d) {\n\
+            live retries 1 {\n\
+                attempts = push(attempts, live_retries());\n\
+                assert(false, \"fail\");\n\
+            }\n\
+        }\n\
+        main(0);\n\
+    ";
+    let (_stdout, stderr, code) = run_src("case10", src);
+    assert_ne!(code, Some(0), "exhaustion must propagate as non-zero exit");
+    assert!(
+        stderr.contains("Live block failed after 1 attempts"),
+        "expected exhaustion with 1 attempts; stderr={stderr}"
+    );
+}
+
+// --- Spec test 11: retries 0 means no retries (fail on first error) ---
+
+#[test]
+fn case_11_custom_retry_budget_retries_0() {
+    // RES-359: `live retries 0 { ... }` should fail immediately on
+    // first error without any retries.
+    let src = "\
+        static let attempts = 0;\n\
+        fn main(int _d) {\n\
+            live retries 0 {\n\
+                attempts = attempts + 1;\n\
+                assert(false, \"fail immediately\");\n\
+            }\n\
+        }\n\
+        main(0);\n\
+    ";
+    let (_stdout, stderr, code) = run_src("case11", src);
+    assert_ne!(code, Some(0), "exhaustion must propagate as non-zero exit");
+    assert!(
+        stderr.contains("Live block failed after 0 attempts"),
+        "expected exhaustion with 0 attempts (no retries); stderr={stderr}"
+    );
+}
+
+// --- Spec test 12: retries can be combined with other clauses ---
+
+#[test]
+fn case_12_retries_with_backoff_and_invariant() {
+    // RES-359: `retries N` should work alongside `backoff(...)` and
+    // `invariant` clauses. The order should not matter.
+    let src = "\
+        static let flips = 0;\n\
+        static let seen = [];\n\
+        fn main(int _d) {\n\
+            live retries 2 backoff(base_ms=1, factor=2, max_ms=10) invariant flips >= 2 {\n\
+                seen = push(seen, live_retries());\n\
+                flips = flips + 1;\n\
+            }\n\
+            println(seen);\n\
+        }\n\
+        main(0);\n\
+    ";
+    let (stdout, _stderr, code) = run_src("case12", src);
+    assert_eq!(
+        code,
+        Some(0),
+        "block should succeed after 2 attempts; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("[0, 1]"),
+        "live_retries() should show attempts 0,1; stdout={stdout}"
+    );
+}

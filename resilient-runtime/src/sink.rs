@@ -203,9 +203,7 @@ mod tests {
     /// tests never run long enough for the leak to matter, and
     /// the `'static` lifetime is what `set_sink` needs.
     fn leak_buf_sink() -> &'static mut BufSink {
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(BufSink {
-            buf: Vec::new(),
-        }))
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(BufSink { buf: Vec::new() }))
     }
 
     #[test]
@@ -254,8 +252,7 @@ mod tests {
     #[test]
     fn failing_sink_surfaces_write_failed() {
         let _g = SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let sink: &'static mut FailSink =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(FailSink));
+        let sink: &'static mut FailSink = alloc::boxed::Box::leak(alloc::boxed::Box::new(FailSink));
         set_sink(sink);
         let err = print("anything").unwrap_err();
         clear_sink();
@@ -277,12 +274,8 @@ mod tests {
         print("to-second").unwrap();
 
         clear_sink();
-        let first_seen = unsafe {
-            String::from_utf8((*first_ptr).buf.clone()).unwrap()
-        };
-        let second_seen = unsafe {
-            String::from_utf8((*second_ptr).buf.clone()).unwrap()
-        };
+        let first_seen = unsafe { String::from_utf8((*first_ptr).buf.clone()).unwrap() };
+        let second_seen = unsafe { String::from_utf8((*second_ptr).buf.clone()).unwrap() };
         assert_eq!(first_seen, "to-first");
         assert_eq!(second_seen, "to-second");
     }
