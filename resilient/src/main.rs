@@ -137,6 +137,11 @@ enum Token {
     /// outside of types the parser surfaces it as an ordinary
     /// unexpected-token error.
     Mut,
+    // <EXTENSION_TOKENS>
+    // Add new keyword tokens here — one variant per line with RES-NNN doc comment.
+    // This block is append-only; merge conflicts in this section are safe to resolve
+    // by keeping ALL variants from both sides.
+    // </EXTENSION_TOKENS>
 
     // Literals
     Identifier(String),
@@ -642,6 +647,10 @@ impl Lexer {
                         "linear" => Token::Linear,
                         "region" => Token::Region,
                         "mut" => Token::Mut,
+                        // <EXTENSION_KEYWORDS>
+                        // Add new keyword → Token mappings here (append-only).
+                        // Merge conflicts: keep ALL arms from both sides.
+                        // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.

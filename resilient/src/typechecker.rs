@@ -1179,6 +1179,12 @@ impl TypeChecker {
                 // RES-385: single-use enforcement for linear types.
                 crate::linear::check_linear_usage(program, source_path)?;
 
+                // <EXTENSION_PASSES>
+                // Add new compiler pass calls here (append-only).
+                // Pattern: crate::your_feature::check(program, source_path)?;
+                // Merge conflicts: keep ALL calls from both sides.
+                // </EXTENSION_PASSES>
+
                 // RES-192: IO-effect inference. Binary lattice
                 // (pure / IO). Fixpoint over the call graph: a fn
                 // is tagged IO iff it calls an impure builtin, an
