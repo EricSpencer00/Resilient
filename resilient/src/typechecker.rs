@@ -1,7 +1,7 @@
 // Type checker module for Resilient language
 use crate::span::Span;
 use crate::{Node, Pattern};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// RES-189: one entry in the typechecker's post-walk inlay-hint
 /// cache. Produced for every unannotated `let` binding (i.e.
@@ -123,6 +123,10 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
             bs.extend(pattern_bindings(inner));
             bs
         }
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .flat_map(|(_, sub)| pattern_bindings(sub.as_ref()))
+            .collect(),
     }
 }
 
@@ -137,6 +141,14 @@ fn pattern_is_default(p: &Pattern) -> bool {
         Pattern::Or(branches) => branches.iter().any(pattern_is_default),
         // `x @ inner` is default iff the inner pattern is default.
         Pattern::Bind(_, inner) => pattern_is_default(inner),
+        Pattern::Struct {
+            fields, has_rest, ..
+        } => {
+            *has_rest
+                || fields
+                    .iter()
+                    .all(|(_, sub)| pattern_is_default(sub.as_ref()))
+        }
     }
 }
 
@@ -148,6 +160,63 @@ fn pattern_covers_bool(p: &Pattern, want: bool) -> bool {
         Pattern::Literal(Node::BooleanLiteral { value, .. }) => *value == want,
         Pattern::Or(branches) => branches.iter().any(|b| pattern_covers_bool(b, want)),
         _ => false,
+    }
+}
+
+/// RES-369: does `p` cover every value of nominal struct `sname`
+/// (given its declared fields) for exhaustiveness?
+fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: &Pattern) -> bool {
+    match p {
+        Pattern::Wildcard | Pattern::Identifier(_) => true,
+        Pattern::Literal(_) => false,
+        Pattern::Or(branches) => branches
+            .iter()
+            .any(|b| struct_pattern_matches_nominal_type(sname, decl, b)),
+        Pattern::Bind(_, inner) => struct_pattern_matches_nominal_type(sname, decl, inner),
+        Pattern::Struct {
+            struct_name,
+            fields,
+            has_rest,
+        } => {
+            if struct_name != sname {
+                return false;
+            }
+            if *has_rest {
+                return true;
+            }
+            if decl.is_empty() {
+                return true;
+            }
+            if fields.len() != decl.len() {
+                return false;
+            }
+            for (fname, _) in decl {
+                let Some((_, sub)) = fields.iter().find(|(n, _)| n == fname) else {
+                    return false;
+                };
+                if !pattern_is_default(sub.as_ref()) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
+fn pattern_is_exhaustive_wrt_scrutinee(
+    scrut: &Type,
+    p: &Pattern,
+    struct_fields: &HashMap<String, Vec<(String, Type)>>,
+) -> bool {
+    match scrut {
+        Type::Struct(sname) => {
+            if let Some(decl) = struct_fields.get(sname) {
+                struct_pattern_matches_nominal_type(sname, decl, p)
+            } else {
+                pattern_is_default(p)
+            }
+        }
+        _ => pattern_is_default(p),
     }
 }
 
@@ -1112,6 +1181,77 @@ impl TypeChecker {
         }
     }
 
+    fn match_pattern_binding_types(
+        &mut self,
+        pattern: &Pattern,
+        scrut_ty: &Type,
+    ) -> Result<Vec<(String, Type)>, String> {
+        match pattern {
+            Pattern::Wildcard | Pattern::Literal(_) => Ok(vec![]),
+            Pattern::Identifier(n) => Ok(vec![(n.clone(), scrut_ty.clone())]),
+            Pattern::Or(branches) => {
+                let first = self.match_pattern_binding_types(&branches[0], scrut_ty)?;
+                for b in &branches[1..] {
+                    let other = self.match_pattern_binding_types(b, scrut_ty)?;
+                    if other != first {
+                        return Err(format!(
+                            "or-pattern branches bind different names or types: {:?} vs {:?}",
+                            first, other
+                        ));
+                    }
+                }
+                Ok(first)
+            }
+            Pattern::Bind(outer, inner) => {
+                let mut inner_bt = self.match_pattern_binding_types(inner, scrut_ty)?;
+                inner_bt.insert(0, (outer.clone(), scrut_ty.clone()));
+                Ok(inner_bt)
+            }
+            Pattern::Struct {
+                struct_name,
+                fields,
+                ..
+            } => {
+                let Type::Struct(sname) = scrut_ty else {
+                    return Err(format!(
+                        "struct pattern `{}` used where scrutinee is not a struct (got {})",
+                        struct_name, scrut_ty
+                    ));
+                };
+                if struct_name != sname {
+                    return Err(format!(
+                        "struct pattern `{}` does not match scrutinee struct `{}`",
+                        struct_name, sname
+                    ));
+                }
+                let decl = self
+                    .struct_fields
+                    .get(sname)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown struct `{}` in match pattern", sname))?;
+                let mut seen = HashSet::<String>::new();
+                let mut out = Vec::new();
+                for (fname, sub) in fields {
+                    if !seen.insert(fname.clone()) {
+                        return Err(format!(
+                            "duplicate field `{}` in struct match pattern",
+                            fname
+                        ));
+                    }
+                    let Some((_, fty)) = decl.iter().find(|(n, _)| n == fname) else {
+                        return Err(format!(
+                            "struct `{}` has no field `{}` in match pattern",
+                            sname, fname
+                        ));
+                    };
+                    let sub_bt = self.match_pattern_binding_types(sub.as_ref(), fty)?;
+                    out.extend(sub_bt);
+                }
+                Ok(out)
+            }
+        }
+    }
+
     pub fn check_node(&mut self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Program(_statements) => self.check_program(node),
@@ -1572,18 +1712,17 @@ impl TypeChecker {
                         }
                     }
 
-                    // RES-159 + RES-160 + RES-161a: register every
-                    // name the pattern binds (as the scrutinee's type)
-                    // so guards and bodies can reference them. Rolled
-                    // back after the arm so bindings don't leak.
-                    // `pattern_bindings` returns [] for Wildcard/Literal,
-                    // [n] for Identifier, [outer, ..inner] for Bind.
-                    let binding_names = pattern_bindings(pattern);
-                    let rollback_bindings: Vec<(String, Option<Type>)> = binding_names
+                    // RES-159 + RES-160 + RES-161a + RES-369: register
+                    // every name the pattern binds with the correct type
+                    // (scrutinee type for simple arms; per-field types for
+                    // struct patterns). Rolled back after the arm.
+                    let binding_entries =
+                        self.match_pattern_binding_types(pattern, &scrutinee_type)?;
+                    let rollback_bindings: Vec<(String, Option<Type>)> = binding_entries
                         .iter()
-                        .map(|n| {
+                        .map(|(n, t)| {
                             let prev = self.env.get(n);
-                            self.env.set(n.clone(), scrutinee_type.clone());
+                            self.env.set(n.clone(), t.clone());
                             (n.clone(), prev)
                         })
                         .collect();
@@ -1618,14 +1757,19 @@ impl TypeChecker {
                     let _ = body_res?;
                 }
 
-                // RES-054 + RES-159 + RES-160: exhaustiveness check.
-                // An arm is "covering" when it's unguarded AND its
-                // pattern contains at least one wildcard / identifier
-                // branch — `pattern_is_default` recurses through
-                // or-patterns so `_ | x` and `0 | _` both count.
-                let has_default = arms
-                    .iter()
-                    .any(|(p, guard, _)| guard.is_none() && pattern_is_default(p));
+                // RES-054 + RES-159 + RES-160 + RES-369: exhaustiveness.
+                // An arm covers the scrutinee domain when it's unguarded
+                // and the pattern is exhaustive for the scrutinee type
+                // (`pattern_is_default` for scalars; struct `{{ .. }}`
+                // or a full field-wise binding pattern for structs).
+                let has_default = arms.iter().any(|(p, guard, _)| {
+                    guard.is_none()
+                        && pattern_is_exhaustive_wrt_scrutinee(
+                            &scrutinee_type,
+                            p,
+                            &self.struct_fields,
+                        )
+                });
 
                 if !has_default {
                     match scrutinee_type {
@@ -1659,6 +1803,12 @@ impl TypeChecker {
                             // rather than force a wildcard. Real
                             // exhaustiveness for user types lands with
                             // G7's struct-decl table.
+                        }
+                        Type::Struct(sname) => {
+                            return Err(format!(
+                                "Non-exhaustive match on struct `{}`: add `{} {{ .. }}`, `_`, or an identifier arm that covers every field",
+                                sname, sname
+                            ));
                         }
                         other => {
                             return Err(format!(

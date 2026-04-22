@@ -66,6 +66,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0005", // redundant trailing bare `return;`
     "L0006", // assume(false) vacuously discharges all verification obligations
     "L0007", // unreachable code after unconditional `return`
+    "L0008", // duplicate identical struct literal match arm
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -80,6 +81,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0005_redundant_return(program, &mut out);
     run_l0006_assume_false(program, &mut out);
     run_l0007_unreachable_code(program, &mut out);
+    run_l0008_duplicate_struct_match_arm(program, &mut out);
 
     // Filter via allow-comments.
     let allows = collect_allow_comments(source);
@@ -185,6 +187,13 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
         }
         // Wildcard and Literal introduce no bindings.
         Pattern::Wildcard | Pattern::Literal(_) => vec![],
+        Pattern::Struct { fields, .. } => {
+            let mut names = Vec::new();
+            for (_, sub) in fields {
+                names.extend(collect_pattern_bindings(sub.as_ref()));
+            }
+            names
+        }
     }
 }
 
@@ -531,6 +540,9 @@ fn pattern_is_default_for_lint(p: &Pattern) -> bool {
         Pattern::Literal(_) => false,
         Pattern::Or(branches) => branches.iter().any(pattern_is_default_for_lint),
         Pattern::Bind(_, inner) => pattern_is_default_for_lint(inner),
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .all(|(_, sub)| pattern_is_default_for_lint(sub.as_ref())),
     }
 }
 
@@ -641,6 +653,138 @@ fn walk_matches(node: &Node, out: &mut Vec<Lint>) {
             walk_matches(function, out);
             for a in arguments {
                 walk_matches(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn struct_literal_match_arm_key(pat: &Pattern) -> Option<String> {
+    let Pattern::Struct {
+        struct_name,
+        fields,
+        has_rest,
+    } = pat
+    else {
+        return None;
+    };
+    if *has_rest || fields.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for (fname, sub) in fields {
+        match sub.as_ref() {
+            Pattern::Literal(Node::IntegerLiteral { value, .. }) => {
+                parts.push(format!("{}={}", fname, value));
+            }
+            _ => return None,
+        }
+    }
+    parts.sort();
+    Some(format!("{}|{}", struct_name, parts.join("|")))
+}
+
+fn run_l0008_duplicate_struct_match_arm(program: &Node, out: &mut Vec<Lint>) {
+    walk_dup_struct_arms(program, out);
+}
+
+fn walk_dup_struct_arms(node: &Node, out: &mut Vec<Lint>) {
+    match node {
+        Node::Program(stmts) => {
+            for s in stmts {
+                walk_dup_struct_arms(&s.node, out);
+            }
+        }
+        Node::Function { body, .. } => walk_dup_struct_arms(body, out),
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                walk_dup_struct_arms(method, out);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                walk_dup_struct_arms(s, out);
+            }
+        }
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            walk_dup_struct_arms(scrutinee, out);
+            let scrut_line = match span_of(scrutinee) {
+                Some(s) => s.start.line as u32,
+                None => 1,
+            };
+            let scrut_col = match span_of(scrutinee) {
+                Some(s) => s.start.column as u32,
+                None => 1,
+            };
+            let mut seen = std::collections::HashSet::<String>::new();
+            for (pat, guard, arm_body) in arms {
+                if guard.is_none()
+                    && let Some(k) = struct_literal_match_arm_key(pat)
+                    && !seen.insert(k)
+                {
+                    let arm_span = span_of(arm_body);
+                    let (line, col) = match arm_span {
+                        Some(s) if s.start.line > 0 => (s.start.line as u32, s.start.column as u32),
+                        _ => (scrut_line, scrut_col),
+                    };
+                    out.push(Lint {
+                        code: "L0008".into(),
+                        severity: Severity::Warning,
+                        message: "unreachable match arm — an earlier arm matches the same struct literal pattern"
+                            .into(),
+                        line,
+                        column: col,
+                    });
+                }
+                walk_dup_struct_arms(arm_body, out);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk_dup_struct_arms(condition, out);
+            walk_dup_struct_arms(consequence, out);
+            if let Some(a) = alternative {
+                walk_dup_struct_arms(a, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            walk_dup_struct_arms(condition, out);
+            walk_dup_struct_arms(body, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            walk_dup_struct_arms(iterable, out);
+            walk_dup_struct_arms(body, out);
+        }
+        Node::LiveBlock { body, .. } => walk_dup_struct_arms(body, out),
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::ReturnStatement {
+            value: Some(value), ..
+        } => {
+            walk_dup_struct_arms(value, out);
+        }
+        Node::ExpressionStatement { expr, .. } => walk_dup_struct_arms(expr, out),
+        Node::InfixExpression { left, right, .. } => {
+            walk_dup_struct_arms(left, out);
+            walk_dup_struct_arms(right, out);
+        }
+        Node::PrefixExpression { right, .. } => walk_dup_struct_arms(right, out),
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            walk_dup_struct_arms(function, out);
+            for a in arguments {
+                walk_dup_struct_arms(a, out);
             }
         }
         _ => {}
