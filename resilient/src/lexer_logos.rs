@@ -181,9 +181,6 @@ enum Tok {
     // RES-387: `fails` — comma-separated failure-variant list on a fn.
     #[token("fails")]
     Fails,
-    // RES-387: `recovers_to:` — postcondition after any recovery.
-    #[token("recovers_to")]
-    RecoversTo,
     #[token("struct")]
     Struct,
     #[token("new")]
@@ -538,7 +535,6 @@ fn convert(t: Tok) -> Token {
         Tok::RecoversTo => Token::RecoversTo,
         Tok::Invariant => Token::Invariant,
         Tok::Fails => Token::Fails,
-        Tok::RecoversTo => Token::RecoversTo,
         Tok::Struct => Token::Struct,
         Tok::New => Token::New,
         Tok::Match => Token::Match,
