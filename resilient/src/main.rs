@@ -1392,6 +1392,25 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-352: `(e1, e2, ...)` tuple literal. Requires at least two
+    /// elements (a single-element parenthesized expression is parsed
+    /// as a grouped expression, not a tuple). Nested tuples are
+    /// allowed.
+    TupleLiteral {
+        items: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-352: `let (a, b, ...) = expr;` tuple destructuring. Each
+    /// name in `names` is bound to the corresponding tuple element.
+    /// The number of names must match the tuple's element count at
+    /// runtime.
+    LetDestructureTuple {
+        names: Vec<String>,
+        value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
@@ -2041,12 +2060,11 @@ impl Parser {
 
     /// RES-157a: parse a single type annotation starting at
     /// `current_token`. Accepts either a bare identifier (e.g. `Int`,
-    /// `MyStruct`) or a fixed-size array form `[T; N]` where `T` is
-    /// an identifier and `N` is a non-negative integer literal. The
-    /// result is stored as a string (mirroring the existing
-    /// single-identifier convention); downstream passes treat the
-    /// annotation as opaque for now. RES-157c will promote this to a
-    /// structured `Type::FixedArray(elem, len)`.
+    /// `MyStruct`), a fixed-size array form `[T; N]`, or a tuple type
+    /// `(T1, T2, ...)`. The result is stored as a string (mirroring
+    /// the existing single-identifier convention); downstream passes
+    /// treat the annotation as opaque for now. RES-157c will promote
+    /// this to a structured `Type::FixedArray(elem, len)`.
     ///
     /// On entry `current_token` is the first token of the type. On
     /// exit `current_token` is the token immediately after the type
@@ -2062,6 +2080,41 @@ impl Parser {
                 let ty = t.clone();
                 self.next_token(); // advance past the identifier
                 Some(ty)
+            }
+            Token::LeftParen => {
+                // RES-352: `(T1, T2, ...)` tuple type annotation.
+                self.next_token(); // skip `(`
+                let mut elem_types: Vec<String> = Vec::new();
+                loop {
+                    if self.current_token == Token::RightParen {
+                        break;
+                    }
+                    let elem_ty = self.parse_type_annotation(ctx)?;
+                    elem_types.push(elem_ty);
+                    if self.current_token == Token::Comma {
+                        self.next_token(); // skip `,`
+                        continue;
+                    }
+                    if self.current_token == Token::RightParen {
+                        break;
+                    }
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `,` or `)` in tuple type {}, found {}",
+                        ctx, tok
+                    ));
+                    break;
+                }
+                if self.current_token != Token::RightParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `)` to close tuple type {}, found {}",
+                        ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `)`
+                Some(format!("({})", elem_types.join(", ")))
             }
             Token::LeftBracket => {
                 // `[T; N]` — fixed-size array type.
@@ -2514,6 +2567,13 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'let'
 
+        // RES-352: `let (a, b, ...) = expr;` tuple destructuring.
+        // The `(` immediately after `let` is unambiguous — simple-let
+        // and struct-let both require an identifier next.
+        if self.current_token == Token::LeftParen {
+            return self.parse_let_destructure_tuple(stmt_span);
+        }
+
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
             _ => {
@@ -2724,6 +2784,89 @@ impl Parser {
             struct_name,
             fields,
             has_rest,
+            value: Box::new(value),
+            span: stmt_span,
+        }
+    }
+
+    /// RES-352: parse `let (a, b, ...) = expr;` — tuple destructuring.
+    /// On entry `current_token` is `(` (the caller has already consumed
+    /// `let`). On exit `current_token` sits on the semicolon (or the
+    /// last token of the value expression).
+    fn parse_let_destructure_tuple(&mut self, stmt_span: span::Span) -> Node {
+        self.next_token(); // skip `(`
+        let mut names: Vec<String> = Vec::new();
+
+        loop {
+            if self.current_token == Token::RightParen {
+                break;
+            }
+            let name = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected identifier in tuple destructure, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // past identifier
+            names.push(name);
+
+            if self.current_token == Token::Comma {
+                self.next_token(); // skip `,`
+                continue;
+            }
+            if self.current_token == Token::RightParen {
+                break;
+            }
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `,` or `)` in tuple destructure, found {}",
+                tok
+            ));
+            break;
+        }
+
+        if self.current_token != Token::RightParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `)` to close tuple destructure, found {}",
+                tok
+            ));
+        } else {
+            self.next_token(); // past `)`
+        }
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `=` after tuple destructure pattern, found {}",
+                tok
+            ));
+            return Node::LetDestructureTuple {
+                names,
+                value: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `=`
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
+
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::LetDestructureTuple {
+            names,
             value: Box::new(value),
             span: stmt_span,
         }
@@ -3641,16 +3784,56 @@ impl Parser {
                 })
             }
             Token::LeftParen => {
+                // RES-352: `(e1, e2, ...)` is a tuple literal if a
+                // comma follows the first element. A single-element
+                // `(e)` is a grouped expression (backward-compatible
+                // with the old parenthesized-expr support).
+                //
+                // Token-position convention (mirrors parse_array_literal):
+                // After parse_expression(0), current_token = last token
+                // of the parsed expression and peek_token = the next
+                // delimiter (`,`, `)`, or something else).
+                let paren_span = self.span_at_current();
                 self.next_token(); // Skip '('
-                let expr = self.parse_expression(0);
-                if self.current_token != Token::RightParen {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected ')' closing parenthesized expression, found {}",
-                        tok
-                    ));
+                let first = self.parse_expression(0)?;
+                if self.peek_token == Token::Comma {
+                    // Tuple literal — collect remaining elements.
+                    let mut items = vec![first];
+                    while self.peek_token == Token::Comma {
+                        self.next_token(); // to ','
+                        // Trailing comma before `)` is allowed.
+                        if self.peek_token == Token::RightParen {
+                            break;
+                        }
+                        self.next_token(); // skip ','
+                        let elem = self.parse_expression(0)?;
+                        items.push(elem);
+                    }
+                    if self.peek_token != Token::RightParen {
+                        let tok = self.peek_token.clone();
+                        self.record_error(format!(
+                            "Expected ')' closing tuple literal, found {}",
+                            tok
+                        ));
+                    } else {
+                        self.next_token(); // to ')'
+                    }
+                    Some(Node::TupleLiteral {
+                        items,
+                        span: paren_span,
+                    })
+                } else {
+                    // Grouped expression: advance to check for `)`.
+                    self.next_token(); // to ')' or unexpected token
+                    if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ')' closing parenthesized expression, found {}",
+                            tok
+                        ));
+                    }
+                    Some(first)
                 }
-                expr
             }
             Token::LeftBracket => Some(self.parse_array_literal()),
             // RES-148: `{"k" -> v, ...}` in expression position parses
@@ -4675,6 +4858,10 @@ enum Value {
     },
     Return(Box<Value>),
     Void,
+    /// RES-352: tuple value — an ordered, fixed-length heterogeneous
+    /// sequence. Produced by evaluating `Node::TupleLiteral` and
+    /// consumed by `Node::LetDestructureTuple`.
+    Tuple(Vec<Value>),
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
     /// the hashable primitives (`Int`, `String`, `Bool`) — anything
     /// else at a key slot is a runtime error. The interpreter lives in
@@ -4816,6 +5003,7 @@ impl std::fmt::Debug for Value {
             }
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
+            Value::Tuple(items) => write!(f, "Tuple({} items)", items.len()),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
             Value::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
@@ -4870,6 +5058,16 @@ impl std::fmt::Display for Value {
             }
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, ")")
+            }
             Value::Map(m) => {
                 // RES-148: iterate keys in sorted order so Display is
                 // deterministic across runs — HashMap's iteration
@@ -7143,6 +7341,44 @@ impl Interpreter {
                     out.push(self.eval(item)?);
                 }
                 Ok(Value::Array(out))
+            }
+            // RES-352: `(e1, e2, ...)` — evaluate each element and
+            // produce a `Value::Tuple`.
+            Node::TupleLiteral { items, .. } => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.eval(item)?);
+                }
+                Ok(Value::Tuple(out))
+            }
+            // RES-352: `let (a, b, ...) = expr;` — evaluate the RHS,
+            // confirm it's a tuple with the right arity, then bind each
+            // element to the corresponding name.
+            Node::LetDestructureTuple { names, value, .. } => {
+                let val = self.eval(value)?;
+                if matches!(val, Value::Return(_)) {
+                    return Ok(val);
+                }
+                let elems = match val {
+                    Value::Tuple(v) => v,
+                    other => {
+                        return Err(format!(
+                            "Cannot destructure non-tuple value with `let (...)`: got {}",
+                            other
+                        ));
+                    }
+                };
+                if elems.len() != names.len() {
+                    return Err(format!(
+                        "Tuple destructure expects {} element(s), got {}",
+                        names.len(),
+                        elems.len()
+                    ));
+                }
+                for (name, elem_val) in names.iter().zip(elems.into_iter()) {
+                    self.env.set(name.clone(), elem_val);
+                }
+                Ok(Value::Void)
             }
             // RES-148: `{k -> v, ...}` — evaluate each key / value and
             // coerce keys to `MapKey` (errors if a key isn't one of

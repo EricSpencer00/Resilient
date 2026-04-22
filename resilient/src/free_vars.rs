@@ -130,6 +130,12 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                             bound.insert(local.clone());
                         }
                     }
+                    // RES-352: tuple destructuring introduces each name.
+                    Node::LetDestructureTuple { names, .. } => {
+                        for name in names {
+                            bound.insert(name.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -205,6 +211,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             walk(value, bound, free);
         }
         Node::LetDestructureStruct { value, .. } => {
+            walk(value, bound, free);
+        }
+        // RES-352: tuple destructuring — walk the RHS value.
+        // The binders (names) are added by the enclosing Block handler.
+        Node::LetDestructureTuple { value, .. } => {
             walk(value, bound, free);
         }
         Node::Assignment { name, value, .. } => {
@@ -313,6 +324,12 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(i, bound, free);
             }
         }
+        // RES-352: tuple literal — walk each element.
+        Node::TupleLiteral { items, .. } => {
+            for i in items {
+                walk(i, bound, free);
+            }
+        }
         Node::StructLiteral { fields, .. } => {
             for (_, v) in fields {
                 walk(v, bound, free);
@@ -394,6 +411,12 @@ fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
         Node::LetDestructureStruct { fields, .. } => {
             for (_, local) in fields {
                 bound.insert(local.clone());
+            }
+        }
+        // RES-352: top-level tuple destructuring exposes each bound name.
+        Node::LetDestructureTuple { names, .. } => {
+            for name in names {
+                bound.insert(name.clone());
             }
         }
         _ => {}
