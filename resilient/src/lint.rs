@@ -540,14 +540,9 @@ fn pattern_is_default_for_lint(p: &Pattern) -> bool {
         Pattern::Literal(_) => false,
         Pattern::Or(branches) => branches.iter().any(pattern_is_default_for_lint),
         Pattern::Bind(_, inner) => pattern_is_default_for_lint(inner),
-        Pattern::Struct {
-            fields, has_rest, ..
-        } => {
-            *has_rest
-                || fields
-                    .iter()
-                    .all(|(_, sub)| pattern_is_default_for_lint(sub.as_ref()))
-        }
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .all(|(_, sub)| pattern_is_default_for_lint(sub.as_ref())),
     }
 }
 
