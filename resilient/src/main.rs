@@ -6192,6 +6192,43 @@ fn builtin_uint64(args: &[Value]) -> RResult<Value> {
     cast_to_int_n("UInt64", args, |i| (i as u64) as i64)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn int8_sign_extends_after_truncation() {
+        assert_eq!(builtin_int8(&[Value::Int(255)]), Ok(Value::Int(-1)));
+        assert_eq!(builtin_int8(&[Value::Int(128)]), Ok(Value::Int(-128)));
+        assert_eq!(builtin_int8(&[Value::Int(-129)]), Ok(Value::Int(127)));
+    }
+
+    #[test]
+    fn uint_builtins_mask_and_truncate() {
+        assert_eq!(builtin_uint8(&[Value::Int(-1)]), Ok(Value::Int(255)));
+        assert_eq!(builtin_uint8(&[Value::Int(256)]), Ok(Value::Int(0)));
+        assert_eq!(builtin_uint16(&[Value::Int(-1)]), Ok(Value::Int(65535)));
+        assert_eq!(builtin_uint16(&[Value::Int(65536)]), Ok(Value::Int(0)));
+        assert_eq!(
+            builtin_uint32(&[Value::Int(-1)]),
+            Ok(Value::Int(4_294_967_295))
+        );
+        assert_eq!(builtin_uint32(&[Value::Int(4_294_967_296)]), Ok(Value::Int(0)));
+    }
+
+    #[test]
+    fn uint64_preserves_low_64_bits() {
+        assert_eq!(builtin_uint64(&[Value::Int(-1)]), Ok(Value::Int(-1)));
+        assert_eq!(builtin_uint64(&[Value::Int(i64::MIN)]), Ok(Value::Int(i64::MIN)));
+        assert_eq!(builtin_uint64(&[Value::Int(i64::MAX)]), Ok(Value::Int(i64::MAX)));
+    }
+
+    #[test]
+    fn int_cast_builtins_reject_float_arguments() {
+        let err = builtin_uint8(&[Value::Float(1.5)]).unwrap_err();
+        assert!(err.contains("UInt8"));
+    }
+}
 /// RES-143: `file_read(path)` — read a file as a UTF-8 string. Only
 /// lives in the `resilient` CLI binary (which is std-only); the
 /// `resilient-runtime` sibling crate has no builtins table and stays
