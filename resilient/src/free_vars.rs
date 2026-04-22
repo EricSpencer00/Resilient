@@ -207,12 +207,43 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             }
         }
         Node::StructDecl { .. } | Node::TypeAlias { .. } | Node::RegionDecl { .. } => {}
-        // RES-386: actor declarations are verifier-only scaffolding
-        // and introduce no free variables at the program scope.
+        // RES-386: Actor declarations are verifier-only.
         Node::Actor { .. } => {}
-        // RES-390: actor / cluster decls introduce no runtime
-        // bindings in this MVP.
-        Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {}
+        // RES-390: ClusterDecl introduces no bindings.
+        Node::ClusterDecl { .. } => {}
+        // RES-388/RES-390: ActorDecl walks state field initializers,
+        // always invariants, and each handler body.
+        Node::ActorDecl {
+            state_fields,
+            always_clauses,
+            receive_handlers,
+            ..
+        } => {
+            let snapshot = bound.len();
+            for (_, field, init) in state_fields {
+                walk(init, bound, free);
+                bound.insert(field.clone());
+            }
+            for clause in always_clauses {
+                walk(clause, bound, free);
+            }
+            for handler in receive_handlers {
+                let handler_snapshot = bound.len();
+                for (_, pname) in &handler.parameters {
+                    bound.insert(pname.clone());
+                }
+                for r in &handler.requires {
+                    walk(r, bound, free);
+                }
+                walk(&handler.body, bound, free);
+                bound.insert("result".into());
+                for e in &handler.ensures {
+                    walk(e, bound, free);
+                }
+                truncate_to(bound, handler_snapshot);
+            }
+            truncate_to(bound, snapshot);
+        }
 
         // ---- Statements ----
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {

@@ -196,15 +196,10 @@ impl Formatter {
                 self.newline();
             }
             Node::RegionDecl { name, .. } => {
-                // RES-391: reserved `region` keyword introduces a
-                // compile-time region label — emitted as a single
-                // terminated statement, matching `type` aliases.
                 self.write(&format!("region {};", name));
                 self.newline();
             }
-            // RES-386: re-emit an actor block. Handler bodies are
-            // printed via the shared block formatter so nested
-            // expressions stay indented correctly.
+            // RES-386: re-emit a commutativity-style actor block.
             Node::Actor {
                 name,
                 state_type,
@@ -244,28 +239,57 @@ impl Formatter {
                 self.write("}");
                 self.newline();
             }
-            // RES-390: re-emit an ActorDecl block.
+            // RES-388/RES-390: re-emit an ActorDecl with typed state fields,
+            // always invariants, and receive handlers.
             Node::ActorDecl {
                 name,
-                state,
-                handlers,
+                state_fields,
+                always_clauses,
+                receive_handlers,
                 ..
             } => {
                 self.write(&format!("actor {} {{", name));
                 self.newline();
                 self.indent();
-                for (fname, init) in state {
-                    self.write(&format!("int {} = ", fname));
+                for (ty, field, init) in state_fields {
+                    self.write(&format!("{}: {} = ", field, ty));
                     self.fmt_expr(init);
                     self.write(";");
                     self.newline();
                 }
-                for (i, h) in handlers.iter().enumerate() {
-                    if !state.is_empty() || i > 0 {
-                        self.blank_line();
+                for clause in always_clauses {
+                    self.write("always: ");
+                    self.fmt_expr(clause);
+                    self.write(";");
+                    self.newline();
+                }
+                for h in receive_handlers {
+                    self.blank_line();
+                    self.write(&format!("receive {}(", h.name));
+                    for (i, (pty, pname)) in h.parameters.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(&format!("{} {}", pty, pname));
                     }
-                    self.write(&format!("receive {}() ", h.name));
+                    self.write(")");
+                    for r in &h.requires {
+                        self.newline();
+                        self.indent();
+                        self.write("requires ");
+                        self.fmt_expr(r);
+                        self.dedent();
+                    }
+                    for e in &h.ensures {
+                        self.newline();
+                        self.indent();
+                        self.write("ensures ");
+                        self.fmt_expr(e);
+                        self.dedent();
+                    }
+                    self.write(" ");
                     self.fmt_stmt(&h.body);
+                    self.newline();
                 }
                 self.dedent();
                 self.write("}");

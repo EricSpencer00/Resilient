@@ -210,15 +210,15 @@ enum Tok {
     Region,
     #[token("mut")]
     Mut,
-    // RES-386: actor / receive / concurrent_ensures keywords. Parity
-    // with the hand-rolled lexer's `"actor" => Token::Actor` arms so
-    // `--features logos-lexer` produces the same AST.
+    // RES-386/RES-388: actor keywords.
     #[token("actor")]
     Actor,
     #[token("receive")]
     Receive,
     #[token("concurrent_ensures")]
     ConcurrentEnsures,
+    #[token("always")]
+    Always,
     #[token("true")]
     True,
     #[token("false")]
@@ -551,6 +551,7 @@ fn convert(t: Tok) -> Token {
         Tok::Actor => Token::Actor,
         Tok::Receive => Token::Receive,
         Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
+        Tok::Always => Token::Always,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,
