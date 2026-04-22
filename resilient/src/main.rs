@@ -68,6 +68,10 @@ mod free_vars;
 mod ffi;
 #[cfg(feature = "ffi")]
 mod ffi_trampolines;
+// RES-385: linear-type MVP — helpers for the `linear T` encoding
+// used in type-annotation strings, plus the single-use-enforcement
+// pass invoked from the typechecker.
+mod linear;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -117,6 +121,9 @@ enum Token {
     Impl,
     /// RES-128: `type <Name> = <Target>;` non-nominal alias.
     Type,
+    /// RES-385: `linear` prefix on a type annotation — marks a
+    /// resource the type checker enforces single-use on.
+    Linear,
 
     // Literals
     Identifier(String),
@@ -230,6 +237,7 @@ impl Token {
             Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
+            Token::Linear => "`linear`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -614,6 +622,7 @@ impl Lexer {
                         "use" => Token::Use,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
+                        "linear" => Token::Linear,
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -2213,7 +2222,20 @@ impl Parser {
     /// a valid type annotation. `ctx` is a short phrase for error
     /// messages (e.g. `"after ':'"`, `"in struct field"`).
     fn parse_type_annotation(&mut self, ctx: &str) -> Option<String> {
-        match &self.current_token {
+        // RES-385: optional `linear` prefix. `linear T` becomes the
+        // encoded string `"linear T"`; downstream (parse_type_name)
+        // strips the prefix back off and records the linearity bit
+        // in a parallel map. The string encoding keeps the existing
+        // `Vec<(String, String)>` parameter/type-annot slots
+        // untouched — essential for this MVP slice given the breadth
+        // of call sites.
+        let is_linear = if self.current_token == Token::Linear {
+            self.next_token(); // consume `linear`
+            true
+        } else {
+            false
+        };
+        let base = match &self.current_token {
             Token::Identifier(t) => {
                 let ty = t.clone();
                 self.next_token(); // advance past the identifier
@@ -2302,6 +2324,14 @@ impl Parser {
                 self.record_error(format!("Expected type name {}, found {}", ctx, tok));
                 None
             }
+        };
+        // RES-385: prefix-encode the linearity bit so every existing
+        // caller slot (parameter lists, let-annotations, return types,
+        // struct fields) inherits the feature with zero field changes.
+        match (is_linear, base) {
+            (true, Some(t)) => Some(format!("linear {}", t)),
+            (false, b) => b,
+            (true, None) => None,
         }
     }
 
@@ -5440,6 +5470,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
     ("byte_at", builtin_byte_at),
+    // RES-385: explicit consumption of a linear value. At runtime
+    // `drop(v)` simply evaluates and discards its argument; the
+    // semantic weight lives in the type checker's linear-use pass,
+    // which treats a `drop` call as the single consumption that
+    // satisfies the single-use obligation.
+    ("drop", builtin_drop),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -5888,6 +5924,20 @@ fn builtin_ok(args: &[Value]) -> RResult<Value> {
             payload: Box::new(v.clone()),
         }),
         _ => Err(format!("Ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-385: `drop(v)` — consume a linear value.
+///
+/// At runtime this is a near-no-op: the argument evaluates, its
+/// value is discarded, and the call returns `Void`. The type
+/// checker's `check_linear_usage` pass is where the work happens —
+/// it counts this call as the binding's single consumption and
+/// reports any subsequent use as `linear value used after move`.
+fn builtin_drop(args: &[Value]) -> RResult<Value> {
+    match args {
+        [_] => Ok(Value::Void),
+        _ => Err(format!("drop: expected 1 argument, got {}", args.len())),
     }
 }
 

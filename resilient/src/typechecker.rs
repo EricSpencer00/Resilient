@@ -675,6 +675,12 @@ impl TypeChecker {
         env.set("println".to_string(), fn_any_to_void());
         env.set("print".to_string(), fn_any_to_void());
 
+        // RES-385: `drop(v)` — explicit single-use consumption
+        // of a linear value. Accepts any type; the linearity pass
+        // (see `crate::linear`) is what enforces the single-use
+        // rule on the argument.
+        env.set("drop".to_string(), fn_any_to_void());
+
         // Math (single-arg — int/float passed as Any)
         env.set("abs".to_string(), fn_any_to_any());
         env.set("sqrt".to_string(), fn_any_to_any());
@@ -1167,15 +1173,11 @@ impl TypeChecker {
                 // above so users land on the violating site.
                 check_program_purity(statements, source_path)?;
 
-                // RES-389: effect-annotation enforcement. A fn
-                // declared `pure fn` may only call other `pure fn`
-                // fns (or pure builtins); `io fn` (and the
-                // backward-compat default for unannotated fns) may
-                // call both `pure` and `io`. The check runs after
-                // the purity pass so the stricter `@pure` errors
-                // fire first when both passes would flag the same
-                // call site.
+                // RES-389: effect-annotation enforcement.
                 check_program_effects(statements, source_path)?;
+
+                // RES-385: single-use enforcement for linear types.
+                crate::linear::check_linear_usage(program, source_path)?;
 
                 // RES-192: IO-effect inference. Binary lattice
                 // (pure / IO). Fixpoint over the call graph: a fn
@@ -2315,7 +2317,13 @@ impl TypeChecker {
     }
 
     fn parse_type_name(&self, name: &str) -> Result<Type, String> {
-        self.parse_type_name_inner(name, &mut Vec::new())
+        // RES-385: the parser prefixes `linear` types with the literal
+        // string `linear `. The linearity bit is consumed by the
+        // dedicated single-use pass (`check_linear_usage`); at the
+        // plain type-equality level, `linear T` and `T` are the same
+        // type, so strip the prefix here before resolving.
+        let base = crate::linear::strip_linear(name);
+        self.parse_type_name_inner(base, &mut Vec::new())
     }
 
     /// RES-128: alias-aware parse with cycle detection. `seen`
@@ -3482,6 +3490,111 @@ mod purity_tests {
     fn empty_program_produces_empty_effects() {
         let s = stmts("");
         assert!(infer_fn_effects(&s).is_empty());
+    }
+
+    // ---------- RES-385: linear-type single-use enforcement ----------
+
+    /// AC: passing a `linear` parameter to one consumer is fine.
+    /// Passing it to a second consumer is a single-use violation.
+    #[test]
+    fn linear_value_used_twice_is_rejected() {
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn bad(linear FileHandle fh) {\n\
+                consume(fh);\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "<t>")
+            .expect_err("second use of linear fh must be rejected");
+        assert!(
+            err.contains("linear-use"),
+            "expected `linear-use` diagnostic tag, got: {err}"
+        );
+        assert!(
+            err.contains("used after move"),
+            "expected `used after move` in message, got: {err}"
+        );
+        assert!(
+            err.contains("fh"),
+            "expected binding name in message, got: {err}"
+        );
+    }
+
+    /// AC: consuming exactly once (via a call or `drop`) is fine.
+    #[test]
+    fn linear_value_used_once_is_accepted() {
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn good(linear FileHandle fh) {\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n\
+            fn dropper(linear FileHandle fh) {\n\
+                drop(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        tc.check_program_with_source(&program, "<t>")
+            .expect("one consumption (direct call or drop) must typecheck");
+    }
+
+    /// AC: `let fh: linear T = …;` binds a linear local whose double-
+    /// use is rejected just like a linear parameter.
+    #[test]
+    fn linear_let_binding_rejects_double_use() {
+        // Construct the handle via a struct literal so the RHS type
+        // matches the let annotation without needing fancy
+        // inference. The linearity bit flows through `parse_type_name`
+        // via the shared `linear` prefix-stripping helper.
+        let src = "\
+            struct FileHandle { int fd }\n\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn main() {\n\
+                let fh: linear FileHandle = new FileHandle { fd: 3 };\n\
+                consume(fh);\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "<t>")
+            .expect_err("second use of let-bound linear must be rejected");
+        assert!(
+            err.contains("linear-use"),
+            "expected `linear-use` diagnostic tag, got: {err}"
+        );
+    }
+
+    /// AC: the diagnostic is prefixed with `<file>:<line>:<col>:`
+    /// so editors can jump straight to the offending second use.
+    #[test]
+    fn linear_use_diagnostic_carries_source_position() {
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn bad(linear FileHandle fh) {\n\
+                consume(fh);\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        let err = tc
+            .check_program_with_source(&program, "src/bad.rz")
+            .expect_err("should fail");
+        assert!(
+            err.starts_with("src/bad.rz:"),
+            "expected <path>:<line>:<col>: prefix, got: {err}"
+        );
     }
 
     #[test]

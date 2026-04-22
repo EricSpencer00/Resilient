@@ -1,0 +1,30 @@
+// RES-385: linear types — happy-path demo.
+//
+// `linear FileHandle` marks the parameter as a resource that must
+// be consumed exactly once. Here `close` is the single consumer;
+// the type checker's single-use pass sees exactly one reference to
+// `fh` inside `use_once` and signs off.
+//
+// For the interpreter this runs unchanged — linearity is a compile-
+// time concept. The program simply prints a status line and exits.
+
+struct FileHandle { int fd }
+
+fn close(linear FileHandle fh) {
+    println("closing fd=" + fh.fd);
+    return 0;
+}
+
+fn use_once(linear FileHandle fh) {
+    close(fh);
+    return 0;
+}
+
+fn main() {
+    let fh: linear FileHandle = new FileHandle { fd: 3 };
+    use_once(fh);
+    println("linear value consumed exactly once");
+    return 0;
+}
+
+main();
