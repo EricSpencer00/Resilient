@@ -1,0 +1,5 @@
+Exempts linear_double_use.rz from the stdout-only golden harness: the
+example is a compile-error demo whose "expected output" is a stderr
+diagnostic, which the existing harness cannot capture. A dedicated
+smoke test in tests/linear_types.rs pins the stderr text against the
+sibling linear_double_use.expected.txt sidecar.

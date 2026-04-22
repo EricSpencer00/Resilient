@@ -1,0 +1,3 @@
+closing fd=3
+linear value consumed exactly once
+Program executed successfully

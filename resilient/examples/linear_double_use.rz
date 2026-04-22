@@ -1,0 +1,30 @@
+// RES-385: linear types — error-path demo.
+//
+// `linear FileHandle` tags the parameter as a single-use resource.
+// Here `leak` consumes `fh` twice (once in the first call, again in
+// the second), which the type checker rejects at compile time.
+//
+// Expected behaviour: the driver exits non-zero and emits a
+// `error[linear-use]:` diagnostic carrying the source span of the
+// second use. The golden sidecar `linear_double_use.expected.txt`
+// pins the stderr text so regressions surface in CI.
+
+struct FileHandle { int fd }
+
+fn touch(linear FileHandle fh) {
+    return 0;
+}
+
+fn leak(linear FileHandle fh) {
+    touch(fh);
+    touch(fh);
+    return 0;
+}
+
+fn main() {
+    let fh: linear FileHandle = new FileHandle { fd: 7 };
+    leak(fh);
+    return 0;
+}
+
+main();

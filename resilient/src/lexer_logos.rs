@@ -193,6 +193,9 @@ enum Tok {
     // requirement as above.
     #[token("type")]
     Type,
+    // RES-385: `linear` prefix on a type annotation.
+    #[token("linear")]
+    Linear,
     #[token("true")]
     True,
     #[token("false")]
@@ -516,6 +519,7 @@ fn convert(t: Tok) -> Token {
         Tok::Use => Token::Use,
         Tok::Impl => Token::Impl,
         Tok::Type => Token::Type,
+        Tok::Linear => Token::Linear,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,
