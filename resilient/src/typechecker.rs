@@ -196,6 +196,15 @@ fn is_integer_type(t: &Type) -> bool {
     )
 }
 
+/// Returns true for signed integer types accepted by unary negation.
+/// This includes the base `Int` type and pinned signed widths only;
+/// unsigned integers must still be rejected for prefix `-`.
+fn is_signed_integer_type(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Int | Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64
+    )
+}
 /// RES-130: arithmetic operators (`+ - * / %`) require both
 /// operands to be the same numeric type — no implicit int ↔ float
 /// coercion. Any/Any fall through as Any for the inference-in-
