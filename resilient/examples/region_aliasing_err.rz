@@ -1,0 +1,16 @@
+// RES-391: two mutable references that share the SAME declared
+// region label alias — the borrow checker rejects the fn. Swapping
+// `B` for `A` on the second parameter would also be accepted; the
+// Z3 fallback (follow-up RES-392) will relax this using `requires`
+// preconditions.
+region A;
+
+fn same_region_bad(&mut[A] int a, &mut[A] int b) {
+    println("should never reach this — borrow check rejects same-region mut refs");
+}
+
+fn main() {
+    same_region_bad(1, 2);
+}
+
+main();

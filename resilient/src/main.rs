@@ -124,6 +124,15 @@ enum Token {
     /// RES-385: `linear` prefix on a type annotation — marks a
     /// resource the type checker enforces single-use on.
     Linear,
+    /// RES-391: `region <Name>;` — declares a memory region name
+    /// used as a label on reference types (`&[Name] T`, `&mut[Name] T`)
+    /// for syntactic non-aliasing checks.
+    Region,
+    /// RES-391: `mut` qualifier on reference types (`&mut T`,
+    /// `&mut[A] T`). Only recognized inside a type position today;
+    /// outside of types the parser surfaces it as an ordinary
+    /// unexpected-token error.
+    Mut,
 
     // Literals
     Identifier(String),
@@ -238,6 +247,8 @@ impl Token {
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
             Token::Linear => "`linear`".to_string(),
+            Token::Region => "`region`".to_string(),
+            Token::Mut => "`mut`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -623,6 +634,8 @@ impl Lexer {
                         "impl" => Token::Impl,
                         "type" => Token::Type,
                         "linear" => Token::Linear,
+                        "region" => Token::Region,
+                        "mut" => Token::Mut,
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -1472,6 +1485,17 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-391: `region <Name>;` top-level declaration. Introduces a
+    /// named region label used inside reference types
+    /// (`&[Name] T`, `&mut[Name] T`) for syntactic non-aliasing
+    /// checks. Region declarations carry no runtime representation —
+    /// they are metadata consumed by the borrow checker
+    /// (`check_region_aliasing`).
+    RegionDecl {
+        name: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
@@ -1603,6 +1627,7 @@ impl Parser {
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
+            Token::Region => Some(self.parse_region_decl()),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -2192,6 +2217,45 @@ impl Parser {
         }
     }
 
+    /// RES-391: parse `region <Name>;` — a top-level region
+    /// declaration. Region declarations introduce a named memory
+    /// region used as a label on reference types (`&[Name] T`,
+    /// `&mut[Name] T`) for the borrow checker's non-aliasing rule.
+    ///
+    /// Parse-error recovery mirrors `parse_type_alias`: missing name
+    /// or missing trailing `;` records a diagnostic but still emits
+    /// a `RegionDecl` so downstream passes see something
+    /// well-shaped.
+    fn parse_region_decl(&mut self) -> Node {
+        let kw_span = self.span_at_current();
+        self.next_token(); // skip `region`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Expected region name after 'region', found {}",
+                    tok
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        // Trailing `;` — match the `type` alias convention.
+        if self.current_token == Token::Semicolon {
+            // cursor on `;`; parse_program advances past it
+        } else if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::RegionDecl {
+            name,
+            span: kw_span,
+        }
+    }
+
     /// Parse an optional `-> TYPE`. If present, current_token advances
     /// past the type identifier. If absent, no tokens are consumed.
     fn parse_optional_return_type(&mut self) -> Option<String> {
@@ -2236,6 +2300,59 @@ impl Parser {
             false
         };
         let base = match &self.current_token {
+            // RES-391: reference type — `& T`, `&mut T`, `&[A] T`, or
+            // `&mut[A] T`. The optional region label `[A]` lives
+            // between `&mut`/`&` and the inner type. Encoded as a
+            // string (matching the existing single-string type
+            // convention): `"&mut[A] Int"`, `"&[A] Int"`, `"&mut Int"`,
+            // `"& Int"`. The borrow checker (`check_region_aliasing`)
+            // reparses this string to extract mutability and region.
+            Token::BitAnd => {
+                self.next_token(); // skip `&`
+                let is_mut = if self.current_token == Token::Mut {
+                    self.next_token(); // skip `mut`
+                    true
+                } else {
+                    false
+                };
+                let region = if self.current_token == Token::LeftBracket {
+                    self.next_token(); // skip `[`
+                    let label = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            let tok = other.clone();
+                            self.record_error(format!(
+                                "Expected region name inside `&{}[...]` {}, found {}",
+                                if is_mut { "mut" } else { "" },
+                                ctx,
+                                tok
+                            ));
+                            return None;
+                        }
+                    };
+                    self.next_token(); // skip region name
+                    if self.current_token != Token::RightBracket {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ']' to close region label `[{}` {}, found {}",
+                            label, ctx, tok
+                        ));
+                        return None;
+                    }
+                    self.next_token(); // skip `]`
+                    Some(label)
+                } else {
+                    None
+                };
+                let inner = self.parse_type_annotation(ctx)?;
+                let prefix = match (is_mut, region) {
+                    (true, Some(r)) => format!("&mut[{}] ", r),
+                    (false, Some(r)) => format!("&[{}] ", r),
+                    (true, None) => "&mut ".to_string(),
+                    (false, None) => "& ".to_string(),
+                };
+                Some(format!("{}{}", prefix, inner))
+            }
             Token::Identifier(t) => {
                 let ty = t.clone();
                 self.next_token(); // advance past the identifier
@@ -7477,6 +7594,9 @@ impl Interpreter {
             // sees aliases — by the time `eval` runs, every use
             // site has already been resolved by the typechecker.
             Node::TypeAlias { .. } => Ok(Value::Void),
+            // RES-391: `region <Name>;` is pure compile-time metadata
+            // consumed by the borrow checker — runtime no-op.
+            Node::RegionDecl { .. } => Ok(Value::Void),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -8712,6 +8832,157 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     (program, errs)
 }
 
+/// RES-391: a parsed reference-type annotation. The parser encodes
+/// reference types as strings (matching the single-string type
+/// convention used for every parameter type today); this helper
+/// unpacks them back into `(mutable, region_label)`.
+///
+/// The string forms accepted:
+/// * `"&mut[NAME] T"` → `(true, Some("NAME"))`
+/// * `"&[NAME] T"`    → `(false, Some("NAME"))`
+/// * `"&mut T"`       → `(true, None)`
+/// * `"& T"`          → `(false, None)`
+/// * anything else    → `None` (not a reference type)
+fn parse_ref_type(ty: &str) -> Option<(bool, Option<String>)> {
+    let rest = ty.strip_prefix('&')?;
+    // After `&`, optional `mut`, then optional `[LABEL]`, then a
+    // mandatory space and the inner type. The inner type itself is
+    // ignored here — the borrow checker only cares about the
+    // mutability + region pair.
+    let (is_mut, rest) = if let Some(r) = rest.strip_prefix("mut") {
+        (true, r)
+    } else {
+        (false, rest)
+    };
+    let rest = rest.trim_start();
+    if let Some(after_bracket) = rest.strip_prefix('[') {
+        let close = after_bracket.find(']')?;
+        let label = after_bracket[..close].trim().to_string();
+        if label.is_empty() {
+            return Some((is_mut, None));
+        }
+        Some((is_mut, Some(label)))
+    } else {
+        Some((is_mut, None))
+    }
+}
+
+/// RES-391: syntactic non-aliasing check over every `fn` in the
+/// program. Returns a list of error strings (each already prefixed
+/// with `<file>:<line>:<col>: `).
+///
+/// The rule, mirroring the ticket's MVP slice:
+/// * A reference parameter `&[LABEL] T` or `&mut[LABEL] T` must name
+///   a region declared elsewhere in the program via `region LABEL;`.
+/// * Two `&mut` parameters in the same fn are rejected whenever they
+///   could potentially alias — i.e. when they share the same region
+///   label, or when either one is unlabeled (`&mut T` with no
+///   `[LABEL]`). Distinct, declared labels are accepted as
+///   statically disjoint.
+///
+/// Out of scope for the MVP (filed as follow-up tickets):
+///   * RES-392: Z3 fallback proof using `requires` preconditions.
+///   * RES-393: region inference for unlabeled references.
+///   * RES-394: region polymorphism (`fn<'R> ...`).
+pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<String> {
+    let mut errors: Vec<String> = Vec::new();
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return errors,
+    };
+
+    // Collect the set of declared region names.
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for stmt in stmts {
+        if let Node::RegionDecl { name, .. } = &stmt.node
+            && !name.is_empty()
+        {
+            declared.insert(name.clone());
+        }
+    }
+
+    let prefix = |span: span::Span, msg: &str| -> String {
+        if span.start.line == 0 {
+            format!("E: {}", msg)
+        } else {
+            format!(
+                "{}:{}:{}: E: {}",
+                source_path, span.start.line, span.start.column, msg
+            )
+        }
+    };
+
+    for stmt in stmts {
+        if let Node::Function {
+            name: fn_name,
+            parameters,
+            span,
+            ..
+        } = &stmt.node
+        {
+            // Per-parameter pass: every labeled reference must name
+            // a declared region.
+            let mut refs: Vec<(usize, bool, Option<String>, String)> = Vec::new();
+            for (idx, (ty, pname)) in parameters.iter().enumerate() {
+                if let Some((is_mut, label)) = parse_ref_type(ty) {
+                    if let Some(l) = &label
+                        && !declared.contains(l)
+                    {
+                        errors.push(prefix(
+                            *span,
+                            &format!(
+                                "undeclared region `{}` in parameter `{}` of fn `{}` — add a top-level `region {};`",
+                                l, pname, fn_name, l
+                            ),
+                        ));
+                    }
+                    refs.push((idx, is_mut, label, pname.clone()));
+                }
+            }
+
+            // Pairwise aliasing check over mutable references.
+            for i in 0..refs.len() {
+                for j in (i + 1)..refs.len() {
+                    let (_, i_mut, i_lbl, i_name) = &refs[i];
+                    let (_, j_mut, j_lbl, j_name) = &refs[j];
+                    // Only two mutable references can alias
+                    // destructively. Two `&[A]` shared references
+                    // pointing into the same region is fine (no
+                    // write conflict possible). A `&mut[A]` paired
+                    // with a `&[A]` is also aliasing, and rejected
+                    // here for the same reason.
+                    if !i_mut && !j_mut {
+                        continue;
+                    }
+                    let (ok, i_show, j_show) = match (i_lbl, j_lbl) {
+                        (Some(a), Some(b)) if a != b => {
+                            (true, format!("[{}]", a), format!("[{}]", b))
+                        }
+                        (Some(a), Some(b)) => (false, format!("[{}]", a), format!("[{}]", b)),
+                        (Some(a), None) => (false, format!("[{}]", a), String::new()),
+                        (None, Some(b)) => (false, String::new(), format!("[{}]", b)),
+                        (None, None) => (false, String::new(), String::new()),
+                    };
+                    if ok {
+                        continue;
+                    }
+                    let i_kind = if *i_mut { "&mut" } else { "&" };
+                    let j_kind = if *j_mut { "&mut" } else { "&" };
+                    errors.push(prefix(
+                        *span,
+                        &format!(
+                            "potential aliasing between `{}{}` parameter `{}` and `{}{}` parameter `{}` of fn `{}` — add distinct region or see docs",
+                            i_kind, i_show, i_name, j_kind, j_show, j_name, fn_name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 /// RES-187: semantic-token type indices. Must match the legend
 /// `lsp_server::SEMANTIC_TOKEN_TYPES` declares in its capability
 /// advertisement. Keep in sync — the LSP spec encodes these as
@@ -9200,6 +9471,24 @@ fn execute_file(
     }
     if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
         return Err(format!("Import error: {}", e));
+    }
+
+    // RES-391: syntactic non-aliasing check over reference-type
+    // parameters. Runs unconditionally — a borrow-check violation is
+    // a compile-time error regardless of `--typecheck`. The check is
+    // intentionally conservative; the Z3 fallback (RES-392 follow-up)
+    // relaxes it for programs whose `requires` preconditions prove
+    // disjointness.
+    let region_errors = check_region_aliasing(&program, filename);
+    if !region_errors.is_empty() {
+        for e in &region_errors {
+            eprintln!("\x1B[31m{}\x1B[0m", e);
+            eprintln!("{}", render_with_caret(&contents, e, "Borrow check"));
+        }
+        return Err(format!(
+            "Borrow check failed: {} error(s)",
+            region_errors.len()
+        ));
     }
 
     // Type checking if enabled. --audit, --explain-effects, and
@@ -18602,6 +18891,163 @@ mod tests {
         // First token starts at column 0 of line 0.
         assert_eq!(wire[0], 0, "first dLine should be 0");
         assert_eq!(wire[1], 0, "first dStart should be 0");
+    }
+
+    // ------------------------------------------------------------
+    // RES-391: ownership-region parser and borrow-check unit tests.
+    // ------------------------------------------------------------
+
+    #[test]
+    fn res391_parses_top_level_region_decl() {
+        let (program, errs) = parse("region A;\nregion Bank1;\n");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        assert_eq!(stmts.len(), 2);
+        match &stmts[0].node {
+            Node::RegionDecl { name, .. } => assert_eq!(name, "A"),
+            other => panic!("expected RegionDecl, got {:?}", other),
+        }
+        match &stmts[1].node {
+            Node::RegionDecl { name, .. } => assert_eq!(name, "Bank1"),
+            other => panic!("expected RegionDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res391_parses_labeled_mut_reference_param() {
+        let src = "region A; fn f(&mut[A] int x) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        let params = match &stmts[1].node {
+            Node::Function { parameters, .. } => parameters.clone(),
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "&mut[A] int");
+        assert_eq!(params[0].1, "x");
+    }
+
+    #[test]
+    fn res391_parses_shared_labeled_reference_param() {
+        let src = "region A; fn g(&[A] int y) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        let params = match &stmts[1].node {
+            Node::Function { parameters, .. } => parameters.clone(),
+            other => panic!("expected Function, got {:?}", other),
+        };
+        assert_eq!(params[0].0, "&[A] int");
+    }
+
+    #[test]
+    fn res391_parses_unlabeled_mut_reference_param() {
+        let src = "fn h(&mut int z) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let stmts = match &program {
+            Node::Program(s) => s,
+            _ => unreachable!(),
+        };
+        let params = match &stmts[0].node {
+            Node::Function { parameters, .. } => parameters.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(params[0].0, "&mut int");
+    }
+
+    #[test]
+    fn res391_distinct_regions_are_accepted() {
+        let src = "region A; region B; fn f(&mut[A] int a, &mut[B] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.is_empty(),
+            "distinct-region fn should be accepted, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    #[test]
+    fn res391_same_region_mut_refs_rejected() {
+        let src = "region A; fn f(&mut[A] int a, &mut[A] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1, "got: {:?}", borrow_errs);
+        assert!(
+            borrow_errs[0].contains("potential aliasing")
+                && borrow_errs[0].contains("&mut[A]")
+                && borrow_errs[0].contains("add distinct region"),
+            "message shape wrong: {}",
+            borrow_errs[0]
+        );
+    }
+
+    #[test]
+    fn res391_unlabeled_mut_pair_rejected() {
+        // `&mut` with no region label is treated as possibly aliasing
+        // with any other `&mut`. The MVP rejects; the follow-up
+        // RES-393 region-inference ticket relaxes this.
+        let src = "fn f(&mut int a, &mut int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1);
+        assert!(borrow_errs[0].contains("potential aliasing"));
+    }
+
+    #[test]
+    fn res391_mixed_labeled_and_unlabeled_mut_rejected() {
+        let src = "region A; fn f(&mut[A] int a, &mut int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1, "got: {:?}", borrow_errs);
+    }
+
+    #[test]
+    fn res391_two_shared_refs_same_region_are_fine() {
+        // Two `&[A]` shared refs cannot conflict (no writes), so the
+        // borrow checker accepts them even in the same region.
+        let src = "region A; fn f(&[A] int a, &[A] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.is_empty(),
+            "two shared refs should be fine, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    #[test]
+    fn res391_undeclared_region_rejected() {
+        // Using a region label that was never declared is an error.
+        let src = "fn f(&mut[Ghost] int a) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            !borrow_errs.is_empty(),
+            "undeclared region should be rejected"
+        );
+        assert!(
+            borrow_errs.iter().any(|e| e.contains("undeclared region")),
+            "expected undeclared-region message, got: {:?}",
+            borrow_errs
+        );
     }
 }
 
