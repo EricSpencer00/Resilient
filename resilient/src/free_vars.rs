@@ -143,6 +143,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             body,
             requires,
             ensures,
+            recovers_to,
             ..
         } => {
             let snapshot = bound.len();
@@ -165,6 +166,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             for clause in ensures {
                 walk(clause, bound, free);
             }
+            // RES-392: `recovers_to` binds in the same env as
+            // `ensures` — `result` and the parameters are in scope.
+            if let Some(rec) = recovers_to {
+                walk(rec, bound, free);
+            }
             truncate_to(bound, pre_ensures);
             truncate_to(bound, snapshot);
         }
@@ -173,6 +179,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             body,
             requires,
             ensures,
+            recovers_to,
             ..
         } => {
             let snapshot = bound.len();
@@ -187,6 +194,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             bound.insert("result".into());
             for clause in ensures {
                 walk(clause, bound, free);
+            }
+            if let Some(rec) = recovers_to {
+                walk(rec, bound, free);
             }
             truncate_to(bound, pre_ensures);
             truncate_to(bound, snapshot);
@@ -530,6 +540,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -550,6 +561,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -580,6 +592,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -669,6 +682,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };
@@ -683,6 +697,7 @@ mod tests {
             }),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: Span::default(),
         };

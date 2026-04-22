@@ -1302,6 +1302,7 @@ impl TypeChecker {
                 body,
                 requires,
                 ensures,
+                recovers_to,
                 return_type: declared_rt,
                 ..
             } => {
@@ -1391,6 +1392,46 @@ impl TypeChecker {
                             self.stats.requires_tautology += 1;
                         }
                         None => {}
+                    }
+                }
+
+                // RES-392: verify the `recovers_to` crash-recovery
+                // postcondition against its MVP semantics — treat
+                // the clause as a universal obligation over the
+                // function's parameters (and `result`, if the clause
+                // mentions it) and try to discharge it via the same
+                // static folder / Z3 path used for requires/ensures.
+                //
+                // This deliberately verifies only the FINAL state,
+                // not per-prefix crash semantics. The proper
+                // per-instruction bounded model check described in
+                // the ticket is a follow-up; when it lands, this
+                // block becomes a weaker side-obligation.
+                //
+                // A provable contradiction (`Some(false)`) is a
+                // compile error — the recovery invariant can never
+                // hold. A proven tautology (`Some(true)`) is
+                // silently discharged; an undecidable verdict is
+                // left for runtime (the runtime check fires after
+                // every return and surfaces a clear diagnostic).
+                if let Some(clause) = recovers_to {
+                    let mut verdict = fold_const_bool(clause, &no_bindings);
+                    let mut cx: Option<String> = None;
+                    if verdict.is_none() {
+                        let (v, _cert, c, _timed_out) =
+                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
+                        verdict = v;
+                        cx = c;
+                    }
+                    if matches!(verdict, Some(false)) {
+                        let base = format!(
+                            "fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
+                            name
+                        );
+                        return Err(match cx {
+                            Some(m) => format!("{} — counterexample (final state): {}", base, m),
+                            None => base,
+                        });
                     }
                 }
 
