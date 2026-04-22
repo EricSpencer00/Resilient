@@ -1,0 +1,35 @@
+// RES-359: demonstrate configurable retry budgets
+
+static let attempts = 0;
+
+fn main(int dummy) {
+    // Example 1: Custom retry budget
+    println("=== Example 1: retries 5 ===");
+    attempts = 0;
+
+    live retries 5 {
+        attempts = attempts + 1;
+        println(attempts);
+
+        if attempts < 4 {
+            assert(false, "Force retry");
+        }
+
+        println("Success on attempt 4!");
+    }
+
+    println("");
+
+    // Example 2: Minimal retry budget
+    println("=== Example 2: retries 0 (no retries) ===");
+    attempts = 0;
+
+    live retries 0 {
+        attempts = attempts + 1;
+        println("Single attempt only");
+    }
+
+    println(attempts);
+}
+
+main(0);
