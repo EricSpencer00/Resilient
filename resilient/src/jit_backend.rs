@@ -497,15 +497,6 @@ fn flush_cache_stats_to_globals(cache: &JitCache) {
     GLOBAL_JIT_COMPILES.fetch_add(cache.compiles as u64, Ordering::Relaxed);
 }
 
-/// Payload for `panic_any` raised from JIT runtime shims when an
-/// array operation fails in a way `run()` maps to [`JitError`]
-/// instead of unwinding to the process abort handler.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum JitAbort {
-    OutOfBounds { index: i64, len: usize },
-    EmptyPop,
-}
-
 /// Errors the JIT backend can surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JitError {
