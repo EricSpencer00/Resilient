@@ -97,6 +97,10 @@ enum Token {
     In,
     Requires,
     Ensures,
+    /// RES-392: `recovers_to` — crash-recovery postcondition. MVP
+    /// verifies only the final state; per-prefix bounded model
+    /// checking is tracked as a follow-up.
+    RecoversTo,
     Invariant,
     Struct,
     New,
@@ -238,6 +242,7 @@ impl Token {
             Token::In => "`in`".to_string(),
             Token::Requires => "`requires`".to_string(),
             Token::Ensures => "`ensures`".to_string(),
+            Token::RecoversTo => "`recovers_to`".to_string(),
             Token::Invariant => "`invariant`".to_string(),
             Token::Struct => "`struct`".to_string(),
             Token::New => "`new`".to_string(),
@@ -625,6 +630,7 @@ impl Lexer {
                         "in" => Token::In,
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
+                        "recovers_to" => Token::RecoversTo,
                         "invariant" => Token::Invariant,
                         "struct" => Token::Struct,
                         "new" => Token::New,
@@ -1082,6 +1088,14 @@ enum Node {
         /// special identifier `result` is bound to the return value
         /// inside each clause's env.
         ensures: Vec<Node>,
+        /// RES-392: optional crash-recovery postcondition. MVP
+        /// semantics: verified as a weaker postcondition over the
+        /// function's final state (same evaluation environment as
+        /// `ensures`, with `result` bound). Proper per-prefix
+        /// bounded model checking — the real "crash at any
+        /// instruction" interpretation from the ticket — is tracked
+        /// as a follow-up. A value of `None` means no clause.
+        recovers_to: Option<Box<Node>>,
         /// RES-052: optional `-> TYPE` return-type annotation. Advisory.
         #[allow(dead_code)]
         return_type: Option<String>,
@@ -1342,6 +1356,9 @@ enum Node {
         body: Box<Node>,
         requires: Vec<Node>,
         ensures: Vec<Node>,
+        /// RES-392: optional crash-recovery postcondition. Same
+        /// MVP semantics as the named-fn variant: final-state only.
+        recovers_to: Option<Box<Node>>,
         #[allow(dead_code)]
         return_type: Option<String>,
         /// RES-088: span of the `fn` keyword. Consumed in follow-ups.
@@ -1935,6 +1952,7 @@ impl Parser {
                     }),
                     requires: Vec::new(),
                     ensures: Vec::new(),
+                    recovers_to: None,
                     return_type: None,
                     span: fn_span,
                     pure,
@@ -1950,6 +1968,7 @@ impl Parser {
                 body: Box::new(body),
                 requires: Vec::new(),
                 ensures: Vec::new(),
+                recovers_to: None,
                 return_type: None,
                 span: fn_span,
                 pure,
@@ -1968,7 +1987,8 @@ impl Parser {
         // RES-035: between the parameter list and the body, accept any
         // number of `requires EXPR` and `ensures EXPR` clauses, in any
         // order. Each clause parses as a single expression.
-        let (requires, ensures) = self.parse_function_contracts();
+        // RES-392: also accept an optional `recovers_to: EXPR;` clause.
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
 
         if self.current_token != Token::LeftBrace {
             self.record_error(format!(
@@ -1990,6 +2010,7 @@ impl Parser {
                     }),
                     requires,
                     ensures,
+                    recovers_to,
                     return_type,
                     span: fn_span,
                     pure,
@@ -2007,6 +2028,7 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            recovers_to,
             return_type,
             span: fn_span,
             pure,
@@ -2130,7 +2152,7 @@ impl Parser {
         }
 
         let return_type = self.parse_optional_return_type();
-        let (requires, ensures) = self.parse_function_contracts();
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -2147,6 +2169,7 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            recovers_to,
             return_type,
             span: fn_span,
             // Impl methods inherit no annotation today. When
@@ -2452,13 +2475,23 @@ impl Parser {
         }
     }
 
-    /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses. On
-    /// entry current_token is whatever followed the parameter list's
-    /// `)`; on exit it's the `{` that starts the body (or whatever
-    /// caused parsing to give up).
-    fn parse_function_contracts(&mut self) -> (Vec<Node>, Vec<Node>) {
+    /// Parse zero or more `requires EXPR` / `ensures EXPR` clauses, and
+    /// an optional `recovers_to: EXPR;` clause (RES-392). On entry
+    /// current_token is whatever followed the parameter list's `)`;
+    /// on exit it's the `{` that starts the body (or whatever caused
+    /// parsing to give up).
+    ///
+    /// RES-392: `recovers_to` is syntactically a single expression
+    /// terminated with `;`. Multiple `recovers_to` clauses on one
+    /// function are rejected — a function has exactly one recovery
+    /// contract. The ticket's full semantics (per-prefix bounded
+    /// model check) is out of scope for the MVP; here we parse it
+    /// and carry it on the AST so the verifier can treat it as a
+    /// weaker postcondition over the function's final state.
+    fn parse_function_contracts(&mut self) -> (Vec<Node>, Vec<Node>, Option<Box<Node>>) {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
+        let mut recovers_to: Option<Box<Node>> = None;
         loop {
             match self.current_token {
                 Token::Requires => {
@@ -2479,10 +2512,43 @@ impl Parser {
                     self.next_token();
                     ensures.push(expr);
                 }
+                Token::RecoversTo => {
+                    self.next_token(); // skip `recovers_to`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `recovers_to`, found {}",
+                            tok
+                        ));
+                    } else {
+                        self.next_token(); // skip `:`
+                    }
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // move past last token of expression
+                    // Optional terminator `;` — tolerate its absence so
+                    // the clause sits cleanly alongside `requires` /
+                    // `ensures` (which are not semicolon-terminated),
+                    // while accepting the form from the ticket's
+                    // proposed syntax.
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    }
+                    if recovers_to.is_some() {
+                        self.record_error(
+                            "Multiple `recovers_to` clauses on one fn — at most one is allowed"
+                                .to_string(),
+                        );
+                    } else {
+                        recovers_to = Some(Box::new(expr));
+                    }
+                }
                 _ => break,
             }
         }
-        (requires, ensures)
+        (requires, ensures, recovers_to)
     }
 
     /// RES-124 (RES-124a): parse an optional `<T, U, ...>`
@@ -3318,7 +3384,17 @@ impl Parser {
 
         // Optional `requires EXPR` / `ensures EXPR` clauses (paren-less — Resilient
         // contract syntax; reuses parse_function_contracts).
-        let (requires, ensures) = self.parse_function_contracts();
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
+
+        // RES-392: `recovers_to` is a Resilient-defined function-level
+        // crash-recovery contract. It has no meaning on a foreign
+        // `extern` — the verifier cannot model arbitrary C state and
+        // we refuse to silently drop the clause.
+        if recovers_to.is_some() {
+            self.record_error(
+                "`recovers_to` is not supported on `extern fn` declarations".to_string(),
+            );
+        }
 
         // Terminator `;`.
         if !matches!(self.current_token, Token::Semicolon) {
@@ -4312,6 +4388,7 @@ impl Parser {
                 }),
                 requires: Vec::new(),
                 ensures: Vec::new(),
+                recovers_to: None,
                 return_type: None,
                 span: self.span_at_current(),
             };
@@ -4319,7 +4396,7 @@ impl Parser {
         self.next_token(); // skip '('
         let parameters = self.parse_function_parameters();
         let return_type = self.parse_optional_return_type();
-        let (requires, ensures) = self.parse_function_contracts();
+        let (requires, ensures, recovers_to) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' in anonymous fn, found {}", tok));
@@ -4331,6 +4408,7 @@ impl Parser {
                 }),
                 requires,
                 ensures,
+                recovers_to,
                 return_type,
                 span: self.span_at_current(),
             };
@@ -4341,6 +4419,7 @@ impl Parser {
             body: Box::new(body),
             requires,
             ensures,
+            recovers_to,
             return_type,
             span: self.span_at_current(),
         }
@@ -4745,6 +4824,7 @@ impl Parser {
             body: Box::new(body_block),
             requires: Vec::new(),
             ensures: Vec::new(),
+            recovers_to: None,
             return_type: None,
             span: bracket_span,
         };
@@ -4949,6 +5029,11 @@ enum Value {
         /// apply_function can check them. Empty when absent.
         requires: Vec<Node>,
         ensures: Vec<Node>,
+        /// RES-392: crash-recovery postcondition (MVP: final-state
+        /// variant, evaluated after the body returns — same env as
+        /// `ensures`, with `result` bound). `None` means no clause
+        /// was declared on the function.
+        recovers_to: Option<Box<Node>>,
         /// Function name — used for better contract-violation messages.
         name: String,
     },
@@ -7201,6 +7286,7 @@ impl Interpreter {
                 body,
                 requires,
                 ensures,
+                recovers_to,
                 ..
             } => {
                 // RES-068: if every observed call site for this fn was
@@ -7217,6 +7303,7 @@ impl Interpreter {
                     env: self.env.clone(),
                     requires: runtime_requires,
                     ensures: ensures.clone(),
+                    recovers_to: recovers_to.clone(),
                     name: name.clone(),
                 };
                 self.env.set(name.clone(), func);
@@ -7506,6 +7593,7 @@ impl Interpreter {
                 body,
                 requires,
                 ensures,
+                recovers_to,
                 ..
             } => Ok(Value::Function {
                 parameters: parameters.clone(),
@@ -7513,6 +7601,7 @@ impl Interpreter {
                 env: self.env.clone(),
                 requires: requires.clone(),
                 ensures: ensures.clone(),
+                recovers_to: recovers_to.clone(),
                 name: "<anon>".to_string(),
             }),
             Node::TryExpression { expr: inner, .. } => {
@@ -8284,6 +8373,7 @@ impl Interpreter {
                 env,
                 requires,
                 ensures,
+                recovers_to,
                 name,
             } => {
                 // RES-050: env.clone() is now an Rc bump, not a deep
@@ -8329,7 +8419,7 @@ impl Interpreter {
 
                 // RES-035: check each `ensures` clause AFTER, with the
                 // special identifier `result` bound to the return value.
-                if !ensures.is_empty() {
+                if !ensures.is_empty() || recovers_to.is_some() {
                     interpreter
                         .env
                         .set("result".to_string(), return_value.clone());
@@ -8340,6 +8430,26 @@ impl Interpreter {
                                 "Contract violation in fn {}: ensures {} failed (result = {})",
                                 name,
                                 format_contract_expr(clause),
+                                return_value
+                            ));
+                        }
+                    }
+                    // RES-392: `recovers_to` — MVP final-state check.
+                    // Evaluated in the same post-return environment as
+                    // `ensures`, i.e. with `result` bound to the
+                    // returned value and parameters still in scope.
+                    // On refutation the diagnostic surfaces the final
+                    // state counterexample so the author can see which
+                    // concrete return value falsified the recovery
+                    // invariant.
+                    if let Some(rec) = &recovers_to {
+                        let v = interpreter.eval(rec)?;
+                        if !interpreter.is_truthy(&v) {
+                            return Err(format!(
+                                "Contract violation in fn {}: recovers_to {} failed — \
+                                 final-state counterexample: result = {}",
+                                name,
+                                format_contract_expr(rec),
                                 return_value
                             ));
                         }
@@ -9111,6 +9221,7 @@ fn classify_lex_token(
         | Token::In
         | Token::Requires
         | Token::Ensures
+        | Token::RecoversTo
         | Token::Invariant
         | Token::Struct
         | Token::New

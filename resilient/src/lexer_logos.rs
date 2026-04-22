@@ -174,6 +174,8 @@ enum Tok {
     Requires,
     #[token("ensures")]
     Ensures,
+    #[token("recovers_to")]
+    RecoversTo,
     #[token("invariant")]
     Invariant,
     #[token("struct")]
@@ -518,6 +520,7 @@ fn convert(t: Tok) -> Token {
         Tok::In => Token::In,
         Tok::Requires => Token::Requires,
         Tok::Ensures => Token::Ensures,
+        Tok::RecoversTo => Token::RecoversTo,
         Tok::Invariant => Token::Invariant,
         Tok::Struct => Token::Struct,
         Tok::New => Token::New,
