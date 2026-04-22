@@ -6143,8 +6143,13 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
 /// and returns a new `Value::Int` with the truncated bits.
 ///
 /// Signed casts (`Int8` / `Int16` / `Int32` / `Int64`) sign-extend via
-/// the natural Rust `as iN as i64` round-trip. Unsigned casts mask to
-/// the bit-width and return a non-negative i64.
+/// the natural Rust `as iN as i64` round-trip. Unsigned casts narrower
+/// than 64 bits can mask to the target width and still fit as a
+/// non-negative `i64`. A full-width `UInt64` cannot make that guarantee
+/// while this runtime stores integers as `Value::Int(i64)`: values with
+/// bit 63 set are represented as negative `i64` values because the
+/// result preserves the 64-bit bit pattern rather than a restricted
+/// `0..=u64::MAX` numeric range.
 ///
 /// Float arguments are rejected — use `to_int(x)` first.
 fn cast_to_int_n(
