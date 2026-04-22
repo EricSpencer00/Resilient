@@ -67,6 +67,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0006", // assume(false) vacuously discharges all verification obligations
     "L0007", // unreachable code after unconditional `return`
     "L0008", // duplicate identical struct literal match arm
+    "L0009", // integer division by zero (literal / SMT-proven-possible)
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -82,6 +83,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0006_assume_false(program, &mut out);
     run_l0007_unreachable_code(program, &mut out);
     run_l0008_duplicate_struct_match_arm(program, &mut out);
+    run_l0009_division_by_zero(program, &mut out);
 
     // Filter via allow-comments.
     let allows = collect_allow_comments(source);
@@ -1105,6 +1107,164 @@ fn walk_unreachable(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0009: integer division by zero (RES-350)
+// ============================================================
+//
+// Division by zero on Cortex-M is a hard fault — no signal, no
+// trap handler in the default configuration, just a locked-up
+// core. This lint flags `a / b` and `a % b` when `b` cannot be
+// proven non-zero given the information available.
+//
+// Two modes:
+//
+// - Default build: only literal-zero divisors fire. `a / 0`,
+//   `a % 0`, `a / 0.0`, `a % 0.0` are statically obvious bugs
+//   and deserve the warning regardless of SMT availability.
+// - `--features z3`: the lint additionally asks Z3 "given the
+//   enclosing fn's `requires` clauses, is `divisor != 0`
+//   provable?". If Z3 returns `Some(true)`, the divisor is
+//   proven non-zero and the lint stays silent. Any other verdict
+//   (`Some(false)`, `None`, or timeout) triggers the warning with
+//   a hint pointing at the missing precondition.
+//
+// The ticket proposed code `L0004` for this lint, but `L0004` is
+// already shipped as the mixed-`&&`/`||` paren warning; renaming
+// would silently flip the meaning of every `// resilient: allow
+// L0004` comment in the wild. We allocate `L0009` — the next
+// unused slot — and note the conflict in the PR that added this
+// file.
+
+fn run_l0009_division_by_zero(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::Function { body, requires, .. } => {
+                l0009_check_body(body, requires, out);
+            }
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function { body, requires, .. } = method {
+                        l0009_check_body(body, requires, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// RES-350: walk one fn body, flagging divisions by zero. The
+/// `requires` slice belongs to the enclosing fn and is handed to
+/// Z3 as assumption axioms (feature-gated).
+fn l0009_check_body(body: &Node, requires: &[Node], out: &mut Vec<Lint>) {
+    walk_divisions(body, requires, out);
+}
+
+fn walk_divisions(node: &Node, requires: &[Node], out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
+        && (operator == "/" || operator == "%")
+    {
+        match right.as_ref() {
+            Node::IntegerLiteral { value: 0, .. } => {
+                out.push(Lint {
+                    code: "L0009".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "division by zero: `{}` with a literal-zero divisor is a hard fault on Cortex-M",
+                        operator
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+            Node::FloatLiteral { value, .. } if *value == 0.0 => {
+                out.push(Lint {
+                    code: "L0009".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "division by zero: `{}` with a literal-zero divisor is a hard fault on Cortex-M",
+                        operator
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+            other => {
+                // Non-literal divisor: under `--features z3` ask the
+                // solver whether the enclosing fn's preconditions
+                // force it non-zero. Without Z3 we stay silent to
+                // avoid false positives.
+                if let Some(lint) = l0009_z3_check(left, operator, other, requires, span) {
+                    out.push(lint);
+                }
+            }
+        }
+    }
+    // Recurse through the same generic walker the other lints use.
+    recurse_children(node, &mut |child| walk_divisions(child, requires, out));
+}
+
+#[cfg(feature = "z3")]
+fn l0009_z3_check(
+    _left: &Node,
+    operator: &str,
+    right: &Node,
+    requires: &[Node],
+    span: &Span,
+) -> Option<Lint> {
+    use crate::verifier_z3;
+    // Construct the synthetic obligation `<right> != 0`.
+    let obligation = Node::InfixExpression {
+        left: Box::new(right.clone()),
+        operator: "!=".to_string(),
+        right: Box::new(Node::IntegerLiteral {
+            value: 0,
+            span: crate::span::Span::default(),
+        }),
+        span: crate::span::Span::default(),
+    };
+    let empty = std::collections::HashMap::new();
+    // 1 s is plenty for simple non-zero obligations; if the user
+    // has unusually complex preconditions they can downgrade via
+    // `// resilient: allow L0009`.
+    let (verdict, _cert, _cx, _timeout) =
+        verifier_z3::prove_with_axioms_and_timeout(&obligation, &empty, requires, 1000);
+    if verdict == Some(true) {
+        return None;
+    }
+    Some(Lint {
+        code: "L0009".into(),
+        severity: Severity::Warning,
+        message: format!(
+            "division may be by zero: `{}` divisor is not proven non-zero; \
+             add `requires <divisor> != 0;` to the enclosing fn, or \
+             silence with `// resilient: allow L0009`",
+            operator
+        ),
+        line: span.start.line as u32,
+        column: span.start.column as u32,
+    })
+}
+
+#[cfg(not(feature = "z3"))]
+fn l0009_z3_check(
+    _left: &Node,
+    _operator: &str,
+    _right: &Node,
+    _requires: &[Node],
+    _span: &Span,
+) -> Option<Lint> {
+    None
+}
+
+// ============================================================
 // Shared AST walker. Not exhaustive — covers the shapes the
 // five lints actually need to descend through.
 // ============================================================
@@ -1765,6 +1925,101 @@ mod tests {
         assert!(
             codes(src).contains(&"L0002".to_string()),
             "L0002 must fire for unreachable arm inside an impl method"
+        );
+    }
+
+    // ---------- RES-350: L0009 integer division by zero ----------
+
+    #[test]
+    fn l0009_fires_on_literal_integer_divisor() {
+        // The non-Z3 baseline: literal 0 always fires.
+        let src = "fn f(int a) -> int {\n    return a / 0;\n}\n";
+        assert!(
+            codes(src).contains(&"L0009".to_string()),
+            "L0009 must fire on literal-zero integer divisor; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0009_fires_on_literal_modulo_divisor() {
+        let src = "fn f(int a) -> int {\n    return a % 0;\n}\n";
+        assert!(
+            codes(src).contains(&"L0009".to_string()),
+            "L0009 must fire on literal-zero modulo divisor"
+        );
+    }
+
+    #[test]
+    fn l0009_silent_on_literal_nonzero_divisor() {
+        let src = "fn f(int a) -> int {\n    return a / 2;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0009".to_string()),
+            "L0009 must not fire on literal-nonzero divisor"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "z3"))]
+    fn l0009_silent_on_identifier_divisor_without_z3() {
+        // Without Z3, identifier divisors are silent — we only
+        // flag statically-obvious literal-zero bugs.
+        let src = "fn f(int a, int b) -> int {\n    return a / b;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0009".to_string()),
+            "L0009 must stay silent on identifier divisors without the z3 feature"
+        );
+    }
+
+    #[test]
+    fn l0009_suppressed_by_allow_comment() {
+        let src = "fn f(int a) -> int {\n    // resilient: allow L0009\n    return a / 0;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0009".to_string()),
+            "L0009 must be suppressed by allow comment"
+        );
+    }
+
+    #[test]
+    fn known_codes_contains_l0009() {
+        assert!(
+            KNOWN_CODES.contains(&"L0009"),
+            "L0009 missing from KNOWN_CODES"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "z3")]
+    fn l0009_fires_on_unconstrained_identifier_divisor_with_z3() {
+        // Under the z3 feature, a divisor with no precondition is
+        // flagged because the solver cannot prove it non-zero.
+        let src = "fn f(int a, int b) -> int {\n    return a / b;\n}\n";
+        assert!(
+            codes(src).contains(&"L0009".to_string()),
+            "L0009 must fire when z3 cannot prove divisor non-zero"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "z3")]
+    fn l0009_silent_when_precondition_guarantees_nonzero() {
+        // `requires b != 0;` gives Z3 enough to prove the obligation.
+        let src = "fn f(int a, int b) -> int requires b != 0 {\n    return a / b;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0009".to_string()),
+            "L0009 must stay silent when preconditions prove divisor non-zero; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "z3")]
+    fn l0009_silent_when_precondition_forces_strictly_positive() {
+        // `requires b > 0;` also implies `b != 0`.
+        let src = "fn f(int a, int b) -> int requires b > 0 {\n    return a / b;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0009".to_string()),
+            "L0009 must stay silent when b > 0 implies b != 0"
         );
     }
 
