@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# .git/hooks/pre-commit — board ticket-ID collision guard.
+#
+# Runs scripts/check-ticket-ids.sh before every commit.  If any two
+# tickets in OPEN/, IN_PROGRESS/, or DONE/ share a RES-NNN id the
+# commit is aborted.
+#
+# Install once per clone:
+#   cp scripts/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+# or via the helper:
+#   scripts/install-hooks.sh
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+CHECK="$ROOT/scripts/check-ticket-ids.sh"
+
+if [[ ! -x "$CHECK" ]]; then
+    echo "pre-commit: check-ticket-ids.sh not found or not executable: $CHECK" >&2
+    echo "pre-commit: run  chmod +x scripts/check-ticket-ids.sh  and retry." >&2
+    exit 1
+fi
+
+exec "$CHECK"

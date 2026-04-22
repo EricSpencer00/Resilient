@@ -13,7 +13,7 @@ url: "https://ericspencer.us"
 remote_theme: just-the-docs/just-the-docs
 
 # Brand
-logo: "/assets/images/logo.jpg"
+logo: "/assets/images/logo-transparent.png"
 
 # Search across pages.
 search_enabled: true

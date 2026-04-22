@@ -304,6 +304,39 @@ The issue board uses a simple workflow:
 5. **Monitor for feedback** via the PR comment subscription
 6. Merge is automatic once approved; the issue closes
 
+### Creating New Tickets
+
+Always use `scripts/new-ticket.sh` to create new board tickets. It automatically assigns the next unused `RES-NNN` id and places the file in `.board/tickets/OPEN/`:
+
+```bash
+scripts/new-ticket.sh "Short imperative title"
+```
+
+This prevents ID collisions that arise from manually chosen numbers.
+
+### Pre-commit Hook — Ticket ID Collision Guard
+
+A pre-commit hook prevents commits that introduce duplicate ticket IDs. Install it once per clone:
+
+```bash
+scripts/install-hooks.sh
+```
+
+Or install manually:
+
+```bash
+cp scripts/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+The hook runs `scripts/check-ticket-ids.sh`, which scans `.board/tickets/OPEN/`, `IN_PROGRESS/`, and `DONE/` for `id: RES-NNN` front-matter and aborts the commit when a collision is found.
+
+You can also run the check independently (useful in CI):
+
+```bash
+scripts/check-ticket-ids.sh
+```
+
 ### Special Notes
 
 - **Test protection**: Modifying existing tests requires maintainer approval (see [CLAUDE.md](./CLAUDE.md) for details)

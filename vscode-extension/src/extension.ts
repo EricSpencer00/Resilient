@@ -1,13 +1,4 @@
-// RES-204: VS Code extension entry point. Launches the Resilient
-// binary as a Language Server over stdio and wires it up to VS
-// Code's LanguageClient.
-//
-// Activation is deferred until a `.rs` file with languageId
-// `resilient` opens (see `package.json` activationEvents). The
-// client is torn down in `deactivate`; VS Code calls that on
-// editor shutdown and when the user disables the extension.
-
-import { workspace, ExtensionContext, window } from "vscode";
+import { workspace, ExtensionContext, window, commands } from "vscode";
 import {
   LanguageClient,
   LanguageClientOptions,
@@ -22,9 +13,6 @@ export function activate(context: ExtensionContext): void {
   const serverPath = config.get<string>("serverPath", "resilient");
   const serverArgs = config.get<string[]>("serverArgs", ["--lsp"]);
 
-  // Spawn the same binary for both "run" (production) and
-  // "debug" (F5 in the extension dev host). The Resilient server
-  // has no debug-specific mode, so both point at the same place.
   const serverOptions: ServerOptions = {
     run: {
       command: serverPath,
@@ -39,18 +27,10 @@ export function activate(context: ExtensionContext): void {
   };
 
   const clientOptions: LanguageClientOptions = {
-    // Activate for any file tagged `resilient` (the language id
-    // is registered in package.json → contributes.languages).
-    documentSelector: [
-      { scheme: "file", language: "resilient" },
-    ],
+    documentSelector: [{ scheme: "file", language: "resilient" }],
     synchronize: {
-      // File watchers for .rs files in the workspace so the
-      // server can refresh workspace symbol indexes on save.
-      fileEvents: workspace.createFileSystemWatcher("**/*.rs"),
+      fileEvents: workspace.createFileSystemWatcher("**/*.rz"),
     },
-    // RES-204: surface the trace setting so users can opt into
-    // verbose LSP traffic via `resilient.trace.server`.
     traceOutputChannel: window.createOutputChannel("Resilient LSP"),
   };
 
@@ -61,9 +41,6 @@ export function activate(context: ExtensionContext): void {
     clientOptions,
   );
 
-  // Start asynchronously — surface any spawn failure as an error
-  // toast rather than bubbling up into the activation error path,
-  // which VS Code reports without context.
   client.start().catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
     window.showErrorMessage(
@@ -73,8 +50,26 @@ export function activate(context: ExtensionContext): void {
     );
   });
 
-  // Keep a handle so `deactivate` can stop cleanly.
-  context.subscriptions.push({
+  const runFile = commands.registerCommand("resilient.runFile", () => {
+    const editor = window.activeTextEditor;
+    if (!editor) {
+      window.showErrorMessage("Resilient: no active editor.");
+      return;
+    }
+    const filePath = editor.document.uri.fsPath;
+    const bin = workspace
+      .getConfiguration("resilient")
+      .get<string>("serverPath", "resilient");
+
+    let terminal = window.terminals.find((t) => t.name === "Resilient");
+    if (!terminal || terminal.exitStatus !== undefined) {
+      terminal = window.createTerminal("Resilient");
+    }
+    terminal.show(true);
+    terminal.sendText(`"${bin}" "${filePath}"`);
+  });
+
+  context.subscriptions.push(runFile, {
     dispose: () => {
       if (client) {
         void client.stop();

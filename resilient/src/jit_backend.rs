@@ -97,10 +97,13 @@ struct LowerCtx {
     /// provided.
     #[cfg(feature = "ffi")]
     foreign_entries: Vec<ForeignJitEntry>,
+    /// RES-380: import `FuncId`s for `res_array_*` / `res_jit_*`
+    /// shims declared once per `JITModule`.
+    imports: JitRuntimeImports,
 }
 
 impl LowerCtx {
-    fn new() -> Self {
+    fn new(imports: JitRuntimeImports) -> Self {
         Self {
             next_var: 0,
             locals: HashMap::new(),
@@ -113,6 +116,7 @@ impl LowerCtx {
             inline_return_target: None,
             #[cfg(feature = "ffi")]
             foreign_entries: Vec::new(),
+            imports,
         }
     }
 
@@ -203,7 +207,10 @@ fn has_disqualifying_construct(n: &Node) -> bool {
         | Node::WhileStatement { .. }
         | Node::ForInStatement { .. }
         | Node::Match { .. }
-        | Node::LiveBlock { .. } => true,
+        | Node::LiveBlock { .. }
+        | Node::IndexExpression { .. }
+        | Node::IndexAssignment { .. }
+        | Node::ArrayLiteral { .. } => true,
         Node::PrefixExpression { right, .. } => has_disqualifying_construct(right),
         Node::InfixExpression { left, right, .. } => {
             has_disqualifying_construct(left) || has_disqualifying_construct(right)
@@ -516,6 +523,95 @@ impl std::fmt::Display for JitError {
 
 impl std::error::Error for JitError {}
 
+/// RES-380: `FuncId`s for runtime symbols registered on the
+/// `JITBuilder` (`res_array_*`, `res_jit_*`). Declared as imports
+/// once per module so lowering can `declare_func_in_func`.
+#[derive(Clone, Copy)]
+pub(crate) struct JitRuntimeImports {
+    pub res_array_new: FuncId,
+    pub res_array_len: FuncId,
+    pub res_array_get_unchecked: FuncId,
+    pub res_array_set_unchecked: FuncId,
+    pub res_array_push_copy: FuncId,
+    pub res_array_pop_copy: FuncId,
+    pub res_jit_abs: FuncId,
+    pub res_jit_len_array: FuncId,
+    pub res_jit_max: FuncId,
+    pub res_jit_min: FuncId,
+}
+
+fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImports, JitError> {
+    let mut sig1r = module.make_signature();
+    sig1r.params.push(AbiParam::new(types::I64));
+    sig1r.returns.push(AbiParam::new(types::I64));
+    let res_array_new = module
+        .declare_function("res_array_new", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let res_array_len = module
+        .declare_function("res_array_len", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut sig2r = module.make_signature();
+    sig2r.params.push(AbiParam::new(types::I64));
+    sig2r.params.push(AbiParam::new(types::I64));
+    sig2r.returns.push(AbiParam::new(types::I64));
+    let res_array_get_unchecked = module
+        .declare_function("res_array_get_unchecked", Linkage::Import, &sig2r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut sig3v = module.make_signature();
+    sig3v.params.push(AbiParam::new(types::I64));
+    sig3v.params.push(AbiParam::new(types::I64));
+    sig3v.params.push(AbiParam::new(types::I64));
+    let res_array_set_unchecked = module
+        .declare_function("res_array_set_unchecked", Linkage::Import, &sig3v)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut sig2r_push = module.make_signature();
+    sig2r_push.params.push(AbiParam::new(types::I64));
+    sig2r_push.params.push(AbiParam::new(types::I64));
+    sig2r_push.returns.push(AbiParam::new(types::I64));
+    let res_array_push_copy = module
+        .declare_function("res_array_push_copy", Linkage::Import, &sig2r_push)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let res_array_pop_copy = module
+        .declare_function("res_array_pop_copy", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let res_jit_abs = module
+        .declare_function("res_jit_abs", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_len_array = module
+        .declare_function("res_jit_len_array", Linkage::Import, &sig1r)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut sig2mm = module.make_signature();
+    sig2mm.params.push(AbiParam::new(types::I64));
+    sig2mm.params.push(AbiParam::new(types::I64));
+    sig2mm.returns.push(AbiParam::new(types::I64));
+    let res_jit_max = module
+        .declare_function("res_jit_max", Linkage::Import, &sig2mm)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+    let res_jit_min = module
+        .declare_function("res_jit_min", Linkage::Import, &sig2mm)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    Ok(JitRuntimeImports {
+        res_array_new,
+        res_array_len,
+        res_array_get_unchecked,
+        res_array_set_unchecked,
+        res_array_push_copy,
+        res_array_pop_copy,
+        res_jit_abs,
+        res_jit_len_array,
+        res_jit_max,
+        res_jit_min,
+    })
+}
+
 /// Build a fresh JITModule for the host ISA.
 fn make_module() -> Result<JITModule, JitError> {
     let mut flag_builder = settings::builder();
@@ -636,11 +732,10 @@ pub(crate) mod runtime_shims {
         // pointer's validity for the duration of this call.
         let arr_ref = unsafe { &*arr };
         if i < 0 || (i as usize) >= arr_ref.items.len() {
-            panic!(
-                "res_array_get: index {} out of bounds for length {}",
-                i,
-                arr_ref.items.len()
-            );
+            std::panic::panic_any(super::JitAbort::OutOfBounds {
+                index: i,
+                len: arr_ref.items.len(),
+            });
         }
         arr_ref.items[i as usize]
     }
@@ -654,13 +749,55 @@ pub(crate) mod runtime_shims {
         // SAFETY: same as `res_array_get`.
         let arr_ref = unsafe { &mut *arr };
         if i < 0 || (i as usize) >= arr_ref.items.len() {
-            panic!(
-                "res_array_set: index {} out of bounds for length {}",
-                i,
-                arr_ref.items.len()
-            );
+            std::panic::panic_any(super::JitAbort::OutOfBounds {
+                index: i,
+                len: arr_ref.items.len(),
+            });
         }
         arr_ref.items[i as usize] = v;
+    }
+
+    pub extern "C-unwind" fn res_array_len(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_len: null array pointer");
+        let arr_ref = unsafe { &*arr };
+        arr_ref.items.len() as i64
+    }
+
+    pub extern "C-unwind" fn res_array_get_unchecked(arr: *mut ResArray, i: i64) -> i64 {
+        assert!(
+            !arr.is_null(),
+            "res_array_get_unchecked: null array pointer"
+        );
+        let arr_ref = unsafe { &*arr };
+        arr_ref.items[i as usize]
+    }
+
+    pub extern "C-unwind" fn res_array_set_unchecked(arr: *mut ResArray, i: i64, v: i64) {
+        assert!(
+            !arr.is_null(),
+            "res_array_set_unchecked: null array pointer"
+        );
+        let arr_ref = unsafe { &mut *arr };
+        arr_ref.items[i as usize] = v;
+    }
+
+    pub extern "C-unwind" fn res_array_push_copy(arr: *mut ResArray, v: i64) -> i64 {
+        assert!(!arr.is_null(), "res_array_push_copy: null array pointer");
+        let arr_ref = unsafe { &*arr };
+        let mut items = arr_ref.items.clone();
+        items.push(v);
+        Box::into_raw(Box::new(ResArray { items })) as i64
+    }
+
+    pub extern "C-unwind" fn res_array_pop_copy(arr: *mut ResArray) -> i64 {
+        assert!(!arr.is_null(), "res_array_pop_copy: null array pointer");
+        let arr_ref = unsafe { &*arr };
+        if arr_ref.items.is_empty() {
+            std::panic::panic_any(super::JitAbort::EmptyPop);
+        }
+        let mut items = arr_ref.items.clone();
+        items.pop();
+        Box::into_raw(Box::new(ResArray { items })) as i64
     }
 
     /// Free an array previously produced by `res_array_new`. A
@@ -693,6 +830,23 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol("res_array_get", runtime_shims::res_array_get as *const u8);
     builder.symbol("res_array_set", runtime_shims::res_array_set as *const u8);
     builder.symbol("res_array_free", runtime_shims::res_array_free as *const u8);
+    builder.symbol("res_array_len", runtime_shims::res_array_len as *const u8);
+    builder.symbol(
+        "res_array_get_unchecked",
+        runtime_shims::res_array_get_unchecked as *const u8,
+    );
+    builder.symbol(
+        "res_array_set_unchecked",
+        runtime_shims::res_array_set_unchecked as *const u8,
+    );
+    builder.symbol(
+        "res_array_push_copy",
+        runtime_shims::res_array_push_copy as *const u8,
+    );
+    builder.symbol(
+        "res_array_pop_copy",
+        runtime_shims::res_array_pop_copy as *const u8,
+    );
     // RES-167a: register the JIT-side builtin shims alongside the
     // array runtime shims. Both surfaces use the same absolute-
     // address `JITBuilder::symbol` mechanism, so piggy-backing on
@@ -759,6 +913,11 @@ pub(crate) mod jit_builtins {
     pub extern "C-unwind" fn res_jit_max(a: i64, b: i64) -> i64 {
         a.max(b)
     }
+
+    /// `len(arr)` for a JIT array handle (`*mut ResArray` as i64).
+    pub extern "C-unwind" fn res_jit_len_array(arr: i64) -> i64 {
+        super::runtime_shims::res_array_len(arr as *mut super::runtime_shims::ResArray)
+    }
 }
 
 /// RES-167a: descriptor for a JIT-side builtin. `name` is the
@@ -821,7 +980,7 @@ pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
     // The slice contents are compile-time known; the only
     // non-const bit is the `as *const u8` coercion.
     use jit_builtins::*;
-    static TABLE: std::sync::OnceLock<[JitBuiltinSig; 3]> = std::sync::OnceLock::new();
+    static TABLE: std::sync::OnceLock<[JitBuiltinSig; 4]> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
         [
             JitBuiltinSig {
@@ -829,6 +988,12 @@ pub(crate) fn jit_builtin_table() -> &'static [JitBuiltinSig] {
                 symbol: "res_jit_abs",
                 arity: 1,
                 addr: res_jit_abs as *const u8,
+            },
+            JitBuiltinSig {
+                name: "len",
+                symbol: "res_jit_len_array",
+                arity: 1,
+                addr: res_jit_len_array as *const u8,
             },
             JitBuiltinSig {
                 name: "max",
@@ -882,6 +1047,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     };
 
     let mut module = make_module()?;
+    let imports = declare_jit_runtime_imports(&mut module)?;
 
     // RES-174: per-run JIT cache. Within a single module, two
     // functions with the same AST hash share one FuncId (the
@@ -964,6 +1130,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
                 &functions,
                 &function_arities,
                 &fn_asts,
+                imports,
                 &mut module,
             )?;
             cache.compiles += 1;
@@ -990,7 +1157,7 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
-        let mut lctx = LowerCtx::new();
+        let mut lctx = LowerCtx::new(imports);
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
         lctx.fn_asts = fn_asts.clone();
@@ -1066,6 +1233,7 @@ pub(crate) fn jit_run_ast_with_entries(
     // Finish building the module using the caller-supplied JITBuilder
     // which already has foreign symbols registered.
     let mut module = cranelift_jit::JITModule::new(builder);
+    let imports = declare_jit_runtime_imports(&mut module)?;
     let mut cache = JitCache::new();
 
     // ---------- Pass 0 (FFI v2): declare foreign imports ----------
@@ -1145,6 +1313,7 @@ pub(crate) fn jit_run_ast_with_entries(
                 &function_arities,
                 &fn_asts,
                 &foreign_entries,
+                imports,
                 &mut module,
             )?;
             cache.compiles += 1;
@@ -1168,7 +1337,7 @@ pub(crate) fn jit_run_ast_with_entries(
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
-        let mut lctx = LowerCtx::new();
+        let mut lctx = LowerCtx::new(imports);
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
         lctx.fn_asts = fn_asts.clone();
@@ -1209,6 +1378,7 @@ fn compile_function_with_ffi(
     function_arities: &HashMap<String, usize>,
     fn_asts: &FnAstMap,
     foreign_entries: &[ForeignJitEntry],
+    imports: JitRuntimeImports,
     module: &mut JITModule,
 ) -> Result<(), JitError> {
     let mut sig = module.make_signature();
@@ -1227,7 +1397,7 @@ fn compile_function_with_ffi(
         bcx.switch_to_block(entry);
         bcx.seal_block(entry);
 
-        let mut lctx = LowerCtx::new();
+        let mut lctx = LowerCtx::new(imports);
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
         lctx.fn_asts = fn_asts.clone();
@@ -1291,6 +1461,7 @@ fn compile_function(
     functions: &HashMap<String, FuncId>,
     function_arities: &HashMap<String, usize>,
     fn_asts: &FnAstMap,
+    imports: JitRuntimeImports,
     module: &mut JITModule,
 ) -> Result<(), JitError> {
     // Build the signature again — we declared it in Pass 1, but
@@ -1317,7 +1488,7 @@ fn compile_function(
         // Bind each parameter to a Variable in the LowerCtx so
         // identifier reads in the body resolve correctly. Capture
         // the Variables in declaration order for TCO back-edges.
-        let mut lctx = LowerCtx::new();
+        let mut lctx = LowerCtx::new(imports);
         lctx.functions = functions.clone();
         lctx.function_arities = function_arities.clone();
         lctx.fn_asts = fn_asts.clone();
@@ -1645,6 +1816,22 @@ fn compile_node_list(
                 bcx.def_var(var, v);
                 continue;
             }
+            Node::IndexAssignment {
+                target,
+                index,
+                value,
+                ..
+            } => {
+                lower_index_store(
+                    target.as_ref(),
+                    index.as_ref(),
+                    value.as_ref(),
+                    bcx,
+                    ctx,
+                    module,
+                )?;
+                continue;
+            }
             // RES-107: `while (cond) { body }` — classic three-
             // block structured loop.
             //
@@ -1886,6 +2073,104 @@ fn lower_block_or_stmt(
     }
 }
 
+fn jit_array_index_target_supported(n: &Node) -> bool {
+    match n {
+        Node::Identifier { .. } | Node::ArrayLiteral { .. } => true,
+        Node::CallExpression { function, .. } => matches!(
+            function.as_ref(),
+            Node::Identifier { name, .. } if name == "push" || name == "pop"
+        ),
+        _ => false,
+    }
+}
+
+fn lower_index_read(
+    target: &Node,
+    index: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Result<Value, JitError> {
+    if !jit_array_index_target_supported(target) {
+        return Err(JitError::Unsupported(
+            "JIT array index: unsupported target expression",
+        ));
+    }
+    let arr = lower_expr(target, bcx, ctx, module)?;
+    let idx = lower_expr(index, bcx, ctx, module)?;
+    let imp = ctx.imports;
+    let flen = module.declare_func_in_func(imp.res_array_len, bcx.func);
+    let clen = bcx.ins().call(flen, &[arr]);
+    let len_v = bcx.inst_results(clen)[0];
+
+    let i0 = bcx.ins().iconst(types::I64, 0);
+    let ok_lo = bcx.ins().icmp(IntCC::SignedGreaterThanOrEqual, idx, i0);
+    let ok_hi = bcx.ins().icmp(IntCC::SignedLessThan, idx, len_v);
+    let ok = bcx.ins().band(ok_lo, ok_hi);
+
+    let ok_bb = bcx.create_block();
+    let bad_bb = bcx.create_block();
+    let merge_bb = bcx.create_block();
+    bcx.append_block_param(merge_bb, types::I64);
+    bcx.ins().brif(ok, ok_bb, &[], bad_bb, &[]);
+
+    bcx.switch_to_block(bad_bb);
+    bcx.seal_block(bad_bb);
+    bcx.ins().trap(TrapCode::HeapOutOfBounds);
+
+    bcx.switch_to_block(ok_bb);
+    bcx.seal_block(ok_bb);
+    let fget = module.declare_func_in_func(imp.res_array_get_unchecked, bcx.func);
+    let cget = bcx.ins().call(fget, &[arr, idx]);
+    let v = bcx.inst_results(cget)[0];
+    bcx.ins().jump(merge_bb, &[v]);
+
+    bcx.switch_to_block(merge_bb);
+    bcx.seal_block(merge_bb);
+    Ok(bcx.block_params(merge_bb)[0])
+}
+
+fn lower_index_store(
+    target: &Node,
+    index: &Node,
+    value: &Node,
+    bcx: &mut FunctionBuilder,
+    ctx: &mut LowerCtx,
+    module: &mut JITModule,
+) -> Result<(), JitError> {
+    if !jit_array_index_target_supported(target) {
+        return Err(JitError::Unsupported(
+            "JIT index assignment: unsupported target expression",
+        ));
+    }
+    let arr = lower_expr(target, bcx, ctx, module)?;
+    let idx = lower_expr(index, bcx, ctx, module)?;
+    let val = lower_expr(value, bcx, ctx, module)?;
+    let imp = ctx.imports;
+    let flen = module.declare_func_in_func(imp.res_array_len, bcx.func);
+    let clen = bcx.ins().call(flen, &[arr]);
+    let len_v = bcx.inst_results(clen)[0];
+
+    let i0 = bcx.ins().iconst(types::I64, 0);
+    let ok_lo = bcx.ins().icmp(IntCC::SignedGreaterThanOrEqual, idx, i0);
+    let ok_hi = bcx.ins().icmp(IntCC::SignedLessThan, idx, len_v);
+    let ok = bcx.ins().band(ok_lo, ok_hi);
+
+    let ok_bb = bcx.create_block();
+    let bad_bb = bcx.create_block();
+    bcx.ins().brif(ok, ok_bb, &[], bad_bb, &[]);
+
+    bcx.switch_to_block(bad_bb);
+    bcx.seal_block(bad_bb);
+    bcx.ins().trap(TrapCode::HeapOutOfBounds);
+
+    bcx.switch_to_block(ok_bb);
+    bcx.seal_block(ok_bb);
+    let fset = module.declare_func_in_func(imp.res_array_set_unchecked, bcx.func);
+    bcx.ins().call(fset, &[arr, idx, val]);
+    Ok(())
+}
+
 /// Lower an expression to a Cranelift `Value` of type `i64`.
 fn lower_expr(
     node: &Node,
@@ -1953,57 +2238,122 @@ fn lower_expr(
                 return Ok(bcx.inst_results(call)[0]);
             }
 
-            let func_id = match ctx.functions.get(&callee_name).copied() {
-                Some(id) => id,
-                None => {
-                    // Note: we lose the actual name in the
-                    // diagnostic since JitError::Unsupported
-                    // takes &'static str. A richer diagnostic
-                    // type is a future ticket.
-                    return Err(JitError::Unsupported("call to unknown function"));
+            if let Some(func_id) = ctx.functions.get(&callee_name).copied() {
+                let expected_arity = ctx.function_arities.get(&callee_name).copied().unwrap_or(0);
+                if arguments.len() != expected_arity {
+                    return Err(JitError::Unsupported(
+                        "call arity mismatch (declared params vs actual args)",
+                    ));
                 }
-            };
-            let expected_arity = ctx.function_arities.get(&callee_name).copied().unwrap_or(0);
-            if arguments.len() != expected_arity {
-                return Err(JitError::Unsupported(
-                    "call arity mismatch (declared params vs actual args)",
-                ));
+
+                if let Some((callee_params, callee_body)) = ctx.fn_asts.get(&callee_name).cloned()
+                    && is_trivial_leaf(&callee_body, &callee_name, ctx.current_fn.as_deref())
+                    && ctx.inline_return_target.is_none()
+                {
+                    return try_lower_inline_call(
+                        &callee_params,
+                        &callee_body,
+                        arguments,
+                        bcx,
+                        ctx,
+                        module,
+                    );
+                }
+
+                let mut arg_values: Vec<Value> = Vec::with_capacity(arguments.len());
+                for arg in arguments {
+                    arg_values.push(lower_expr(arg, bcx, ctx, module)?);
+                }
+                let local_callee = module.declare_func_in_func(func_id, bcx.func);
+                let call = bcx.ins().call(local_callee, &arg_values);
+                return Ok(bcx.inst_results(call)[0]);
             }
 
-            // RES-175: leaf-fn inliner. If the callee's AST
-            // qualifies as a trivial leaf AND we aren't
-            // inside a nested inline already (to bound code
-            // expansion), lower the body in-place instead of
-            // emitting an indirect call. See
-            // `try_lower_inline_call` for the mechanics.
-            if let Some((callee_params, callee_body)) = ctx.fn_asts.get(&callee_name).cloned()
-                && is_trivial_leaf(&callee_body, &callee_name, ctx.current_fn.as_deref())
-                && ctx.inline_return_target.is_none()
-            {
-                return try_lower_inline_call(
-                    &callee_params,
-                    &callee_body,
-                    arguments,
-                    bcx,
-                    ctx,
-                    module,
-                );
+            if let Some(b) = lookup_jit_builtin(callee_name.as_str()) {
+                if arguments.len() != b.arity {
+                    return Err(JitError::Unsupported("call arity mismatch for JIT builtin"));
+                }
+                let mut arg_vals: Vec<Value> = Vec::with_capacity(arguments.len());
+                for arg in arguments {
+                    arg_vals.push(lower_expr(arg, bcx, ctx, module)?);
+                }
+                let fid = match callee_name.as_str() {
+                    "abs" => ctx.imports.res_jit_abs,
+                    "len" => ctx.imports.res_jit_len_array,
+                    "max" => ctx.imports.res_jit_max,
+                    "min" => ctx.imports.res_jit_min,
+                    _ => return Err(JitError::Unsupported("unknown JIT builtin")),
+                };
+                let local_ref = module.declare_func_in_func(fid, bcx.func);
+                let call = bcx.ins().call(local_ref, &arg_vals);
+                return Ok(bcx.inst_results(call)[0]);
             }
 
-            // Lower each argument before declaring the local
-            // function ref; lowering may recurse and we want a
-            // clean borrow stack at the call site.
-            let mut arg_values: Vec<Value> = Vec::with_capacity(arguments.len());
-            for arg in arguments {
-                arg_values.push(lower_expr(arg, bcx, ctx, module)?);
+            if callee_name == "push" {
+                if arguments.len() != 2 {
+                    return Err(JitError::Unsupported(
+                        "JIT push: expected exactly 2 arguments",
+                    ));
+                }
+                let arr = lower_expr(&arguments[0], bcx, ctx, module)?;
+                let v = lower_expr(&arguments[1], bcx, ctx, module)?;
+                let fref = module.declare_func_in_func(ctx.imports.res_array_push_copy, bcx.func);
+                let call = bcx.ins().call(fref, &[arr, v]);
+                return Ok(bcx.inst_results(call)[0]);
             }
-            // Declare the callee in the current function so
-            // Cranelift knows its signature. Returns a local
-            // FuncRef usable in `call`.
-            let local_callee = module.declare_func_in_func(func_id, bcx.func);
-            let call = bcx.ins().call(local_callee, &arg_values);
-            // i64-returning function — exactly one result.
-            Ok(bcx.inst_results(call)[0])
+
+            if callee_name == "pop" {
+                if arguments.len() != 1 {
+                    return Err(JitError::Unsupported(
+                        "JIT pop: expected exactly 1 argument",
+                    ));
+                }
+                let arr = lower_expr(&arguments[0], bcx, ctx, module)?;
+                let flen = module.declare_func_in_func(ctx.imports.res_array_len, bcx.func);
+                let clen = bcx.ins().call(flen, &[arr]);
+                let len_v = bcx.inst_results(clen)[0];
+                let z = bcx.ins().iconst(types::I64, 0);
+                let empty = bcx.ins().icmp(IntCC::Equal, len_v, z);
+                let ok_bb = bcx.create_block();
+                let bad_bb = bcx.create_block();
+                let merge_bb = bcx.create_block();
+                bcx.append_block_param(merge_bb, types::I64);
+                bcx.ins().brif(empty, bad_bb, &[], ok_bb, &[]);
+                bcx.switch_to_block(bad_bb);
+                bcx.seal_block(bad_bb);
+                bcx.ins().trap(TrapCode::HeapOutOfBounds);
+                bcx.switch_to_block(ok_bb);
+                bcx.seal_block(ok_bb);
+                let fref = module.declare_func_in_func(ctx.imports.res_array_pop_copy, bcx.func);
+                let call = bcx.ins().call(fref, &[arr]);
+                let v = bcx.inst_results(call)[0];
+                bcx.ins().jump(merge_bb, &[v]);
+                bcx.switch_to_block(merge_bb);
+                bcx.seal_block(merge_bb);
+                return Ok(bcx.block_params(merge_bb)[0]);
+            }
+
+            Err(JitError::Unsupported("call to unknown function"))
+        }
+        Node::ArrayLiteral { items, .. } => {
+            let n = items.len();
+            if n > i64::MAX as usize {
+                return Err(JitError::Unsupported("array literal too large for JIT"));
+            }
+            let len_v = bcx.ins().iconst(types::I64, n as i64);
+            let fnew = module.declare_func_in_func(ctx.imports.res_array_new, bcx.func);
+            let arr_c = bcx.ins().call(fnew, &[len_v]);
+            let arr_v = bcx.inst_results(arr_c)[0];
+            let fset = module.declare_func_in_func(ctx.imports.res_array_set_unchecked, bcx.func);
+            for (i, item) in items.iter().enumerate() {
+                let vi = lower_expr(item, bcx, ctx, module)?;
+                let ii = bcx.ins().iconst(types::I64, i as i64);
+                bcx.ins().call(fset, &[arr_v, ii, vi]);
+            }
+            Ok(arr_v)
+        }
+        Node::IndexExpression { target, index, .. } => {
+            lower_index_read(target.as_ref(), index.as_ref(), bcx, ctx, module)
         }
         // RES-099: lower all four signed integer infix ops + RES-100:
         // the six comparison ops. Same recursive shape — recurse on
@@ -3409,7 +3759,7 @@ mod tests {
     fn res165a_unknown_struct_name_lookup_is_none() {
         let p = parse_program(r#"struct P { int x, }"#);
         let layouts = collect_struct_layouts(&p);
-        assert!(layouts.get("Q").is_none());
+        assert!(!layouts.contains_key("Q"));
     }
 
     #[test]
@@ -3547,7 +3897,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds")]
+    #[should_panic]
     fn res166a_array_get_oob_panics() {
         let arr = res_array_new(3);
         // Leaking here is OK — the panic aborts the test, and
@@ -3558,14 +3908,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds")]
+    #[should_panic]
     fn res166a_array_get_negative_idx_panics() {
         let arr = res_array_new(3);
         let _ = res_array_get(arr, -1);
     }
 
     #[test]
-    #[should_panic(expected = "out of bounds")]
+    #[should_panic]
     fn res166a_array_set_oob_panics() {
         let arr = res_array_new(2);
         res_array_set(arr, 2, 42);
@@ -3631,11 +3981,43 @@ mod tests {
         res_array_free(arr);
     }
 
+    #[test]
+    fn res380_jit_len_push_roundtrip() {
+        let p =
+            parse_program("let a = [1, 2]; let n = len(a); let b = push(a, 3); return len(b) + n;");
+        assert_eq!(run(&p).unwrap(), 5);
+    }
+
+    #[test]
+    fn res380_jit_bubble_sort_smoke() {
+        let src = r#"
+let a = [5, 2, 8, 1, 9];
+let n = len(a);
+let i = 0;
+let j = 0;
+while (i < n) {
+  j = 0;
+  while (j + 1 < n) {
+    if (a[j] > a[j + 1]) {
+      let t = a[j];
+      a[j] = a[j + 1];
+      a[j + 1] = t;
+    }
+    j = j + 1;
+  }
+  i = i + 1;
+}
+return a[0] * 10000 + a[1] * 1000 + a[2] * 100 + a[3] * 10 + a[4];
+"#;
+        let p = parse_program(src);
+        assert_eq!(run(&p).unwrap(), 12589);
+    }
+
     // ============================================================
     // RES-167a: JIT builtin shim table + registry
     // ============================================================
 
-    use super::jit_builtins::{res_jit_abs, res_jit_max, res_jit_min};
+    use super::jit_builtins::{res_jit_abs, res_jit_len_array, res_jit_max, res_jit_min};
     use super::{jit_builtin_table, lookup_jit_builtin};
 
     #[test]
@@ -3740,8 +4122,16 @@ mod tests {
         // shim's real parameter count. Without this, RES-167b's
         // lowering could silently emit a wrong signature.
         assert_eq!(lookup_jit_builtin("abs").unwrap().arity, 1);
+        assert_eq!(lookup_jit_builtin("len").unwrap().arity, 1);
         assert_eq!(lookup_jit_builtin("min").unwrap().arity, 2);
         assert_eq!(lookup_jit_builtin("max").unwrap().arity, 2);
+    }
+
+    #[test]
+    fn res167a_len_shim_counts_slots() {
+        let arr = super::runtime_shims::res_array_new(4);
+        assert_eq!(res_jit_len_array(arr as i64), 4);
+        super::runtime_shims::res_array_free(arr);
     }
 
     #[test]
