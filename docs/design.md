@@ -2,7 +2,7 @@
 
 ## Logo
 
-![Resilient Logo](resilient-logo.png)
+![Resilient Logo](/assets/images/logo-transparent.png)
 
 Large letter **R** set in **Korigan ITC Std Light**.
 
@@ -22,5 +22,5 @@ Large letter **R** set in **Korigan ITC Std Light**.
 
 | File | Description |
 |---|---|
-| `docs/resilient-logo.png` | Primary logo — large R |
-| `docs/Resilient-logo.jpg` | Alternate logo asset |
+| `docs/assets/images/logo-transparent.png` | Primary logo — transparent background |
+| `docs/assets/images/logo.jpg` | Alternate logo asset (JPEG) |

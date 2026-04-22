@@ -1,0 +1,6 @@
+# Tell GitHub to detect .rz files as Resilient source code.
+# Until Resilient is registered in github-linguist, GitHub will
+# label the language correctly in the repo stats bar but won't
+# apply syntax highlighting. A linguist PR is the next step.
+*.rz linguist-language=Resilient
+*.rz linguist-detectable=true

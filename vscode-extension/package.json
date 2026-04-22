@@ -1,8 +1,8 @@
 {
   "name": "resilient-vscode",
   "displayName": "Resilient",
-  "description": "Language support for Resilient — syntax highlighting + Language Server integration.",
-  "version": "0.1.2",
+  "description": "Syntax highlighting, LSP diagnostics, and one-click run for Resilient (.rz) — a compiled, contract-driven language for safety-critical embedded systems.",
+  "version": "0.1.3",
   "publisher": "fromamerica",
   "icon": "icon.png",
   "license": "MIT",
@@ -15,6 +15,13 @@
   },
   "categories": [
     "Programming Languages"
+  ],
+  "keywords": [
+    "resilient",
+    "embedded",
+    "safety-critical",
+    "contracts",
+    "no_std"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -31,7 +38,11 @@
         "extensions": [
           ".rz"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
       }
     ],
     "grammars": [
@@ -41,6 +52,30 @@
         "path": "./syntaxes/resilient.tmLanguage.json"
       }
     ],
+    "commands": [
+      {
+        "command": "resilient.runFile",
+        "title": "Run Resilient File",
+        "category": "Resilient",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "resilient.runFile",
+          "when": "resourceLangId == resilient",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "resilient.runFile",
+          "when": "resourceLangId == resilient",
+          "group": "resilient"
+        }
+      ]
+    },
     "configuration": {
       "type": "object",
       "title": "Resilient",
