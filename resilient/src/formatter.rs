@@ -202,6 +202,48 @@ impl Formatter {
                 self.write(&format!("region {};", name));
                 self.newline();
             }
+            // RES-386: re-emit an actor block. Handler bodies are
+            // printed via the shared block formatter so nested
+            // expressions stay indented correctly.
+            Node::Actor {
+                name,
+                state_type,
+                state_init,
+                concurrent_ensures,
+                handlers,
+                ..
+            } => {
+                self.write(&format!("actor {} {{", name));
+                self.newline();
+                self.indent();
+                self.write(&format!("state: {} = ", state_type));
+                self.fmt_expr(state_init);
+                self.write(";");
+                self.newline();
+                for ce in concurrent_ensures {
+                    self.write("concurrent_ensures: ");
+                    self.fmt_expr(ce);
+                    self.write(";");
+                    self.newline();
+                }
+                for h in handlers {
+                    self.write(&format!("receive {}()", h.name));
+                    for e in &h.ensures {
+                        self.newline();
+                        self.indent();
+                        self.write("ensures ");
+                        self.fmt_expr(e);
+                        self.write(";");
+                        self.dedent();
+                    }
+                    self.write(" ");
+                    self.fmt_block_like(&h.body);
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             Node::LetStatement {
                 name,
                 value,
@@ -735,6 +777,7 @@ impl Formatter {
             | Node::ImplBlock { .. }
             | Node::TypeAlias { .. }
             | Node::RegionDecl { .. }
+            | Node::Actor { .. }
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }

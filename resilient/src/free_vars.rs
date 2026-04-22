@@ -207,6 +207,12 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             }
         }
         Node::StructDecl { .. } | Node::TypeAlias { .. } | Node::RegionDecl { .. } => {}
+        // RES-386: actor declarations are verifier-only scaffolding
+        // and introduce no free variables at the program scope —
+        // the minimum slice doesn't lower them to callable fns, so
+        // their handler bodies don't participate in capture
+        // analysis.
+        Node::Actor { .. } => {}
 
         // ---- Statements ----
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {

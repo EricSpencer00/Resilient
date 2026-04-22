@@ -1940,6 +1940,13 @@ impl TypeChecker {
             // and yields the inner type.
             Node::RegionDecl { .. } => Ok(Type::Void),
 
+            // RES-386: actor declarations type-check as Void. The
+            // verifier consumes them directly (see
+            // `verifier_z3::check_actor_commutativity`); handler
+            // bodies are not walked here because the minimum slice
+            // doesn't lower actors to callable fns yet.
+            Node::Actor { .. } => Ok(Type::Void),
+
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check
             // field existence and surface typed-field errors

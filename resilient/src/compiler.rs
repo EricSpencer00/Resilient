@@ -762,6 +762,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::ImplBlock { span, .. }
         | Node::TypeAlias { span, .. }
         | Node::RegionDecl { span, .. }
+        | Node::Actor { span, .. }
         | Node::FunctionLiteral { span, .. } => span.start.line as u32,
 
         // RES-142: duration literal carries the span of its integer

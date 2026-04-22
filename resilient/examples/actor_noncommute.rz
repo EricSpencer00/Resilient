@@ -1,0 +1,18 @@
+// RES-386: an Accumulator actor whose `inc` and `double` handlers do
+// NOT commute (inc-then-double != double-then-inc starting from any
+// integer). The Z3-backed commutativity verifier rejects the pair and
+// prints a counterexample. Driven by the z3-gated smoke test
+// `actor_noncommute_example_reports_counterexample` in
+// tests/examples_smoke.rs; the `.interactive` sidecar keeps it out of
+// the default golden harness for the same reason as actor_commute.rz.
+actor Accumulator {
+    state: int = 0;
+
+    receive inc() {
+        self.state = self.state + 1;
+    }
+
+    receive double() {
+        self.state = self.state * 2;
+    }
+}
