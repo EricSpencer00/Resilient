@@ -1861,6 +1861,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
+            // RES-391: `region <Name>;` is compile-time metadata
+            // consumed by the borrow checker — the typechecker just
+            // accepts it as Void. Region-scoped reference types
+            // (`&[A] T`, `&mut[A] T`) surface in parameter positions,
+            // where `parse_type_name` strips the reference prefix
+            // and yields the inner type.
+            Node::RegionDecl { .. } => Ok(Type::Void),
+
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check
             // field existence and surface typed-field errors
@@ -2333,6 +2341,25 @@ impl TypeChecker {
     /// as a diagnostic instead of looping forever or stack-
     /// overflowing.
     fn parse_type_name_inner(&self, name: &str, seen: &mut Vec<String>) -> Result<Type, String> {
+        // RES-391: strip the reference prefix — `& T`, `&mut T`,
+        // `&[A] T`, `&mut[A] T` — before resolving the inner type.
+        // The borrow checker (`main::check_region_aliasing`) has
+        // already consumed the region / mutability info; downstream
+        // type resolution cares only about the pointee.
+        if let Some(rest) = name.strip_prefix('&') {
+            let rest = rest.strip_prefix("mut").unwrap_or(rest);
+            let rest = rest.trim_start();
+            let rest = if let Some(after) = rest.strip_prefix('[') {
+                // Skip to the first `]`.
+                match after.find(']') {
+                    Some(end) => after[end + 1..].trim_start(),
+                    None => rest, // malformed, fall through
+                }
+            } else {
+                rest
+            };
+            return self.parse_type_name_inner(rest, seen);
+        }
         match name {
             "int" => Ok(Type::Int),
             "float" => Ok(Type::Float),

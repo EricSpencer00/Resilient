@@ -196,6 +196,12 @@ enum Tok {
     // RES-385: `linear` prefix on a type annotation.
     #[token("linear")]
     Linear,
+    // RES-391: `region <Name>;` declaration keyword and the `mut`
+    // qualifier used inside reference types (`&mut[A] T`).
+    #[token("region")]
+    Region,
+    #[token("mut")]
+    Mut,
     #[token("true")]
     True,
     #[token("false")]
@@ -520,6 +526,8 @@ fn convert(t: Tok) -> Token {
         Tok::Impl => Token::Impl,
         Tok::Type => Token::Type,
         Tok::Linear => Token::Linear,
+        Tok::Region => Token::Region,
+        Tok::Mut => Token::Mut,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,

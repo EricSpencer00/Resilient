@@ -195,6 +195,13 @@ impl Formatter {
                 self.write(&format!("type {} = {};", name, target));
                 self.newline();
             }
+            Node::RegionDecl { name, .. } => {
+                // RES-391: reserved `region` keyword introduces a
+                // compile-time region label — emitted as a single
+                // terminated statement, matching `type` aliases.
+                self.write(&format!("region {};", name));
+                self.newline();
+            }
             Node::LetStatement {
                 name,
                 value,
@@ -727,6 +734,7 @@ impl Formatter {
             | Node::StructDecl { .. }
             | Node::ImplBlock { .. }
             | Node::TypeAlias { .. }
+            | Node::RegionDecl { .. }
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
