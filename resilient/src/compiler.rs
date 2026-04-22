@@ -288,6 +288,10 @@ fn compile_stmt(
             // them — the caller filters them out before calling us.
             Err(CompileError::Unsupported("nested function/extern decl"))
         }
+        // RES-390: actor / cluster decls are compile-time-only
+        // verifier constructs. The bytecode backend emits nothing
+        // for them — the interpreter also treats them as no-ops.
+        Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -763,6 +767,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::TypeAlias { span, .. }
         | Node::RegionDecl { span, .. }
         | Node::Actor { span, .. }
+        | Node::ActorDecl { span, .. }
+        | Node::ClusterDecl { span, .. }
         | Node::FunctionLiteral { span, .. } => span.start.line as u32,
 
         // RES-142: duration literal carries the span of its integer

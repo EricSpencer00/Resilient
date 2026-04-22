@@ -1,0 +1,2 @@
+cluster_single_leader_ok
+Program executed successfully

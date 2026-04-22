@@ -244,6 +244,57 @@ impl Formatter {
                 self.write("}");
                 self.newline();
             }
+            // RES-390: re-emit an ActorDecl block.
+            Node::ActorDecl {
+                name,
+                state,
+                handlers,
+                ..
+            } => {
+                self.write(&format!("actor {} {{", name));
+                self.newline();
+                self.indent();
+                for (fname, init) in state {
+                    self.write(&format!("int {} = ", fname));
+                    self.fmt_expr(init);
+                    self.write(";");
+                    self.newline();
+                }
+                for (i, h) in handlers.iter().enumerate() {
+                    if !state.is_empty() || i > 0 {
+                        self.blank_line();
+                    }
+                    self.write(&format!("receive {}() ", h.name));
+                    self.fmt_stmt(&h.body);
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            // RES-390: re-emit a ClusterDecl block.
+            Node::ClusterDecl {
+                name,
+                members,
+                invariants,
+                ..
+            } => {
+                self.write(&format!("cluster {} {{", name));
+                self.newline();
+                self.indent();
+                for (local, actor_ty) in members {
+                    self.write(&format!("{}: {};", local, actor_ty));
+                    self.newline();
+                }
+                for inv in invariants {
+                    self.write("cluster_invariant: ");
+                    self.fmt_expr(inv);
+                    self.write(";");
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             Node::LetStatement {
                 name,
                 value,
@@ -778,6 +829,8 @@ impl Formatter {
             | Node::TypeAlias { .. }
             | Node::RegionDecl { .. }
             | Node::Actor { .. }
+            | Node::ActorDecl { .. }
+            | Node::ClusterDecl { .. }
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }

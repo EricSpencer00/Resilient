@@ -208,11 +208,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         }
         Node::StructDecl { .. } | Node::TypeAlias { .. } | Node::RegionDecl { .. } => {}
         // RES-386: actor declarations are verifier-only scaffolding
-        // and introduce no free variables at the program scope —
-        // the minimum slice doesn't lower them to callable fns, so
-        // their handler bodies don't participate in capture
-        // analysis.
+        // and introduce no free variables at the program scope.
         Node::Actor { .. } => {}
+        // RES-390: actor / cluster decls introduce no runtime
+        // bindings in this MVP.
+        Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {}
 
         // ---- Statements ----
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
@@ -409,6 +409,12 @@ fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
             // name (consumed by the borrow checker). No runtime
             // binding, but treat it like other declarations for the
             // scoping walk so sibling statements see the name.
+            bound.insert(name.clone());
+        }
+        Node::ActorDecl { name, .. } => {
+            bound.insert(name.clone());
+        }
+        Node::ClusterDecl { name, .. } => {
             bound.insert(name.clone());
         }
         Node::LetStatement { name, .. } | Node::StaticLet { name, .. } => {
