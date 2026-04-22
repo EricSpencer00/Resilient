@@ -3187,8 +3187,9 @@ mod pinned_int_tests {
 
     #[test]
     fn same_width_arithmetic_is_allowed() {
-        // Int16 + Int16 should typecheck cleanly.
-        check("fn f(Int16 a, Int16 b) -> Int16 { return Int16(a + b); }\n")
+        // Int16 + Int16 should typecheck cleanly and the addition itself
+        // must return Int16 (tested via the declared return type).
+        check("fn f(Int16 a, Int16 b) -> Int16 { return a + b; }\n")
             .expect("same-width arithmetic OK");
     }
 
