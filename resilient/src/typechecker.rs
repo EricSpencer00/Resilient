@@ -1934,18 +1934,16 @@ impl TypeChecker {
 
             // RES-391: `region <Name>;` is compile-time metadata
             // consumed by the borrow checker — the typechecker just
-            // accepts it as Void. Region-scoped reference types
-            // (`&[A] T`, `&mut[A] T`) surface in parameter positions,
-            // where `parse_type_name` strips the reference prefix
-            // and yields the inner type.
+            // accepts it as Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
 
-            // RES-386: actor declarations type-check as Void. The
-            // verifier consumes them directly (see
-            // `verifier_z3::check_actor_commutativity`); handler
-            // bodies are not walked here because the minimum slice
-            // doesn't lower actors to callable fns yet.
+            // RES-386: actor declarations type-check as Void.
             Node::Actor { .. } => Ok(Type::Void),
+
+            // RES-390: actor / cluster decls are compile-time-only
+            // in this MVP. The cluster verifier runs a separate
+            // Z3-backed pass after typechecking succeeds.
+            Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Type::Void),
 
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check

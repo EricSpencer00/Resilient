@@ -22,6 +22,13 @@ mod span;
 mod typechecker;
 #[cfg(feature = "z3")]
 mod verifier_z3;
+// RES-390: distributed-invariant verifier — a joint Z3 state
+// model over every actor in a cluster, proving `cluster_invariant`
+// clauses inductive across every `receive` handler. Feature-gated
+// on `z3` so the hand-rolled verifier path stays clean when z3 is
+// off; no cluster diagnostics surface in that build mode.
+#[cfg(feature = "z3")]
+mod cluster_verifier;
 mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
@@ -1584,19 +1591,57 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-390 (depends on RES-332): actor scaffolding for the
+    /// cluster-invariant verifier. This is the minimum viable slice
+    /// of RES-332 that the distributed-invariant verifier needs —
+    /// enough state-variable + receive-handler structure to build
+    /// a Z3 joint-state model. The runtime / interpreter / VM
+    /// treats this as a declaration-only construct (like
+    /// `StructDecl`): there is no dynamic dispatch yet. Full actor
+    /// execution semantics land with RES-332.
+    ActorDecl {
+        name: String,
+        /// Integer state variables, in source order. Each entry is
+        /// `(field_name, initial_value_expr)`. Only `Int`-typed
+        /// fields are supported in this slice — the verifier
+        /// models joint state as Z3 `Int` consts. Fields of other
+        /// types parse but are rejected at verify time.
+        state: Vec<(String, Node)>,
+        /// Each receive handler is `(handler_name, body)` where
+        /// body is a `Node::Block` of simple assignments of the
+        /// form `self.field = expr;`. Handlers take no parameters
+        /// in this slice — parameterised messages are a follow-up.
+        handlers: Vec<ActorHandler>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-390: group of actors with a joint invariant the Z3
+    /// verifier must prove inductive across every member handler.
+    /// Members are `(local_name, actor_type_name)` pairs — the
+    /// `local_name` is used in the invariant expression (e.g.
+    /// `primary.is_leader`) and `actor_type_name` references a
+    /// top-level `ActorDecl`. Invariants are a list of boolean
+    /// expressions over any `member.field` reference; each is
+    /// verified independently.
+    ClusterDecl {
+        name: String,
+        members: Vec<(String, String)>,
+        invariants: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
-/// RES-386: one `receive <name>()` handler inside an `actor` block.
-/// The minimum slice expects the body to be a block that assigns a
-/// single integer expression to `self.state`; any other shape is
-/// accepted at parse time but rejected (with a clean diagnostic) by
-/// the verifier.
+/// RES-386/RES-390: one `receive <name>()` handler inside an `actor`
+/// or `actor_decl` block. The minimum slice expects the body to be a
+/// block that assigns integer expressions to state fields; any other
+/// shape is accepted at parse time but rejected at verify time.
 #[derive(Debug, Clone)]
 pub(crate) struct ActorHandler {
     pub(crate) name: String,
-    /// Per-handler post-conditions. Treated the same way as fn
-    /// `ensures` — the verifier bolts them onto the handler's
-    /// symbolic state transition.
+    /// Per-handler post-conditions (RES-386). Treated the same way as
+    /// fn `ensures` — the verifier bolts them onto the handler's
+    /// symbolic state transition. Empty for RES-390 `ActorDecl` handlers.
     #[allow(dead_code)]
     pub(crate) ensures: Vec<Node>,
     pub(crate) body: Box<Node>,
@@ -1764,6 +1809,23 @@ impl Parser {
                 };
                 self.record_error(msg);
                 None
+            }
+            // RES-390: contextual keywords `actor` / `cluster`. Both
+            // are recognised only at the top of a statement when
+            // followed by an identifier, so user code that binds
+            // `let actor = 1;` or calls a local `cluster(...)` still
+            // parses. Tokens are plain `Identifier`s — no new
+            // reserved words on the lexer surface until RES-332
+            // lands full actor execution semantics.
+            Token::Identifier(ref n)
+                if n == "actor" && matches!(self.peek_token, Token::Identifier(_)) =>
+            {
+                Some(self.parse_actor_decl())
+            }
+            Token::Identifier(ref n)
+                if n == "cluster" && matches!(self.peek_token, Token::Identifier(_)) =>
+            {
+                Some(self.parse_cluster_decl())
             }
             // Assignment: `IDENT = EXPR;` — disambiguated from an
             // expression statement by looking ahead for `=`.
@@ -4661,6 +4723,237 @@ impl Parser {
             concurrent_ensures,
             handlers,
             span: actor_span,
+        }
+    }
+
+    /// RES-390: parse `actor Name { int field = N; receive handler() { body } ... }`.
+    /// On entry `current_token` is `Identifier("actor")`; on exit
+    /// `current_token` is the closing `}`.
+    fn parse_actor_decl(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `actor`
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after `actor`, found {}", tok));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected `{{` after actor name, found {}", tok));
+            return Node::ActorDecl {
+                name,
+                state: Vec::new(),
+                handlers: Vec::new(),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `{`
+
+        let mut state: Vec<(String, Node)> = Vec::new();
+        let mut handlers: Vec<ActorHandler> = Vec::new();
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            // `receive NAME() { BODY }`
+            if matches!(&self.current_token, Token::Identifier(n) if n == "receive") {
+                let handler_span = self.span_at_current();
+                self.next_token(); // skip `receive`
+                let hname = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected handler name after `receive`, found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                };
+                self.next_token(); // skip handler name
+                if self.current_token != Token::LeftParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `(` after handler name `{}`, found {}",
+                        hname, tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `(`
+                if self.current_token != Token::RightParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `)` — parameterised receive handlers are not yet supported (RES-390 MVP), found {}",
+                        tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `)`
+                if self.current_token != Token::LeftBrace {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `{{` after handler signature, found {}",
+                        tok
+                    ));
+                    break;
+                }
+                let body = self.parse_block_statement();
+                handlers.push(ActorHandler {
+                    name: hname,
+                    ensures: Vec::new(),
+                    body: Box::new(body),
+                    span: handler_span,
+                });
+                self.next_token(); // skip `}` of handler body
+                continue;
+            }
+
+            // Otherwise: `TYPE name = INIT;` state variable.
+            let _ty = match self.parse_type_annotation("for actor state field") {
+                Some(t) => t,
+                None => break,
+            };
+            let fname = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!("Expected actor-state field name, found {}", tok));
+                    break;
+                }
+            };
+            self.next_token(); // skip name
+            if self.current_token != Token::Assign {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected `=` after actor-state field `{}` (state fields must be initialised), found {}",
+                    fname, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip `=`
+            let init = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+            self.next_token(); // move past tail of init expression
+            if self.current_token != Token::Semicolon {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected `;` after actor-state field initialiser, found {}",
+                    tok
+                ));
+                break;
+            }
+            self.next_token(); // skip `;`
+            state.push((fname, init));
+        }
+        Node::ActorDecl {
+            name,
+            state,
+            handlers,
+            span: stmt_span,
+        }
+    }
+
+    /// RES-390: parse `cluster Name { member: ActorType; ... cluster_invariant: EXPR; ... }`.
+    fn parse_cluster_decl(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `cluster`
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected identifier after `cluster`, found {}",
+                    tok
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected `{{` after cluster name, found {}", tok));
+            return Node::ClusterDecl {
+                name,
+                members: Vec::new(),
+                invariants: Vec::new(),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `{`
+
+        let mut members: Vec<(String, String)> = Vec::new();
+        let mut invariants: Vec<Node> = Vec::new();
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            let ident = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected cluster member or `cluster_invariant`, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // skip identifier
+            if self.current_token != Token::Colon {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected `:` after `{}` in cluster body, found {}",
+                    ident, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip `:`
+            if ident == "cluster_invariant" {
+                let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                });
+                self.next_token(); // move past tail of invariant
+                if self.current_token != Token::Semicolon {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `;` after `cluster_invariant`, found {}",
+                        tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `;`
+                invariants.push(expr);
+            } else {
+                let actor_ty = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected actor type after `{}:`, found {}",
+                            ident, tok
+                        ));
+                        break;
+                    }
+                };
+                self.next_token(); // skip actor type
+                if self.current_token != Token::Semicolon {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `;` after cluster member `{}: {}`, found {}",
+                        ident, actor_ty, tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `;`
+                members.push((ident, actor_ty));
+            }
+        }
+        Node::ClusterDecl {
+            name,
+            members,
+            invariants,
+            span: stmt_span,
         }
     }
 
@@ -8098,6 +8391,12 @@ impl Interpreter {
             // RES-391: `region <Name>;` is pure compile-time metadata
             // consumed by the borrow checker — runtime no-op.
             Node::RegionDecl { .. } => Ok(Value::Void),
+            // RES-390: actor and cluster declarations are
+            // compile-time-only in the MVP. Full actor execution
+            // semantics land with RES-332; for now the interpreter
+            // treats them as no-ops so programs that declare them
+            // run without error.
+            Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Value::Void),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -11110,6 +11409,38 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
         .with_warn_unverified(!quiet);
     match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
         Ok(_) => {
+            // RES-390: distributed-invariant verification runs
+            // AFTER successful typechecking — we only try to
+            // prove clusters that parse cleanly and whose
+            // members resolve. Any diagnostics raise the
+            // subcommand's exit code to 1 so CI catches
+            // broken clusters the same way it catches a
+            // failed `ensures`.
+            #[cfg(feature = "z3")]
+            {
+                let diags = cluster_verifier::verify_program(&program, verifier_timeout_ms);
+                if !diags.is_empty() {
+                    if !quiet {
+                        for d in &diags {
+                            let header = format!(
+                                "{}:{}:{}: cluster-invariant error: [{}/{}.{}] {}",
+                                path.display(),
+                                d.span.start.line,
+                                d.span.start.column,
+                                d.cluster,
+                                d.actor,
+                                d.handler,
+                                d.message,
+                            );
+                            eprintln!(
+                                "{}",
+                                render_with_caret(&src, &header, "cluster-invariant error")
+                            );
+                        }
+                    }
+                    return Some(1);
+                }
+            }
             if !quiet {
                 println!("{}: ok", path.display());
             }
