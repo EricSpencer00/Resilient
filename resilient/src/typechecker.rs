@@ -461,6 +461,16 @@ pub struct VerificationStats {
     /// callee). `false` = pure. Populated by
     /// `infer_fn_effects` during `check_program_with_source`.
     pub fn_effects: std::collections::HashMap<String, bool>,
+    /// RES-351: array-access sites whose bounds were proven by constant
+    /// folding (index literal + known array-literal size).
+    pub bounds_proven_by_fold: usize,
+    /// RES-351: array-access sites whose bounds were proven by Z3
+    /// using the function's `requires` clauses as axioms.
+    pub bounds_proven_by_z3: usize,
+    /// RES-351: array-access sites that could not be proven in-bounds
+    /// (runtime check retained, or compile error with
+    /// `--deny-unproven-bounds`).
+    pub bounds_unproven: usize,
 }
 
 impl VerificationStats {
@@ -517,6 +527,95 @@ fn z3_prove_with_cert(
     _timeout_ms: u32,
 ) -> (Option<bool>, Option<String>, Option<String>, bool) {
     (None, None, None, false)
+}
+
+/// RES-351: like `z3_prove_with_cert`, but accepts caller-supplied
+/// axioms (e.g. the current function's `requires` clauses). Used for
+/// array-bounds proofs: axioms supply the index constraints that make
+/// the `0 <= i && i < len(arr)` goal provable.
+#[cfg(feature = "z3")]
+fn z3_prove_with_axioms_and_cert(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    let (verdict, cert, cx, timed_out) =
+        crate::verifier_z3::prove_with_axioms_and_timeout(expr, bindings, axioms, timeout_ms);
+    (verdict, cert.map(|c| c.smt2), cx, timed_out)
+}
+#[cfg(not(feature = "z3"))]
+fn z3_prove_with_axioms_and_cert(
+    _expr: &Node,
+    _bindings: &HashMap<String, i64>,
+    _axioms: &[Node],
+    _timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    (None, None, None, false)
+}
+
+/// RES-351: build the AST node `index >= 0 && index < len(arr_name)`.
+/// This is the standard in-bounds predicate handed to Z3 or the
+/// constant folder. Uses synthetic default spans — the goal is
+/// internal and never surfaces to the user as source text.
+fn make_bounds_goal(index: &Node, arr_name: &str) -> Node {
+    let span = Span::default();
+    let lower = Node::InfixExpression {
+        left: Box::new(index.clone()),
+        operator: ">=".to_string(),
+        right: Box::new(Node::IntegerLiteral { value: 0, span }),
+        span,
+    };
+    let len_call = Node::CallExpression {
+        function: Box::new(Node::Identifier {
+            name: "len".to_string(),
+            span,
+        }),
+        arguments: vec![Node::Identifier {
+            name: arr_name.to_string(),
+            span,
+        }],
+        span,
+    };
+    let upper = Node::InfixExpression {
+        left: Box::new(index.clone()),
+        operator: "<".to_string(),
+        right: Box::new(len_call),
+        span,
+    };
+    Node::InfixExpression {
+        left: Box::new(lower),
+        operator: "&&".to_string(),
+        right: Box::new(upper),
+        span,
+    }
+}
+
+/// RES-351: build the axiom `len(arr_name) == size`. Injected when
+/// the array is a literal of known length so Z3 can use the
+/// concrete size without needing it in `bindings`.
+fn make_array_size_axiom(arr_name: &str, size: usize) -> Node {
+    let span = Span::default();
+    let len_call = Node::CallExpression {
+        function: Box::new(Node::Identifier {
+            name: "len".to_string(),
+            span,
+        }),
+        arguments: vec![Node::Identifier {
+            name: arr_name.to_string(),
+            span,
+        }],
+        span,
+    };
+    Node::InfixExpression {
+        left: Box::new(len_call),
+        operator: "==".to_string(),
+        right: Box::new(Node::IntegerLiteral {
+            value: size as i64,
+            span,
+        }),
+        span,
+    }
 }
 
 /// RES-217: best-effort span for a contract clause. Mirrors
@@ -637,6 +736,20 @@ pub struct TypeChecker {
     /// let — that's an acceptable partial behaviour (errors take
     /// precedence over hints for broken files).
     pub let_type_hints: Vec<LetTypeHint>,
+    /// RES-351: the `requires` clauses of the function currently
+    /// being type-checked. These are passed as Z3 axioms when
+    /// checking array-access bounds inside the function body.
+    /// Saved/restored on Function entry/exit so nested functions
+    /// (if the language ever supports them) stay correct.
+    current_fn_requires: Vec<Node>,
+    /// RES-351: when `true`, an array access whose bounds cannot
+    /// be proven in-bounds is a compile error rather than a
+    /// retained runtime check. Set by `--deny-unproven-bounds`.
+    deny_unproven_bounds: bool,
+    /// RES-351: sizes of array literals bound by `let` in the
+    /// current scope. `let arr = [a, b, c]` records `"arr" → 3`
+    /// so the bounds checker can inject a `len(arr) == 3` axiom.
+    known_array_sizes: HashMap<String, usize>,
 }
 
 impl TypeChecker {
@@ -1058,6 +1171,12 @@ impl TypeChecker {
             source_path: String::new(),
             // RES-189: populated during LetStatement handling.
             let_type_hints: Vec::new(),
+            // RES-351: no requires context until we enter a function.
+            current_fn_requires: Vec::new(),
+            // RES-351: `--deny-unproven-bounds` off by default.
+            deny_unproven_bounds: false,
+            // RES-351: empty until LetStatement populates it.
+            known_array_sizes: HashMap::new(),
         }
     }
 
@@ -1079,6 +1198,15 @@ impl TypeChecker {
     /// for CI runs that want a quieter stderr.
     pub fn with_warn_unverified(mut self, on: bool) -> Self {
         self.warn_unverified = on;
+        self
+    }
+
+    /// RES-351: make any unproven array-bounds access a compile error
+    /// instead of retaining a runtime check. Activated by
+    /// `--deny-unproven-bounds`. Defaults to `false` (safe runtime
+    /// check retained on unprovable accesses).
+    pub fn with_deny_unproven_bounds(mut self, on: bool) -> Self {
+        self.deny_unproven_bounds = on;
         self
     }
 
@@ -1395,8 +1523,22 @@ impl TypeChecker {
                     }
                 }
 
+                // RES-351: stash this function's requires clauses so
+                // the bounds checker can use them as Z3 axioms while
+                // walking the function body. Also reset known array
+                // sizes to avoid leaking outer-scope literals into the
+                // function's own scope.
+                let prev_fn_requires =
+                    std::mem::replace(&mut self.current_fn_requires, requires.clone());
+                let prev_array_sizes =
+                    std::mem::replace(&mut self.known_array_sizes, HashMap::new());
+
                 // Check function body
                 let body_type = self.check_node(body)?;
+
+                // Restore requires context and array-size map.
+                self.current_fn_requires = prev_fn_requires;
+                self.known_array_sizes = prev_array_sizes;
 
                 // Restore const_bindings to its pre-body state.
                 for (aname, prev) in pushed_assumptions.into_iter().rev() {
@@ -1561,6 +1703,15 @@ impl TypeChecker {
                     self.const_bindings.insert(name.clone(), v);
                 } else {
                     self.const_bindings.remove(name);
+                }
+                // RES-351: track array literal sizes so the bounds
+                // checker can inject a `len(name) == N` axiom. Any
+                // non-literal assignment clears the size (we don't
+                // track aliasing or runtime sizes).
+                if let Node::ArrayLiteral { items, .. } = value.as_ref() {
+                    self.known_array_sizes.insert(name.clone(), items.len());
+                } else {
+                    self.known_array_sizes.remove(name);
                 }
                 Ok(Type::Void)
             }
@@ -1912,9 +2063,14 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::IndexExpression { target, index, .. } => {
+            Node::IndexExpression { target, index, span } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
+                // RES-351: attempt a static bounds proof.
+                if let Node::Identifier { name: arr_name, .. } = target.as_ref() {
+                    let arr_name = arr_name.clone();
+                    self.check_array_bounds(index, &arr_name, *span)?;
+                }
                 // Element type not tracked at MVP.
                 Ok(Type::Any)
             }
@@ -1923,11 +2079,16 @@ impl TypeChecker {
                 target,
                 index,
                 value,
-                ..
+                span,
             } => {
                 let _ = self.check_node(target)?;
                 let _ = self.check_node(index)?;
                 let _ = self.check_node(value)?;
+                // RES-351: attempt a static bounds proof for the write.
+                if let Node::Identifier { name: arr_name, .. } = target.as_ref() {
+                    let arr_name = arr_name.clone();
+                    self.check_array_bounds(index, &arr_name, *span)?;
+                }
                 Ok(Type::Void)
             }
 
