@@ -1,0 +1,33 @@
+// RES-389: `pure fn` / `io fn` effect annotations.
+//
+// This program type-checks because:
+//   - `square` and `add` are both declared `pure` and their
+//     bodies only call other pure fns / pure builtins (math).
+//   - `describe` is declared `io` and is free to call `println`
+//     (an impure builtin) and the two pure fns above.
+//
+// The effect checker enforces that a `pure` caller never reaches
+// an `io` callee. The `io` default is permissive — unannotated
+// fns (like `main` here) may call anything.
+
+pure fn square(int x) {
+    return x * x;
+}
+
+pure fn add(int a, int b) {
+    return a + b;
+}
+
+io fn describe(int n) {
+    let s = square(n);
+    let t = add(s, 1);
+    println(t);
+}
+
+fn main(int _dummy) {
+    describe(4);
+    describe(5);
+    return 0;
+}
+
+main(0);
