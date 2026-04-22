@@ -53,6 +53,13 @@ use crate::span::Span;
 #[cfg(feature = "z3")]
 use crate::{ActorHandler, Node};
 
+// Helper: extract (field_name, init_expr) pairs from state_fields.
+// The cluster verifier only needs field names + initializers (not type names).
+#[cfg(feature = "z3")]
+fn extract_state(state_fields: &[(String, String, Node)]) -> Vec<(String, Node)> {
+    state_fields.iter().map(|(_, n, v)| (n.clone(), v.clone())).collect()
+}
+
 /// RES-390: per-actor spec — (state fields, handlers) — used by the
 /// cluster verifier to resolve `member: ActorType` into its handler
 /// list. Extracted into a type alias so clippy stops yelling about
@@ -94,12 +101,12 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
     for spanned in stmts {
         if let Node::ActorDecl {
             name,
-            state,
+            state_fields,
             handlers,
             ..
         } = &spanned.node
         {
-            actors.insert(name.clone(), (state.clone(), handlers.clone()));
+            actors.insert(name.clone(), (extract_state(state_fields), handlers.clone()));
         }
     }
 

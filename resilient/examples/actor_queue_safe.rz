@@ -1,0 +1,36 @@
+// RES-388: actor-level safety invariant via `always`.
+//
+// The queue depth never exceeds 100, guaranteed by Z3:
+//   * Base case: the initializer `0` satisfies `state <= 100`.
+//   * Inductive step on `enqueue`: the `requires state < 100`
+//     bound lets Z3 conclude `state + 1 <= 100` after the
+//     assignment.
+//   * Inductive step on `dequeue`: `state - 1 <= 100` holds
+//     whenever `state <= 100` did, regardless of the precondition.
+//
+// Run `resilient --typecheck examples/actor_queue_safe.rz` with
+// `--features z3` to see the verifier discharge the obligations.
+// The default interpreter path simply runs `main()`.
+
+actor RequestQueue {
+    state: int = 0;
+
+    always: state <= 100;
+
+    receive enqueue(int item)
+        requires state < 100
+    {
+        self.state = self.state + 1;
+    }
+
+    receive dequeue()
+        requires state > 0
+    {
+        self.state = self.state - 1;
+    }
+}
+
+fn main() {
+    println("actor_queue_safe: invariant state <= 100 verified");
+}
+main();

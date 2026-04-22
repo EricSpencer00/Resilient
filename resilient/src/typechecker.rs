@@ -1180,6 +1180,61 @@ impl TypeChecker {
                     })?;
                 }
 
+                // RES-388: verify every `actor`'s `always` safety
+                // invariants. The walk happens *after* per-statement
+                // type-checking so we only reason about well-typed
+                // bodies. Any obligation that Z3 refutes becomes a
+                // hard error with a file:line:col diagnostic naming
+                // the actor, handler, and invariant; Unknown /
+                // Unsupported verdicts emit a stderr warning but do
+                // not fail the check (matching how partial proofs
+                // of `requires` / `ensures` are handled — RES-217).
+                let obligations = collect_actor_obligations(statements, self.verifier_timeout_ms);
+                let mut refuted: Vec<String> = Vec::new();
+                for o in obligations {
+                    match o.result {
+                        crate::verifier_actors::ActorProofResult::Proved => {}
+                        crate::verifier_actors::ActorProofResult::Refuted { counterexample } => {
+                            let mut msg = format!(
+                                "{}:{}:{}: actor `{}` violates `always: {}` in handler `{}`",
+                                if source_path.is_empty() {
+                                    "<unknown>"
+                                } else {
+                                    source_path
+                                },
+                                o.invariant_span.start.line,
+                                o.invariant_span.start.column,
+                                o.actor_name,
+                                o.invariant_label,
+                                o.handler_name,
+                            );
+                            if let Some(cx) = counterexample {
+                                msg.push_str(&format!(" (counterexample: {})", cx));
+                            }
+                            refuted.push(msg);
+                        }
+                        crate::verifier_actors::ActorProofResult::Unknown => {
+                            if self.warn_unverified {
+                                eprintln!(
+                                    "warning[partial-proof]: actor `{}` `always: {}` could not be proven on handler `{}` — Z3 returned Unknown",
+                                    o.actor_name, o.invariant_label, o.handler_name,
+                                );
+                            }
+                        }
+                        crate::verifier_actors::ActorProofResult::Unsupported { reason } => {
+                            if self.warn_unverified {
+                                eprintln!(
+                                    "warning[partial-proof]: actor `{}` `always: {}` not verified on handler `{}` — {}",
+                                    o.actor_name, o.invariant_label, o.handler_name, reason,
+                                );
+                            }
+                        }
+                    }
+                }
+                if !refuted.is_empty() {
+                    return Err(refuted.join("\n"));
+                }
+
                 // RES-191: after regular type-checking, enforce the
                 // `@pure` annotation. Collect the set of fn names
                 // that are declared `@pure`, then re-walk each of
@@ -1932,18 +1987,68 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            // RES-391: `region <Name>;` is compile-time metadata
-            // consumed by the borrow checker — the typechecker just
-            // accepts it as Void.
+            // RES-391: `region <Name>;` is compile-time metadata — Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
 
-            // RES-386: actor declarations type-check as Void.
+            // RES-386: commutativity actor type-checks as Void.
             Node::Actor { .. } => Ok(Type::Void),
 
-            // RES-390: actor / cluster decls are compile-time-only
-            // in this MVP. The cluster verifier runs a separate
-            // Z3-backed pass after typechecking succeeds.
-            Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Type::Void),
+            // RES-390: ClusterDecl is compile-time-only.
+            Node::ClusterDecl { .. } => Ok(Type::Void),
+
+            // RES-388/RES-390: ActorDecl type-checks state fields,
+            // always invariants, and receive handler bodies.
+            Node::ActorDecl {
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                ..
+            } => {
+                let saved_env = self.env.clone();
+                let mut resolved_fields: Vec<(String, Type)> = Vec::new();
+                for (ty, field, init) in state_fields {
+                    let resolved = self.parse_type_name(ty)?;
+                    let init_ty = self.check_node(init)?;
+                    if init_ty != resolved && init_ty != Type::Any && resolved != Type::Any {
+                        return Err(format!(
+                            "actor `{}` state field `{}` initializer has type {}, expected {}",
+                            name, field, init_ty, resolved
+                        ));
+                    }
+                    self.env.set(field.clone(), resolved.clone());
+                    resolved_fields.push((field.clone(), resolved));
+                }
+                self.struct_fields
+                    .insert(name.clone(), resolved_fields.clone());
+                for clause in always_clauses {
+                    let ty = self.check_node(clause)?;
+                    if ty != Type::Bool && ty != Type::Any {
+                        return Err(format!(
+                            "actor `{}` `always` invariant must be Bool, got {}",
+                            name, ty
+                        ));
+                    }
+                }
+                for handler in receive_handlers {
+                    let handler_saved = self.env.clone();
+                    self.env.set("self".to_string(), Type::Struct(name.clone()));
+                    for (pty, pname) in &handler.parameters {
+                        let resolved = self.parse_type_name(pty)?;
+                        self.env.set(pname.clone(), resolved);
+                    }
+                    for r in &handler.requires {
+                        let _ = self.check_node(r)?;
+                    }
+                    for e in &handler.ensures {
+                        let _ = self.check_node(e)?;
+                    }
+                    let _ = self.check_node(&handler.body)?;
+                    self.env = handler_saved;
+                }
+                self.env = saved_env;
+                Ok(Type::Void)
+            }
 
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check
@@ -2545,6 +2650,36 @@ const IMPURE_BUILTINS: &[&str] = &[
 /// program's statement list once to collect `@pure` fn names
 /// (their declarations include the `pure: bool` flag per the
 /// ticket), then re-walks each declared-pure fn's body and
+/// RES-388: iterate top-level statements and verify every
+/// `ActorDecl`'s `always` safety invariants. Returns the flattened
+/// list of per-obligation verdicts; the caller inspects each for a
+/// `Refuted` verdict to decide whether the check fails.
+fn collect_actor_obligations(
+    statements: &[crate::span::Spanned<Node>],
+    verifier_timeout_ms: u32,
+) -> Vec<crate::verifier_actors::ActorObligation> {
+    let mut out = Vec::new();
+    for stmt in statements {
+        if let Node::ActorDecl {
+            name,
+            state_fields,
+            always_clauses,
+            receive_handlers,
+            ..
+        } = &stmt.node
+        {
+            out.extend(crate::verifier_actors::verify_actor(
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                verifier_timeout_ms,
+            ));
+        }
+    }
+    out
+}
+
 /// reports the first violation.
 ///
 /// Errors use the `<path>:<line>:<col>: <msg>` prefix convention

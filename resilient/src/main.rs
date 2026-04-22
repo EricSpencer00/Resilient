@@ -29,6 +29,12 @@ mod verifier_z3;
 // off; no cluster diagnostics surface in that build mode.
 #[cfg(feature = "z3")]
 mod cluster_verifier;
+// RES-388: actor-level temporal assertions (`always` safety invariants).
+// Generates inductive proof obligations per `receive` handler and
+// hands them to the Z3 verifier. Compiled unconditionally so the
+// parser / typechecker can consume its types; the Z3 path is a no-op
+// when the `z3` feature is off.
+mod verifier_actors;
 mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
@@ -160,6 +166,8 @@ enum Token {
     /// contract attached to an actor declaration. Proved by the
     /// Z3 verifier's commutativity check.
     ConcurrentEnsures,
+    /// RES-388: actor-level `always: <expr>;` safety invariant.
+    Always,
 
     // Literals
     Identifier(String),
@@ -281,6 +289,7 @@ impl Token {
             Token::Actor => "`actor`".to_string(),
             Token::Receive => "`receive`".to_string(),
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
+            Token::Always => "`always`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -673,6 +682,7 @@ impl Lexer {
                         "actor" => Token::Actor,
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
+                        "always" => Token::Always,
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -1549,80 +1559,39 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
-    /// RES-386: actor declaration.
-    ///
-    /// Parsed from:
-    /// ```text
-    /// actor <Name> {
-    ///     state: <Type> = <init-expr>;
-    ///     concurrent_ensures: <expr>;      // zero or more
-    ///     receive <handler_name>()
-    ///         ensures <expr>;              // zero or more per handler
-    ///     { <body> }
-    /// }
-    /// ```
-    ///
-    /// The verifier consumes this node shape to emit Z3
-    /// commutativity obligations for every pair of `receive`
-    /// handlers. The interpreter, compiler, JIT, and LSP treat
-    /// it as a no-op — the minimum slice is type-check-and-verify
-    /// only; full actor runtime semantics are tracked as a
-    /// follow-up (see RES-386 PR body).
+    /// RES-386: actor declaration (commutativity verifier slice).
+    #[allow(dead_code)]
     Actor {
         name: String,
-        /// RES-386: the per-instance state type, mirroring
-        /// `state: <Type> = <init>;`. Advisory today — the
-        /// verifier only supports integer state.
         #[allow(dead_code)]
         state_type: String,
-        /// RES-386: initializer for the actor's state. Kept on the
-        /// node so the (future) runtime can allocate the actor
-        /// without re-parsing.
         #[allow(dead_code)]
         state_init: Box<Node>,
-        /// RES-386: `concurrent_ensures: <expr>;` clauses attached
-        /// to the actor. Empty when the declaration carries only
-        /// `receive` handlers. Each clause is expected to be a
-        /// boolean expression over the actor's symbolic state
-        /// names (see `ActorHandler::body` for the assignment form
-        /// the verifier understands).
         concurrent_ensures: Vec<Node>,
         handlers: Vec<ActorHandler>,
         #[allow(dead_code)]
         span: span::Span,
     },
-    /// RES-390 (depends on RES-332): actor scaffolding for the
-    /// cluster-invariant verifier. This is the minimum viable slice
-    /// of RES-332 that the distributed-invariant verifier needs —
-    /// enough state-variable + receive-handler structure to build
-    /// a Z3 joint-state model. The runtime / interpreter / VM
-    /// treats this as a declaration-only construct (like
-    /// `StructDecl`): there is no dynamic dispatch yet. Full actor
-    /// execution semantics land with RES-332.
+    /// RES-388/RES-390: actor declaration with `always` safety
+    /// invariants and typed state fields. Used by both the
+    /// temporal-assertion verifier (RES-388) and the cluster-
+    /// invariant verifier (RES-390).
     ActorDecl {
         name: String,
-        /// Integer state variables, in source order. Each entry is
-        /// `(field_name, initial_value_expr)`. Only `Int`-typed
-        /// fields are supported in this slice — the verifier
-        /// models joint state as Z3 `Int` consts. Fields of other
-        /// types parse but are rejected at verify time.
-        state: Vec<(String, Node)>,
-        /// Each receive handler is `(handler_name, body)` where
-        /// body is a `Node::Block` of simple assignments of the
-        /// form `self.field = expr;`. Handlers take no parameters
-        /// in this slice — parameterised messages are a follow-up.
+        /// (type_name, field_name, initializer_expr).
+        state_fields: Vec<(String, String, Node)>,
+        /// Boolean `always:` safety invariants.
+        always_clauses: Vec<Node>,
+        /// Receive handlers with full pre/post contracts.
+        receive_handlers: Vec<ReceiveHandler>,
+        /// Simpler receive handlers (used by RES-386 `Actor` path).
+        #[allow(dead_code)]
         handlers: Vec<ActorHandler>,
         #[allow(dead_code)]
         span: span::Span,
     },
     /// RES-390: group of actors with a joint invariant the Z3
     /// verifier must prove inductive across every member handler.
-    /// Members are `(local_name, actor_type_name)` pairs — the
-    /// `local_name` is used in the invariant expression (e.g.
-    /// `primary.is_leader`) and `actor_type_name` references a
-    /// top-level `ActorDecl`. Invariants are a list of boolean
-    /// expressions over any `member.field` reference; each is
-    /// verified independently.
     ClusterDecl {
         name: String,
         members: Vec<(String, String)>,
@@ -1632,20 +1601,27 @@ enum Node {
     },
 }
 
-/// RES-386/RES-390: one `receive <name>()` handler inside an `actor`
-/// or `actor_decl` block. The minimum slice expects the body to be a
-/// block that assigns integer expressions to state fields; any other
-/// shape is accepted at parse time but rejected at verify time.
+/// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
 #[derive(Debug, Clone)]
 pub(crate) struct ActorHandler {
     pub(crate) name: String,
-    /// Per-handler post-conditions (RES-386). Treated the same way as
-    /// fn `ensures` — the verifier bolts them onto the handler's
-    /// symbolic state transition. Empty for RES-390 `ActorDecl` handlers.
     #[allow(dead_code)]
     pub(crate) ensures: Vec<Node>,
     pub(crate) body: Box<Node>,
     #[allow(dead_code)]
+    pub(crate) span: span::Span,
+}
+
+/// RES-388: one `receive <name>(params) requires ... ensures ... { body }`
+/// inside an `ActorDecl`. Handler bodies run atomically for `always` proofs.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ReceiveHandler {
+    pub(crate) name: String,
+    pub(crate) parameters: Vec<(String, String)>,
+    pub(crate) requires: Vec<Node>,
+    pub(crate) ensures: Vec<Node>,
+    pub(crate) body: Node,
     pub(crate) span: span::Span,
 }
 
@@ -1779,7 +1755,7 @@ impl Parser {
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
             Token::Region => Some(self.parse_region_decl()),
-            Token::Actor => Some(self.parse_actor_block()),
+            Token::Actor => Some(self.parse_actor_decl()),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -2269,6 +2245,232 @@ impl Parser {
             struct_name,
             methods,
             span: impl_span,
+        }
+    }
+
+    /// RES-388: parse `actor <Name> { ... }`.
+    ///
+    /// Body forms (any order, any number):
+    ///   `state: <Type> = <expr>;`   -- actor state field + initializer
+    ///   `always: <expr>;`           -- safety invariant
+    ///   `receive <name>(...) [requires ...] [ensures ...] { ... }`
+    ///
+    /// On entry `current_token` is `Token::Actor`; on exit it sits on
+    /// the actor's closing `}`, matching the calling convention used
+    /// by `parse_impl_block` and `parse_struct_decl`.
+    fn parse_actor_decl(&mut self) -> Node {
+        let actor_span = self.span_at_current();
+        self.next_token(); // skip `actor`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected actor name after `actor`, found {}",
+                    other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `{{` after `actor {}`, found {}",
+                name, tok
+            ));
+        } else {
+            self.next_token(); // skip `{`
+        }
+
+        let mut state_fields: Vec<(String, String, Node)> = Vec::new();
+        let mut always_clauses: Vec<Node> = Vec::new();
+        let mut receive_handlers: Vec<ReceiveHandler> = Vec::new();
+
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            match &self.current_token {
+                // `state: Type = expr;` — Identifier("state") followed by `:`.
+                Token::Identifier(kw) if kw == "state" && self.peek_token == Token::Colon => {
+                    self.next_token(); // skip `state`
+                    self.next_token(); // skip `:`
+                    let ty = match &self.current_token {
+                        Token::Identifier(t) => t.clone(),
+                        other => {
+                            let msg = format!(
+                                "Expected type name after `state:` in actor `{}`, found {}",
+                                name, other
+                            );
+                            self.record_error(msg);
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    };
+                    self.next_token(); // skip type
+                    // RES-388 MVP: require an `= init` so verification
+                    // has a concrete base case. A bare `state: Int;`
+                    // with no initializer is a parse error.
+                    if self.current_token != Token::Assign {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `=` after `state: {}` in actor `{}`, found {}",
+                            ty, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `=`
+                    let init = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past init
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `state` initializer in actor `{}`, found {}",
+                            name, tok
+                        ));
+                    }
+                    // Synthesize a field name equal to the keyword for
+                    // MVP. Multi-field actors are a follow-up; the
+                    // verifier currently reasons about a single
+                    // `state` field and rejects duplicates here.
+                    let field_name = "state".to_string();
+                    if state_fields.iter().any(|(_, n, _)| n == &field_name) {
+                        self.record_error(format!(
+                            "Actor `{}` declares `state` more than once; only a single `state` field is supported today",
+                            name
+                        ));
+                        continue;
+                    }
+                    state_fields.push((ty, field_name, init));
+                }
+
+                Token::Always => {
+                    self.next_token(); // skip `always`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `always` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past expr
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `always` invariant in actor `{}`, found {}",
+                            name, tok
+                        ));
+                    }
+                    always_clauses.push(expr);
+                }
+
+                Token::Receive => {
+                    let recv_span = self.span_at_current();
+                    self.next_token(); // skip `receive`
+                    let handler_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            self.record_error(format!(
+                                "Expected handler name after `receive` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            String::new()
+                        }
+                    };
+                    self.next_token(); // skip name
+                    if self.current_token != Token::LeftParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `(` after `receive {}` in actor `{}`, found {}",
+                            handler_name, name, tok
+                        ));
+                    } else {
+                        self.next_token(); // skip `(`
+                    }
+                    let parameters = if self.current_token == Token::RightParen {
+                        self.next_token();
+                        Vec::new()
+                    } else {
+                        self.parse_function_parameters()
+                    };
+                    let (requires, ensures, _) = self.parse_function_contracts();
+                    if self.current_token != Token::LeftBrace {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `{{` for body of `receive {}` in actor `{}`, found {}",
+                            handler_name, name, tok
+                        ));
+                        // Best-effort recovery: drop through; parse_block_statement
+                        // requires a `{` and would wedge otherwise.
+                        break;
+                    }
+                    let body = self.parse_block_statement();
+                    // Advance past the handler's closing `}` so the
+                    // next iteration sees the next actor-body item
+                    // (or the actor's own `}`). Same convention as
+                    // `parse_impl_block`.
+                    if self.current_token == Token::RightBrace {
+                        self.next_token();
+                    }
+                    receive_handlers.push(ReceiveHandler {
+                        name: handler_name,
+                        parameters,
+                        requires,
+                        ensures,
+                        body,
+                        span: recv_span,
+                    });
+                }
+
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "Expected `state`, `always`, `receive`, or `}}` in actor `{}`, found {}",
+                        name, tok
+                    ));
+                    // Don't infinite-loop on unexpected content.
+                    self.skip_until_stmt_end();
+                }
+            }
+        }
+
+        Node::ActorDecl {
+            name,
+            state_fields,
+            always_clauses,
+            receive_handlers,
+            handlers: Vec::new(),
+            span: actor_span,
+        }
+    }
+
+    /// RES-388: cheap recovery helper used by `parse_actor_decl` —
+    /// swallow tokens until the next `;`, `}`, or EOF so a bogus
+    /// actor-body item doesn't cascade into parse errors on the
+    /// remainder of the declaration.
+    fn skip_until_stmt_end(&mut self) {
+        while self.current_token != Token::Semicolon
+            && self.current_token != Token::RightBrace
+            && self.current_token != Token::Eof
+        {
+            self.next_token();
+        }
+        if self.current_token == Token::Semicolon {
+            self.next_token();
         }
     }
 
@@ -4521,6 +4723,7 @@ impl Parser {
     /// contract so `parse_program`'s `next_token` advances correctly).
     /// Parse errors are recorded via `record_error` and best-effort
     /// recovery falls through — we never panic on malformed input.
+    #[allow(dead_code)]
     fn parse_actor_block(&mut self) -> Node {
         let actor_span = self.span_at_current();
         self.next_token(); // skip 'actor'
@@ -4726,135 +4929,7 @@ impl Parser {
         }
     }
 
-    /// RES-390: parse `actor Name { int field = N; receive handler() { body } ... }`.
-    /// On entry `current_token` is `Identifier("actor")`; on exit
-    /// `current_token` is the closing `}`.
-    fn parse_actor_decl(&mut self) -> Node {
-        let stmt_span = self.span_at_current();
-        self.next_token(); // skip `actor`
-        let name = match &self.current_token {
-            Token::Identifier(n) => n.clone(),
-            _ => {
-                let tok = self.current_token.clone();
-                self.record_error(format!("Expected identifier after `actor`, found {}", tok));
-                String::new()
-            }
-        };
-        self.next_token(); // skip name
-        if self.current_token != Token::LeftBrace {
-            let tok = self.current_token.clone();
-            self.record_error(format!("Expected `{{` after actor name, found {}", tok));
-            return Node::ActorDecl {
-                name,
-                state: Vec::new(),
-                handlers: Vec::new(),
-                span: stmt_span,
-            };
-        }
-        self.next_token(); // skip `{`
 
-        let mut state: Vec<(String, Node)> = Vec::new();
-        let mut handlers: Vec<ActorHandler> = Vec::new();
-        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
-            // `receive NAME() { BODY }`
-            if matches!(&self.current_token, Token::Identifier(n) if n == "receive") {
-                let handler_span = self.span_at_current();
-                self.next_token(); // skip `receive`
-                let hname = match &self.current_token {
-                    Token::Identifier(n) => n.clone(),
-                    _ => {
-                        let tok = self.current_token.clone();
-                        self.record_error(format!(
-                            "Expected handler name after `receive`, found {}",
-                            tok
-                        ));
-                        break;
-                    }
-                };
-                self.next_token(); // skip handler name
-                if self.current_token != Token::LeftParen {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected `(` after handler name `{}`, found {}",
-                        hname, tok
-                    ));
-                    break;
-                }
-                self.next_token(); // skip `(`
-                if self.current_token != Token::RightParen {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected `)` — parameterised receive handlers are not yet supported (RES-390 MVP), found {}",
-                        tok
-                    ));
-                    break;
-                }
-                self.next_token(); // skip `)`
-                if self.current_token != Token::LeftBrace {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected `{{` after handler signature, found {}",
-                        tok
-                    ));
-                    break;
-                }
-                let body = self.parse_block_statement();
-                handlers.push(ActorHandler {
-                    name: hname,
-                    ensures: Vec::new(),
-                    body: Box::new(body),
-                    span: handler_span,
-                });
-                self.next_token(); // skip `}` of handler body
-                continue;
-            }
-
-            // Otherwise: `TYPE name = INIT;` state variable.
-            let _ty = match self.parse_type_annotation("for actor state field") {
-                Some(t) => t,
-                None => break,
-            };
-            let fname = match &self.current_token {
-                Token::Identifier(n) => n.clone(),
-                _ => {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!("Expected actor-state field name, found {}", tok));
-                    break;
-                }
-            };
-            self.next_token(); // skip name
-            if self.current_token != Token::Assign {
-                let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected `=` after actor-state field `{}` (state fields must be initialised), found {}",
-                    fname, tok
-                ));
-                break;
-            }
-            self.next_token(); // skip `=`
-            let init = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
-                value: 0,
-                span: span::Span::default(),
-            });
-            self.next_token(); // move past tail of init expression
-            if self.current_token != Token::Semicolon {
-                let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected `;` after actor-state field initialiser, found {}",
-                    tok
-                ));
-                break;
-            }
-            self.next_token(); // skip `;`
-            state.push((fname, init));
-        }
-        Node::ActorDecl {
-            name,
-            state,
-            handlers,
-            span: stmt_span,
-        }
-    }
 
     /// RES-390: parse `cluster Name { member: ActorType; ... cluster_invariant: EXPR; ... }`.
     fn parse_cluster_decl(&mut self) -> Node {
@@ -8379,10 +8454,6 @@ impl Interpreter {
                 // construction trusts the literal.
                 Ok(Value::Void)
             }
-            // RES-386: actor declarations are verifier-only today.
-            // The runtime never instantiates them — full actor
-            // semantics are tracked as a follow-up to RES-386.
-            Node::Actor { .. } => Ok(Value::Void),
             // RES-128: `type NAME = TARGET;` is purely a
             // typechecker / documentation concern. Runtime never
             // sees aliases — by the time `eval` runs, every use
@@ -8391,12 +8462,10 @@ impl Interpreter {
             // RES-391: `region <Name>;` is pure compile-time metadata
             // consumed by the borrow checker — runtime no-op.
             Node::RegionDecl { .. } => Ok(Value::Void),
-            // RES-390: actor and cluster declarations are
-            // compile-time-only in the MVP. Full actor execution
-            // semantics land with RES-332; for now the interpreter
-            // treats them as no-ops so programs that declare them
-            // run without error.
-            Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Value::Void),
+            // RES-386/RES-388/RES-390: actor/cluster declarations are
+            // compile-time-only. The verifier hooks proof obligations
+            // out of `check_program_with_source`; no runtime lowering.
+            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Value::Void),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -19280,6 +19349,115 @@ mod tests {
             tc.check_program_with_source(&program, "<test>").is_ok(),
             "forward ref should typecheck"
         );
+    }
+
+    // --- RES-388: actor temporal assertions (`always` invariants) ---
+
+    #[test]
+    fn actor_decl_with_state_always_and_receive_parses() {
+        let src = "\
+            actor Q {\n\
+                state: int = 0;\n\
+                always: state <= 100;\n\
+                receive push() requires state < 100 { self.state = self.state + 1; }\n\
+                receive pop() requires state > 0 { self.state = self.state - 1; }\n\
+            }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let Node::Program(statements) = &program else {
+            panic!("expected program");
+        };
+        let first = &statements[0].node;
+        match first {
+            Node::ActorDecl {
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                ..
+            } => {
+                assert_eq!(name, "Q");
+                assert_eq!(state_fields.len(), 1);
+                assert_eq!(state_fields[0].1, "state");
+                assert_eq!(always_clauses.len(), 1);
+                assert_eq!(receive_handlers.len(), 2);
+                assert_eq!(receive_handlers[0].name, "push");
+                assert_eq!(receive_handlers[1].name, "pop");
+                assert_eq!(receive_handlers[0].requires.len(), 1);
+            }
+            other => panic!("expected ActorDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn actor_missing_state_initializer_is_parse_error() {
+        let src = "actor Q { state: int; }";
+        let (_program, errs) = parse(src);
+        assert!(
+            !errs.is_empty(),
+            "`state: int;` without `=` must surface a parse error"
+        );
+    }
+
+    #[test]
+    fn actor_receive_handler_typechecks_self_field_access() {
+        // `self.state` inside the handler body must resolve via the
+        // actor's registered struct-field layout. No Z3 needed — this
+        // tests only the typechecker plumbing.
+        let src = "\
+            actor C {\n\
+                state: int = 0;\n\
+                always: state >= 0;\n\
+                receive tick() { self.state = self.state + 1; }\n\
+            }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
+        assert!(
+            tc.check_program_with_source(&program, "<test>").is_ok(),
+            "actor `self.state` access should typecheck"
+        );
+    }
+
+    #[test]
+    fn actor_always_invariant_must_be_bool() {
+        // `always: 42;` is not a boolean expression — the typechecker
+        // rejects it before the verifier ever runs.
+        let src = "\
+            actor C {\n\
+                state: int = 0;\n\
+                always: 42;\n\
+            }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
+        let result = tc.check_program_with_source(&program, "<test>");
+        match result {
+            Err(msg) => assert!(
+                msg.contains("always") && msg.contains("Bool"),
+                "expected always/Bool diagnostic, got: {}",
+                msg
+            ),
+            Ok(_) => panic!("non-Bool `always` clause should be a type error"),
+        }
+    }
+
+    #[test]
+    fn actor_decl_evaluates_to_void_at_runtime() {
+        // Actors have no runtime lowering today — the interpreter
+        // treats them as no-ops, just like type aliases.
+        let src = "\
+            actor Q { state: int = 0; always: state >= 0; }\n\
+            let sentinel = 7;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        assert!(matches!(interp.env.get("sentinel"), Some(Value::Int(7))));
     }
 
     // --- RES-126: nominal struct equivalence ---
