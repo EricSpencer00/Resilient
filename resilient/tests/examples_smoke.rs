@@ -774,3 +774,62 @@ fn ffi_libm_example_calls_sqrt() {
         "expected sqrt(2.0) in stdout; got:\nstdout={stdout}\nstderr={stderr}"
     );
 }
+
+#[test]
+#[cfg(feature = "z3")]
+fn actor_commute_example_proves_handlers_commute() {
+    // RES-386: the Counter actor's `increment` and `decrement`
+    // handlers both rewrite `self.state` as `state + k`; Z3 proves
+    // (state + 1) - 1 == (state - 1) + 1 for all integers, so the
+    // verifier must print a `commute` diagnostic and the driver must
+    // exit 0. This exercises the entire commutativity pipeline
+    // end-to-end — parser → driver → verifier_z3::check_actor_commutativity.
+    let (stdout, stderr, code) = run_example("actor_commute.rz");
+    assert_eq!(
+        code,
+        Some(0),
+        "actor_commute.rz must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("verifier: actor Counter: handlers `increment` and `decrement` commute"),
+        "expected commutativity diagnostic in stdout; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("do not commute"),
+        "commutative pair should not produce a divergence diagnostic; got:\n{stdout}"
+    );
+}
+
+#[test]
+#[cfg(feature = "z3")]
+fn actor_noncommute_example_reports_counterexample() {
+    // RES-386: the Accumulator actor's `inc` (state + 1) and `double`
+    // (state * 2) handlers do not commute — starting from state = 0,
+    // inc-then-double yields 2 while double-then-inc yields 1. The
+    // verifier prints the counterexample line with both final states,
+    // and the driver still exits 0 (verifier diagnostics are advisory,
+    // not fatal, per the minimum-slice contract).
+    let (stdout, stderr, code) = run_example("actor_noncommute.rz");
+    assert_eq!(
+        code,
+        Some(0),
+        "actor_noncommute.rz must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("verifier: actor Accumulator: handlers `inc` and `double` do not commute"),
+        "expected divergence diagnostic in stdout; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("counterexample:"),
+        "expected counterexample marker in stdout; got:\n{stdout}"
+    );
+    // The verifier formats each final state as `a_then_b=<int>` and
+    // `b_then_a=<int>`. We check for both substrings rather than
+    // literal integers so the assertion tolerates any Z3 model choice
+    // (the solver is free to pick any state_0 that falsifies the
+    // commutativity query).
+    assert!(
+        stdout.contains("inc_then_double=") && stdout.contains("double_then_inc="),
+        "expected both order-specific final states in stdout; got:\n{stdout}"
+    );
+}

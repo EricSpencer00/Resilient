@@ -424,6 +424,9 @@ struct ContractInfo {
     /// in the table so RES-062 can pick up where this leaves off.
     #[allow(dead_code)]
     ensures: Vec<Node>,
+    /// RES-387: declared failure variants on this fn. Call sites
+    /// must propagate or handle each variant.
+    fails: Vec<String>,
 }
 
 /// RES-066: counters for the verification audit. Incremented as the
@@ -637,6 +640,15 @@ pub struct TypeChecker {
     /// let — that's an acceptable partial behaviour (errors take
     /// precedence over hints for broken files).
     pub let_type_hints: Vec<LetTypeHint>,
+    /// RES-387: declared failure variants of the fn currently
+    /// being checked. Pushed on entry to `Node::Function` and
+    /// popped on exit. Consulted at every `CallExpression` to
+    /// enforce that callees' `fails` variants are propagated on
+    /// the caller's signature. `None` means we're not inside a
+    /// named fn — call sites in top-level code (e.g. `live`
+    /// blocks) cannot raise checked failures today and must only
+    /// invoke fns with an empty `fails` set.
+    current_fn_fails: Option<Vec<String>>,
 }
 
 impl TypeChecker {
@@ -1064,6 +1076,8 @@ impl TypeChecker {
             source_path: String::new(),
             // RES-189: populated during LetStatement handling.
             let_type_hints: Vec::new(),
+            // RES-387: no enclosing fn at program start.
+            current_fn_fails: None,
         }
     }
 
@@ -1128,6 +1142,7 @@ impl TypeChecker {
                             parameters,
                             requires,
                             ensures,
+                            fails,
                             ..
                         } => {
                             self.contract_table.insert(
@@ -1136,6 +1151,7 @@ impl TypeChecker {
                                     parameters: parameters.clone(),
                                     requires: requires.clone(),
                                     ensures: ensures.clone(),
+                                    fails: fails.clone(),
                                 },
                             );
                         }
@@ -1162,6 +1178,61 @@ impl TypeChecker {
                             )
                         }
                     })?;
+                }
+
+                // RES-388: verify every `actor`'s `always` safety
+                // invariants. The walk happens *after* per-statement
+                // type-checking so we only reason about well-typed
+                // bodies. Any obligation that Z3 refutes becomes a
+                // hard error with a file:line:col diagnostic naming
+                // the actor, handler, and invariant; Unknown /
+                // Unsupported verdicts emit a stderr warning but do
+                // not fail the check (matching how partial proofs
+                // of `requires` / `ensures` are handled — RES-217).
+                let obligations = collect_actor_obligations(statements, self.verifier_timeout_ms);
+                let mut refuted: Vec<String> = Vec::new();
+                for o in obligations {
+                    match o.result {
+                        crate::verifier_actors::ActorProofResult::Proved => {}
+                        crate::verifier_actors::ActorProofResult::Refuted { counterexample } => {
+                            let mut msg = format!(
+                                "{}:{}:{}: actor `{}` violates `always: {}` in handler `{}`",
+                                if source_path.is_empty() {
+                                    "<unknown>"
+                                } else {
+                                    source_path
+                                },
+                                o.invariant_span.start.line,
+                                o.invariant_span.start.column,
+                                o.actor_name,
+                                o.invariant_label,
+                                o.handler_name,
+                            );
+                            if let Some(cx) = counterexample {
+                                msg.push_str(&format!(" (counterexample: {})", cx));
+                            }
+                            refuted.push(msg);
+                        }
+                        crate::verifier_actors::ActorProofResult::Unknown => {
+                            if self.warn_unverified {
+                                eprintln!(
+                                    "warning[partial-proof]: actor `{}` `always: {}` could not be proven on handler `{}` — Z3 returned Unknown",
+                                    o.actor_name, o.invariant_label, o.handler_name,
+                                );
+                            }
+                        }
+                        crate::verifier_actors::ActorProofResult::Unsupported { reason } => {
+                            if self.warn_unverified {
+                                eprintln!(
+                                    "warning[partial-proof]: actor `{}` `always: {}` not verified on handler `{}` — {}",
+                                    o.actor_name, o.invariant_label, o.handler_name, reason,
+                                );
+                            }
+                        }
+                    }
+                }
+                if !refuted.is_empty() {
+                    return Err(refuted.join("\n"));
                 }
 
                 // RES-191: after regular type-checking, enforce the
@@ -1310,6 +1381,7 @@ impl TypeChecker {
                 ensures,
                 recovers_to,
                 return_type: declared_rt,
+                fails,
                 ..
             } => {
                 let mut param_types = Vec::new();
@@ -1454,8 +1526,21 @@ impl TypeChecker {
                     }
                 }
 
+                // RES-387: enter the fn's fault scope. Call sites in
+                // the body may invoke fns with `fails` variants only
+                // if each variant is also declared here.
+                let saved_fn_fails = self.current_fn_fails.take();
+                self.current_fn_fails = Some(fails.clone());
+
                 // Check function body
-                let body_type = self.check_node(body)?;
+                let body_result = self.check_node(body);
+
+                // RES-387: leave the fault scope before propagating any
+                // error, so a nested fn declared inside this body does
+                // not inherit our fails set on the way out.
+                self.current_fn_fails = saved_fn_fails;
+
+                let body_type = body_result?;
 
                 // Restore const_bindings to its pre-body state.
                 for (aname, prev) in pushed_assumptions.into_iter().rev() {
@@ -1908,13 +1993,68 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            // RES-391: `region <Name>;` is compile-time metadata
-            // consumed by the borrow checker — the typechecker just
-            // accepts it as Void. Region-scoped reference types
-            // (`&[A] T`, `&mut[A] T`) surface in parameter positions,
-            // where `parse_type_name` strips the reference prefix
-            // and yields the inner type.
+            // RES-391: `region <Name>;` is compile-time metadata — Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
+
+            // RES-386: commutativity actor type-checks as Void.
+            Node::Actor { .. } => Ok(Type::Void),
+
+            // RES-390: ClusterDecl is compile-time-only.
+            Node::ClusterDecl { .. } => Ok(Type::Void),
+
+            // RES-388/RES-390: ActorDecl type-checks state fields,
+            // always invariants, and receive handler bodies.
+            Node::ActorDecl {
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                ..
+            } => {
+                let saved_env = self.env.clone();
+                let mut resolved_fields: Vec<(String, Type)> = Vec::new();
+                for (ty, field, init) in state_fields {
+                    let resolved = self.parse_type_name(ty)?;
+                    let init_ty = self.check_node(init)?;
+                    if init_ty != resolved && init_ty != Type::Any && resolved != Type::Any {
+                        return Err(format!(
+                            "actor `{}` state field `{}` initializer has type {}, expected {}",
+                            name, field, init_ty, resolved
+                        ));
+                    }
+                    self.env.set(field.clone(), resolved.clone());
+                    resolved_fields.push((field.clone(), resolved));
+                }
+                self.struct_fields
+                    .insert(name.clone(), resolved_fields.clone());
+                for clause in always_clauses {
+                    let ty = self.check_node(clause)?;
+                    if ty != Type::Bool && ty != Type::Any {
+                        return Err(format!(
+                            "actor `{}` `always` invariant must be Bool, got {}",
+                            name, ty
+                        ));
+                    }
+                }
+                for handler in receive_handlers {
+                    let handler_saved = self.env.clone();
+                    self.env.set("self".to_string(), Type::Struct(name.clone()));
+                    for (pty, pname) in &handler.parameters {
+                        let resolved = self.parse_type_name(pty)?;
+                        self.env.set(pname.clone(), resolved);
+                    }
+                    for r in &handler.requires {
+                        let _ = self.check_node(r)?;
+                    }
+                    for e in &handler.ensures {
+                        let _ = self.check_node(e)?;
+                    }
+                    let _ = self.check_node(&handler.body)?;
+                    self.env = handler_saved;
+                }
+                self.env = saved_env;
+                Ok(Type::Void)
+            }
 
             // RES-153: record the struct's (field, type) list so
             // `FieldAccess` / `FieldAssignment` downstream can check
@@ -2242,6 +2382,22 @@ impl TypeChecker {
                 } = function.as_ref()
                     && let Some(info) = self.contract_table.get(callee_name).cloned()
                 {
+                    // RES-387: every failure variant the callee declares
+                    // must be propagated by the enclosing fn's `fails`
+                    // set. This is the MVP slice — structured handlers
+                    // (try/catch) land in a follow-up.
+                    for variant in &info.fails {
+                        let declared = match &self.current_fn_fails {
+                            Some(outer) => outer.iter().any(|v| v == variant),
+                            None => false,
+                        };
+                        if !declared {
+                            return Err(format!(
+                                "unhandled failure variant {} — declare `fails {}` on the caller or handle at call site (from call to `{}`)",
+                                variant, variant, callee_name
+                            ));
+                        }
+                    }
                     if !info.requires.is_empty() {
                         self.stats.contracted_call_sites += 1;
                     }
@@ -2500,6 +2656,36 @@ const IMPURE_BUILTINS: &[&str] = &[
 /// program's statement list once to collect `@pure` fn names
 /// (their declarations include the `pure: bool` flag per the
 /// ticket), then re-walks each declared-pure fn's body and
+/// RES-388: iterate top-level statements and verify every
+/// `ActorDecl`'s `always` safety invariants. Returns the flattened
+/// list of per-obligation verdicts; the caller inspects each for a
+/// `Refuted` verdict to decide whether the check fails.
+fn collect_actor_obligations(
+    statements: &[crate::span::Spanned<Node>],
+    verifier_timeout_ms: u32,
+) -> Vec<crate::verifier_actors::ActorObligation> {
+    let mut out = Vec::new();
+    for stmt in statements {
+        if let Node::ActorDecl {
+            name,
+            state_fields,
+            always_clauses,
+            receive_handlers,
+            ..
+        } = &stmt.node
+        {
+            out.extend(crate::verifier_actors::verify_actor(
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                verifier_timeout_ms,
+            ));
+        }
+    }
+    out
+}
+
 /// reports the first violation.
 ///
 /// Errors use the `<path>:<line>:<col>: <msg>` prefix convention
@@ -3709,5 +3895,186 @@ mod type_hole_display_tests {
     fn var_without_span_displays_as_qt() {
         let ty = Type::Var(0, None);
         assert_eq!(ty.to_string(), "?t0");
+    }
+}
+
+/// RES-387: fault model — parser + typechecker slice for the `fails`
+/// annotation and `recovers_to` postcondition. Structured handlers
+/// and the Z3 proof obligation for `recovers_to` are separate tickets.
+#[cfg(test)]
+mod fault_model_tests {
+    use super::*;
+    use crate::parse;
+
+    // ---------- Parser: `fails` / `recovers_to` ----------
+
+    #[test]
+    fn parser_accepts_single_fails_variant() {
+        let src = "fn read_sensor(int addr) fails HardwareFault { return addr; }\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { name, fails, .. } => {
+                    assert_eq!(name, "read_sensor");
+                    assert_eq!(fails, &vec!["HardwareFault".to_string()]);
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_multiple_fails_variants() {
+        let src = "fn write_sensor(int v) fails HardwareFault, Timeout { return v; }\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { fails, .. } => {
+                    assert_eq!(
+                        fails,
+                        &vec!["HardwareFault".to_string(), "Timeout".to_string()]
+                    );
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_recovers_to_postcondition() {
+        let src = "fn write_sensor(int v) fails Timeout recovers_to: v >= 0; { return v; }\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function {
+                    fails, recovers_to, ..
+                } => {
+                    assert_eq!(fails, &vec!["Timeout".to_string()]);
+                    assert!(
+                        recovers_to.is_some(),
+                        "expected recovers_to to be populated"
+                    );
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_fails_after_requires() {
+        // requires, then fails — mirrors the ticket's example.
+        let src = "fn op(int x) requires x > 0 fails Bad { return x; }\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function {
+                    fails, requires, ..
+                } => {
+                    assert_eq!(fails, &vec!["Bad".to_string()]);
+                    assert_eq!(requires.len(), 1);
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_fn_without_fails_has_empty_list() {
+        let src = "fn add(int a, int b) { return a + b; }\n";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        match prog {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function {
+                    fails, recovers_to, ..
+                } => {
+                    assert!(fails.is_empty());
+                    assert!(recovers_to.is_none());
+                }
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    // ---------- Typechecker: propagation ----------
+
+    fn check(src: &str) -> Result<(), String> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = TypeChecker::new();
+        tc.check_program_with_source(&prog, "<t>").map(|_| ())
+    }
+
+    #[test]
+    fn propagated_fails_is_accepted() {
+        // `caller` propagates `HardwareFault`, matching `inner`'s fails.
+        let src = "\
+            fn inner(int x) fails HardwareFault { return x; }\n\
+            fn caller(int y) fails HardwareFault { return inner(y); }\n";
+        check(src).expect("propagation should typecheck");
+    }
+
+    #[test]
+    fn unhandled_fails_is_rejected() {
+        // `caller` does not declare `HardwareFault`; the call must
+        // be rejected with the MVP diagnostic.
+        let src = "\
+            fn inner(int x) fails HardwareFault { return x; }\n\
+            fn caller(int y) { return inner(y); }\n";
+        let err = check(src).expect_err("unhandled fails must be rejected");
+        assert!(
+            err.contains("unhandled failure variant HardwareFault"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("declare `fails HardwareFault`"),
+            "diagnostic should mention how to fix it: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_one_of_many_fails_is_rejected() {
+        // Caller propagates one variant but not the other — must
+        // still be rejected for the missing one.
+        let src = "\
+            fn inner(int x) fails A, B { return x; }\n\
+            fn caller(int y) fails A { return inner(y); }\n";
+        let err = check(src).expect_err("partial propagation must be rejected");
+        assert!(
+            err.contains("unhandled failure variant B"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fails_free_call_is_still_accepted() {
+        // Regression: a call to a fn with no `fails` set must remain
+        // allowed from anywhere, with or without enclosing fault scope.
+        let src = "\
+            fn inner(int x) { return x; }\n\
+            fn caller(int y) { return inner(y); }\n";
+        check(src).expect("fails-free propagation path must stay green");
+    }
+
+    #[test]
+    fn top_level_call_to_failing_fn_is_rejected() {
+        // No enclosing fn — cannot propagate, must be rejected.
+        let src = "\
+            fn inner(int x) fails Timeout { return x; }\n\
+            let x = inner(1);\n";
+        let err = check(src).expect_err("top-level must reject failing call");
+        assert!(
+            err.contains("unhandled failure variant Timeout"),
+            "unexpected error: {err}"
+        );
     }
 }

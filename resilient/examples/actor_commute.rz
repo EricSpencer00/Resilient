@@ -1,0 +1,18 @@
+// RES-386: a Counter actor whose receive handlers trivially commute.
+// The verifier discharges the commutativity obligation for each
+// unordered pair using Z3. This example is run by the z3-gated smoke
+// test `actor_commute_example_proves_handlers_commute` in
+// tests/examples_smoke.rs — hence the `.interactive` sidecar marking
+// it exempt from the default golden harness (the verifier stays silent
+// on non-z3 builds).
+actor Counter {
+    state: int = 0;
+
+    receive increment() {
+        self.state = self.state + 1;
+    }
+
+    receive decrement() {
+        self.state = self.state - 1;
+    }
+}

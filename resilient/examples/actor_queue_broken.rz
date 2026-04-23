@@ -1,0 +1,34 @@
+// RES-388: actor with a deliberately broken `always` invariant.
+//
+// The queue's `enqueue` handler carries no precondition bounding
+// `state`, so Z3 will refute the inductive step: `state == 100`
+// before the call satisfies `state <= 100`, but `state + 1 == 101`
+// after it does not.
+//
+// Run `resilient --typecheck examples/actor_queue_broken.rz` with
+// `--features z3` to see the refutation diagnostic pointing at the
+// `enqueue` handler. The default interpreter path runs `main()`
+// unchanged — the verifier only fires under the typecheck driver.
+
+actor UnboundedQueue {
+    state: int = 0;
+
+    // Safety claim — deliberately unprovable.
+    always: state <= 100;
+
+    receive enqueue(int item)
+    {
+        self.state = self.state + 1;
+    }
+
+    receive dequeue()
+        requires state > 0
+    {
+        self.state = self.state - 1;
+    }
+}
+
+fn main() {
+    println("actor_queue_broken: verifier expected to refute invariant on enqueue");
+}
+main();

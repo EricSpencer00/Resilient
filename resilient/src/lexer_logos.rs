@@ -178,6 +178,9 @@ enum Tok {
     RecoversTo,
     #[token("invariant")]
     Invariant,
+    // RES-387: `fails` — comma-separated failure-variant list on a fn.
+    #[token("fails")]
+    Fails,
     #[token("struct")]
     Struct,
     #[token("new")]
@@ -207,6 +210,15 @@ enum Tok {
     // <EXTENSION_TOKENS>
     // Add new keyword tokens here — one #[token("keyword")] + Variant per feature.
     // Append-only. Merge conflicts: keep ALL variants from both sides.
+    // RES-386/RES-388: actor keywords.
+    #[token("actor")]
+    Actor,
+    #[token("receive")]
+    Receive,
+    #[token("concurrent_ensures")]
+    ConcurrentEnsures,
+    #[token("always")]
+    Always,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -526,6 +538,7 @@ fn convert(t: Tok) -> Token {
         Tok::Ensures => Token::Ensures,
         Tok::RecoversTo => Token::RecoversTo,
         Tok::Invariant => Token::Invariant,
+        Tok::Fails => Token::Fails,
         Tok::Struct => Token::Struct,
         Tok::New => Token::New,
         Tok::Match => Token::Match,
@@ -537,6 +550,10 @@ fn convert(t: Tok) -> Token {
         Tok::Mut => Token::Mut,
         // <EXTENSION_KEYWORDS>
         // Add Tok::MyToken => Token::MyToken mappings here (append-only).
+        Tok::Actor => Token::Actor,
+        Tok::Receive => Token::Receive,
+        Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
+        Tok::Always => Token::Always,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

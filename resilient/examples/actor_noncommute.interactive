@@ -1,0 +1,2 @@
+RES-386: run this example only under `cargo test --features z3`.
+See sibling actor_commute.interactive for the rationale.

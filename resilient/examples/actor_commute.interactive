@@ -1,0 +1,4 @@
+RES-386: run this example only under `cargo test --features z3`.
+The actor commutativity verifier is z3-gated; the default build prints
+no verifier output, so the default golden harness has nothing stable
+to match against. See tests/examples_smoke.rs for the z3-gated smoke.
