@@ -1,0 +1,50 @@
+name: agent-guardrails
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  guardrails:
+    name: diff-shape guardrail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run verify-scope (shape + overlap only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash agent-scripts/verify-scope.sh \
+            --base "origin/${{ github.event.pull_request.base.ref }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --skip tests --skip clippy --skip fmt \
+            --report /tmp/report.json
+
+      - name: Upload guardrail report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-guardrail-report
+          path: /tmp/report.json
+
+      - name: Post guardrail comment on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/report.json ]; then
+            body="$(python3 - <<'PYEOF'
+import json
+r = json.load(open("/tmp/report.json"))
+print("Agent guardrails **FAILED** on CI.\n")
+print("Violations:")
+for f in r.get("failures", []):
+    print(f"- {f}")
+print("\nLocal fix: `agent-scripts/verify-scope.sh --skip tests --skip clippy --skip fmt` should reproduce.")
+PYEOF
+)"
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$body"
+          fi
