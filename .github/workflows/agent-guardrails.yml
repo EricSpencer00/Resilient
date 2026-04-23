@@ -13,6 +13,10 @@ on:
     branches-ignore:
       - main
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   guardrails:
     name: diff-shape guardrail
