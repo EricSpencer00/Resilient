@@ -7,6 +7,11 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+  # Also trigger on push so the guardrail runs even when the PR event
+  # dedup'd by GitHub (e.g. a workflow-file-adding commit).
+  push:
+    branches-ignore:
+      - main
 
 jobs:
   guardrails:
@@ -17,13 +22,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve base/head
+        id: refs
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=origin/${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=origin/main" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run verify-scope (shape + overlap only)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bash agent-scripts/verify-scope.sh \
-            --base "origin/${{ github.event.pull_request.base.ref }}" \
-            --head "${{ github.event.pull_request.head.sha }}" \
+            --base "${{ steps.refs.outputs.base }}" \
+            --head "${{ steps.refs.outputs.head }}" \
             --skip tests --skip clippy --skip fmt \
             --report /tmp/report.json
 
@@ -35,20 +51,19 @@ jobs:
           path: /tmp/report.json
 
       - name: Post guardrail comment on failure
-        if: failure()
+        if: failure() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [ -f /tmp/report.json ]; then
-            body="$(python3 - <<'PYEOF'
-import json
-r = json.load(open("/tmp/report.json"))
-print("Agent guardrails **FAILED** on CI.\n")
-print("Violations:")
-for f in r.get("failures", []):
-    print(f"- {f}")
-print("\nLocal fix: `agent-scripts/verify-scope.sh --skip tests --skip clippy --skip fmt` should reproduce.")
-PYEOF
-)"
-            gh pr comment "${{ github.event.pull_request.number }}" --body "$body"
-          fi
+          if [ ! -f /tmp/report.json ]; then exit 0; fi
+          python3 > /tmp/body.md <<'PYEOF'
+          import json
+          r = json.load(open("/tmp/report.json"))
+          print("Agent guardrails **FAILED** on CI.\n")
+          print("Violations:")
+          for f in r.get("failures", []):
+              print(f"- {f}")
+          print("\nLocal fix: `agent-scripts/verify-scope.sh --skip tests --skip clippy --skip fmt` should reproduce.")
+          PYEOF
+          gh pr comment "$PR_NUMBER" --body-file /tmp/body.md
