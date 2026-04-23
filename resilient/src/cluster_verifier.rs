@@ -665,28 +665,28 @@ mod tests {
 
     #[test]
     fn single_leader_cluster_with_only_step_down_passes() {
-        // Invariant: at most one leader, each `is_leader` is 0 or 1.
+        // Invariant: at most one leader; the `state` flag is 0 or 1.
         // Only a `step_down` handler exists — it assigns
-        // `is_leader = 0`, which can only decrease the sum and
-        // keeps the per-field [0, 1] range, so Z3 proves
-        // preservation. The range clauses are load-bearing: without
-        // them Z3 finds a pre-state like `a = -1, b = 2` that
-        // satisfies `a + b <= 1` but breaks after zeroing `a`.
+        // `state = 0`, which can only decrease the sum and keeps
+        // the per-field [0, 1] range, so Z3 proves preservation.
+        // The range clauses are load-bearing: without them Z3
+        // finds a pre-state like `a = -1, b = 2` that satisfies
+        // `a + b <= 1` but breaks after zeroing `a`.
         let src = r#"
 actor Node {
-    int is_leader = 0;
+    state: int = 0;
 
     receive step_down() {
-        self.is_leader = 0;
+        self.state = 0;
     }
 }
 
 cluster Ring {
     a: Node;
     b: Node;
-    cluster_invariant: a.is_leader >= 0 && a.is_leader <= 1
-                    && b.is_leader >= 0 && b.is_leader <= 1
-                    && a.is_leader + b.is_leader <= 1;
+    cluster_invariant: a.state >= 0 && a.state <= 1
+                    && b.state >= 0 && b.state <= 1
+                    && a.state + b.state <= 1;
 }
 "#;
         let diags = verify(src);
@@ -695,23 +695,23 @@ cluster Ring {
 
     #[test]
     fn single_leader_cluster_with_become_leader_fails() {
-        // A `become_leader` handler sets `is_leader = 1` on the
-        // caller without coordinating with the other replica —
-        // Z3 should find a pre-state (the peer is already leader)
-        // where the post-state violates the invariant.
+        // A `become_leader` handler sets `state = 1` on the caller
+        // without coordinating with the other replica — Z3 should
+        // find a pre-state (the peer is already leader) where the
+        // post-state violates the invariant.
         let src = r#"
 actor Node {
-    int is_leader = 0;
+    state: int = 0;
 
     receive become_leader() {
-        self.is_leader = 1;
+        self.state = 1;
     }
 }
 
 cluster Ring {
     a: Node;
     b: Node;
-    cluster_invariant: a.is_leader + b.is_leader <= 1;
+    cluster_invariant: a.state + b.state <= 1;
 }
 "#;
         let diags = verify(src);
@@ -747,16 +747,16 @@ cluster Broken {
         // silently pass.
         let src = r#"
 actor Toggle {
-    int on = 0;
+    state: int = 0;
 
     receive flip() {
-        if on == 0 { self.on = 1; } else { self.on = 0; }
+        if state == 0 { self.state = 1; } else { self.state = 0; }
     }
 }
 
 cluster Single {
     t: Toggle;
-    cluster_invariant: t.on <= 1;
+    cluster_invariant: t.state <= 1;
 }
 "#;
         let diags = verify(src);
