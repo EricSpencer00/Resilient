@@ -22,6 +22,19 @@ mod span;
 mod typechecker;
 #[cfg(feature = "z3")]
 mod verifier_z3;
+// RES-390: distributed-invariant verifier — a joint Z3 state
+// model over every actor in a cluster, proving `cluster_invariant`
+// clauses inductive across every `receive` handler. Feature-gated
+// on `z3` so the hand-rolled verifier path stays clean when z3 is
+// off; no cluster diagnostics surface in that build mode.
+#[cfg(feature = "z3")]
+mod cluster_verifier;
+// RES-388: actor-level temporal assertions (`always` safety invariants).
+// Generates inductive proof obligations per `receive` handler and
+// hands them to the Z3 verifier. Compiled unconditionally so the
+// parser / typechecker can consume its types; the Z3 path is a no-op
+// when the `z3` feature is off.
+mod verifier_actors;
 mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
@@ -97,11 +110,15 @@ enum Token {
     In,
     Requires,
     Ensures,
-    /// RES-392: `recovers_to` — crash-recovery postcondition. MVP
-    /// verifies only the final state; per-prefix bounded model
-    /// checking is tracked as a follow-up.
+    /// RES-392/RES-387: `recovers_to` — crash-recovery postcondition.
+    /// MVP verifies only the final state; per-prefix bounded model
+    /// checking is tracked as a follow-up. Also used as the
+    /// `recovers_to:` postcondition for declared failure variants.
     RecoversTo,
     Invariant,
+    /// RES-387: `fails` annotation on a fn signature — comma-separated
+    /// list of failure-variant identifiers the fn may raise.
+    Fails,
     Struct,
     New,
     Dot,
@@ -137,6 +154,20 @@ enum Token {
     /// outside of types the parser surfaces it as an ordinary
     /// unexpected-token error.
     Mut,
+    /// RES-386: `actor Name { state: T = expr; concurrent_ensures: ...;
+    /// receive name() ensures expr; { body } }` — actor declaration.
+    /// The minimum slice only uses the `actor` / `receive` /
+    /// `concurrent_ensures` keywords inside this block.
+    Actor,
+    /// RES-386: `receive name() ensures expr; { body }` — one
+    /// message handler inside an actor block.
+    Receive,
+    /// RES-386: `concurrent_ensures: expr;` — race-freedom
+    /// contract attached to an actor declaration. Proved by the
+    /// Z3 verifier's commutativity check.
+    ConcurrentEnsures,
+    /// RES-388: actor-level `always: <expr>;` safety invariant.
+    Always,
 
     // Literals
     Identifier(String),
@@ -244,6 +275,7 @@ impl Token {
             Token::Ensures => "`ensures`".to_string(),
             Token::RecoversTo => "`recovers_to`".to_string(),
             Token::Invariant => "`invariant`".to_string(),
+            Token::Fails => "`fails`".to_string(),
             Token::Struct => "`struct`".to_string(),
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
@@ -254,6 +286,10 @@ impl Token {
             Token::Linear => "`linear`".to_string(),
             Token::Region => "`region`".to_string(),
             Token::Mut => "`mut`".to_string(),
+            Token::Actor => "`actor`".to_string(),
+            Token::Receive => "`receive`".to_string(),
+            Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
+            Token::Always => "`always`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -632,6 +668,7 @@ impl Lexer {
                         "ensures" => Token::Ensures,
                         "recovers_to" => Token::RecoversTo,
                         "invariant" => Token::Invariant,
+                        "fails" => Token::Fails,
                         "struct" => Token::Struct,
                         "new" => Token::New,
                         "match" => Token::Match,
@@ -642,6 +679,10 @@ impl Lexer {
                         "linear" => Token::Linear,
                         "region" => Token::Region,
                         "mut" => Token::Mut,
+                        "actor" => Token::Actor,
+                        "receive" => Token::Receive,
+                        "concurrent_ensures" => Token::ConcurrentEnsures,
+                        "always" => Token::Always,
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -1088,14 +1129,6 @@ enum Node {
         /// special identifier `result` is bound to the return value
         /// inside each clause's env.
         ensures: Vec<Node>,
-        /// RES-392: optional crash-recovery postcondition. MVP
-        /// semantics: verified as a weaker postcondition over the
-        /// function's final state (same evaluation environment as
-        /// `ensures`, with `result` bound). Proper per-prefix
-        /// bounded model checking — the real "crash at any
-        /// instruction" interpretation from the ticket — is tracked
-        /// as a follow-up. A value of `None` means no clause.
-        recovers_to: Option<Box<Node>>,
         /// RES-052: optional `-> TYPE` return-type annotation. Advisory.
         #[allow(dead_code)]
         return_type: Option<String>,
@@ -1131,6 +1164,19 @@ enum Node {
         /// `fn<T: Hashable>` etc. is a future extension).
         #[allow(dead_code)] // consumed by RES-124b+
         type_params: Vec<String>,
+        /// RES-387: declared failure variants. Parsed from
+        /// `fails Variant (, Variant)*` between the return type
+        /// and `{`. Empty when the fn declares no failures.
+        /// The typechecker requires every call to a fn with a
+        /// non-empty `fails` set to either declare the same
+        /// variants on the caller's signature (propagation) or
+        /// — in a future ticket — handle them structurally.
+        fails: Vec<String>,
+        /// RES-387: `recovers_to: EXPR;` postcondition. Parsed
+        /// and stored; Z3 verification that the invariant
+        /// actually holds after recovery is a follow-up ticket.
+        #[allow(dead_code)] // consumed by RES-387 follow-up (Z3 recovers_to proof)
+        recovers_to: Option<Box<Node>>,
     },
     LiveBlock {
         body: Box<Node>,
@@ -1513,6 +1559,70 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-386: actor declaration (commutativity verifier slice).
+    #[allow(dead_code)]
+    Actor {
+        name: String,
+        #[allow(dead_code)]
+        state_type: String,
+        #[allow(dead_code)]
+        state_init: Box<Node>,
+        concurrent_ensures: Vec<Node>,
+        handlers: Vec<ActorHandler>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-388/RES-390: actor declaration with `always` safety
+    /// invariants and typed state fields. Used by both the
+    /// temporal-assertion verifier (RES-388) and the cluster-
+    /// invariant verifier (RES-390).
+    ActorDecl {
+        name: String,
+        /// (type_name, field_name, initializer_expr).
+        state_fields: Vec<(String, String, Node)>,
+        /// Boolean `always:` safety invariants.
+        always_clauses: Vec<Node>,
+        /// Receive handlers with full pre/post contracts.
+        receive_handlers: Vec<ReceiveHandler>,
+        /// Simpler receive handlers (used by RES-386 `Actor` path).
+        #[allow(dead_code)]
+        handlers: Vec<ActorHandler>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-390: group of actors with a joint invariant the Z3
+    /// verifier must prove inductive across every member handler.
+    ClusterDecl {
+        name: String,
+        members: Vec<(String, String)>,
+        invariants: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+}
+
+/// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
+#[derive(Debug, Clone)]
+pub(crate) struct ActorHandler {
+    pub(crate) name: String,
+    #[allow(dead_code)]
+    pub(crate) ensures: Vec<Node>,
+    pub(crate) body: Box<Node>,
+    #[allow(dead_code)]
+    pub(crate) span: span::Span,
+}
+
+/// RES-388: one `receive <name>(params) requires ... ensures ... { body }`
+/// inside an `ActorDecl`. Handler bodies run atomically for `always` proofs.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ReceiveHandler {
+    pub(crate) name: String,
+    pub(crate) parameters: Vec<(String, String)>,
+    pub(crate) requires: Vec<Node>,
+    pub(crate) ensures: Vec<Node>,
+    pub(crate) body: Node,
+    pub(crate) span: span::Span,
 }
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
@@ -1645,6 +1755,7 @@ impl Parser {
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
             Token::Region => Some(self.parse_region_decl()),
+            Token::Actor => Some(self.parse_actor_decl()),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -1674,6 +1785,23 @@ impl Parser {
                 };
                 self.record_error(msg);
                 None
+            }
+            // RES-390: contextual keywords `actor` / `cluster`. Both
+            // are recognised only at the top of a statement when
+            // followed by an identifier, so user code that binds
+            // `let actor = 1;` or calls a local `cluster(...)` still
+            // parses. Tokens are plain `Identifier`s — no new
+            // reserved words on the lexer surface until RES-332
+            // lands full actor execution semantics.
+            Token::Identifier(ref n)
+                if n == "actor" && matches!(self.peek_token, Token::Identifier(_)) =>
+            {
+                Some(self.parse_actor_decl())
+            }
+            Token::Identifier(ref n)
+                if n == "cluster" && matches!(self.peek_token, Token::Identifier(_)) =>
+            {
+                Some(self.parse_cluster_decl())
             }
             // Assignment: `IDENT = EXPR;` — disambiguated from an
             // expression statement by looking ahead for `=`.
@@ -1958,6 +2086,7 @@ impl Parser {
                     pure,
                     effects,
                     type_params: type_params.clone(),
+                    fails: Vec::new(),
                 };
             }
 
@@ -1974,6 +2103,7 @@ impl Parser {
                 pure,
                 effects,
                 type_params,
+                fails: Vec::new(),
             };
         }
 
@@ -1988,7 +2118,20 @@ impl Parser {
         // number of `requires EXPR` and `ensures EXPR` clauses, in any
         // order. Each clause parses as a single expression.
         // RES-392: also accept an optional `recovers_to: EXPR;` clause.
-        let (requires, ensures, recovers_to) = self.parse_function_contracts();
+        let (requires, ensures, pre_recovers_to) = self.parse_function_contracts();
+
+        // RES-387: optional `fails Variant (, Variant)*` and
+        // `recovers_to: EXPR;` clauses. May appear in any order
+        // relative to each other, after the contracts.
+        let (fails, post_recovers_to) = self.parse_function_failures_and_recovery();
+        // Contracts may also appear after fails/recovers_to in
+        // hand-written code; fold any trailing clauses back in.
+        let (more_req, more_ens, _) = self.parse_function_contracts();
+        let mut requires = requires;
+        let mut ensures = ensures;
+        requires.extend(more_req);
+        ensures.extend(more_ens);
+        let recovers_to = pre_recovers_to.or(post_recovers_to);
 
         if self.current_token != Token::LeftBrace {
             self.record_error(format!(
@@ -2016,6 +2159,7 @@ impl Parser {
                     pure,
                     effects,
                     type_params: type_params.clone(),
+                    fails,
                 };
             }
         }
@@ -2034,6 +2178,7 @@ impl Parser {
             pure,
             effects,
             type_params,
+            fails,
         }
     }
 
@@ -2103,6 +2248,232 @@ impl Parser {
         }
     }
 
+    /// RES-388: parse `actor <Name> { ... }`.
+    ///
+    /// Body forms (any order, any number):
+    ///   `state: <Type> = <expr>;`   -- actor state field + initializer
+    ///   `always: <expr>;`           -- safety invariant
+    ///   `receive <name>(...) [requires ...] [ensures ...] { ... }`
+    ///
+    /// On entry `current_token` is `Token::Actor`; on exit it sits on
+    /// the actor's closing `}`, matching the calling convention used
+    /// by `parse_impl_block` and `parse_struct_decl`.
+    fn parse_actor_decl(&mut self) -> Node {
+        let actor_span = self.span_at_current();
+        self.next_token(); // skip `actor`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected actor name after `actor`, found {}",
+                    other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `{{` after `actor {}`, found {}",
+                name, tok
+            ));
+        } else {
+            self.next_token(); // skip `{`
+        }
+
+        let mut state_fields: Vec<(String, String, Node)> = Vec::new();
+        let mut always_clauses: Vec<Node> = Vec::new();
+        let mut receive_handlers: Vec<ReceiveHandler> = Vec::new();
+
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            match &self.current_token {
+                // `state: Type = expr;` — Identifier("state") followed by `:`.
+                Token::Identifier(kw) if kw == "state" && self.peek_token == Token::Colon => {
+                    self.next_token(); // skip `state`
+                    self.next_token(); // skip `:`
+                    let ty = match &self.current_token {
+                        Token::Identifier(t) => t.clone(),
+                        other => {
+                            let msg = format!(
+                                "Expected type name after `state:` in actor `{}`, found {}",
+                                name, other
+                            );
+                            self.record_error(msg);
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    };
+                    self.next_token(); // skip type
+                    // RES-388 MVP: require an `= init` so verification
+                    // has a concrete base case. A bare `state: Int;`
+                    // with no initializer is a parse error.
+                    if self.current_token != Token::Assign {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `=` after `state: {}` in actor `{}`, found {}",
+                            ty, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `=`
+                    let init = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past init
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `state` initializer in actor `{}`, found {}",
+                            name, tok
+                        ));
+                    }
+                    // Synthesize a field name equal to the keyword for
+                    // MVP. Multi-field actors are a follow-up; the
+                    // verifier currently reasons about a single
+                    // `state` field and rejects duplicates here.
+                    let field_name = "state".to_string();
+                    if state_fields.iter().any(|(_, n, _)| n == &field_name) {
+                        self.record_error(format!(
+                            "Actor `{}` declares `state` more than once; only a single `state` field is supported today",
+                            name
+                        ));
+                        continue;
+                    }
+                    state_fields.push((ty, field_name, init));
+                }
+
+                Token::Always => {
+                    self.next_token(); // skip `always`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `always` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past expr
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `always` invariant in actor `{}`, found {}",
+                            name, tok
+                        ));
+                    }
+                    always_clauses.push(expr);
+                }
+
+                Token::Receive => {
+                    let recv_span = self.span_at_current();
+                    self.next_token(); // skip `receive`
+                    let handler_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            self.record_error(format!(
+                                "Expected handler name after `receive` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            String::new()
+                        }
+                    };
+                    self.next_token(); // skip name
+                    if self.current_token != Token::LeftParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `(` after `receive {}` in actor `{}`, found {}",
+                            handler_name, name, tok
+                        ));
+                    } else {
+                        self.next_token(); // skip `(`
+                    }
+                    let parameters = if self.current_token == Token::RightParen {
+                        self.next_token();
+                        Vec::new()
+                    } else {
+                        self.parse_function_parameters()
+                    };
+                    let (requires, ensures, _) = self.parse_function_contracts();
+                    if self.current_token != Token::LeftBrace {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `{{` for body of `receive {}` in actor `{}`, found {}",
+                            handler_name, name, tok
+                        ));
+                        // Best-effort recovery: drop through; parse_block_statement
+                        // requires a `{` and would wedge otherwise.
+                        break;
+                    }
+                    let body = self.parse_block_statement();
+                    // Advance past the handler's closing `}` so the
+                    // next iteration sees the next actor-body item
+                    // (or the actor's own `}`). Same convention as
+                    // `parse_impl_block`.
+                    if self.current_token == Token::RightBrace {
+                        self.next_token();
+                    }
+                    receive_handlers.push(ReceiveHandler {
+                        name: handler_name,
+                        parameters,
+                        requires,
+                        ensures,
+                        body,
+                        span: recv_span,
+                    });
+                }
+
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "Expected `state`, `always`, `receive`, or `}}` in actor `{}`, found {}",
+                        name, tok
+                    ));
+                    // Don't infinite-loop on unexpected content.
+                    self.skip_until_stmt_end();
+                }
+            }
+        }
+
+        Node::ActorDecl {
+            name,
+            state_fields,
+            always_clauses,
+            receive_handlers,
+            handlers: Vec::new(),
+            span: actor_span,
+        }
+    }
+
+    /// RES-388: cheap recovery helper used by `parse_actor_decl` —
+    /// swallow tokens until the next `;`, `}`, or EOF so a bogus
+    /// actor-body item doesn't cascade into parse errors on the
+    /// remainder of the declaration.
+    fn skip_until_stmt_end(&mut self) {
+        while self.current_token != Token::Semicolon
+            && self.current_token != Token::RightBrace
+            && self.current_token != Token::Eof
+        {
+            self.next_token();
+        }
+        if self.current_token == Token::Semicolon {
+            self.next_token();
+        }
+    }
+
     /// RES-158: parse a single method inside an `impl` block. Returns
     /// a `Node::Function` with the method name mangled
     /// (`<StructName>$<method>`) and `self` — if present as the
@@ -2152,7 +2523,14 @@ impl Parser {
         }
 
         let return_type = self.parse_optional_return_type();
-        let (requires, ensures, recovers_to) = self.parse_function_contracts();
+        let (requires, ensures, pre_recovers_to) = self.parse_function_contracts();
+        let (fails, post_recovers_to) = self.parse_function_failures_and_recovery();
+        let (more_req, more_ens, _) = self.parse_function_contracts();
+        let mut requires = requires;
+        let mut ensures = ensures;
+        requires.extend(more_req);
+        ensures.extend(more_ens);
+        let recovers_to = pre_recovers_to.or(post_recovers_to);
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
@@ -2183,6 +2561,7 @@ impl Parser {
             // always monomorphic. `impl<T>` is a future
             // extension.
             type_params: Vec::new(),
+            fails,
         }
     }
 
@@ -2549,6 +2928,76 @@ impl Parser {
             }
         }
         (requires, ensures, recovers_to)
+    }
+
+    /// RES-387: parse `fails Variant (, Variant)*` and
+    /// `recovers_to: EXPR;` clauses on a fn signature. Both are
+    /// optional; either, both, or neither may appear, in any order.
+    /// Each `fails` clause appends to the variant list; a second
+    /// `recovers_to` emits a diagnostic and overrides the first.
+    /// On exit the cursor sits on whatever follows the last clause.
+    fn parse_function_failures_and_recovery(&mut self) -> (Vec<String>, Option<Box<Node>>) {
+        let mut fails: Vec<String> = Vec::new();
+        let mut recovers_to: Option<Box<Node>> = None;
+        loop {
+            match self.current_token {
+                Token::Fails => {
+                    self.next_token(); // skip `fails`
+                    loop {
+                        match &self.current_token {
+                            Token::Identifier(name) => {
+                                let name = name.clone();
+                                if !fails.contains(&name) {
+                                    fails.push(name);
+                                }
+                                self.next_token();
+                            }
+                            other => {
+                                let tok = other.clone();
+                                self.record_error(format!(
+                                    "Expected failure-variant identifier after `fails`, found {}",
+                                    tok
+                                ));
+                                break;
+                            }
+                        }
+                        if self.current_token == Token::Comma {
+                            self.next_token();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Token::RecoversTo => {
+                    self.next_token(); // skip `recovers_to`
+                    if self.current_token == Token::Colon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `recovers_to`, found {}",
+                            tok
+                        ));
+                    }
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past last token of expression
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    }
+                    if recovers_to.is_some() {
+                        self.record_error(
+                            "Duplicate `recovers_to:` clause on fn signature".to_string(),
+                        );
+                    }
+                    recovers_to = Some(Box::new(expr));
+                }
+                _ => break,
+            }
+        }
+        (fails, recovers_to)
     }
 
     /// RES-124 (RES-124a): parse an optional `<T, U, ...>`
@@ -4253,6 +4702,333 @@ impl Parser {
             name,
             fields,
             span: self.span_at_current(),
+        }
+    }
+
+    /// RES-386: parse an `actor Name { ... }` declaration.
+    ///
+    /// Grammar (minimum viable slice):
+    /// ```text
+    /// actor Counter {
+    ///     state: int = 0;
+    ///     concurrent_ensures: <expr>;          // zero or more
+    ///     receive <name>()
+    ///         ensures <expr>;                  // zero or more per handler
+    ///     { <body> }                           // usually `self.state = ...;`
+    /// }
+    /// ```
+    ///
+    /// On entry `current_token` is `actor`. On exit it sits on the
+    /// closing `}` of the actor body (mirroring `parse_struct_decl`'s
+    /// contract so `parse_program`'s `next_token` advances correctly).
+    /// Parse errors are recorded via `record_error` and best-effort
+    /// recovery falls through — we never panic on malformed input.
+    #[allow(dead_code)]
+    fn parse_actor_block(&mut self) -> Node {
+        let actor_span = self.span_at_current();
+        self.next_token(); // skip 'actor'
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'actor', found {}", tok));
+                String::new()
+            }
+        };
+        self.next_token();
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after actor name, found {}", tok));
+            return Node::Actor {
+                name,
+                state_type: String::new(),
+                state_init: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
+                concurrent_ensures: Vec::new(),
+                handlers: Vec::new(),
+                span: actor_span,
+            };
+        }
+        self.next_token(); // skip '{'
+
+        // `state: <Type> = <init>;` — required once.
+        let mut state_type = String::new();
+        let mut state_init: Node = Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        };
+        let mut saw_state = false;
+
+        let mut concurrent_ensures: Vec<Node> = Vec::new();
+        let mut handlers: Vec<ActorHandler> = Vec::new();
+
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            match &self.current_token {
+                // `state: <Type> = <init>;`
+                Token::Identifier(n) if n == "state" => {
+                    self.next_token(); // skip 'state'
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ':' after 'state' in actor declaration, found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                    self.next_token(); // skip ':'
+                    let ty = match self.parse_type_annotation("for actor state") {
+                        Some(t) => t,
+                        None => break,
+                    };
+                    state_type = ty;
+                    if self.current_token != Token::Assign {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected '=' after actor state type, found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                    self.next_token(); // skip '='
+                    state_init = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    });
+                    if self.peek_token == Token::Semicolon {
+                        self.next_token();
+                    }
+                    self.next_token(); // advance past `;` to next member
+                    saw_state = true;
+                }
+
+                Token::ConcurrentEnsures => {
+                    self.next_token(); // skip 'concurrent_ensures'
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ':' after 'concurrent_ensures', found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                    self.next_token(); // skip ':'
+                    let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    concurrent_ensures.push(expr);
+                    if self.peek_token == Token::Semicolon {
+                        self.next_token();
+                    }
+                    self.next_token();
+                }
+
+                Token::Receive => {
+                    let handler_span = self.span_at_current();
+                    self.next_token(); // skip 'receive'
+                    let handler_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected handler name after 'receive', found {}",
+                                tok
+                            ));
+                            break;
+                        }
+                    };
+                    self.next_token();
+                    if self.current_token != Token::LeftParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected '(' after handler name '{}', found {}",
+                            handler_name, tok
+                        ));
+                        break;
+                    }
+                    self.next_token(); // '('
+                    // Minimum slice: no parameters supported. RES-332
+                    // will add message payload params.
+                    if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ')' after '(' in receive handler \
+                             (handler parameters not yet supported), found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                    self.next_token(); // ')'
+
+                    // Optional `ensures <expr>;` clauses between the
+                    // signature and the body. Zero or more.
+                    let mut ensures: Vec<Node> = Vec::new();
+                    while self.current_token == Token::Ensures {
+                        self.next_token(); // skip 'ensures'
+                        let clause = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                            value: true,
+                            span: span::Span::default(),
+                        });
+                        ensures.push(clause);
+                        if self.peek_token == Token::Semicolon {
+                            self.next_token();
+                        }
+                        self.next_token();
+                    }
+
+                    if self.current_token != Token::LeftBrace {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected '{{' to open receive-handler body, found {}",
+                            tok
+                        ));
+                        break;
+                    }
+                    let body = self.parse_block_statement();
+                    handlers.push(ActorHandler {
+                        name: handler_name,
+                        ensures,
+                        body: Box::new(body),
+                        span: handler_span,
+                    });
+                    // parse_block_statement leaves current_token on
+                    // the closing `}`. Advance to the next member.
+                    self.next_token();
+                }
+
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected 'state', 'concurrent_ensures', 'receive', or '}}' \
+                         inside actor '{}', found {}",
+                        name, tok
+                    ));
+                    break;
+                }
+            }
+        }
+
+        if !saw_state {
+            self.record_error(format!(
+                "actor '{}' is missing a `state: <Type> = <init>;` declaration",
+                name
+            ));
+        }
+
+        Node::Actor {
+            name,
+            state_type,
+            state_init: Box::new(state_init),
+            concurrent_ensures,
+            handlers,
+            span: actor_span,
+        }
+    }
+
+
+
+    /// RES-390: parse `cluster Name { member: ActorType; ... cluster_invariant: EXPR; ... }`.
+    fn parse_cluster_decl(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `cluster`
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected identifier after `cluster`, found {}",
+                    tok
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected `{{` after cluster name, found {}", tok));
+            return Node::ClusterDecl {
+                name,
+                members: Vec::new(),
+                invariants: Vec::new(),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `{`
+
+        let mut members: Vec<(String, String)> = Vec::new();
+        let mut invariants: Vec<Node> = Vec::new();
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            let ident = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected cluster member or `cluster_invariant`, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            };
+            self.next_token(); // skip identifier
+            if self.current_token != Token::Colon {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected `:` after `{}` in cluster body, found {}",
+                    ident, tok
+                ));
+                break;
+            }
+            self.next_token(); // skip `:`
+            if ident == "cluster_invariant" {
+                let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                    value: true,
+                    span: span::Span::default(),
+                });
+                self.next_token(); // move past tail of invariant
+                if self.current_token != Token::Semicolon {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `;` after `cluster_invariant`, found {}",
+                        tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `;`
+                invariants.push(expr);
+            } else {
+                let actor_ty = match &self.current_token {
+                    Token::Identifier(n) => n.clone(),
+                    _ => {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected actor type after `{}:`, found {}",
+                            ident, tok
+                        ));
+                        break;
+                    }
+                };
+                self.next_token(); // skip actor type
+                if self.current_token != Token::Semicolon {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `;` after cluster member `{}: {}`, found {}",
+                        ident, actor_ty, tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `;`
+                members.push((ident, actor_ty));
+            }
+        }
+        Node::ClusterDecl {
+            name,
+            members,
+            invariants,
+            span: stmt_span,
         }
     }
 
@@ -7686,6 +8462,10 @@ impl Interpreter {
             // RES-391: `region <Name>;` is pure compile-time metadata
             // consumed by the borrow checker — runtime no-op.
             Node::RegionDecl { .. } => Ok(Value::Void),
+            // RES-386/RES-388/RES-390: actor/cluster declarations are
+            // compile-time-only. The verifier hooks proof obligations
+            // out of `check_program_with_source`; no runtime lowering.
+            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Value::Void),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -9223,6 +10003,7 @@ fn classify_lex_token(
         | Token::Ensures
         | Token::RecoversTo
         | Token::Invariant
+        | Token::Fails
         | Token::Struct
         | Token::New
         | Token::Match
@@ -9529,6 +10310,67 @@ fn emit_certificates(
     Ok(certificates.len())
 }
 
+/// RES-386: walk the top-level program, find every `actor` declaration,
+/// and run the Z3 commutativity check on each unordered pair of its
+/// `receive` handlers. Results are printed to stdout with a stable
+/// `verifier: actor <name>:` prefix so the golden-test harness can
+/// capture them deterministically.
+///
+/// Without the `z3` feature, this is a no-op — we silently skip actor
+/// verification rather than emit a diagnostic that would break the
+/// default-build golden tests. Any golden that exercises the actor
+/// verifier lives under `#[cfg(feature = "z3")]`.
+#[cfg(feature = "z3")]
+fn run_actor_verification(program: &Node) {
+    let Node::Program(statements) = program else {
+        return;
+    };
+    for spanned in statements {
+        if let Node::Actor { name, handlers, .. } = &spanned.node {
+            let verification = verifier_z3::check_actor_commutativity(name, handlers);
+            for (a, b, result) in &verification.pairs {
+                match result {
+                    verifier_z3::CommutativityResult::Commute => {
+                        println!(
+                            "verifier: actor {}: handlers `{}` and `{}` commute",
+                            verification.actor_name, a, b,
+                        );
+                    }
+                    verifier_z3::CommutativityResult::Diverge {
+                        pre_state,
+                        ab_state,
+                        ba_state,
+                    } => {
+                        println!(
+                            "verifier: actor {}: handlers `{}` and `{}` do not commute \
+                             — counterexample: pre_state={}, {}_then_{}={}, {}_then_{}={}",
+                            verification.actor_name,
+                            a,
+                            b,
+                            pre_state,
+                            a,
+                            b,
+                            ab_state,
+                            b,
+                            a,
+                            ba_state,
+                        );
+                    }
+                    verifier_z3::CommutativityResult::Unknown { reason } => {
+                        println!(
+                            "verifier: actor {}: handlers `{}` and `{}` — unknown ({})",
+                            verification.actor_name, a, b, reason,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "z3"))]
+fn run_actor_verification(_program: &Node) {}
+
 // Execute a Resilient source file
 #[allow(clippy::too_many_arguments)] // CLI glue fn — all args come from flags
 fn execute_file(
@@ -9601,6 +10443,11 @@ fn execute_file(
             region_errors.len()
         ));
     }
+
+    // RES-386: race-freedom / commutativity obligation per actor.
+    // Runs before typecheck so an invalid actor is a verifier-level
+    // diagnostic rather than a type error. No-op in non-z3 builds.
+    run_actor_verification(&program);
 
     // Type checking if enabled. --audit, --explain-effects, and
     // --emit-certificate all imply --typecheck (no point running
@@ -10631,6 +11478,38 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
         .with_warn_unverified(!quiet);
     match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
         Ok(_) => {
+            // RES-390: distributed-invariant verification runs
+            // AFTER successful typechecking — we only try to
+            // prove clusters that parse cleanly and whose
+            // members resolve. Any diagnostics raise the
+            // subcommand's exit code to 1 so CI catches
+            // broken clusters the same way it catches a
+            // failed `ensures`.
+            #[cfg(feature = "z3")]
+            {
+                let diags = cluster_verifier::verify_program(&program, verifier_timeout_ms);
+                if !diags.is_empty() {
+                    if !quiet {
+                        for d in &diags {
+                            let header = format!(
+                                "{}:{}:{}: cluster-invariant error: [{}/{}.{}] {}",
+                                path.display(),
+                                d.span.start.line,
+                                d.span.start.column,
+                                d.cluster,
+                                d.actor,
+                                d.handler,
+                                d.message,
+                            );
+                            eprintln!(
+                                "{}",
+                                render_with_caret(&src, &header, "cluster-invariant error")
+                            );
+                        }
+                    }
+                    return Some(1);
+                }
+            }
             if !quiet {
                 println!("{}: ok", path.display());
             }
@@ -18470,6 +19349,115 @@ mod tests {
             tc.check_program_with_source(&program, "<test>").is_ok(),
             "forward ref should typecheck"
         );
+    }
+
+    // --- RES-388: actor temporal assertions (`always` invariants) ---
+
+    #[test]
+    fn actor_decl_with_state_always_and_receive_parses() {
+        let src = "\
+            actor Q {\n\
+                state: int = 0;\n\
+                always: state <= 100;\n\
+                receive push() requires state < 100 { self.state = self.state + 1; }\n\
+                receive pop() requires state > 0 { self.state = self.state - 1; }\n\
+            }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let Node::Program(statements) = &program else {
+            panic!("expected program");
+        };
+        let first = &statements[0].node;
+        match first {
+            Node::ActorDecl {
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                ..
+            } => {
+                assert_eq!(name, "Q");
+                assert_eq!(state_fields.len(), 1);
+                assert_eq!(state_fields[0].1, "state");
+                assert_eq!(always_clauses.len(), 1);
+                assert_eq!(receive_handlers.len(), 2);
+                assert_eq!(receive_handlers[0].name, "push");
+                assert_eq!(receive_handlers[1].name, "pop");
+                assert_eq!(receive_handlers[0].requires.len(), 1);
+            }
+            other => panic!("expected ActorDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn actor_missing_state_initializer_is_parse_error() {
+        let src = "actor Q { state: int; }";
+        let (_program, errs) = parse(src);
+        assert!(
+            !errs.is_empty(),
+            "`state: int;` without `=` must surface a parse error"
+        );
+    }
+
+    #[test]
+    fn actor_receive_handler_typechecks_self_field_access() {
+        // `self.state` inside the handler body must resolve via the
+        // actor's registered struct-field layout. No Z3 needed — this
+        // tests only the typechecker plumbing.
+        let src = "\
+            actor C {\n\
+                state: int = 0;\n\
+                always: state >= 0;\n\
+                receive tick() { self.state = self.state + 1; }\n\
+            }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
+        assert!(
+            tc.check_program_with_source(&program, "<test>").is_ok(),
+            "actor `self.state` access should typecheck"
+        );
+    }
+
+    #[test]
+    fn actor_always_invariant_must_be_bool() {
+        // `always: 42;` is not a boolean expression — the typechecker
+        // rejects it before the verifier ever runs.
+        let src = "\
+            actor C {\n\
+                state: int = 0;\n\
+                always: 42;\n\
+            }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
+        let result = tc.check_program_with_source(&program, "<test>");
+        match result {
+            Err(msg) => assert!(
+                msg.contains("always") && msg.contains("Bool"),
+                "expected always/Bool diagnostic, got: {}",
+                msg
+            ),
+            Ok(_) => panic!("non-Bool `always` clause should be a type error"),
+        }
+    }
+
+    #[test]
+    fn actor_decl_evaluates_to_void_at_runtime() {
+        // Actors have no runtime lowering today — the interpreter
+        // treats them as no-ops, just like type aliases.
+        let src = "\
+            actor Q { state: int = 0; always: state >= 0; }\n\
+            let sentinel = 7;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).unwrap();
+        assert!(matches!(interp.env.get("sentinel"), Some(Value::Int(7))));
     }
 
     // --- RES-126: nominal struct equivalence ---

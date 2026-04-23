@@ -178,6 +178,9 @@ enum Tok {
     RecoversTo,
     #[token("invariant")]
     Invariant,
+    // RES-387: `fails` — comma-separated failure-variant list on a fn.
+    #[token("fails")]
+    Fails,
     #[token("struct")]
     Struct,
     #[token("new")]
@@ -204,6 +207,15 @@ enum Tok {
     Region,
     #[token("mut")]
     Mut,
+    // RES-386/RES-388: actor keywords.
+    #[token("actor")]
+    Actor,
+    #[token("receive")]
+    Receive,
+    #[token("concurrent_ensures")]
+    ConcurrentEnsures,
+    #[token("always")]
+    Always,
     #[token("true")]
     True,
     #[token("false")]
@@ -522,6 +534,7 @@ fn convert(t: Tok) -> Token {
         Tok::Ensures => Token::Ensures,
         Tok::RecoversTo => Token::RecoversTo,
         Tok::Invariant => Token::Invariant,
+        Tok::Fails => Token::Fails,
         Tok::Struct => Token::Struct,
         Tok::New => Token::New,
         Tok::Match => Token::Match,
@@ -531,6 +544,10 @@ fn convert(t: Tok) -> Token {
         Tok::Linear => Token::Linear,
         Tok::Region => Token::Region,
         Tok::Mut => Token::Mut,
+        Tok::Actor => Token::Actor,
+        Tok::Receive => Token::Receive,
+        Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
+        Tok::Always => Token::Always,
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,

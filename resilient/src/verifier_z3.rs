@@ -19,7 +19,7 @@
 // floats) makes us bail to None — the existing runtime check still
 // fires.
 
-use crate::Node;
+use crate::{ActorHandler, Node};
 use std::collections::{BTreeSet, HashMap};
 use z3::ast::{Ast, Bool, Int};
 
@@ -480,6 +480,292 @@ fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
             }
         }
         _ => {}
+    }
+}
+
+// ============================================================
+// RES-386: actor commutativity check
+// ============================================================
+//
+// The minimum slice models an actor's per-handler state transition
+// as a pure function `f: Int -> Int` over a single integer-valued
+// `self.state`. For every pair of handlers `(A, B)` we ask the
+// solver whether running A-then-B from any symbolic pre-state
+// produces the same final state as B-then-A.
+//
+// This captures the "no lost updates" invariant the ticket body
+// motivates — if `Counter::increment` and `Counter::decrement`
+// commute, concurrent dispatchers can interleave them without
+// locks and still arrive at the same final count.
+//
+// Verdict shape:
+//   - Commute(name)                    — provable, no counterexample.
+//   - Diverge { a, b, pre, ab, ba, .. } — Z3 exhibited a model that
+//                                        falsifies the commutativity
+//                                        formula.
+//   - Unknown(name)                    — handler body isn't the
+//                                        supported `self.state = <int>;`
+//                                        shape (e.g. a branch, a call,
+//                                        or an assignment to a
+//                                        non-state field) or Z3
+//                                        returned Unknown.
+//
+// Anything beyond the supported body shape is reported as Unknown
+// so the driver can surface a clear diagnostic; it is never
+// silently treated as proof.
+
+/// RES-386: outcome of a commutativity check for one pair of actor
+/// handlers. The driver formats this into a user-facing diagnostic;
+/// tests consume the structured form directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommutativityResult {
+    /// Z3 proved `A(B(s)) == B(A(s))` for all integer pre-states.
+    Commute,
+    /// Z3 produced a concrete counterexample.
+    Diverge {
+        pre_state: String,
+        ab_state: String,
+        ba_state: String,
+    },
+    /// Handler body wasn't in the supported shape, or the solver
+    /// could not decide (typically a hard non-linear arithmetic
+    /// query). The driver emits a `warning`-flavoured diagnostic
+    /// rather than a hard error.
+    Unknown { reason: String },
+}
+
+/// RES-386: per-actor verification outcome, aggregating one
+/// `CommutativityResult` per ordered handler pair.
+#[derive(Debug, Clone)]
+pub struct ActorVerification {
+    pub actor_name: String,
+    /// Ordered `(handler_a, handler_b, result)` triples. The
+    /// verifier only emits each unordered pair once (a < b by
+    /// source order) — commutativity is symmetric.
+    pub pairs: Vec<(String, String, CommutativityResult)>,
+}
+
+/// RES-386: drive the commutativity check for every pair of
+/// `receive` handlers in the given actor. See module docs above
+/// for the semantic contract.
+pub fn check_actor_commutativity(actor_name: &str, handlers: &[ActorHandler]) -> ActorVerification {
+    let mut pairs: Vec<(String, String, CommutativityResult)> = Vec::new();
+    for i in 0..handlers.len() {
+        for j in (i + 1)..handlers.len() {
+            let a = &handlers[i];
+            let b = &handlers[j];
+            let result = check_pair_commute(a, b);
+            pairs.push((a.name.clone(), b.name.clone(), result));
+        }
+    }
+    ActorVerification {
+        actor_name: actor_name.to_string(),
+        pairs,
+    }
+}
+
+/// Check that running `a` then `b` produces the same final state
+/// as running `b` then `a`, starting from an arbitrary symbolic
+/// integer pre-state.
+fn check_pair_commute(a: &ActorHandler, b: &ActorHandler) -> CommutativityResult {
+    // Extract each handler's symbolic RHS expression (the expression
+    // that computes the new `self.state` from the old one). Anything
+    // outside the supported `self.state = <int_expr>;` shape fails
+    // fast with a descriptive `Unknown`.
+    let a_rhs = match extract_state_rhs(&a.body) {
+        Ok(n) => n,
+        Err(why) => {
+            return CommutativityResult::Unknown {
+                reason: format!("handler `{}`: {}", a.name, why),
+            };
+        }
+    };
+    let b_rhs = match extract_state_rhs(&b.body) {
+        Ok(n) => n,
+        Err(why) => {
+            return CommutativityResult::Unknown {
+                reason: format!("handler `{}`: {}", b.name, why),
+            };
+        }
+    };
+
+    let cfg = z3::Config::new();
+    let ctx = z3::Context::new(&cfg);
+
+    // Name conventions for the counterexample formatter:
+    //   state_0         — the symbolic pre-state.
+    //   state_after_<h> — abbreviations recovered from the model.
+    let pre = Int::new_const(&ctx, "state_0");
+
+    // Build the A-then-B chain.
+    let Some(ab_inter) = translate_state_rhs(&ctx, &a_rhs, &pre) else {
+        return CommutativityResult::Unknown {
+            reason: format!(
+                "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
+                a.name,
+            ),
+        };
+    };
+    let Some(ab_final) = translate_state_rhs(&ctx, &b_rhs, &ab_inter) else {
+        return CommutativityResult::Unknown {
+            reason: format!(
+                "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
+                b.name,
+            ),
+        };
+    };
+
+    // Build the B-then-A chain.
+    let Some(ba_inter) = translate_state_rhs(&ctx, &b_rhs, &pre) else {
+        return CommutativityResult::Unknown {
+            reason: format!(
+                "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
+                b.name,
+            ),
+        };
+    };
+    let Some(ba_final) = translate_state_rhs(&ctx, &a_rhs, &ba_inter) else {
+        return CommutativityResult::Unknown {
+            reason: format!(
+                "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
+                a.name,
+            ),
+        };
+    };
+
+    // Tautology question: is (ab_final != ba_final) UNSAT?
+    // If UNSAT → commute. If SAT → counterexample. If Unknown → Unknown.
+    let goal = ab_final._eq(&ba_final);
+    let negated = goal.not();
+    let solver = z3::Solver::new(&ctx);
+    solver.assert(&negated);
+    match solver.check() {
+        z3::SatResult::Unsat => CommutativityResult::Commute,
+        z3::SatResult::Sat => match solver.get_model() {
+            Some(model) => {
+                let pre_val = model
+                    .eval(&pre, true)
+                    .and_then(|v| v.as_i64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "<?>".to_string());
+                let ab_val = model
+                    .eval(&ab_final, true)
+                    .and_then(|v| v.as_i64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "<?>".to_string());
+                let ba_val = model
+                    .eval(&ba_final, true)
+                    .and_then(|v| v.as_i64())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "<?>".to_string());
+                CommutativityResult::Diverge {
+                    pre_state: pre_val,
+                    ab_state: ab_val,
+                    ba_state: ba_val,
+                }
+            }
+            None => CommutativityResult::Unknown {
+                reason: "Z3 reported Sat but provided no model".to_string(),
+            },
+        },
+        z3::SatResult::Unknown => CommutativityResult::Unknown {
+            reason:
+                "Z3 returned Unknown — the commutativity formula is outside the decided fragment"
+                    .to_string(),
+        },
+    }
+}
+
+/// Peel a handler body down to its single `self.state = <rhs>;`
+/// assignment. Returns the RHS expression on success. Any other
+/// body shape is rejected with a human-readable reason — the
+/// minimum slice deliberately narrows the accepted form rather
+/// than silently proving trivial-seeming commutativity on
+/// unrepresented control flow.
+fn extract_state_rhs(body: &Node) -> Result<Node, String> {
+    let stmts: &[Node] = match body {
+        Node::Block { stmts, .. } => stmts,
+        _ => {
+            return Err(
+                "body must be a block containing exactly `self.state = <int_expr>;`".to_string(),
+            );
+        }
+    };
+    if stmts.len() != 1 {
+        return Err(format!(
+            "body must contain exactly one statement (`self.state = ...`), found {}",
+            stmts.len()
+        ));
+    }
+    let expr_stmt = match &stmts[0] {
+        Node::ExpressionStatement { expr, .. } => expr.as_ref(),
+        other => other,
+    };
+    match expr_stmt {
+        Node::FieldAssignment {
+            target,
+            field,
+            value,
+            ..
+        } => {
+            let Node::Identifier { name, .. } = target.as_ref() else {
+                return Err("assignment target must be `self.state` (minimum slice)".to_string());
+            };
+            if name != "self" || field != "state" {
+                return Err(format!(
+                    "assignment target must be `self.state`, got `{}.{}`",
+                    name, field
+                ));
+            }
+            Ok((**value).clone())
+        }
+        _ => Err("body statement must be `self.state = <int_expr>;`".to_string()),
+    }
+}
+
+/// Translate a handler's RHS expression into a Z3 `Int`, with any
+/// `self.state` field access bound to `pre_state`. Supports the
+/// same integer subset as `translate_int`.
+fn translate_state_rhs<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    pre_state: &Int<'c>,
+) -> Option<Int<'c>> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(Int::from_i64(ctx, *value)),
+        Node::FieldAccess { target, field, .. } => {
+            if let Node::Identifier { name, .. } = target.as_ref()
+                && name == "self"
+                && field == "state"
+            {
+                Some(pre_state.clone())
+            } else {
+                None
+            }
+        }
+        // A bare `self` with no field access is nonsensical here.
+        Node::Identifier { .. } => None,
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => translate_state_rhs(ctx, right, pre_state).map(|v| v.unary_minus()),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            let l = translate_state_rhs(ctx, left, pre_state)?;
+            let r = translate_state_rhs(ctx, right, pre_state)?;
+            Some(match operator.as_str() {
+                "+" => Int::add(ctx, &[&l, &r]),
+                "-" => Int::sub(ctx, &[&l, &r]),
+                "*" => Int::mul(ctx, &[&l, &r]),
+                "/" => l.div(&r),
+                "%" => l.rem(&r),
+                _ => return None,
+            })
+        }
+        _ => None,
     }
 }
 

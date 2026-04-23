@@ -1,0 +1,2 @@
+actor_queue_safe: invariant state <= 100 verified
+Program executed successfully

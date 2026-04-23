@@ -196,10 +196,127 @@ impl Formatter {
                 self.newline();
             }
             Node::RegionDecl { name, .. } => {
-                // RES-391: reserved `region` keyword introduces a
-                // compile-time region label — emitted as a single
-                // terminated statement, matching `type` aliases.
                 self.write(&format!("region {};", name));
+                self.newline();
+            }
+            // RES-386: re-emit a commutativity-style actor block.
+            Node::Actor {
+                name,
+                state_type,
+                state_init,
+                concurrent_ensures,
+                handlers,
+                ..
+            } => {
+                self.write(&format!("actor {} {{", name));
+                self.newline();
+                self.indent();
+                self.write(&format!("state: {} = ", state_type));
+                self.fmt_expr(state_init);
+                self.write(";");
+                self.newline();
+                for ce in concurrent_ensures {
+                    self.write("concurrent_ensures: ");
+                    self.fmt_expr(ce);
+                    self.write(";");
+                    self.newline();
+                }
+                for h in handlers {
+                    self.write(&format!("receive {}()", h.name));
+                    for e in &h.ensures {
+                        self.newline();
+                        self.indent();
+                        self.write("ensures ");
+                        self.fmt_expr(e);
+                        self.write(";");
+                        self.dedent();
+                    }
+                    self.write(" ");
+                    self.fmt_block_like(&h.body);
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            // RES-388/RES-390: re-emit an ActorDecl with typed state fields,
+            // always invariants, and receive handlers.
+            Node::ActorDecl {
+                name,
+                state_fields,
+                always_clauses,
+                receive_handlers,
+                ..
+            } => {
+                self.write(&format!("actor {} {{", name));
+                self.newline();
+                self.indent();
+                for (ty, field, init) in state_fields {
+                    self.write(&format!("{}: {} = ", field, ty));
+                    self.fmt_expr(init);
+                    self.write(";");
+                    self.newline();
+                }
+                for clause in always_clauses {
+                    self.write("always: ");
+                    self.fmt_expr(clause);
+                    self.write(";");
+                    self.newline();
+                }
+                for h in receive_handlers {
+                    self.blank_line();
+                    self.write(&format!("receive {}(", h.name));
+                    for (i, (pty, pname)) in h.parameters.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(&format!("{} {}", pty, pname));
+                    }
+                    self.write(")");
+                    for r in &h.requires {
+                        self.newline();
+                        self.indent();
+                        self.write("requires ");
+                        self.fmt_expr(r);
+                        self.dedent();
+                    }
+                    for e in &h.ensures {
+                        self.newline();
+                        self.indent();
+                        self.write("ensures ");
+                        self.fmt_expr(e);
+                        self.dedent();
+                    }
+                    self.write(" ");
+                    self.fmt_stmt(&h.body);
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            // RES-390: re-emit a ClusterDecl block.
+            Node::ClusterDecl {
+                name,
+                members,
+                invariants,
+                ..
+            } => {
+                self.write(&format!("cluster {} {{", name));
+                self.newline();
+                self.indent();
+                for (local, actor_ty) in members {
+                    self.write(&format!("{}: {};", local, actor_ty));
+                    self.newline();
+                }
+                for inv in invariants {
+                    self.write("cluster_invariant: ");
+                    self.fmt_expr(inv);
+                    self.write(";");
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
                 self.newline();
             }
             Node::LetStatement {
@@ -735,6 +852,9 @@ impl Formatter {
             | Node::ImplBlock { .. }
             | Node::TypeAlias { .. }
             | Node::RegionDecl { .. }
+            | Node::Actor { .. }
+            | Node::ActorDecl { .. }
+            | Node::ClusterDecl { .. }
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
