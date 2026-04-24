@@ -15,13 +15,13 @@ fn main() {
     let v1 = cfg?.value;
     println(v1);
 
-    // None()?.value — short-circuits to None without touching .value.
-    let none_cfg = None();
+    // None?.value — short-circuits to None without touching .value.
+    let none_cfg = None;
     let v2 = none_cfg?.value;
     println(v2);
 
     // Three-level chain: a?.b?.c — None at the first step propagates.
-    let a = None();
+    let a = None;
     let b = a?.value;    // None (short-circuits on a)
     let c = b?.value;    // None (short-circuits on b)
     println(b);

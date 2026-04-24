@@ -1732,7 +1732,7 @@ impl TypeChecker {
                     let mut timed_out_flag = false;
                     if verdict.is_none() {
                         // RES-354: use theory-aware prover.
-                        let (v, _cert, c, _timed_out) = {
+                        let (_v, _cert, _c, _timed_out) = {
                             #[cfg(feature = "z3")]
                             {
                                 z3_prove_with_cert_theory(

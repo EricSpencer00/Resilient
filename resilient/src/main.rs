@@ -683,11 +683,11 @@ impl Lexer {
                 self.read_char(); // consume second `?`
                 Token::DoubleQuestion
             }
-            '?' => Token::Question,
+            // RES-363: `?.` is the optional-chain operator. Peek one
+            // character ahead; if it is `.` emit QuestionDot and
+            // advance past the `.` so it is not re-consumed. Otherwise
+            // emit a lone `?` (RES-375 used in `??` already handled above).
             '?' => {
-                // RES-363: `?.` is the optional-chain operator. Peek one
-                // character ahead; if it is `.` emit QuestionDot and
-                // advance past the `.` so it is not re-consumed.
                 if self.peek_char() == '.' {
                     self.read_char(); // consume '.'
                     Token::QuestionDot
@@ -6338,17 +6338,13 @@ enum Value {
         ok: bool,
         payload: Box<Value>,
     },
-    /// RES-375: first-class Option type.
+    /// RES-363 + RES-375: first-class Option type.
     ///
-    /// `Some(None)` is `Value::Option(None)` — i.e. the outer `Option`
-    /// is the Rust-level discriminant, matching `None` / `Some(inner)`.
+    /// `Value::Option(None)` is the absent case — `?.` short-circuits to
+    /// this and `None` evaluates to it. `Value::Option(Some(v))` wraps a
+    /// present value; `Some(x)` constructs it and `?.` unwraps it before
+    /// performing a chained field/method access.
     Option(Option<Box<Value>>),
-    /// RES-363: first-class Option type for optional chaining.
-    ///
-    /// `Option(None)` is the absent case — `?.` short-circuits to this.
-    /// `Option(Some(v))` wraps a present value; `?.` unwraps it before
-    /// performing the chained field/method access.
-    Option(std::option::Option<Box<Value>>),
     Return(Box<Value>),
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
@@ -6977,20 +6973,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
-    // RES-375: Option<T> constructors and free-function methods.
-    // `None` is registered as a Value directly in Interpreter::new, not
-    // here, because the builtins table only holds functions.
-    ("Some", builtin_some),
-    ("is_some", builtin_is_some),
-    ("is_none", builtin_is_none),
-    ("option_unwrap", builtin_option_unwrap),
-    ("option_unwrap_or", builtin_option_unwrap_or),
-    // RES-363: Option type builtins.
+    // RES-363 + RES-375: Option<T> constructors and free-function methods.
     ("Some", builtin_some),
     ("None", builtin_none),
     ("is_some", builtin_is_some),
     ("is_none", builtin_is_none),
     ("unwrap_option", builtin_unwrap_option),
+    ("option_unwrap", builtin_option_unwrap),
+    ("option_unwrap_or", builtin_option_unwrap_or),
     // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
@@ -7651,32 +7641,6 @@ fn builtin_unwrap_err(args: &[Value]) -> RResult<Value> {
 }
 
 // ─── RES-375: Option<T> builtins ───────────────────────────────────────────
-
-/// `Some(v)` — wrap a value as a present Option.
-fn builtin_some(args: &[Value]) -> RResult<Value> {
-    match args {
-        [v] => Ok(Value::Option(Some(Box::new(v.clone())))),
-        _ => Err(format!("Some: expected 1 argument, got {}", args.len())),
-    }
-}
-
-/// `is_some(opt)` — true iff `opt` is `Some(_)`.
-fn builtin_is_some(args: &[Value]) -> RResult<Value> {
-    match args {
-        [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
-        [other] => Err(format!("is_some: expected Option, got {}", other)),
-        _ => Err(format!("is_some: expected 1 argument, got {}", args.len())),
-    }
-}
-
-/// `is_none(opt)` — true iff `opt` is `None`.
-fn builtin_is_none(args: &[Value]) -> RResult<Value> {
-    match args {
-        [Value::Option(inner)] => Ok(Value::Bool(inner.is_none())),
-        [other] => Err(format!("is_none: expected Option, got {}", other)),
-        _ => Err(format!("is_none: expected 1 argument, got {}", args.len())),
-    }
-}
 
 /// `option_unwrap(opt)` — return the inner value or runtime error.
 fn builtin_option_unwrap(args: &[Value]) -> RResult<Value> {
