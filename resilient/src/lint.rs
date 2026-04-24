@@ -443,6 +443,14 @@ fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<
         Node::TryExpression { expr, .. } => {
             collect_identifier_reads_in(expr, out);
         }
+        Node::OptionalChain { object, access, .. } => {
+            collect_identifier_reads_in(object, out);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    collect_identifier_reads_in(a, out);
+                }
+            }
+        }
         Node::IndexExpression { target, index, .. } => {
             collect_identifier_reads_in(target, out);
             collect_identifier_reads_in(index, out);
@@ -903,6 +911,7 @@ fn span_of(node: &Node) -> Option<Span> {
         | Node::PrefixExpression { span, .. }
         | Node::CallExpression { span, .. }
         | Node::TryExpression { span, .. }
+        | Node::OptionalChain { span, .. }
         | Node::ArrayLiteral { span, .. }
         | Node::IndexExpression { span, .. }
         | Node::FieldAccess { span, .. }
@@ -1353,6 +1362,14 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             }
         }
         Node::TryExpression { expr, .. } => f(expr),
+        Node::OptionalChain { object, access, .. } => {
+            f(object);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    f(a);
+                }
+            }
+        }
         Node::Match {
             scrutinee, arms, ..
         } => {

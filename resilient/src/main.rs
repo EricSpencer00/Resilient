@@ -152,6 +152,10 @@ enum Token {
     /// pattern.
     Default,
     Question,
+    /// RES-363: `?.` — optional-chaining operator. Emitted by the lexer
+    /// when `?` is immediately followed by `.`. The parser desugars it
+    /// into `Node::OptionalChain`.
+    QuestionDot,
     /// RES-073: `use "path/to/file.rz";` — module import.
     Use,
     /// FFI v1: `extern "libname" { fn ... }` block keyword.
@@ -331,6 +335,7 @@ impl Token {
             Token::FatArrow => "`=>`".to_string(),
             Token::Arrow => "`->`".to_string(),
             Token::Question => "`?`".to_string(),
+            Token::QuestionDot => "`?.`".to_string(),
             Token::Plus => "`+`".to_string(),
             Token::Minus => "`-`".to_string(),
             Token::Multiply => "`*`".to_string(),
@@ -656,7 +661,17 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             '.' => Token::Dot,
-            '?' => Token::Question,
+            '?' => {
+                // RES-363: `?.` is the optional-chain operator. Peek one
+                // character ahead; if it is `.` emit QuestionDot and
+                // advance past the `.` so it is not re-consumed.
+                if self.peek_char() == '.' {
+                    self.read_char(); // consume '.'
+                    Token::QuestionDot
+                } else {
+                    Token::Question
+                }
+            }
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,
@@ -1437,6 +1452,25 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-363: `expr?.field` / `expr?.method(args)` — optional-chaining.
+    ///
+    /// If `expr` evaluates to `Value::Option(None)` or `Value::Result { ok:
+    /// false, .. }`, short-circuits to `Value::Option(None)`. Otherwise
+    /// unwraps `Value::Option(Some(inner))` (or passes any other value
+    /// through) and performs the field/method access on the inner value.
+    ///
+    /// Chains left-to-right naturally: each `?.` node produces a
+    /// `Value::Option`, so a subsequent `?.` on that result either
+    /// short-circuits again or unwraps-and-accesses.
+    OptionalChain {
+        /// The expression whose result is tested for None/Err.
+        object: Box<Node>,
+        /// What to access after the optional check.
+        access: ChainAccess,
+        /// Span of the `?.` token.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-042: anonymous fn expression. Unlike `Node::Function`, this
     /// node is not bound to a name — it evaluates to a `Value::Function`
     /// directly. Captures its defining env by value, matching existing
@@ -1726,6 +1760,15 @@ pub(crate) struct ExternDecl {
     /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
     #[allow(dead_code)]
     pub(crate) span: span::Span,
+}
+
+/// RES-363: what to access after the `?.` short-circuit check.
+#[derive(Debug, Clone)]
+enum ChainAccess {
+    /// `?.field` — read a named field.
+    Field(String),
+    /// `?.method(args)` — call a method with arguments.
+    Method(String, Vec<Node>),
 }
 
 // Parser for creating AST from tokens
@@ -4741,6 +4784,58 @@ impl Parser {
                         span: q_span,
                     })
                 }
+                Token::QuestionDot => {
+                    // RES-363: `?.` — optional chaining. `peek_token` is
+                    // `QuestionDot`. Advance twice: first to make `?.` the
+                    // current token (for the span), then past it to the
+                    // field/method identifier.
+                    self.next_token(); // current = `?.`, peek = identifier
+                    let qd_span = self.span_at_current();
+                    self.next_token(); // current = identifier, peek = next
+                    let field_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected field or method name after '?.', found {}",
+                                tok
+                            ));
+                            // current_left was moved out of left_expr;
+                            // return it wrapped in Some for error recovery.
+                            return Some(current_left);
+                        }
+                    };
+                    // If the token after the identifier is `(`, this is a
+                    // method call — parse the argument list.
+                    let access = if self.peek_token == Token::LeftParen {
+                        self.next_token(); // move to `(`
+                        self.next_token(); // move past `(` into args
+                        let mut args: Vec<Node> = Vec::new();
+                        if self.current_token != Token::RightParen {
+                            if let Some(first) = self.parse_expression(0) {
+                                args.push(first);
+                            }
+                            while self.peek_token == Token::Comma {
+                                self.next_token(); // to `,`
+                                self.next_token(); // past `,`
+                                if let Some(a) = self.parse_expression(0) {
+                                    args.push(a);
+                                }
+                            }
+                            if self.peek_token == Token::RightParen {
+                                self.next_token(); // consume `)`
+                            }
+                        }
+                        ChainAccess::Method(field_name, args)
+                    } else {
+                        ChainAccess::Field(field_name)
+                    };
+                    Some(Node::OptionalChain {
+                        object: Box::new(current_left),
+                        access,
+                        span: qd_span,
+                    })
+                }
                 _ => Some(current_left),
             };
         }
@@ -5951,6 +6046,9 @@ impl Parser {
             Token::LeftBracket => 11,
             Token::Dot => 11,
             Token::Question => 12,
+            // RES-363: `?.` has the same postfix precedence as `?` and
+            // is higher than any binary operator so chaining binds tightly.
+            Token::QuestionDot => 12,
             _ => 0,
         }
     }
@@ -5971,6 +6069,7 @@ impl Parser {
             Token::LeftBracket => 11,
             Token::Dot => 11,
             Token::Question => 12,
+            Token::QuestionDot => 12,
             _ => 0,
         }
     }
@@ -6026,6 +6125,12 @@ enum Value {
         ok: bool,
         payload: Box<Value>,
     },
+    /// RES-363: first-class Option type for optional chaining.
+    ///
+    /// `Option(None)` is the absent case — `?.` short-circuits to this.
+    /// `Option(Some(v))` wraps a present value; `?.` unwraps it before
+    /// performing the chained field/method access.
+    Option(std::option::Option<Box<Value>>),
     Return(Box<Value>),
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
@@ -6167,6 +6272,10 @@ impl std::fmt::Debug for Value {
             Value::Result { ok, payload } => {
                 write!(f, "{}({:?})", if *ok { "Ok" } else { "Err" }, payload)
             }
+            Value::Option(inner) => match inner {
+                Some(v) => write!(f, "Some({:?})", v),
+                None => write!(f, "None"),
+            },
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
@@ -6221,6 +6330,10 @@ impl std::fmt::Display for Value {
             Value::Result { ok, payload } => {
                 write!(f, "{}({})", if *ok { "Ok" } else { "Err" }, payload)
             }
+            Value::Option(inner) => match inner {
+                Some(v) => write!(f, "Some({})", v),
+                None => write!(f, "None"),
+            },
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
             Value::Map(m) => {
@@ -6622,6 +6735,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
+    // RES-363: Option type builtins.
+    ("Some", builtin_some),
+    ("None", builtin_none),
+    ("is_some", builtin_is_some),
+    ("is_none", builtin_is_none),
+    ("unwrap_option", builtin_unwrap_option),
     // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
@@ -7100,6 +7219,54 @@ fn builtin_ok(args: &[Value]) -> RResult<Value> {
             payload: Box::new(v.clone()),
         }),
         _ => Err(format!("Ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `Some(v)` — wrap a value as a present Option.
+fn builtin_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Option(Some(Box::new(v.clone())))),
+        _ => Err(format!("Some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `None` — the absent Option. Called with zero arguments.
+fn builtin_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [] => Ok(Value::Option(None)),
+        _ => Err(format!("None: expected 0 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-363: `is_some(o)` — true iff `o` is a present Option.
+fn builtin_is_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
+        [other] => Err(format!("is_some: expected Option, got {}", other)),
+        _ => Err(format!("is_some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `is_none(o)` — true iff `o` is an absent Option.
+fn builtin_is_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_none())),
+        [other] => Err(format!("is_none: expected Option, got {}", other)),
+        _ => Err(format!("is_none: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `unwrap_option(o)` — return the inner value of a Some or
+/// panic-diagnose at runtime if None.
+fn builtin_unwrap_option(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v))] => Ok((**v).clone()),
+        [Value::Option(None)] => Err("unwrap_option called on None".to_string()),
+        [other] => Err(format!("unwrap_option: expected Option, got {}", other)),
+        _ => Err(format!(
+            "unwrap_option: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -8669,6 +8836,69 @@ impl Interpreter {
                     }
                     other => Err(format!("? operator expects a Result, got {}", other)),
                 }
+            }
+            // RES-363: `expr?.field` / `expr?.method(args)` — optional chaining.
+            Node::OptionalChain { object, access, .. } => {
+                let obj_val = self.eval(object)?;
+                // Determine the inner value to operate on, or short-circuit.
+                let inner = match obj_val {
+                    // None → short-circuit to None.
+                    Value::Option(None) => return Ok(Value::Option(None)),
+                    // Some(v) → unwrap and operate on v.
+                    Value::Option(Some(inner)) => *inner,
+                    // Err(e) → short-circuit to None (treat Err as absent).
+                    Value::Result { ok: false, .. } => return Ok(Value::Option(None)),
+                    // Ok(v) → unwrap and operate on v.
+                    Value::Result { ok: true, payload } => *payload,
+                    // Any other value: pass through directly (non-optional
+                    // chaining — `?.` on a non-Option is a no-op guard).
+                    other => other,
+                };
+                // Now perform the access on `inner` and wrap in Some.
+                let result = match access {
+                    ChainAccess::Field(field) => match inner {
+                        Value::Struct { name, fields } => fields
+                            .into_iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, v)| v)
+                            .ok_or_else(|| format!("Struct {} has no field '{}'", name, field)),
+                        other => Err(format!(
+                            "Cannot access field '{}' on non-struct {:?}",
+                            field, other
+                        )),
+                    },
+                    ChainAccess::Method(method, arg_nodes) => {
+                        // Mirror the method-dispatch logic of CallExpression:
+                        // look for `<StructName>$<method>` in the environment.
+                        if let Value::Struct {
+                            name: ref sname, ..
+                        } = inner
+                        {
+                            let mangled = format!("{}${}", sname, method);
+                            if let Some(method_val) = self.env.get(&mangled) {
+                                let mut args = vec![inner];
+                                for a in arg_nodes {
+                                    args.push(self.eval(a)?);
+                                }
+                                return self
+                                    .apply_function(method_val, args)
+                                    .map(|v| Value::Option(Some(Box::new(v))));
+                            }
+                        }
+                        // Fall back to a builtin function named `method`.
+                        if let Some(func_val) = self.env.get(method) {
+                            let mut args = vec![inner];
+                            for a in arg_nodes {
+                                args.push(self.eval(a)?);
+                            }
+                            return self
+                                .apply_function(func_val, args)
+                                .map(|v| Value::Option(Some(Box::new(v))));
+                        }
+                        Err(format!("Unknown method '{}'", method))
+                    }
+                }?;
+                Ok(Value::Option(Some(Box::new(result))))
             }
             Node::Match {
                 scrutinee, arms, ..
