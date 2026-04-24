@@ -248,9 +248,7 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         }
 
         // ---- Statements ----
-        Node::LetStatement { value, .. }
-        | Node::StaticLet { value, .. }
-        | Node::Const { value, .. } => {
+        Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
             // RHS evaluated in outer scope; the binder is added
             // by the enclosing block after this walk returns.
             walk(value, bound, free);
@@ -447,9 +445,6 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
                 bind_pattern(sub.as_ref(), bound);
             }
         }
-        // RES-375: `Some(inner)` — forwards into inner; `None` — no bindings.
-        Pattern::Some(inner) => bind_pattern(inner.as_ref(), bound),
-        Pattern::None => {}
     }
 }
 
@@ -480,9 +475,7 @@ fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
         Node::ClusterDecl { name, .. } => {
             bound.insert(name.clone());
         }
-        Node::LetStatement { name, .. }
-        | Node::StaticLet { name, .. }
-        | Node::Const { name, .. } => {
+        Node::LetStatement { name, .. } | Node::StaticLet { name, .. } => {
             bound.insert(name.clone());
         }
         Node::LetDestructureStruct { fields, .. } => {

@@ -1,8 +1,0 @@
-// RES-361: compile-time constants.
-// `const NAME: T = expr;` evaluates `expr` at compile time.
-// Constants are inlined at every use site — no runtime storage.
-const MAX_SENSORS: Int = 16;
-const ITEM_SIZE: Int = 4;
-const BUFFER_SIZE: Int = MAX_SENSORS * ITEM_SIZE;
-
-println(BUFFER_SIZE);

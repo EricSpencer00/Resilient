@@ -1,4 +1,0 @@
-RES-354: run this example only under `cargo test --features z3`.
-The BV32 verifier is z3-gated; the default build produces no verifier
-output, so the default golden harness has nothing stable to match
-against. See tests/examples_smoke.rs for the z3-gated smoke test.
