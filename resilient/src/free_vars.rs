@@ -360,6 +360,20 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(i, bound, free);
             }
         }
+        // RES-352: tuple literal — walk each element.
+        Node::TupleLiteral { items, .. } => {
+            for i in items {
+                walk(i, bound, free);
+            }
+        }
+        // RES-352: tuple destructuring — walk the RHS value; bind each
+        // name in the pattern so downstream uses are not counted free.
+        Node::LetDestructureTuple { names, value, .. } => {
+            walk(value, bound, free);
+            for n in names {
+                bound.insert(n.clone());
+            }
+        }
         Node::StructLiteral { fields, .. } => {
             for (_, v) in fields {
                 walk(v, bound, free);

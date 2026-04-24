@@ -1774,6 +1774,27 @@ impl TypeChecker {
                 Ok(Type::Array)
             }
 
+            // RES-352: tuple literal — walk each element; return
+            // `Type::Any` until a structured `Type::Tuple(Vec<Type>)`
+            // lands in the typechecker.
+            Node::TupleLiteral { items, .. } => {
+                for item in items {
+                    let _ = self.check_node(item)?;
+                }
+                Ok(Type::Any)
+            }
+
+            // RES-352: tuple destructuring `let (a, b) = expr;` —
+            // typecheck the RHS and bind each name as `Type::Any`.
+            Node::LetDestructureTuple { names, value, .. } => {
+                let _ = self.check_node(value)?;
+                for name in names {
+                    self.env.set(name.clone(), Type::Any);
+                    self.const_bindings.remove(name);
+                }
+                Ok(Type::Void)
+            }
+
             // RES-148: map literal — walk every key and value to
             // surface nested type errors, but fall back to `Type::Any`
             // for the result until a real `Type::Map<K, V>` lands in

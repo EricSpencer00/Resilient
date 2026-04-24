@@ -1,0 +1,22 @@
+// RES-352 demo: multi-return values via tuple literals and destructuring.
+//
+// `divmod` returns a two-element tuple `(quotient, remainder)`.
+// The caller destructures it with `let (q, r) = ...`.
+
+fn divmod(Int a, Int b) -> (Int, Int) {
+    let q = a / b;
+    let r = a % b;
+    return (q, r);
+}
+
+fn main() {
+    let (q, r) = divmod(17, 5);
+    println(q);
+    println(r);
+
+    // Tuple literals can be nested.
+    let nested = (1, (2, 3));
+    println(nested);
+}
+
+main();

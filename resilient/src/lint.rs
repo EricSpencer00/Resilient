@@ -513,6 +513,16 @@ fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<
         Node::LetDestructureStruct { value, .. } => {
             collect_identifier_reads_in(value, out);
         }
+        // RES-352: tuple literal — each element is a read.
+        Node::TupleLiteral { items, .. } => {
+            for item in items {
+                collect_identifier_reads_in(item, out);
+            }
+        }
+        // RES-352: tuple destructure — the RHS value is a read.
+        Node::LetDestructureTuple { value, .. } => {
+            collect_identifier_reads_in(value, out);
+        }
         _ => {}
     }
 }

@@ -753,6 +753,11 @@ fn node_line(n: &Node) -> Option<u32> {
         // RES-155: struct destructure let carries the `let` keyword span.
         Node::LetDestructureStruct { span, .. } => span.start.line as u32,
 
+        // RES-352: tuple literal and tuple destructure carry a span.
+        Node::TupleLiteral { span, .. } | Node::LetDestructureTuple { span, .. } => {
+            span.start.line as u32
+        }
+
         // Structural variants (RES-088).
         Node::Function { span, .. }
         | Node::Use { span, .. }
@@ -810,6 +815,8 @@ fn node_kind(n: &Node) -> &'static str {
         Node::InfixExpression { .. } => "InfixExpression",
         Node::CallExpression { .. } => "CallExpression",
         Node::ArrayLiteral { .. } => "ArrayLiteral",
+        Node::TupleLiteral { .. } => "TupleLiteral",
+        Node::LetDestructureTuple { .. } => "LetDestructureTuple",
         Node::IndexExpression { .. } => "IndexExpression",
         Node::IndexAssignment { .. } => "IndexAssignment",
         Node::RegionDecl { .. } => "RegionDecl",

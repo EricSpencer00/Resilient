@@ -365,6 +365,15 @@ impl Formatter {
                 self.write(";");
                 self.newline();
             }
+            // RES-352: `let (a, b, ...) = expr;` tuple destructuring.
+            Node::LetDestructureTuple { names, value, .. } => {
+                self.write("let (");
+                self.write(&names.join(", "));
+                self.write(") = ");
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
             Node::Assignment { name, value, .. } => {
                 self.write(&format!("{} = ", name));
                 self.fmt_expr(value);
@@ -738,6 +747,17 @@ impl Formatter {
                 }
                 self.write("]");
             }
+            // RES-352: `(e1, e2, ...)` tuple literal.
+            Node::TupleLiteral { items, .. } => {
+                self.write("(");
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_expr(it);
+                }
+                self.write(")");
+            }
             Node::MapLiteral { entries, .. } => {
                 self.write("{");
                 for (i, (k, v)) in entries.iter().enumerate() {
@@ -858,6 +878,7 @@ impl Formatter {
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
+            | Node::LetDestructureTuple { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
