@@ -418,6 +418,9 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
                 bind_pattern(sub.as_ref(), bound);
             }
         }
+        // RES-375: `Some(inner)` — forwards into inner; `None` — no bindings.
+        Pattern::Some(inner) => bind_pattern(inner.as_ref(), bound),
+        Pattern::None => {}
     }
 }
 
