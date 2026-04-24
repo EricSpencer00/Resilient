@@ -1368,6 +1368,7 @@ impl TypeChecker {
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
                 // Merge conflicts: keep ALL calls from both sides.
+                crate::try_catch::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -2110,6 +2111,27 @@ impl TypeChecker {
             // RES-391: `region <Name>;` is compile-time metadata — Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
 
+            // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`.
+            // Extend the in-scope `fails` set with every caught
+            // variant while type-checking the body, then restore for
+            // the handler bodies (a handler is not inside its own
+            // `catch` scope — it runs once the body already failed).
+            Node::TryCatch { body, handlers, .. } => {
+                let augmented =
+                    crate::try_catch::augmented_fn_fails(self.current_fn_fails.as_ref(), handlers);
+                let saved = self.current_fn_fails.replace(augmented);
+                for stmt in body {
+                    self.check_node(stmt)?;
+                }
+                self.current_fn_fails = saved;
+                for (_, handler_body) in handlers {
+                    for stmt in handler_body {
+                        self.check_node(stmt)?;
+                    }
+                }
+                Ok(Type::Void)
+            }
+
             // RES-386: commutativity actor type-checks as Void.
             Node::Actor { .. } => Ok(Type::Void),
 
@@ -2516,8 +2538,8 @@ impl TypeChecker {
                         };
                         if !declared {
                             return Err(format!(
-                                "unhandled failure variant {} — declare `fails {}` on the caller or handle at call site (from call to `{}`)",
-                                variant, variant, callee_name
+                                "unhandled failure variant {} — declare `fails {}` on the caller or wrap the call in `try {{ ... }} catch {} {{ ... }}` (from call to `{}`)",
+                                variant, variant, variant, callee_name
                             ));
                         }
                     }
