@@ -139,8 +139,12 @@ impl Formatter {
 
     fn fmt_stmt(&mut self, node: &Node) {
         match node {
-            Node::Use { path, .. } => {
-                self.write(&format!("use \"{}\";", path));
+            Node::Use { path, alias, .. } => {
+                if let Some(ns) = alias {
+                    self.write(&format!("use \"{}\" as {};", path, ns));
+                } else {
+                    self.write(&format!("use \"{}\";", path));
+                }
                 self.newline();
             }
             Node::Function {

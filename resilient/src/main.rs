@@ -136,6 +136,14 @@ enum Token {
     Question,
     /// RES-073: `use "path/to/file.rz";` — module import.
     Use,
+    /// RES-360: `as` keyword — used in `use "path" as name;` to create
+    /// a namespace alias for the imported file. Outside `use` the token
+    /// is currently a parse error; it is reserved for future cast syntax.
+    As,
+    /// RES-360: `::` path separator — used to call declarations from a
+    /// scoped import: `ns::fn()`. Parsed as a qualifier on identifiers;
+    /// the resulting composite name is `"ns::fn"` in the environment.
+    DoubleColon,
     /// FFI v1: `extern "libname" { fn ... }` block keyword.
     Extern,
     /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
@@ -280,6 +288,8 @@ impl Token {
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
             Token::Use => "`use`".to_string(),
+            Token::As => "`as`".to_string(),
+            Token::DoubleColon => "`::`".to_string(),
             Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
@@ -624,7 +634,14 @@ impl Lexer {
             '?' => Token::Question,
             ',' => Token::Comma,
             ';' => Token::Semicolon,
-            ':' => Token::Colon,
+            ':' => {
+                if self.peek_char() == ':' {
+                    self.read_char(); // consume second `:`
+                    Token::DoubleColon
+                } else {
+                    Token::Colon
+                }
+            }
             // RES-191: attribute prefix (e.g. `@pure`). The parser
             // consumes the following identifier; the lexer just
             // tags the `@` itself.
@@ -674,6 +691,7 @@ impl Lexer {
                         "match" => Token::Match,
                         "extern" => Token::Extern,
                         "use" => Token::Use,
+                        "as" => Token::As,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
                         "linear" => Token::Linear,
@@ -1100,8 +1118,15 @@ enum Node {
     /// relative to the file containing the `use`. Resolved away by
     /// `expand_uses` (in `imports.rs`) before the program reaches the
     /// typechecker or interpreter — never seen at eval time.
+    ///
+    /// RES-360: optional `as NAME` suffix creates a namespace alias.
+    /// Declarations imported from the file are bound as `NAME::decl`
+    /// instead of being merged directly into the current scope.
     Use {
         path: String,
+        /// RES-360: namespace alias from `use "file" as name;`.
+        /// `None` preserves the original unqualified-import behaviour.
+        alias: Option<String>,
         /// RES-088: span of the `use` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -3664,7 +3689,9 @@ impl Parser {
         }
     }
 
-    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, span }`.
+    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, alias, span }`.
+    /// RES-360: `use "path" as name;` — like above but imports are scoped
+    /// under `name::` instead of being merged into the global namespace.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
         // Caller checked self.current_token == Token::Use.
@@ -3678,11 +3705,33 @@ impl Parser {
                 return None;
             }
         };
+        // RES-360: optional `as NAME` suffix.
+        let alias = if self.peek_token == Token::As {
+            self.next_token(); // consume string literal (current becomes 'as')
+            self.next_token(); // consume 'as'; current is now the alias identifier
+            match &self.current_token {
+                Token::Identifier(name) => {
+                    let name = name.clone();
+                    Some(name)
+                }
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected identifier after 'as' in use statement, found {}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Some(Node::Use {
             path,
+            alias,
             span: self.span_at_current(),
         })
     }
@@ -4438,10 +4487,38 @@ impl Parser {
         // Parse prefix expressions
         let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
-            Token::Identifier(name) => Some(Node::Identifier {
-                name: name.clone(),
-                span: tok_span,
-            }),
+            Token::Identifier(name) => {
+                let name = name.clone();
+                // RES-360: `ns::decl` scoped lookup. If the next token is
+                // `::` followed by an identifier, collapse both into a
+                // single flat identifier name `"ns::decl"`. This keeps
+                // the rest of the interpreter oblivious to namespaces —
+                // it just looks up the key `"ns::decl"` in the env.
+                if self.peek_token == Token::DoubleColon {
+                    self.next_token(); // consume identifier, current = '::'
+                    self.next_token(); // consume '::', current = member ident
+                    let member = match &self.current_token {
+                        Token::Identifier(m) => m.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected identifier after `::`, found {}",
+                                tok
+                            ));
+                            return None;
+                        }
+                    };
+                    Some(Node::Identifier {
+                        name: format!("{}::{}", name, member),
+                        span: tok_span,
+                    })
+                } else {
+                    Some(Node::Identifier {
+                        name,
+                        span: tok_span,
+                    })
+                }
+            }
             Token::IntLiteral(value) => Some(Node::IntegerLiteral {
                 value: *value,
                 span: tok_span,
@@ -10025,6 +10102,7 @@ fn classify_lex_token(
         | Token::New
         | Token::Match
         | Token::Use
+        | Token::As
         | Token::Impl
         | Token::Type
         | Token::Default
@@ -10071,7 +10149,8 @@ fn classify_lex_token(
         | Token::Dot
         | Token::FatArrow
         | Token::Arrow
-        | Token::Question => (sem_tok::OPERATOR, 0),
+        | Token::Question
+        | Token::DoubleColon => (sem_tok::OPERATOR, 0),
 
         // Delimiters + internal tokens: no semantic highlight.
         _ => return None,
