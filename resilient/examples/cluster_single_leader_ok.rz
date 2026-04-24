@@ -1,28 +1,28 @@
 // RES-390: passing cluster invariant — single-leader election.
 //
-// Two replicas, each with an `is_leader` flag. The only handler
-// (`step_down`) clears the flag, which can only decrease the sum
-// and keeps each field in [0, 1]. Z3 proves preservation under
-// `resilient check --features z3`.
+// Two replicas, each with a `state` flag (0 = follower, 1 = leader).
+// The only handler (`step_down`) clears the flag, which can only
+// decrease the sum and keeps each field in [0, 1]. Z3 proves
+// preservation under `resilient check --features z3`.
 //
-// The [0, 1] range clauses on each `is_leader` are load-bearing:
-// the joint Z3 model uses unbounded `Int`, so without them Z3
-// finds a pre-state like `a = -1, b = 2` that satisfies
-// `a + b <= 1` but breaks after zeroing `a`.
+// The [0, 1] range clauses on each state are load-bearing: the
+// joint Z3 model uses unbounded `Int`, so without them Z3 finds a
+// pre-state like `a = -1, b = 2` that satisfies `a + b <= 1` but
+// breaks after zeroing `a`.
 actor Node {
-    int is_leader = 0;
+    state: int = 0;
 
     receive step_down() {
-        self.is_leader = 0;
+        self.state = 0;
     }
 }
 
 cluster Ring {
     a: Node;
     b: Node;
-    cluster_invariant: a.is_leader >= 0 && a.is_leader <= 1
-                    && b.is_leader >= 0 && b.is_leader <= 1
-                    && a.is_leader + b.is_leader <= 1;
+    cluster_invariant: a.state >= 0 && a.state <= 1
+                    && b.state >= 0 && b.state <= 1
+                    && a.state + b.state <= 1;
 }
 
 fn main(int _d) {

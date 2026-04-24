@@ -2448,12 +2448,29 @@ impl Parser {
             }
         }
 
+        // Mirror each receive handler into the simpler `ActorHandler`
+        // shape consumed by the cluster verifier (RES-390). The
+        // verifier only needs name + body + ensures; pre-conditions
+        // and parameter lists aren't part of its symbolic execution
+        // yet. Keeping both vectors in sync avoids a silent
+        // empty-handlers case where the verifier reports no
+        // diagnostics because it never sees any handlers.
+        let handlers: Vec<ActorHandler> = receive_handlers
+            .iter()
+            .map(|rh| ActorHandler {
+                name: rh.name.clone(),
+                ensures: rh.ensures.clone(),
+                body: Box::new(rh.body.clone()),
+                span: rh.span,
+            })
+            .collect();
+
         Node::ActorDecl {
             name,
             state_fields,
             always_clauses,
             receive_handlers,
-            handlers: Vec::new(),
+            handlers,
             span: actor_span,
         }
     }
@@ -4928,8 +4945,6 @@ impl Parser {
             span: actor_span,
         }
     }
-
-
 
     /// RES-390: parse `cluster Name { member: ActorType; ... cluster_invariant: EXPR; ... }`.
     fn parse_cluster_decl(&mut self) -> Node {
@@ -8465,7 +8480,9 @@ impl Interpreter {
             // RES-386/RES-388/RES-390: actor/cluster declarations are
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
-            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Value::Void),
+            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {
+                Ok(Value::Void)
+            }
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.
@@ -10326,7 +10343,21 @@ fn run_actor_verification(program: &Node) {
         return;
     };
     for spanned in statements {
-        if let Node::Actor { name, handlers, .. } = &spanned.node {
+        let actor_handlers: Option<(&str, &[ActorHandler])> = match &spanned.node {
+            Node::Actor { name, handlers, .. } => Some((name.as_str(), handlers.as_slice())),
+            // RES-388 actors with `always:` invariants are already
+            // covered by the safety-invariant verifier — skip the
+            // commutativity pass to avoid double-reporting (and to
+            // keep their golden files stable regardless of features).
+            Node::ActorDecl {
+                name,
+                handlers,
+                always_clauses,
+                ..
+            } if always_clauses.is_empty() => Some((name.as_str(), handlers.as_slice())),
+            _ => None,
+        };
+        if let Some((name, handlers)) = actor_handlers {
             let verification = verifier_z3::check_actor_commutativity(name, handlers);
             for (a, b, result) in &verification.pairs {
                 match result {
