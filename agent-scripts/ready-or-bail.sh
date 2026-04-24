@@ -39,12 +39,17 @@ REPORT=/tmp/agent-guardrail-report.json
 
 if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
   echo
-  echo "Guardrail green → marking PR #$PR ready for review."
+  echo "Guardrail green → syncing against agents/integration before marking ready."
   if (( DRY_RUN == 0 )); then
+    if ! bash "$SCRIPT_DIR/sync-integration.sh" --pr "$PR"; then
+      echo "sync-integration failed — leaving PR #$PR as draft."
+      gh pr comment "$PR" --body "Guardrail passed, but \`sync-integration.sh\` failed — conflicts outside the append-only allowlist. Resolve manually, then re-run \`agent-scripts/ready-or-bail.sh\`." >/dev/null
+      exit 2
+    fi
     gh pr ready "$PR" 2>&1 | tail -2
-    gh pr comment "$PR" --body "Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Marked ready for human review." >/dev/null
+    gh pr comment "$PR" --body "Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete." >/dev/null
   else
-    echo "(dry-run)"
+    echo "(dry-run) would also run sync-integration.sh"
   fi
   exit 0
 else

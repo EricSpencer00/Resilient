@@ -15,23 +15,27 @@ conclusions as the first without talking to them.
 
 ```
 pick-ticket  →  worktree + claim  →  implement  →  draft PR  →
-    ready-or-bail (verify-scope)  →  sweep-drafts (merge)  →  claim released
+    verify-scope  →  sync-integration  →  mark ready  →
+    agent-auto-merge (CI green → squash to main)  →  claim released
 ```
 
-Each step is backed by a script in [`agent-scripts/`](../agent-scripts/).
-Stages are idempotent — re-running a stage on the same ticket is a
-no-op or safely re-converges.
+Each step is backed by a script in [`agent-scripts/`](../agent-scripts/)
+or a workflow in [`.github/workflows/`](../.github/workflows/). Stages
+are idempotent — re-running a stage on the same ticket is a no-op or
+safely re-converges.
 
 ### Stage details
 
-| Stage | Script | Output |
+| Stage | Mechanism | Output |
 |---|---|---|
 | Pick | `pick-ticket.sh` | `<issue-number>\t<title>\tagent-ready` |
 | Dispatch | `dispatch-agent.sh --issue N` | Worktree at `.claude/worktrees/res-N/`, draft PR with `Closes #N` |
 | Implement | (agent free-form) | Follow feature-isolation pattern in CLAUDE.md |
-| Verify | `ready-or-bail.sh --pr P` | PR marked ready (green) or stays draft with failure comment (red) |
-| Sweep | `sweep-drafts.sh --go` | Merge green PRs, auto-resolve append-only conflicts |
-| Release | CI (`release-file-claims.yml`) | `agent-scripts/file-claims.json` cleared for the branch |
+| Verify | `ready-or-bail.sh --pr P` | Runs `verify-scope.sh` + `sync-integration.sh`; marks PR ready on green |
+| Sync | `sync-integration.sh` (called by ready-or-bail) | Rebases branch onto `origin/agents/integration`, fast-forwards integration, stamps PR with `integration-synced` label |
+| Auto-merge | `agent-auto-merge.yml` (CI) | Enables `gh pr merge --auto` when every check is green AND PR is labeled `integration-synced` |
+| Follow-main | `integration-follow-main.yml` (CI) | Fast-forwards `agents/integration` to `main` after every merge |
+| Release | `release-file-claims.yml` (CI) | `agent-scripts/file-claims.json` cleared for the branch |
 
 ---
 
@@ -82,19 +86,46 @@ does exactly that. It refuses to run on any file outside the allowlist
 (the three core files plus `file-claims.json`), so it can't quietly
 corrupt logic code.
 
-### 2c. Live branches (pull-before-push, every commit)
+### 2c. The `agents/integration` live branch
 
-Every agent pushes to its feature branch immediately after every
-commit (`CLAUDE.md` push policy). Before pushing, the agent runs
-`git fetch origin main` and, if `main` has advanced, rebases or
-`gh pr update-branch`s before continuing. This keeps branches within
-seconds of `main` and means every conflict surfaces at the smallest
-possible scope.
+`agents/integration` is the shared staging branch that always holds
+**every in-flight agent commit**. It's always at-or-ahead of `main`:
 
-**Concrete rule for implementers**: after every `git commit`, run
-`git push`. Before starting any new edit session on an existing
-branch, run `git fetch origin main && git rebase origin/main` (or
-`gh pr update-branch <pr>` if you prefer the merge-commit strategy).
+- When `main` advances (a PR merges), `integration-follow-main.yml`
+  fast-forwards `agents/integration` to the new main.
+- When an agent runs `sync-integration.sh`, the agent's rebased HEAD
+  is fast-forward-pushed into `agents/integration`, making that work
+  visible to every sibling agent within seconds.
+
+The rule: **before marking a PR ready, the agent must sync**. That is
+exactly what `ready-or-bail.sh` enforces — it runs `verify-scope.sh`
+first, then `sync-integration.sh`. If either fails, the PR stays draft.
+
+`sync-integration.sh` does:
+
+1. `git fetch origin` and rebase the current branch onto
+   `origin/agents/integration`.
+2. If the rebase hits conflicts, check each file against the
+   append-only allowlist (main.rs, typechecker.rs, lexer_logos.rs,
+   file-claims.json). If all conflict files are in the allowlist, run
+   `auto-resolve-extensions.sh` and continue. Otherwise abort — a
+   human or a sonnet-tier agent must resolve.
+3. `git push --force-with-lease` the rebased feature branch.
+4. `git push origin HEAD:refs/heads/agents/integration` as a fast
+   forward. Retry once if another agent raced us.
+5. Stamp the PR with the `integration-synced` label.
+
+### 2d. Auto-merge on green
+
+Once a PR is marked ready AND labeled `integration-synced`,
+`agent-auto-merge.yml` runs on every `check_suite.completed` event.
+When all required checks succeed it calls
+`gh pr merge --squash --auto --delete-branch`. The `--auto` flag
+defers the merge until GitHub itself has re-verified freshness, so a
+last-second force-push or status change still blocks the merge.
+
+**Concrete rule for implementers**: you no longer merge your own PR.
+You mark it ready (via `ready-or-bail.sh`) and let auto-merge land it.
 
 ---
 

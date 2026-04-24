@@ -1,0 +1,58 @@
+name: integration-follow-main
+
+# Keep the `agents/integration` branch at-or-ahead of `main`.
+# When main advances (a PR merged), fast-forward agents/integration so
+# it's always a superset of main.
+#
+# If agents/integration has diverged (shouldn't happen if agents are
+# following the sync-integration.sh protocol), we log and skip rather
+# than force-push — a human will need to reconcile.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  fast-forward:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fast-forward agents/integration to main
+        run: |
+          set -euo pipefail
+          git fetch origin agents/integration main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if ! git rev-parse --verify origin/agents/integration >/dev/null 2>&1; then
+            echo "agents/integration does not exist — creating from main"
+            git push origin main:refs/heads/agents/integration
+            exit 0
+          fi
+
+          main_sha="$(git rev-parse origin/main)"
+          int_sha="$(git rev-parse origin/agents/integration)"
+
+          if [[ "$main_sha" == "$int_sha" ]]; then
+            echo "agents/integration already at main ($main_sha)"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "$int_sha" "$main_sha"; then
+            echo "agents/integration is behind main — fast-forwarding"
+            git push origin "$main_sha:refs/heads/agents/integration"
+          elif git merge-base --is-ancestor "$main_sha" "$int_sha"; then
+            echo "agents/integration is ahead of main (expected: in-flight work)"
+          else
+            echo "::warning::agents/integration has diverged from main — skipping fast-forward"
+            echo "  main_sha=$main_sha"
+            echo "  int_sha=$int_sha"
+          fi

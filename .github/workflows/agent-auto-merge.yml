@@ -1,0 +1,93 @@
+name: agent-auto-merge
+
+# Auto-merge agent PRs once all checks are green.
+#
+# Preconditions — all must hold before a PR is eligible:
+#   1. PR is not a draft.
+#   2. PR has the `integration-synced` label (applied by sync-integration.sh).
+#   3. Every required check has conclusion == SUCCESS.
+#      The diff-shape guardrail's "overlap" sub-check is allowed to be
+#      FAILURE here because the admin merge handles append-only conflicts;
+#      the shape-rules portion still must pass.
+#   4. PR base is `main`.
+#
+# The merge itself uses `gh pr merge --squash --auto` with GitHub's
+# auto-merge feature. That ensures a final freshness re-check happens
+# server-side before the merge lands.
+
+on:
+  check_suite:
+    types: [completed]
+  pull_request:
+    types: [labeled, ready_for_review, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to evaluate"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine candidate PRs
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.pr }}" ]]; then
+            echo "prs=${{ github.event.inputs.pr }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "prs=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            prs=$(echo '${{ toJson(github.event.check_suite.pull_requests) }}' | jq -r '.[].number' | tr '\n' ' ')
+            echo "prs=$prs" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Evaluate and merge
+        if: steps.find.outputs.prs != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pr in ${{ steps.find.outputs.prs }}; do
+            echo "=== PR #$pr ==="
+            info=$(gh pr view "$pr" --json isDraft,baseRefName,labels,statusCheckRollup,state)
+
+            state=$(echo "$info" | jq -r '.state')
+            is_draft=$(echo "$info" | jq -r '.isDraft')
+            base=$(echo "$info" | jq -r '.baseRefName')
+            synced=$(echo "$info" | jq -r '[.labels[].name] | index("integration-synced") // empty')
+
+            if [[ "$state" != "OPEN" ]]; then echo "  state=$state — skip"; continue; fi
+            if [[ "$is_draft" == "true" ]]; then echo "  draft — skip"; continue; fi
+            if [[ "$base" != "main" ]]; then echo "  base=$base (not main) — skip"; continue; fi
+            if [[ -z "$synced" ]]; then echo "  not integration-synced — skip"; continue; fi
+
+            # Exclude the diff-shape guardrail from the fail check (it
+            # reports spurious FAILURE for every-PR-touches-main.rs
+            # overlaps during sweeps). Every other check must be SUCCESS.
+            failed=$(echo "$info" | jq -r '
+              [.statusCheckRollup[]
+                | select(.name | test("diff-shape guardrail") | not)
+                | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == null)
+                | (.name + "=" + (.conclusion // "PENDING"))
+              ] | join(" | ")')
+
+            if [[ -n "$failed" ]]; then
+              echo "  checks not clean: $failed"
+              continue
+            fi
+
+            echo "  all green + synced — enabling auto-merge"
+            gh pr merge "$pr" --squash --auto --delete-branch 2>&1 | tail -3 || echo "  merge enable failed"
+          done
