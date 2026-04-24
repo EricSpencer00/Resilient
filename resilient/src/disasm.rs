@@ -184,6 +184,29 @@ fn write_op(
         Op::StoreIndex => write!(out, "StoreIndex")?,
         // FFI v2.
         Op::CallForeign(idx) => write!(out, "CallForeign {idx:<6}")?,
+        // RES-335: struct-op disasm. The name is a constant-pool index
+        // into a `Value::String`; resolve and annotate it.
+        Op::StructLiteral {
+            name_const,
+            field_count,
+        } => {
+            write!(out, "StructLiteral {} {}", name_const, field_count)?;
+            if let Some(v) = chunk.constants.get(name_const as usize) {
+                write!(out, "  ; type = {}", v)?;
+            }
+        }
+        Op::GetField { name_const } => {
+            write!(out, "GetField {}", name_const)?;
+            if let Some(v) = chunk.constants.get(name_const as usize) {
+                write!(out, "      ; field = {}", v)?;
+            }
+        }
+        Op::SetField { name_const } => {
+            write!(out, "SetField {}", name_const)?;
+            if let Some(v) = chunk.constants.get(name_const as usize) {
+                write!(out, "      ; field = {}", v)?;
+            }
+        }
     }
     Ok(())
 }

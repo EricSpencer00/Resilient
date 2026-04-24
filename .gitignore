@@ -15,6 +15,9 @@ benchmarks/sum/sum_native
 
 # Ralph-loop session state (local to each Claude Code run)
 .claude/
+!.claude/scripts/
+!.claude/scripts/*.sh
+!.claude/file-claims.json
 .worktrees/
 docs/.DS_Store
 # RES-355: incremental compilation cache (local, per-source-dir)

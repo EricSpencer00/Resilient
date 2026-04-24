@@ -62,9 +62,19 @@ Optional features: `--features z3` (SMT verifier), `--features lsp`,
 ## Ticket workflow
 
 1. Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues) — pick any open issue.
-2. Comment to claim it, then create a branch named `res-NNN-short-title`.
-3. Open a **draft PR** early with `Closes #N` in the body — this signals the ticket is taken.
-4. When the PR is ready, mark it ready for review; the issue closes automatically on merge.
+2. **Pre-dispatch check** — before creating your branch, run:
+   ```bash
+   agent-scripts/check-overlaps.sh resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
+   ```
+   If conflicts are found, wait for those PRs to merge before starting.
+3. Comment to claim the issue, then create a branch named `res-NNN-short-title`.
+4. **Claim core files** immediately (before any edits):
+   ```bash
+   agent-scripts/claim-files.sh res-NNN-short-title resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
+   ```
+5. Open a **draft PR** early with `Closes #N` in the body — this signals the ticket is taken.
+6. When the PR is ready, mark it ready for review; the issue closes automatically on merge.
+   Claims are auto-released by CI on merge (see `.github/workflows/release-file-claims.yml`).
 
 Commit format: `RES-NNN: short description` (≤72 chars on the first line).
 Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
@@ -72,6 +82,71 @@ Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
 **Push policy: push to remote immediately after every commit.** Do not
 accumulate local commits. As soon as a ticket is closed and committed, run
 `git push` so the branch is on remote. Keep as little as possible local-only.
+
+---
+
+## Feature isolation pattern
+
+**This is the single most important rule for parallel agent work.**
+
+Every language feature MUST follow this layout:
+
+```
+resilient/src/my_feature.rs   ← ALL feature logic lives here
+resilient/src/main.rs         ← minimal: token + AST variant + dispatch call (~5 lines total)
+resilient/src/typechecker.rs  ← minimal: one function call in the <EXTENSION_PASSES> block
+resilient/src/lexer_logos.rs  ← minimal: one token arm
+```
+
+### Core files have designated extension points
+
+`main.rs`, `typechecker.rs`, and `lexer_logos.rs` contain comment markers:
+
+```rust
+// <EXTENSION_TOKENS>    ← add Token variants here
+// <EXTENSION_KEYWORDS>  ← add "keyword" => Token::X mappings here
+// <EXTENSION_PASSES>    ← add check_my_feature(...) calls here
+```
+
+**Always add to the extension point block, never elsewhere in the file.**
+These blocks are append-only — two agents adding to the same block will
+produce a conflict that's trivially resolved by keeping all lines.
+
+### What goes in `my_feature.rs` vs core files
+
+| Element | Location |
+|---|---|
+| All feature logic (parser, type check, Z3 proofs) | `src/my_feature.rs` |
+| Token enum variant | `main.rs` `<EXTENSION_TOKENS>` |
+| Keyword → Token mapping | `main.rs` `<EXTENSION_KEYWORDS>` |
+| Logos lexer token | `lexer_logos.rs` `<EXTENSION_TOKENS>` |
+| Top-level check call | `typechecker.rs` `<EXTENSION_PASSES>` |
+| AST node variant | `main.rs` `Node` enum — add to the end |
+
+### Minimal main.rs touch example
+
+```rust
+// In Token enum — <EXTENSION_TOKENS> block:
+/// RES-NNN: `my_keyword` — brief description.
+MyKeyword,
+
+// In keyword map — <EXTENSION_KEYWORDS> block:
+"my_keyword" => Token::MyKeyword,
+
+// In Node enum — at the end before the closing brace:
+/// RES-NNN: MyFeature node.
+MyFeatureNode { span: Span, ... },
+```
+
+### Minimal typechecker.rs touch
+
+```rust
+// In the <EXTENSION_PASSES> block:
+crate::my_feature::check(program, source_path)?;
+```
+
+If you follow this pattern, two agents working in parallel will at most conflict on
+the 3-line extension blocks — conflicts that are always safe to resolve by keeping both.
 
 ---
 
