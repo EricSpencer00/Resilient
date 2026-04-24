@@ -15995,10 +15995,8 @@ mod tests {
     #[test]
     fn pinned_int_mixed_arithmetic_rejected() {
         // Int8 + Int16 without a cast is a type error.
-        let err = typecheck_src(
-            "let a = as_int8(1); let b = as_int16(2); let c = a + b;",
-        )
-        .unwrap_err();
+        let err =
+            typecheck_src("let a = as_int8(1); let b = as_int16(2); let c = a + b;").unwrap_err();
         assert!(
             err.contains("Cannot apply"),
             "expected a type error, got: {}",
