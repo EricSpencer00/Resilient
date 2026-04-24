@@ -154,6 +154,10 @@ enum Token {
     /// outside of types the parser surfaces it as an ordinary
     /// unexpected-token error.
     Mut,
+    // <EXTENSION_TOKENS>
+    // Add new keyword tokens here — one variant per line with RES-NNN doc comment.
+    // This block is append-only; merge conflicts in this section are safe to resolve
+    // by keeping ALL variants from both sides.
     /// RES-386: `actor Name { state: T = expr; concurrent_ensures: ...;
     /// receive name() ensures expr; { body } }` — actor declaration.
     /// The minimum slice only uses the `actor` / `receive` /
@@ -168,6 +172,7 @@ enum Token {
     ConcurrentEnsures,
     /// RES-388: actor-level `always: <expr>;` safety invariant.
     Always,
+    // </EXTENSION_TOKENS>
 
     // Literals
     Identifier(String),
@@ -679,10 +684,14 @@ impl Lexer {
                         "linear" => Token::Linear,
                         "region" => Token::Region,
                         "mut" => Token::Mut,
+                        // <EXTENSION_KEYWORDS>
+                        // Add new keyword → Token mappings here (append-only).
+                        // Merge conflicts: keep ALL arms from both sides.
                         "actor" => Token::Actor,
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
+                        // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
