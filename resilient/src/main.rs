@@ -90,6 +90,11 @@ mod linear;
 // mode for safety-critical embedded builds.
 mod bounds_check;
 
+// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
+// failure handlers. Holds parser + typechecker logic for the feature;
+// the main module only touches the extension-point blocks.
+mod try_catch;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -176,6 +181,12 @@ enum Token {
     ConcurrentEnsures,
     /// RES-388: actor-level `always: <expr>;` safety invariant.
     Always,
+    /// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`
+    /// structured failure handler — statement-level keyword.
+    Try,
+    /// RES-224 (RES-387 follow-up): `catch VariantName { ... }` arm
+    /// attached to a `try` block.
+    Catch,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -299,6 +310,8 @@ impl Token {
             Token::Receive => "`receive`".to_string(),
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
             Token::Always => "`always`".to_string(),
+            Token::Try => "`try`".to_string(),
+            Token::Catch => "`catch`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -695,6 +708,8 @@ impl Lexer {
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
+                        "try" => Token::Try,
+                        "catch" => Token::Catch,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -1612,6 +1627,23 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-224 (RES-387 follow-up): structured failure handler.
+    ///
+    /// ```text
+    /// try { callee(x); } catch Timeout { recover(); }
+    /// ```
+    ///
+    /// Each `handlers` entry pairs a failure-variant name with the
+    /// handler block's statement list. The typechecker walks `body`
+    /// with the caught variants added to the in-scope `fails` set,
+    /// so a call that declares exactly those variants type-checks
+    /// even when the enclosing fn has an empty `fails` list.
+    TryCatch {
+        #[allow(dead_code)]
+        span: span::Span,
+        body: Vec<Node>,
+        handlers: Vec<(String, Vec<Node>)>,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -1769,6 +1801,7 @@ impl Parser {
             Token::Type => Some(self.parse_type_alias()),
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
+            Token::Try => Some(crate::try_catch::parse(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -8579,6 +8612,19 @@ impl Interpreter {
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
             Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {
+                Ok(Value::Void)
+            }
+            // RES-224 (RES-387 follow-up): runtime evaluation of
+            // `try { ... } catch V { ... }`. The MVP fault model does
+            // not surface a runtime Failure value yet — `fails` is
+            // statically verified and callees that declare a variant
+            // still return normally — so the handler bodies are
+            // unreachable at execution time. We still walk the body so
+            // any side-effectful statements inside it run.
+            Node::TryCatch { body, .. } => {
+                for stmt in body {
+                    self.eval(stmt)?;
+                }
                 Ok(Value::Void)
             }
             // RES-158: `impl <Struct> { ... }` evaluates each method
