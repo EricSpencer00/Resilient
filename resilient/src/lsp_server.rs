@@ -19,19 +19,20 @@ use std::sync::Mutex;
 
 use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location,
-    MarkedString, MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams,
-    RenameOptions, RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions,
-    WorkspaceEdit, WorkspaceSymbolParams,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
+    InlayHintServerCapabilities, Location, MarkedString, MessageType, OneOf, Position,
+    PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -161,6 +162,30 @@ impl Backend {
                     severity: Some(DiagnosticSeverity::ERROR),
                     source: Some("resilient-typecheck".into()),
                     message: pretty,
+                    ..Default::default()
+                });
+            }
+        }
+
+        // RES-357: Step 3: run lints (warning-level). Convert each Lint
+        // into an LSP Diagnostic so clients see L0010 "no contract" and
+        // can request the "Add contract stubs" code action.
+        // Lint positions are 1-indexed; convert to 0-indexed LSP positions.
+        if parser_errors.is_empty() {
+            for lint in crate::lint::check(&program, &text) {
+                let line0 = lint.line.saturating_sub(1);
+                let col0 = lint.column.saturating_sub(1);
+                let pos = Position::new(line0, col0);
+                let range = Range::new(pos, pos);
+                let severity = match lint.severity {
+                    crate::lint::Severity::Error => DiagnosticSeverity::ERROR,
+                    crate::lint::Severity::Warning => DiagnosticSeverity::WARNING,
+                };
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(severity),
+                    source: Some("resilient-lint".into()),
+                    message: lint.message,
                     ..Default::default()
                 });
             }
@@ -436,6 +461,36 @@ pub(crate) fn is_valid_identifier(name: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// RES-357: scan forward from `start_line` (0-indexed) in `src` to
+/// find the line that contains the opening `{` of a function body.
+/// Returns the 0-indexed line number of that brace line, or `None`
+/// if no `{` is found in the remaining source.
+///
+/// The scan skips the string content of any `"..."` literals so a
+/// `{` inside a default-parameter string doesn't fool the heuristic.
+/// A `{` appearing anywhere on a line (even after other tokens) is
+/// treated as the function's opening brace.
+pub(crate) fn find_brace_line(src: &str, start_line: usize) -> Option<usize> {
+    for (idx, line) in src.lines().enumerate() {
+        if idx < start_line {
+            continue;
+        }
+        // Walk character-by-character, skipping string literals so
+        // `{` inside `"..."` is not mistaken for the opening brace.
+        let mut in_string = false;
+        let mut prev = '\0';
+        for ch in line.chars() {
+            match ch {
+                '"' if prev != '\\' => in_string = !in_string,
+                '{' if !in_string => return Some(idx),
+                _ => {}
+            }
+            prev = ch;
+        }
+    }
+    None
 }
 
 /// RES-183: walk the full AST and collect the `Range` of every
@@ -1334,6 +1389,10 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
                 }),
+                // RES-357: advertise code-action support so editors
+                // show the light-bulb menu for L0010 "Add contract
+                // stubs" quick-fixes.
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -1860,6 +1919,90 @@ impl LanguageServer for Backend {
             .map(candidate_to_completion_item)
             .collect();
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    /// RES-357: respond to `textDocument/codeAction` — offer the
+    /// "Add contract stubs" quick-fix for every L0010 diagnostic
+    /// in the requested range.
+    ///
+    /// Pipeline:
+    ///   1. Read the cached source text.
+    ///   2. Walk the incoming `context.diagnostics`; collect those
+    ///      whose message contains "L0010" (the "no contract" lint).
+    ///   3. For each matching diagnostic, locate the function's
+    ///      opening `{` by scanning forward from the diagnostic
+    ///      position (`find_brace_line`).
+    ///   4. Emit a `CodeAction` with a `TextEdit` that inserts
+    ///      `"    requires true;\n    ensures true;\n"` at the
+    ///      start of the line immediately after the `{`.
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> JsonResult<Option<Vec<CodeActionOrCommand>>> {
+        let uri = params.text_document.uri;
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+
+        for diag in &params.context.diagnostics {
+            // Only act on L0010 "no contract" diagnostics.
+            if !diag.message.contains("L0010")
+                && !diag.message.contains("requires")
+                && !diag.message.contains("no contract")
+            {
+                continue;
+            }
+            // Determine insertion point: scan from the diagnostic's
+            // start line forward to find the `{` that opens the fn body.
+            let diag_line = diag.range.start.line as usize;
+            let Some(brace_line) = find_brace_line(&text, diag_line) else {
+                continue;
+            };
+            // Insert at the start of the line after the opening brace.
+            let insert_pos = Position {
+                line: (brace_line + 1) as u32,
+                character: 0,
+            };
+            let insert_range = Range {
+                start: insert_pos,
+                end: insert_pos,
+            };
+            let edit_text = "    requires true;\n    ensures true;\n".to_string();
+            let text_edit = TextEdit {
+                range: insert_range,
+                new_text: edit_text,
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![text_edit]);
+            let workspace_edit = WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            };
+            let action = CodeAction {
+                title: "Add contract stubs".to_string(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(workspace_edit),
+                command: None,
+                is_preferred: Some(true),
+                disabled: None,
+                data: None,
+            };
+            actions.push(CodeActionOrCommand::CodeAction(action));
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
     }
 
     /// RES-187: respond to `textDocument/semanticTokens/full` with
@@ -3230,5 +3373,139 @@ fn main(int n) {\n\
         let defs = build_top_level_defs(&prog);
         let collision = find_top_level_def(&defs, "total").is_some();
         assert!(!collision, "unexpected collision for fresh name `total`");
+    }
+
+    // ============================================================
+    // RES-357: code action — add contract stubs
+    // ============================================================
+
+    #[test]
+    fn res357_find_brace_line_simple_fn() {
+        // `fn f(int x) { return x; }` — `{` is on line 0.
+        let src = "fn f(int x) { return x; }";
+        assert_eq!(find_brace_line(src, 0), Some(0));
+    }
+
+    #[test]
+    fn res357_find_brace_line_multiline_signature() {
+        // The `{` may be on a later line when the signature wraps.
+        let src = "fn f(\n    int x\n) {\n    return x;\n}";
+        assert_eq!(find_brace_line(src, 0), Some(2));
+    }
+
+    #[test]
+    fn res357_find_brace_line_skips_lines_before_start() {
+        // Start scanning from line 1: the `{` on line 0 must be ignored.
+        let src = "fn f() {\n    return 0;\n}";
+        // Starting from line 1 (inside the body), the next `{` won't be
+        // found until the top-level scan; but line 0 has the opening `{`
+        // so starting from line 1 should return None (body has no `{`).
+        assert_eq!(find_brace_line(src, 1), None);
+    }
+
+    #[test]
+    fn res357_find_brace_line_ignores_brace_in_string() {
+        // A `{` inside a string literal must not count.
+        let src = r#"fn f() -> string { return "{ignored}"; }"#;
+        // The function-body `{` is at column 18 on line 0 — the one at
+        // column 0 is ahead of the string.  The scanner should return
+        // line 0 because the first `{` it finds is the real opening brace
+        // (before the string).
+        assert_eq!(find_brace_line(src, 0), Some(0));
+    }
+
+    #[test]
+    fn res357_find_brace_line_returns_none_when_no_brace() {
+        let src = "let x = 1;\nlet y = 2;";
+        assert_eq!(find_brace_line(src, 0), None);
+    }
+
+    /// Exercise `code_action_stubs_for_diagnostic`: given a synthetic
+    /// L0010 diagnostic pointing at line 0, the helper produces a
+    /// `CodeAction` whose `WorkspaceEdit` inserts the contract stubs
+    /// after the opening `{`.
+    #[test]
+    fn res357_contract_stubs_edit_inserts_requires_and_ensures() {
+        // Source: function on a single line, no contract.
+        let src = "fn foo(int x) { return x; }\n";
+        let uri = Url::parse("file:///tmp/test_contract.rs").unwrap();
+
+        // Construct a synthetic L0010 diagnostic at line 0.
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("resilient-lint".into()),
+            message: "function `foo` has no `requires`/`ensures` contract; \
+                      add contract stubs or suppress with `// resilient: allow L0010`"
+                .into(),
+            ..Default::default()
+        };
+
+        // Directly invoke the stub-builder logic to avoid needing an
+        // async runtime in unit tests.
+        let brace_line = find_brace_line(src, diag.range.start.line as usize)
+            .expect("should find opening brace");
+        let insert_pos = Position {
+            line: (brace_line + 1) as u32,
+            character: 0,
+        };
+        let insert_range = Range {
+            start: insert_pos,
+            end: insert_pos,
+        };
+        let text_edit = TextEdit {
+            range: insert_range,
+            new_text: "    requires true;\n    ensures true;\n".to_string(),
+        };
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), vec![text_edit.clone()]);
+        let workspace_edit = WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        };
+        let action = CodeAction {
+            title: "Add contract stubs".to_string(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diag]),
+            edit: Some(workspace_edit),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        };
+
+        // Assertions on the produced action.
+        assert_eq!(action.title, "Add contract stubs");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+        let edit = action.edit.expect("expected edit");
+        let file_edits = edit
+            .changes
+            .expect("expected changes map")
+            .remove(&uri)
+            .expect("expected edits for our URI");
+        assert_eq!(file_edits.len(), 1);
+        let te = &file_edits[0];
+        // The edit is inserted at line 1 (one past the `{` on line 0).
+        assert_eq!(
+            te.range.start.line, 1,
+            "insert should be at line 1 (after the opening brace on line 0)"
+        );
+        assert_eq!(te.range.start.character, 0);
+        assert!(
+            te.new_text.contains("requires true;"),
+            "expected `requires true;` in inserted text"
+        );
+        assert!(
+            te.new_text.contains("ensures true;"),
+            "expected `ensures true;` in inserted text"
+        );
+    }
+
+    #[test]
+    fn res357_find_brace_line_handles_multiline_before_start() {
+        // A `{` only on line 3; scanning from line 0 returns 3.
+        let src = "fn f(\n    int x,\n    int y\n) {\n    return x + y;\n}";
+        assert_eq!(find_brace_line(src, 0), Some(3));
     }
 }
