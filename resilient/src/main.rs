@@ -2448,12 +2448,29 @@ impl Parser {
             }
         }
 
+        // Mirror each receive handler into the simpler `ActorHandler`
+        // shape consumed by the cluster verifier (RES-390). The
+        // verifier only needs name + body + ensures; pre-conditions
+        // and parameter lists aren't part of its symbolic execution
+        // yet. Keeping both vectors in sync avoids a silent
+        // empty-handlers case where the verifier reports no
+        // diagnostics because it never sees any handlers.
+        let handlers: Vec<ActorHandler> = receive_handlers
+            .iter()
+            .map(|rh| ActorHandler {
+                name: rh.name.clone(),
+                ensures: rh.ensures.clone(),
+                body: Box::new(rh.body.clone()),
+                span: rh.span,
+            })
+            .collect();
+
         Node::ActorDecl {
             name,
             state_fields,
             always_clauses,
             receive_handlers,
-            handlers: Vec::new(),
+            handlers,
             span: actor_span,
         }
     }

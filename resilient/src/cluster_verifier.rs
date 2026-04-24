@@ -711,7 +711,9 @@ actor Node {
 cluster Ring {
     a: Node;
     b: Node;
-    cluster_invariant: a.state + b.state <= 1;
+    cluster_invariant: a.state >= 0 && a.state <= 1
+                    && b.state >= 0 && b.state <= 1
+                    && a.state + b.state <= 1;
 }
 "#;
         let diags = verify(src);

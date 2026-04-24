@@ -21,7 +21,14 @@ actor Node {
 cluster Ring {
     a: Node;
     b: Node;
-    cluster_invariant: a.state + b.state <= 1;
+    // Range clauses are load-bearing: without them Z3 picks a
+    // pre-state like `a = 2, b = -1` satisfying `a + b <= 1`, and
+    // the post-state (`a = 1`) still satisfies it — missing the
+    // real violation. Constraining each flag to [0, 1] forces Z3
+    // to the intended pre-state where both are leaders.
+    cluster_invariant: a.state >= 0 && a.state <= 1
+                    && b.state >= 0 && b.state <= 1
+                    && a.state + b.state <= 1;
 }
 
 fn main(int _d) {
