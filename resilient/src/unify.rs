@@ -128,6 +128,13 @@ impl Substitution {
             },
             // Primitive and opaque variants have no sub-types.
             Type::Int
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64
             | Type::Float
             | Type::String
             | Type::Bytes
@@ -154,6 +161,13 @@ impl Substitution {
         match (a, b) {
             // Reflexive primitive equality.
             (Type::Int, Type::Int)
+            | (Type::Int8, Type::Int8)
+            | (Type::Int16, Type::Int16)
+            | (Type::Int32, Type::Int32)
+            | (Type::UInt8, Type::UInt8)
+            | (Type::UInt16, Type::UInt16)
+            | (Type::UInt32, Type::UInt32)
+            | (Type::UInt64, Type::UInt64)
             | (Type::Float, Type::Float)
             | (Type::String, Type::String)
             | (Type::Bool, Type::Bool)
