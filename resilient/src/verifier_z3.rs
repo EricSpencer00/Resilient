@@ -7,7 +7,7 @@
 // the folder returns Unknown, we hand the clause to Z3 and ask
 // whether it's a tautology, a contradiction, or actually undecidable.
 //
-// The translation supports:
+// The translation supports (LIA path):
 //   - integer literals
 //   - identifiers (free or bound to a known integer in `bindings`)
 //   - +, -, *, /, %  on integers
@@ -15,13 +15,64 @@
 //   - !, &&, ||  logical connectives
 //   - true, false
 //
-// Anything outside this subset (strings, arrays, structs, calls,
-// floats) makes us bail to None — the existing runtime check still
-// fires.
+// The translation supports (BV32 path — RES-354):
+//   - All of the above, plus
+//   - &, |, ^  bitwise AND/OR/XOR
+//   - <<, >>   left/right shifts
+//   All variables and constants are BV<32>; comparisons use signed BV.
+//
+// Anything outside the supported subset makes us bail to None — the
+// existing runtime check still fires.
+//
+// RES-354: theory selection
+//   - Z3Theory::Auto  — use BV32 if any bitwise op is present, else LIA
+//   - Z3Theory::Bv    — always use BV32
+//   - Z3Theory::Lia   — always use LIA (error if bitwise ops present)
 
 use crate::{ActorHandler, Node};
 use std::collections::{BTreeSet, HashMap};
-use z3::ast::{Ast, Bool, Int};
+use z3::ast::{Ast, BV, Bool, Int};
+
+// ============================================================
+// RES-354: SMT theory selection
+// ============================================================
+
+/// Which Z3 theory to use for encoding integer arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Z3Theory {
+    /// Auto-detect: use BV32 if any bitwise operation is present in
+    /// the formula, LIA otherwise.
+    #[default]
+    Auto,
+    /// Always encode as 32-bit bit-vectors (QF_BV).
+    Bv,
+    /// Always encode as linear integer arithmetic (QF_LIA / AUFLIA).
+    Lia,
+}
+
+/// Return `true` if `node` or any sub-expression uses a bitwise
+/// operator (`&`, `|`, `^`, `<<`, `>>`).
+pub fn has_bitwise_ops(node: &Node) -> bool {
+    match node {
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            matches!(operator.as_str(), "&" | "|" | "^" | "<<" | ">>")
+                || has_bitwise_ops(left)
+                || has_bitwise_ops(right)
+        }
+        Node::PrefixExpression { right, .. } => has_bitwise_ops(right),
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => has_bitwise_ops(function) || arguments.iter().any(has_bitwise_ops),
+        _ => false,
+    }
+}
 
 /// RES-071: a re-verifiable SMT-LIB2 certificate captured when Z3
 /// successfully discharges a contract obligation. Feeding the
@@ -266,6 +317,246 @@ pub fn prove_with_axioms_and_timeout(
     }
 
     (None, None, counterexample, timed_out)
+}
+
+// ============================================================
+// RES-354: BV32 theory prover
+// ============================================================
+
+/// Prove `expr` under `bindings` using the BV32 theory. All integer
+/// constants are modelled as `BV<32>`; all free identifiers become
+/// `BV<32>` constants; arithmetic and bitwise operations use BV ops.
+/// Comparisons use signed BV (`bvsgt`, `bvslt`, etc.).
+///
+/// Returns the same four-slot tuple as `prove_with_axioms_and_timeout`.
+/// Certificate generation is not yet supported for the BV path (the
+/// SMT-LIB2 certificate infrastructure is LIA-only); `ProofCertificate`
+/// is always `None` on this path.
+pub fn prove_bv(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    let cfg = z3::Config::new();
+    let ctx = z3::Context::new(&cfg);
+
+    let formula = match translate_bool_bv(&ctx, expr, bindings) {
+        Some(f) => f,
+        None => return (None, None, None, false),
+    };
+
+    let apply_timeout = |solver: &z3::Solver<'_>| {
+        if timeout_ms > 0 {
+            let mut params = z3::Params::new(&ctx);
+            params.set_u32("timeout", timeout_ms);
+            solver.set_params(&params);
+        }
+    };
+
+    // Tautology check.
+    let solver = z3::Solver::new(&ctx);
+    apply_timeout(&solver);
+    let negated = formula.not();
+    solver.assert(&negated);
+    let check = solver.check();
+    let tautology = matches!(check, z3::SatResult::Unsat);
+    let timed_out = matches!(check, z3::SatResult::Unknown);
+
+    if tautology {
+        return (Some(true), None, None, false);
+    }
+
+    let counterexample = if matches!(check, z3::SatResult::Sat) {
+        extract_counterexample_bv(&ctx, &solver, expr, bindings)
+    } else {
+        None
+    };
+
+    // Contradiction check.
+    let solver2 = z3::Solver::new(&ctx);
+    apply_timeout(&solver2);
+    solver2.assert(&formula);
+    let contradiction = matches!(solver2.check(), z3::SatResult::Unsat);
+
+    if contradiction {
+        return (Some(false), None, counterexample, false);
+    }
+
+    (None, None, counterexample, timed_out)
+}
+
+/// Auto-detect the theory for `expr` based on `theory` hint and
+/// the presence of bitwise operations. Returns the result of
+/// whichever theory path is selected.
+///
+/// - `Z3Theory::Auto`: use BV32 if `has_bitwise_ops(expr)`, else LIA.
+/// - `Z3Theory::Bv`: always BV32.
+/// - `Z3Theory::Lia`: always LIA; if bitwise ops are present, returns
+///   `(None, None, None, false)` — the caller's runtime check fires.
+pub fn prove_auto(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    theory: Z3Theory,
+    timeout_ms: u32,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    let use_bv = match theory {
+        Z3Theory::Bv => true,
+        Z3Theory::Lia => {
+            if has_bitwise_ops(expr) {
+                // Caller asked for LIA but formula has bitwise ops —
+                // cannot encode; bail to None so the runtime check fires.
+                return (None, None, None, false);
+            }
+            false
+        }
+        Z3Theory::Auto => has_bitwise_ops(expr),
+    };
+    if use_bv {
+        prove_bv(expr, bindings, timeout_ms)
+    } else {
+        prove_with_axioms_and_timeout(expr, bindings, &[], timeout_ms)
+    }
+}
+
+/// Collect every identifier name seen in `node` (for BV counterexample
+/// extraction — mirrors `collect_int_identifiers` but used for BV vars).
+fn collect_bv_identifiers(node: &Node, out: &mut BTreeSet<String>) {
+    match node {
+        Node::Identifier { name, .. } => {
+            out.insert(name.clone());
+        }
+        Node::PrefixExpression { right, .. } => collect_bv_identifiers(right, out),
+        Node::InfixExpression { left, right, .. } => {
+            collect_bv_identifiers(left, out);
+            collect_bv_identifiers(right, out);
+        }
+        _ => {}
+    }
+}
+
+/// Extract a counterexample from a BV solver model: format as
+/// `name = value, ...` where each value is the BV constant evaluated
+/// as a signed 32-bit integer.
+fn extract_counterexample_bv(
+    ctx: &z3::Context,
+    solver: &z3::Solver<'_>,
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<String> {
+    let model = solver.get_model()?;
+    let mut idents: BTreeSet<String> = BTreeSet::new();
+    collect_bv_identifiers(expr, &mut idents);
+
+    let mut parts: Vec<String> = Vec::new();
+    for name in &idents {
+        if bindings.contains_key(name) {
+            continue;
+        }
+        let var = BV::new_const(ctx, name.as_str(), 32);
+        if let Some(v) = model.eval(&var, false) {
+            // BV::as_i64() gives the unsigned bit pattern; sign-extend
+            // for display by treating values > i32::MAX as negative.
+            if let Some(n) = v.as_i64() {
+                // Mask to 32 bits then sign-extend.
+                let bits = n as u32;
+                let signed = bits as i32;
+                parts.push(format!("{} = {}", name, signed));
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+/// Translate an AST expression to a Z3 `Bool` under the BV32 theory.
+fn translate_bool_bv<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<Bool<'c>> {
+    match node {
+        Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "!" => translate_bool_bv(ctx, right, bindings).map(|b| b.not()),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => match operator.as_str() {
+            "&&" => {
+                let l = translate_bool_bv(ctx, left, bindings)?;
+                let r = translate_bool_bv(ctx, right, bindings)?;
+                Some(Bool::and(ctx, &[&l, &r]))
+            }
+            "||" => {
+                let l = translate_bool_bv(ctx, left, bindings)?;
+                let r = translate_bool_bv(ctx, right, bindings)?;
+                Some(Bool::or(ctx, &[&l, &r]))
+            }
+            "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+                let l = translate_bv(ctx, left, bindings)?;
+                let r = translate_bv(ctx, right, bindings)?;
+                let cmp = match operator.as_str() {
+                    "==" => l._eq(&r),
+                    "!=" => l._eq(&r).not(),
+                    "<" => l.bvslt(&r),
+                    ">" => l.bvsgt(&r),
+                    "<=" => l.bvsle(&r),
+                    ">=" => l.bvsge(&r),
+                    _ => unreachable!(),
+                };
+                Some(cmp)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Translate an AST integer expression to a Z3 BV<32> value.
+fn translate_bv<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<BV<'c>> {
+    match node {
+        Node::IntegerLiteral { value: v, .. } => Some(BV::from_i64(ctx, *v, 32)),
+        Node::Identifier { name, .. } => match bindings.get(name) {
+            Some(v) => Some(BV::from_i64(ctx, *v, 32)),
+            None => Some(BV::new_const(ctx, name.as_str(), 32)),
+        },
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => translate_bv(ctx, right, bindings).map(|v| v.bvneg()),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            let l = translate_bv(ctx, left, bindings)?;
+            let r = translate_bv(ctx, right, bindings)?;
+            Some(match operator.as_str() {
+                "+" => l.bvadd(&r),
+                "-" => l.bvsub(&r),
+                "*" => l.bvmul(&r),
+                "/" => l.bvsdiv(&r),
+                "%" => l.bvsrem(&r),
+                "&" => l.bvand(&r),
+                "|" => l.bvor(&r),
+                "^" => l.bvxor(&r),
+                "<<" => l.bvshl(&r),
+                ">>" => l.bvashr(&r),
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// RES-136: harvest identifier assignments from a satisfied Z3
@@ -1389,5 +1680,126 @@ mod tests {
         let ax2 = infix(ident("b"), ">", ident("a"));
         let (verdict, _cert, _cx, _t) = prove_with_axioms_and_timeout(&goal, &no_b, &[ax1, ax2], 0);
         assert_eq!(verdict, Some(true));
+    }
+
+    // -------------------------------------------------------
+    // RES-354: BV32 theory tests
+    // -------------------------------------------------------
+
+    #[test]
+    fn bv_bitwise_and_mask_lower_bound() {
+        // `(x & 0xF) >= 0` — BV signed: masking with 0xF (= 15)
+        // can never set the sign bit on 32-bit values.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "&", int(15)), ">=", int(0));
+        let (verdict, _cert, _cx, _t) = prove_bv(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true), "bvand with 0xF should be >= 0");
+    }
+
+    #[test]
+    fn bv_bitwise_and_mask_upper_bound() {
+        // `(x & 0xF) <= 15` — the low nibble is at most 15.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "&", int(15)), "<=", int(15));
+        let (verdict, _cert, _cx, _t) = prove_bv(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true), "bvand with 0xF should be <= 15");
+    }
+
+    #[test]
+    fn bv_xor_self_is_zero() {
+        // `x ^ x == 0` — XOR with self is always zero.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "^", ident("x")), "==", int(0));
+        let (verdict, _cert, _cx, _t) = prove_bv(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true), "x ^ x should be 0");
+    }
+
+    #[test]
+    fn bv_or_self_is_self() {
+        // `x | x == x` — OR with self is identity.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "|", ident("x")), "==", ident("x"));
+        let (verdict, _cert, _cx, _t) = prove_bv(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true), "x | x should equal x");
+    }
+
+    #[test]
+    fn bv_constant_shift_right() {
+        // `(16 >> 4) == 1` — constant folding in BV32: 16 >> 4 = 1.
+        let no_b = HashMap::new();
+        let expr = infix(infix(int(16), ">>", int(4)), "==", int(1));
+        let (verdict, _cert, _cx, _t) = prove_bv(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true), "16 >> 4 should equal 1 in BV32");
+    }
+
+    #[test]
+    fn bv_constant_shift_left() {
+        // `(1 << 3) == 8` — constant left shift.
+        let no_b = HashMap::new();
+        let expr = infix(infix(int(1), "<<", int(3)), "==", int(8));
+        let (verdict, _cert, _cx, _t) = prove_bv(&expr, &no_b, 0);
+        assert_eq!(verdict, Some(true), "1 << 3 should equal 8 in BV32");
+    }
+
+    #[test]
+    fn has_bitwise_ops_detects_and() {
+        // `x & y > 0` — has_bitwise_ops must return true.
+        let expr = infix(infix(ident("x"), "&", ident("y")), ">", int(0));
+        assert!(has_bitwise_ops(&expr), "should detect & operator");
+    }
+
+    #[test]
+    fn has_bitwise_ops_detects_shift() {
+        // `x >> 2` — has_bitwise_ops must return true.
+        let expr = infix(ident("x"), ">>", int(2));
+        assert!(has_bitwise_ops(&expr), "should detect >> operator");
+    }
+
+    #[test]
+    fn has_bitwise_ops_returns_false_for_pure_lia() {
+        // `x + y > 0` — pure integer arithmetic, no bitwise ops.
+        let expr = infix(infix(ident("x"), "+", ident("y")), ">", int(0));
+        assert!(!has_bitwise_ops(&expr), "pure LIA should not trigger BV");
+    }
+
+    #[test]
+    fn prove_auto_detects_and_uses_bv_for_bitwise_expr() {
+        // `(x & 0xF) <= 15` — Auto should pick BV32 and prove it.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "&", int(15)), "<=", int(15));
+        let (verdict, _cert, _cx, _t) = prove_auto(&expr, &no_b, Z3Theory::Auto, 0);
+        assert_eq!(verdict, Some(true), "Auto should prove BV mask <= 15");
+    }
+
+    #[test]
+    fn prove_auto_uses_lia_for_pure_arithmetic() {
+        // `x + 0 == x` — Auto should use LIA and prove it.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        let (verdict, _cert, _cx, _t) = prove_auto(&expr, &no_b, Z3Theory::Auto, 0);
+        assert_eq!(verdict, Some(true), "Auto should use LIA for x + 0 == x");
+    }
+
+    #[test]
+    fn prove_auto_lia_forced_bails_on_bitwise_ops() {
+        // `(x & 0xF) <= 15` with theory=Lia — should return None
+        // because LIA cannot encode bitwise ops.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "&", int(15)), "<=", int(15));
+        let (verdict, _cert, _cx, _t) = prove_auto(&expr, &no_b, Z3Theory::Lia, 0);
+        assert_eq!(
+            verdict, None,
+            "Lia theory must bail (None) when bitwise ops are present"
+        );
+    }
+
+    #[test]
+    fn prove_auto_bv_forced_proves_pure_arithmetic() {
+        // `x + 0 == x` with theory=Bv — BV32 should still prove
+        // basic arithmetic identities.
+        let no_b = HashMap::new();
+        let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
+        let (verdict, _cert, _cx, _t) = prove_auto(&expr, &no_b, Z3Theory::Bv, 0);
+        assert_eq!(verdict, Some(true), "Bv theory should prove x + 0 == x");
     }
 }
