@@ -1,27 +1,34 @@
 // RES-390: broken cluster invariant — two-leader scenario.
 //
 // Same cluster as `cluster_single_leader_ok.rz` but with a
-// `become_leader` handler that sets `is_leader = 1` without
+// `become_leader` handler that sets the leader flag to 1 without
 // checking the peer. Z3 finds a pre-state where the *other*
-// replica is already leader and the handler pushes the sum
-// past 1, breaking the invariant.
+// replica is already leader and the handler pushes the sum past
+// 1, breaking the invariant.
 //
 // The program itself still runs — actor/cluster declarations are
 // compile-time-only today, so the interpreter treats them as
 // no-ops. Run `resilient check --features z3 <this file>` to see
 // the distributed-invariant diagnostic.
 actor Node {
-    int is_leader = 0;
+    state: int = 0;
 
     receive become_leader() {
-        self.is_leader = 1;
+        self.state = 1;
     }
 }
 
 cluster Ring {
     a: Node;
     b: Node;
-    cluster_invariant: a.is_leader + b.is_leader <= 1;
+    // Range clauses are load-bearing: without them Z3 picks a
+    // pre-state like `a = 2, b = -1` satisfying `a + b <= 1`, and
+    // the post-state (`a = 1`) still satisfies it — missing the
+    // real violation. Constraining each flag to [0, 1] forces Z3
+    // to the intended pre-state where both are leaders.
+    cluster_invariant: a.state >= 0 && a.state <= 1
+                    && b.state >= 0 && b.state <= 1
+                    && a.state + b.state <= 1;
 }
 
 fn main(int _d) {
