@@ -1,0 +1,12 @@
+100
+1000
+100000
+-56
+255
+0
+100
+7
+1023
+42
+9999
+Program executed successfully

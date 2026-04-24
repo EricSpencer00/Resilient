@@ -245,6 +245,7 @@ impl Formatter {
                 name,
                 state_fields,
                 always_clauses,
+                eventually_clauses,
                 receive_handlers,
                 ..
             } => {
@@ -260,6 +261,12 @@ impl Formatter {
                 for clause in always_clauses {
                     self.write("always: ");
                     self.fmt_expr(clause);
+                    self.write(";");
+                    self.newline();
+                }
+                for ev in eventually_clauses {
+                    self.write(&format!("eventually(after: {}): ", ev.target_handler));
+                    self.fmt_expr(&ev.post);
                     self.write(";");
                     self.newline();
                 }
@@ -525,6 +532,28 @@ impl Formatter {
             Node::ExpressionStatement { expr, .. } => {
                 self.fmt_expr(expr);
                 self.write(";");
+                self.newline();
+            }
+            // RES-224: `try { ... } catch V { ... }` structured handler.
+            Node::TryCatch { body, handlers, .. } => {
+                self.write("try {");
+                self.newline();
+                self.indent();
+                for s in body {
+                    self.fmt_stmt(s);
+                }
+                self.dedent();
+                self.write("}");
+                for (variant, handler_body) in handlers {
+                    self.write(&format!(" catch {} {{", variant));
+                    self.newline();
+                    self.indent();
+                    for s in handler_body {
+                        self.fmt_stmt(s);
+                    }
+                    self.dedent();
+                    self.write("}");
+                }
                 self.newline();
             }
             // FFI v1: extern blocks not yet formatted (Tasks 4-8).
@@ -877,6 +906,7 @@ impl Formatter {
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
+            | Node::TryCatch { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }

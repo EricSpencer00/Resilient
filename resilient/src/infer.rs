@@ -167,6 +167,13 @@ fn collect_ftv(ty: &Type, out: &mut std::collections::HashSet<u32>) {
         }
         // Primitive / opaque types have no type variables.
         Type::Int
+        | Type::Int8
+        | Type::Int16
+        | Type::Int32
+        | Type::UInt8
+        | Type::UInt16
+        | Type::UInt32
+        | Type::UInt64
         | Type::Float
         | Type::String
         | Type::Bool
@@ -587,7 +594,16 @@ impl Inferer {
 /// to fall back to a fresh var).
 fn parse_primitive_type(s: &str) -> Option<Type> {
     match s {
-        "int" => Some(Type::Int),
+        // RES-366: `Int64` is the long-form alias for `Int`.
+        "int" | "Int" | "Int64" => Some(Type::Int),
+        // RES-366: pinned integer widths.
+        "Int8" => Some(Type::Int8),
+        "Int16" => Some(Type::Int16),
+        "Int32" => Some(Type::Int32),
+        "UInt8" => Some(Type::UInt8),
+        "UInt16" => Some(Type::UInt16),
+        "UInt32" => Some(Type::UInt32),
+        "UInt64" => Some(Type::UInt64),
         "float" => Some(Type::Float),
         "bool" => Some(Type::Bool),
         "string" => Some(Type::String),

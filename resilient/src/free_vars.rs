@@ -398,6 +398,23 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 truncate_to(bound, snapshot);
             }
         }
+        // RES-224: `try { body } catch V { handler }` — each block
+        // is its own scope, and no variant-level binder is introduced
+        // by the current MVP (payload bindings are a follow-up).
+        Node::TryCatch { body, handlers, .. } => {
+            let snapshot = bound.len();
+            for s in body {
+                walk(s, bound, free);
+            }
+            truncate_to(bound, snapshot);
+            for (_, handler_body) in handlers {
+                let hsnap = bound.len();
+                for s in handler_body {
+                    walk(s, bound, free);
+                }
+                truncate_to(bound, hsnap);
+            }
+        }
     }
 }
 
