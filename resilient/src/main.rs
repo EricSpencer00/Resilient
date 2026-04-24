@@ -152,6 +152,9 @@ enum Token {
     /// pattern.
     Default,
     Question,
+    /// RES-375: `??` — Option coalescing operator. `opt ?? default`
+    /// returns the inner value if `opt` is `Some(v)`, else `default`.
+    DoubleQuestion,
     /// RES-363: `?.` — optional-chaining operator. Emitted by the lexer
     /// when `?` is immediately followed by `.`. The parser desugars it
     /// into `Node::OptionalChain`.
@@ -348,6 +351,7 @@ impl Token {
             Token::FatArrow => "`=>`".to_string(),
             Token::Arrow => "`->`".to_string(),
             Token::Question => "`?`".to_string(),
+            Token::DoubleQuestion => "`??`".to_string(),
             Token::QuestionDot => "`?.`".to_string(),
             Token::Plus => "`+`".to_string(),
             Token::Minus => "`-`".to_string(),
@@ -674,6 +678,12 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             '.' => Token::Dot,
+            // RES-375: `??` coalescing operator (must precede lone `?`).
+            '?' if self.peek_char() == '?' => {
+                self.read_char(); // consume second `?`
+                Token::DoubleQuestion
+            }
+            '?' => Token::Question,
             '?' => {
                 // RES-363: `?.` is the optional-chain operator. Peek one
                 // character ahead; if it is `.` emit QuestionDot and
@@ -1067,6 +1077,11 @@ enum Pattern {
         fields: Vec<(String, Box<Pattern>)>,
         has_rest: bool,
     },
+    /// RES-375: `Some(x)` — matches a present Option and binds the
+    /// inner value to `x`. The inner pattern is an arbitrary sub-pattern.
+    Some(Box<Pattern>),
+    /// RES-375: `None` — matches an absent Option.
+    None,
 }
 
 /// RES-139: exponential-backoff policy for a `live` block. Sleep
@@ -4923,6 +4938,22 @@ impl Parser {
                     self.next_token();
                     self.parse_infix_expression(current_left)
                 }
+                // RES-375: `opt ?? default` — Option coalescing.
+                Token::DoubleQuestion => {
+                    let op_span = self.span_at_current();
+                    self.next_token(); // current_token = `??`
+                    self.next_token(); // current_token = start of rhs
+                    let rhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: op_span,
+                    });
+                    Some(Node::InfixExpression {
+                        left: Box::new(current_left),
+                        operator: "??".to_string(),
+                        right: Box::new(rhs),
+                        span: op_span,
+                    })
+                }
                 Token::LeftParen => {
                     self.next_token();
                     self.parse_call_expression(current_left)
@@ -5785,6 +5816,18 @@ impl Parser {
             }),
             Token::Identifier(name) => {
                 let name = name.clone();
+                // RES-375: `Some(inner_pattern)` — Option presence pattern.
+                if name == "Some" && self.peek_token == Token::LeftParen {
+                    self.next_token(); // current = `(`
+                    self.next_token(); // current = start of inner pattern
+                    let inner = self.parse_pattern_atom();
+                    self.next_token(); // current = `)`
+                    return Pattern::Some(Box::new(inner));
+                }
+                // RES-375: `None` — Option absence pattern.
+                if name == "None" {
+                    return Pattern::None;
+                }
                 if self.peek_token == Token::LeftBrace {
                     return self.parse_match_struct_pattern(name);
                 }
@@ -6194,6 +6237,12 @@ impl Parser {
 
     fn current_precedence(&self) -> u8 {
         match &self.current_token {
+            // RES-375: `??` has very low precedence — below `||` so
+            // `a || b ?? c` is `(a || b) ?? c`. Assigned below Or(1)
+            // at level 1 itself to satisfy the > 0 parse-loop invariant;
+            // we never call current_precedence on `??` as an infix
+            // operator (it's handled in its own branch).
+            Token::DoubleQuestion => 1,
             Token::Or => 1,
             Token::And => 2,
             Token::BitOr => 3,
@@ -6217,6 +6266,8 @@ impl Parser {
 
     fn peek_precedence(&self) -> u8 {
         match &self.peek_token {
+            // RES-375: `??` has very low precedence — see current_precedence.
+            Token::DoubleQuestion => 1,
             Token::Or => 1,
             Token::And => 2,
             Token::BitOr => 3,
@@ -6287,6 +6338,11 @@ enum Value {
         ok: bool,
         payload: Box<Value>,
     },
+    /// RES-375: first-class Option type.
+    ///
+    /// `Some(None)` is `Value::Option(None)` — i.e. the outer `Option`
+    /// is the Rust-level discriminant, matching `None` / `Some(inner)`.
+    Option(Option<Box<Value>>),
     /// RES-363: first-class Option type for optional chaining.
     ///
     /// `Option(None)` is the absent case — `?.` short-circuits to this.
@@ -6921,6 +6977,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
+    // RES-375: Option<T> constructors and free-function methods.
+    // `None` is registered as a Value directly in Interpreter::new, not
+    // here, because the builtins table only holds functions.
+    ("Some", builtin_some),
+    ("is_some", builtin_is_some),
+    ("is_none", builtin_is_none),
+    ("option_unwrap", builtin_option_unwrap),
+    ("option_unwrap_or", builtin_option_unwrap_or),
     // RES-363: Option type builtins.
     ("Some", builtin_some),
     ("None", builtin_none),
@@ -7581,6 +7645,60 @@ fn builtin_unwrap_err(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("unwrap_err: expected Result, got {}", other)),
         _ => Err(format!(
             "unwrap_err: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+// ─── RES-375: Option<T> builtins ───────────────────────────────────────────
+
+/// `Some(v)` — wrap a value as a present Option.
+fn builtin_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Option(Some(Box::new(v.clone())))),
+        _ => Err(format!("Some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `is_some(opt)` — true iff `opt` is `Some(_)`.
+fn builtin_is_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
+        [other] => Err(format!("is_some: expected Option, got {}", other)),
+        _ => Err(format!("is_some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `is_none(opt)` — true iff `opt` is `None`.
+fn builtin_is_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_none())),
+        [other] => Err(format!("is_none: expected Option, got {}", other)),
+        _ => Err(format!("is_none: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `option_unwrap(opt)` — return the inner value or runtime error.
+fn builtin_option_unwrap(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v))] => Ok((**v).clone()),
+        [Value::Option(None)] => Err("unwrap called on None".to_string()),
+        [other] => Err(format!("option_unwrap: expected Option, got {}", other)),
+        _ => Err(format!(
+            "option_unwrap: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `option_unwrap_or(opt, default)` — return inner value or `default`.
+fn builtin_option_unwrap_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v)), _] => Ok((**v).clone()),
+        [Value::Option(None), default] => Ok(default.clone()),
+        [other, _] => Err(format!("option_unwrap_or: expected Option, got {}", other)),
+        _ => Err(format!(
+            "option_unwrap_or: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -8833,6 +8951,9 @@ impl Interpreter {
     fn new() -> Self {
         let mut env = Environment::new();
         register_builtins(&mut env);
+        // RES-375: register `None` as the absent-Option constant.
+        // `Some` is already in the builtins table as a function.
+        env.set("None".to_string(), Value::Option(None));
         Interpreter {
             env,
             statics: Rc::new(RefCell::new(HashMap::new())),
@@ -9126,6 +9247,27 @@ impl Interpreter {
                 // is an ordinary function invocation.
                 if let Node::FieldAccess { target, field, .. } = function.as_ref() {
                     let target_val = self.eval(target)?;
+                    // RES-375: Option method dispatch — `.is_some()`,
+                    // `.is_none()`, `.unwrap()`, `.unwrap_or(default)`.
+                    if let Value::Option(ref inner) = target_val {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        return match field.as_str() {
+                            "is_some" => Ok(Value::Bool(inner.is_some())),
+                            "is_none" => Ok(Value::Bool(inner.is_none())),
+                            "unwrap" => match inner {
+                                Some(v) => Ok((**v).clone()),
+                                None => Err("unwrap called on None".to_string()),
+                            },
+                            "unwrap_or" => match (inner, extra_args.first()) {
+                                (Some(v), _) => Ok((**v).clone()),
+                                (None, Some(d)) => Ok(d.clone()),
+                                (None, None) => {
+                                    Err("unwrap_or: expected a default argument".to_string())
+                                }
+                            },
+                            other => Err(format!("Option has no method `{}`", other)),
+                        };
+                    }
                     // RES-353: StringBuilder method dispatch — intercept before
                     // the generic impl-block lookup so these builtins can write
                     // the mutated struct back to the caller's binding.
@@ -9235,7 +9377,15 @@ impl Interpreter {
                             payload,
                         })))
                     }
-                    other => Err(format!("? operator expects a Result, got {}", other)),
+                    // RES-375: `?` propagation for Option — `expr?` in a
+                    // function returning `Option<T>` returns `None` early
+                    // when `expr` is `None`; otherwise unwraps `Some(v)`.
+                    Value::Option(Some(inner_val)) => Ok(*inner_val),
+                    Value::Option(None) => Ok(Value::Return(Box::new(Value::Option(None)))),
+                    other => Err(format!(
+                        "? operator expects a Result or Option, got {}",
+                        other
+                    )),
                 }
             }
             // RES-363: `expr?.field` / `expr?.method(args)` — optional chaining.
@@ -10221,6 +10371,22 @@ impl Interpreter {
         left: Value,
         right: Value,
     ) -> RResult<Value> {
+        // RES-375: `??` — Option coalescing. Handled before the type-dispatch
+        // below because the right-hand side must not be eagerly evaluated when
+        // the left-hand side is `Some` (short-circuit). However, since both
+        // sides were evaluated before this function is called, the semantics
+        // are value-based here. If the left is Some(v) return v; else right.
+        if operator == "??" {
+            return match left {
+                Value::Option(Some(inner)) => Ok(*inner),
+                Value::Option(None) => Ok(right),
+                other => Err(format!(
+                    "`??` operator requires an Option on the left, got {}",
+                    other
+                )),
+            };
+        }
+
         // String + <primitive> coercion (RES-008): when `+` has a string on
         // either side and the other side is a primitive (int / float / bool),
         // coerce the primitive to its textual form and concatenate. This only
@@ -10622,6 +10788,17 @@ impl Interpreter {
                 }
                 Ok(Some(bindings))
             }
+            // RES-375: `Some(inner_pattern)` — matches `Value::Option(Some(_))`
+            // and recurses into the inner value.
+            Pattern::Some(inner_pat) => match value {
+                Value::Option(Some(inner_val)) => self.match_pattern(inner_pat, inner_val),
+                _ => Ok(None),
+            },
+            // RES-375: `None` — matches only `Value::Option(None)`.
+            Pattern::None => match value {
+                Value::Option(None) => Ok(Some(vec![])),
+                _ => Ok(None),
+            },
         }
     }
 

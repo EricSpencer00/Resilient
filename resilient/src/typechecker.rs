@@ -168,6 +168,10 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
             .iter()
             .flat_map(|(_, sub)| pattern_bindings(sub.as_ref()))
             .collect(),
+        // RES-375: `Some(inner)` introduces whatever the inner
+        // pattern binds; `None` introduces nothing.
+        Pattern::Some(inner) => pattern_bindings(inner.as_ref()),
+        Pattern::None => Vec::new(),
     }
 }
 
@@ -190,6 +194,8 @@ fn pattern_is_default(p: &Pattern) -> bool {
                     .iter()
                     .all(|(_, sub)| pattern_is_default(sub.as_ref()))
         }
+        // RES-375: `Some(_)` / `None` are not defaults by themselves.
+        Pattern::Some(_) | Pattern::None => false,
     }
 }
 
@@ -241,6 +247,8 @@ fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: 
             }
             true
         }
+        // RES-375: Option patterns don't match struct-nominal types.
+        Pattern::Some(_) | Pattern::None => false,
     }
 }
 
@@ -1484,6 +1492,11 @@ impl TypeChecker {
                 }
                 Ok(out)
             }
+            // RES-375: `Some(inner)` binds the inner value as `Any`
+            // (Option carries no type parameter in the dynamic checker).
+            // `None` introduces no bindings.
+            Pattern::Some(inner) => self.match_pattern_binding_types(inner.as_ref(), &Type::Any),
+            Pattern::None => Ok(vec![]),
         }
     }
 

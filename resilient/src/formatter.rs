@@ -979,6 +979,13 @@ impl Formatter {
                 }
                 self.write(" }");
             }
+            // RES-375: `Some(inner)` / `None` Option patterns.
+            Pattern::Some(inner) => {
+                self.write("Some(");
+                self.fmt_pattern(inner.as_ref());
+                self.write(")");
+            }
+            Pattern::None => self.write("None"),
         }
     }
 }

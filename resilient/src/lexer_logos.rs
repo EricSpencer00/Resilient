@@ -67,6 +67,10 @@ enum Tok {
     // handling so logos prefers the longer match.
     #[token("#{")]
     HashLBrace,
+    // RES-375: `??` Option coalescing operator. Declared before `?` so
+    // logos's longer-match rule prefers `??` when both `?` are present.
+    #[token("??")]
+    DoubleQuestion,
 
     // --- single-char operators & punctuation ---
     #[token("+")]
@@ -617,6 +621,7 @@ fn convert(t: Tok) -> Token {
         Tok::Dot => Token::Dot,
         Tok::QuestionDot => Token::QuestionDot,
         Tok::Question => Token::Question,
+        Tok::DoubleQuestion => Token::DoubleQuestion,
         Tok::At => Token::At,
         Tok::HexInt(n) => Token::IntLiteral(n),
         Tok::BinInt(n) => Token::IntLiteral(n),
