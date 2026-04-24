@@ -1,0 +1,20 @@
+// RES-369: non-exhaustive struct match — compile error example.
+// This program is intentionally invalid: the match covers only the
+// origin case and has no wildcard arm, so the typechecker rejects it
+// with: "Non-exhaustive match on struct `Point`: add `Point { .. }`,
+//        `_`, or an identifier arm that covers every field"
+
+struct Point {
+    int x,
+    int y,
+}
+
+fn main() {
+    let p = new Point { x: 1, y: 2 };
+    let _r = match p {
+        Point { x: 0, y: 0 } => 0,
+    };
+    return 0;
+}
+
+main();
