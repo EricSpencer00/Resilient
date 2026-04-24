@@ -85,6 +85,10 @@ mod ffi_trampolines;
 // used in type-annotation strings, plus the single-use-enforcement
 // pass invoked from the typechecker.
 mod linear;
+// RES-351: array bounds — static Z3 proof of `0 <= i < len(arr)`
+// at every index site, with an optional strict `--deny-unproven-bounds`
+// mode for safety-critical embedded builds.
+mod bounds_check;
 
 // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
 // failure handlers. Holds parser + typechecker logic for the feature;
@@ -11784,6 +11788,7 @@ COMMON FLAGS:\n\
         --explain-effects        Print the inferred effect (@pure / @io)\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
+        --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
@@ -11930,6 +11935,13 @@ fn main() {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--deny-unproven-bounds" {
+                // RES-351: strict mode — unproven array-bounds
+                // accesses become compile errors instead of relying
+                // on the VM's runtime check. Implies --typecheck so
+                // the pass actually runs before the program executes.
+                bounds_check::set_deny_unproven_bounds(true);
+                type_check = true;
             } else if arg == "--explain-effects" {
                 // RES-347: dump one line per user fn with its
                 // inferred effect. Implies --typecheck.

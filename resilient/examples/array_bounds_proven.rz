@@ -1,0 +1,22 @@
+// RES-351 demo: every `arr[i]` here is statically provable in-bounds.
+//
+//   - `xs[0]`, `xs[1]`, `xs[2]` are literal indices against a
+//     literal-length array — the fast-path folder catches them
+//     without needing Z3.
+//   - The `for i in 0..len(xs)` loop axiom handles `xs[i]` inside
+//     the loop body when built with `--features z3`.
+//
+// Compile with `resilient --features z3 --emit-certificate certs/`
+// to dump an SMT-LIB2 proof for each loop access.
+fn sum(int a, int b, int c) -> int {
+    let xs = [a, b, c];
+    let t = xs[0] + xs[1] + xs[2];
+    return t;
+}
+
+fn main() {
+    let s = sum(10, 20, 30);
+    println(s);
+}
+
+main();
