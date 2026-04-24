@@ -6528,6 +6528,26 @@ impl Environment {
             })),
         }
     }
+
+    /// RES-356: Collect every `Value::Function` in the top-level frame
+    /// that has at least one `requires` or `ensures` clause. Returns a
+    /// map from function name to `(requires_clauses, ensures_clauses)`.
+    /// Only walks the top-level store (outermost frame) — user-defined
+    /// functions live there after REPL evaluation.
+    fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
+        let frame = self.inner.borrow();
+        let mut out = HashMap::new();
+        for (name, val) in &frame.store {
+            if let Value::Function {
+                requires, ensures, ..
+            } = val
+                && (!requires.is_empty() || !ensures.is_empty())
+            {
+                out.insert(name.clone(), (requires.clone(), ensures.clone()));
+            }
+        }
+        out
+    }
 }
 
 /// Walk a `FieldAssignment` target tree, collecting the chain of field
@@ -8484,6 +8504,14 @@ impl Interpreter {
     fn with_proven_fns(mut self, proven: HashSet<String>) -> Self {
         self.proven_fns = Rc::new(proven);
         self
+    }
+
+    /// RES-356: collect every user-defined function that declares at
+    /// least one contract clause (`requires` or `ensures`). Used by the
+    /// REPL `.contracts` command. Returns a map from function name to
+    /// `(requires_clauses, ensures_clauses)`.
+    fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
+        self.env.collect_contract_fns()
     }
 
     fn eval(&mut self, node: &Node) -> RResult<Value> {
