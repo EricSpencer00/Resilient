@@ -207,6 +207,9 @@ enum Tok {
     Region,
     #[token("mut")]
     Mut,
+    // <EXTENSION_TOKENS>
+    // Add new keyword tokens here — one #[token("keyword")] + Variant per feature.
+    // Append-only. Merge conflicts: keep ALL variants from both sides.
     // RES-386/RES-388: actor keywords.
     #[token("actor")]
     Actor,
@@ -216,6 +219,7 @@ enum Tok {
     ConcurrentEnsures,
     #[token("always")]
     Always,
+    // </EXTENSION_TOKENS>
     #[token("true")]
     True,
     #[token("false")]
@@ -544,10 +548,13 @@ fn convert(t: Tok) -> Token {
         Tok::Linear => Token::Linear,
         Tok::Region => Token::Region,
         Tok::Mut => Token::Mut,
+        // <EXTENSION_KEYWORDS>
+        // Add Tok::MyToken => Token::MyToken mappings here (append-only).
         Tok::Actor => Token::Actor,
         Tok::Receive => Token::Receive,
         Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
         Tok::Always => Token::Always,
+        // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
         Tok::Underscore => Token::Underscore,
