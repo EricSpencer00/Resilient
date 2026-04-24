@@ -40,6 +40,9 @@ use crate::span::{Pos, Span};
 enum Tok {
     // --- two-char operators (must precede their single-char prefixes
     // at the logos level via longer-match priority) ---
+    // RES-360: `::` path separator — must precede the single `:` rule.
+    #[token("::")]
+    ColonColon,
     #[token("==")]
     EqEq,
     #[token("!=")]
@@ -114,6 +117,10 @@ enum Tok {
     Colon,
     #[token(".")]
     Dot,
+    // RES-363: `?.` — optional-chain operator. Must precede lone `?`
+    // so logos's longer-match priority picks it up.
+    #[token("?.")]
+    QuestionDot,
     #[token("?")]
     Question,
     // RES-191: attribute prefix (`@pure`, etc.). Emitted as a bare
@@ -193,6 +200,9 @@ enum Tok {
     Match,
     #[token("use")]
     Use,
+    // RES-360: `as` keyword — namespace alias in `use "f" as name;`.
+    #[token("as")]
+    As,
     // RES-158: `impl <Struct> { ... }` keyword. Added alongside the
     // hand-rolled lexer's `"impl" => Token::Impl` kw arm so feature
     // parity is preserved.
@@ -555,6 +565,8 @@ fn convert(t: Tok) -> Token {
         Tok::New => Token::New,
         Tok::Match => Token::Match,
         Tok::Use => Token::Use,
+        Tok::As => Token::As,
+        Tok::ColonColon => Token::DoubleColon,
         Tok::Impl => Token::Impl,
         Tok::Type => Token::Type,
         Tok::Linear => Token::Linear,
@@ -607,6 +619,7 @@ fn convert(t: Tok) -> Token {
         Tok::Semi => Token::Semicolon,
         Tok::Colon => Token::Colon,
         Tok::Dot => Token::Dot,
+        Tok::QuestionDot => Token::QuestionDot,
         Tok::Question => Token::Question,
         Tok::DoubleQuestion => Token::DoubleQuestion,
         Tok::At => Token::At,

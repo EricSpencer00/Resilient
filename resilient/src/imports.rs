@@ -9,17 +9,22 @@
 //! functions are simply prepended to the program's top-level statement
 //! list.
 //!
+//! RES-360: `use "path" as name;` — scoped imports. When an alias is
+//! present, each imported top-level `fn` (and `Struct`) is renamed to
+//! `"name::original"` before being spliced. Call sites write
+//! `name::fn()` which the parser represents as `Node::Identifier {
+//! name: "name::fn" }` (a plain dotted name produced by the `::` token
+//! handling in `parse_expression`). The interpreter looks up the key
+//! `"name::fn"` in the environment — no extra runtime machinery needed.
+//!
 //! Cycles are detected via an in-flight set and produce a clean
 //! diagnostic. Files already loaded once are skipped on re-import
 //! (dedup by canonicalized path).
 //!
 //! NOT in scope here:
-//! - Qualified names (`module::fn`)
 //! - Visibility modifiers (`pub`)
 //! - Submodules / packages
 //! - Re-exports
-//!
-//! Those are intentional follow-ups; this is the foundation.
 
 use crate::span::Spanned;
 use crate::{Node, parse};
@@ -52,19 +57,27 @@ pub fn expand_uses(
 
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
-        if let Node::Use { path, .. } = &stmt.node {
+        if let Node::Use { path, alias, .. } = &stmt.node {
+            let alias = alias.clone(); // borrow ends before we mutate `expanded`
             let target = resolve_use_path(base_dir, path)?;
 
             // Cycle / already-loaded check: canonicalize so that
             // `./helpers.rz` and `helpers.rz` collapse to one entry.
+            //
+            // RES-360: scoped imports (`use "f" as a; use "f" as b;`) must
+            // NOT collapse — the same file can be imported under two
+            // different aliases without conflict. Only unaliased re-imports
+            // are dedup'd.
             let canon = canonicalize_or_self(&target);
-            if loaded.contains(&canon) {
-                // Already loaded once. Re-importing is a no-op — same
-                // semantics as Rust's `use` after a `mod` was already
-                // brought in.
-                continue;
+            if alias.is_none() {
+                if loaded.contains(&canon) {
+                    // Already loaded once. Re-importing is a no-op — same
+                    // semantics as Rust's `use` after a `mod` was already
+                    // brought in.
+                    continue;
+                }
+                loaded.insert(canon.clone());
             }
-            loaded.insert(canon.clone());
 
             let imported_program = load_and_parse(&target)?;
             let imported_dir = target
@@ -82,7 +95,15 @@ pub fn expand_uses(
             // drained).
             if let Node::Program(imported_stmts) = imported_program {
                 for s in imported_stmts {
-                    if !matches!(s.node, Node::Use { .. }) {
+                    if matches!(s.node, Node::Use { .. }) {
+                        continue;
+                    }
+                    // RES-360: if an alias was given, prefix every
+                    // imported declaration name with `"alias::"`.
+                    if let Some(ref ns) = alias {
+                        let renamed = rename_decl(s, ns);
+                        expanded.push(renamed);
+                    } else {
                         expanded.push(s);
                     }
                 }
@@ -93,6 +114,23 @@ pub fn expand_uses(
     }
     *stmts = expanded;
     Ok(())
+}
+
+/// RES-360: rename an imported top-level declaration by prepending `ns::`
+/// to its name. Only `Function` and `Struct` nodes carry a mutable `name`
+/// field at the top level; other node kinds (already-evaluated expressions,
+/// etc.) are returned unchanged so the splice stays clean.
+fn rename_decl(mut s: Spanned<Node>, ns: &str) -> Spanned<Node> {
+    match &mut s.node {
+        Node::Function { name, .. } => {
+            *name = format!("{}::{}", ns, name);
+        }
+        Node::StructDecl { name, .. } => {
+            *name = format!("{}::{}", ns, name);
+        }
+        _ => {}
+    }
+    s
 }
 
 fn resolve_use_path(base_dir: &Path, path: &str) -> Result<PathBuf, String> {
