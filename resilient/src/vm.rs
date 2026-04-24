@@ -57,6 +57,12 @@ pub enum VmError {
     },
     /// FFI v2: the trampoline returned an error string.
     ForeignCallFailed(String),
+    /// RES-335: `GetField`/`SetField` on a struct value whose field
+    /// table has no entry matching the requested name.
+    UnknownField {
+        struct_name: String,
+        field: String,
+    },
 }
 
 impl VmError {
@@ -91,6 +97,9 @@ impl std::fmt::Display for VmError {
             ),
             VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
             VmError::ForeignCallFailed(msg) => write!(f, "ffi call failed: {}", msg),
+            VmError::UnknownField { struct_name, field } => {
+                write!(f, "vm: struct {} has no field '{}'", struct_name, field)
+            }
         }
     }
 }
@@ -536,7 +545,104 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                 // can write it into the local slot.
                 stack.push(Value::Array(items));
             }
+            // ---- RES-335: struct ops ----
+            Op::StructLiteral {
+                name_const,
+                field_count,
+            } => {
+                let name = constant_as_string(chunk, name_const, "StructLiteral (type name)")?;
+                let n = field_count as usize;
+                // Stack layout on entry (top → bottom):
+                //   [v_N, k_N, ..., v_1, k_1, ...]
+                // Drain the top `2 * n` values as a flat vec and
+                // destructure into (key, value) pairs in push order.
+                let needed = n.checked_mul(2).ok_or(VmError::EmptyStack)?;
+                if stack.len() < needed {
+                    return Err(VmError::EmptyStack);
+                }
+                let split_at = stack.len() - needed;
+                let flat: Vec<Value> = stack.drain(split_at..).collect();
+                let mut fields: Vec<(String, Value)> = Vec::with_capacity(n);
+                let mut it = flat.into_iter();
+                for _ in 0..n {
+                    let k = it.next().ok_or(VmError::EmptyStack)?;
+                    let v = it.next().ok_or(VmError::EmptyStack)?;
+                    let Value::String(field_name) = k else {
+                        return Err(VmError::TypeMismatch("StructLiteral (non-string key)"));
+                    };
+                    fields.push((field_name, v));
+                }
+                stack.push(Value::Struct { name, fields });
+            }
+            Op::GetField { name_const } => {
+                let field = constant_as_string(chunk, name_const, "GetField (field name)")?;
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let Value::Struct {
+                    name: sname,
+                    fields,
+                } = v
+                else {
+                    return Err(VmError::TypeMismatch("GetField (non-struct target)"));
+                };
+                let found = fields
+                    .iter()
+                    .find(|(k, _)| k == &field)
+                    .map(|(_, v)| v.clone());
+                match found {
+                    Some(val) => stack.push(val),
+                    None => {
+                        return Err(VmError::UnknownField {
+                            struct_name: sname,
+                            field,
+                        });
+                    }
+                }
+            }
+            Op::SetField { name_const } => {
+                let field = constant_as_string(chunk, name_const, "SetField (field name)")?;
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                let tgt = stack.pop().ok_or(VmError::EmptyStack)?;
+                let Value::Struct {
+                    name: sname,
+                    mut fields,
+                } = tgt
+                else {
+                    return Err(VmError::TypeMismatch("SetField (non-struct target)"));
+                };
+                let slot = fields.iter_mut().find(|(k, _)| k == &field);
+                match slot {
+                    Some((_, existing)) => *existing = v,
+                    None => {
+                        return Err(VmError::UnknownField {
+                            struct_name: sname,
+                            field,
+                        });
+                    }
+                }
+                // Push the modified struct back so the enclosing
+                // compile pattern (`StoreLocal` after `SetField`) can
+                // write it into the local slot. Mirrors `StoreIndex`.
+                stack.push(Value::Struct {
+                    name: sname,
+                    fields,
+                });
+            }
         }
+    }
+}
+
+/// RES-335: pull a `Value::String` out of `chunk.constants[idx]` or
+/// surface a type-shaped VM error. Used by the struct opcodes, all of
+/// which carry field/type names via the constant pool to keep
+/// `Op: Copy`.
+fn constant_as_string(chunk: &Chunk, idx: u16, context: &'static str) -> Result<String, VmError> {
+    let v = chunk
+        .constants
+        .get(idx as usize)
+        .ok_or(VmError::ConstantOutOfBounds(idx))?;
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        _ => Err(VmError::TypeMismatch(context)),
     }
 }
 
@@ -1272,6 +1378,161 @@ mod tests {
             err.kind(),
             VmError::ArrayIndexOutOfBounds { index: 5, len: 2 }
         ));
+    }
+
+    // ============================================================
+    // RES-335: struct opcodes
+    // ============================================================
+
+    #[test]
+    fn res335_struct_literal_constructs_value() {
+        // Synthetic chunk: build `Point { x: 1, y: 2 }` and return it.
+        let mut main = Chunk::new();
+        let type_const = main.add_constant(Value::String("Point".into())).unwrap();
+        let x_const = main.add_constant(Value::String("x".into())).unwrap();
+        let y_const = main.add_constant(Value::String("y".into())).unwrap();
+        let one = main.add_constant(Value::Int(1)).unwrap();
+        let two = main.add_constant(Value::Int(2)).unwrap();
+        main.emit(Op::Const(x_const), 1);
+        main.emit(Op::Const(one), 1);
+        main.emit(Op::Const(y_const), 1);
+        main.emit(Op::Const(two), 1);
+        main.emit(
+            Op::StructLiteral {
+                name_const: type_const,
+                field_count: 2,
+            },
+            1,
+        );
+        main.emit(Op::Return, 1);
+        let prog = Program {
+            main,
+            functions: vec![],
+            #[cfg(feature = "ffi")]
+            foreign_syms: vec![],
+        };
+        let result = run(&prog).unwrap();
+        match result {
+            Value::Struct { name, fields } => {
+                assert_eq!(name, "Point");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "x");
+                assert!(matches!(fields[0].1, Value::Int(1)));
+                assert_eq!(fields[1].0, "y");
+                assert!(matches!(fields[1].1, Value::Int(2)));
+            }
+            other => panic!("expected Struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res335_get_field_pushes_field_value() {
+        assert_int(
+            compile_run(
+                "struct Point { int x, int y, } \
+                 fn main() -> int { let p = new Point { x: 1, y: 42 }; return p.y; } \
+                 main();",
+            )
+            .unwrap(),
+            42,
+        );
+    }
+
+    #[test]
+    fn res335_set_field_updates_in_place() {
+        assert_int(
+            compile_run(
+                "struct Point { int x, int y, } \
+                 fn main() -> int { \
+                     let p = new Point { x: 1, y: 2 }; \
+                     p.x = 10; \
+                     p.y = 20; \
+                     return p.x + p.y; \
+                 } \
+                 main();",
+            )
+            .unwrap(),
+            30,
+        );
+    }
+
+    #[test]
+    fn res335_get_field_on_non_struct_errors() {
+        // Build chunk that pushes an int then GetField — type mismatch.
+        let mut main = Chunk::new();
+        let f_const = main.add_constant(Value::String("x".into())).unwrap();
+        let v_const = main.add_constant(Value::Int(5)).unwrap();
+        main.emit(Op::Const(v_const), 1);
+        main.emit(
+            Op::GetField {
+                name_const: f_const,
+            },
+            1,
+        );
+        main.emit(Op::Return, 1);
+        let prog = Program {
+            main,
+            functions: vec![],
+            #[cfg(feature = "ffi")]
+            foreign_syms: vec![],
+        };
+        let err = run(&prog).unwrap_err();
+        assert!(
+            matches!(err.kind(), VmError::TypeMismatch(_)),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn res335_get_field_unknown_field_errors() {
+        let mut main = Chunk::new();
+        let type_const = main.add_constant(Value::String("Point".into())).unwrap();
+        let x_const = main.add_constant(Value::String("x".into())).unwrap();
+        let one = main.add_constant(Value::Int(1)).unwrap();
+        let missing = main.add_constant(Value::String("z".into())).unwrap();
+        main.emit(Op::Const(x_const), 1);
+        main.emit(Op::Const(one), 1);
+        main.emit(
+            Op::StructLiteral {
+                name_const: type_const,
+                field_count: 1,
+            },
+            1,
+        );
+        main.emit(
+            Op::GetField {
+                name_const: missing,
+            },
+            1,
+        );
+        main.emit(Op::Return, 1);
+        let prog = Program {
+            main,
+            functions: vec![],
+            #[cfg(feature = "ffi")]
+            foreign_syms: vec![],
+        };
+        let err = run(&prog).unwrap_err();
+        match err.kind() {
+            VmError::UnknownField { struct_name, field } => {
+                assert_eq!(struct_name, "Point");
+                assert_eq!(field, "z");
+            }
+            other => panic!("expected UnknownField, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res335_sizeof_op_stays_bounded() {
+        // The bytecode module claims sizeof::<Op>() <= 8. RES-335 added
+        // variants carrying `u16 + u16` payloads; verify the envelope
+        // didn't inflate.
+        assert!(
+            std::mem::size_of::<Op>() <= 8,
+            "sizeof(Op) = {} bytes; struct opcodes should not inflate this",
+            std::mem::size_of::<Op>()
+        );
     }
 
     #[cfg(feature = "ffi")]
