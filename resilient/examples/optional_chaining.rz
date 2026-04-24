@@ -1,0 +1,31 @@
+// RES-363: optional chaining — `?.` operator golden test.
+//
+// Demonstrates:
+//   1. `expr?.field`  — short-circuits to None when expr is None
+//   2. `Some(v)?.field` — unwraps and accesses the field, returning Some(result)
+//   3. Three-level chain `a?.b?.c` — None at the first step short-circuits all
+
+struct Config {
+    int value,
+}
+
+fn main() {
+    // Some(cfg)?.value — unwraps and accesses field; result is Some(42).
+    let cfg = Some(new Config { value: 42 });
+    let v1 = cfg?.value;
+    println(v1);
+
+    // None()?.value — short-circuits to None without touching .value.
+    let none_cfg = None();
+    let v2 = none_cfg?.value;
+    println(v2);
+
+    // Three-level chain: a?.b?.c — None at the first step propagates.
+    let a = None();
+    let b = a?.value;    // None (short-circuits on a)
+    let c = b?.value;    // None (short-circuits on b)
+    println(b);
+    println(c);
+}
+
+main();

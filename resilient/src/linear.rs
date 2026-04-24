@@ -320,6 +320,15 @@ fn walk(
         }
         Node::PrefixExpression { right, .. } => walk(right, bindings, fn_name, source_path),
         Node::TryExpression { expr, .. } => walk(expr, bindings, fn_name, source_path),
+        Node::OptionalChain { object, access, .. } => {
+            walk(object, bindings, fn_name, source_path)?;
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    walk(a, bindings, fn_name, source_path)?;
+                }
+            }
+            Ok(())
+        }
         Node::Identifier { name, span } => consume(bindings, name, *span, fn_name, source_path),
         Node::Assert {
             condition, message, ..

@@ -35,6 +35,11 @@ mod cluster_verifier;
 // parser / typechecker can consume its types; the Z3 path is a no-op
 // when the `z3` feature is off.
 mod verifier_actors;
+// RES-388 follow-up: bounded-liveness verifier for actor-level
+// `eventually(after: <handler>): <expr>;` claims. Compiled
+// unconditionally so the parser / typechecker can consume its types;
+// the Z3 ranking search is a no-op without the `z3` feature.
+mod verifier_liveness;
 mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
@@ -74,6 +79,10 @@ mod formatter;
 // by a parameter / let / for-in / match pattern within it.
 // No runtime deps; no Environment touched.
 mod free_vars;
+// RES-355: function-level bytecode cache. Stores a small JSON header per
+// source-file SHA-256 so re-runs of unchanged programs skip re-parsing.
+// Disabled for a single run with `--no-cache`.
+mod cache;
 // FFI Phase 1: loader module that resolves extern-block symbols.
 // Two backends share one public API: the `ffi` feature routes through
 // `libloading` (dynamic linking); the default build compiles the
@@ -85,6 +94,15 @@ mod ffi_trampolines;
 // used in type-annotation strings, plus the single-use-enforcement
 // pass invoked from the typechecker.
 mod linear;
+// RES-351: array bounds — static Z3 proof of `0 <= i < len(arr)`
+// at every index site, with an optional strict `--deny-unproven-bounds`
+// mode for safety-critical embedded builds.
+mod bounds_check;
+
+// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
+// failure handlers. Holds parser + typechecker logic for the feature;
+// the main module only touches the extension-point blocks.
+mod try_catch;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -134,8 +152,20 @@ enum Token {
     /// pattern.
     Default,
     Question,
+    /// RES-363: `?.` — optional-chaining operator. Emitted by the lexer
+    /// when `?` is immediately followed by `.`. The parser desugars it
+    /// into `Node::OptionalChain`.
+    QuestionDot,
     /// RES-073: `use "path/to/file.rz";` — module import.
     Use,
+    /// RES-360: `as` keyword — used in `use "path" as name;` to create
+    /// a namespace alias for the imported file. Outside `use` the token
+    /// is currently a parse error; it is reserved for future cast syntax.
+    As,
+    /// RES-360: `::` path separator — used to call declarations from a
+    /// scoped import: `ns::fn()`. Parsed as a qualifier on identifiers;
+    /// the resulting composite name is `"ns::fn"` in the environment.
+    DoubleColon,
     /// FFI v1: `extern "libname" { fn ... }` block keyword.
     Extern,
     /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
@@ -154,6 +184,10 @@ enum Token {
     /// outside of types the parser surfaces it as an ordinary
     /// unexpected-token error.
     Mut,
+    // <EXTENSION_TOKENS>
+    // Add new keyword tokens here — one variant per line with RES-NNN doc comment.
+    // This block is append-only; merge conflicts in this section are safe to resolve
+    // by keeping ALL variants from both sides.
     /// RES-386: `actor Name { state: T = expr; concurrent_ensures: ...;
     /// receive name() ensures expr; { body } }` — actor declaration.
     /// The minimum slice only uses the `actor` / `receive` /
@@ -170,6 +204,16 @@ enum Token {
     Always,
     /// RES-361: `const NAME: T = expr;` — compile-time constant declaration.
     Const,
+    /// RES-388 follow-up: actor-level
+    /// `eventually(after: <handler>): <expr>;` bounded liveness claim.
+    Eventually,
+    /// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`
+    /// structured failure handler — statement-level keyword.
+    Try,
+    /// RES-224 (RES-387 follow-up): `catch VariantName { ... }` arm
+    /// attached to a `try` block.
+    Catch,
+    // </EXTENSION_TOKENS>
 
     // Literals
     Identifier(String),
@@ -282,6 +326,8 @@ impl Token {
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
             Token::Use => "`use`".to_string(),
+            Token::As => "`as`".to_string(),
+            Token::DoubleColon => "`::`".to_string(),
             Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
@@ -293,12 +339,16 @@ impl Token {
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
             Token::Always => "`always`".to_string(),
             Token::Const => "`const`".to_string(),
+            Token::Eventually => "`eventually`".to_string(),
+            Token::Try => "`try`".to_string(),
+            Token::Catch => "`catch`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
             Token::FatArrow => "`=>`".to_string(),
             Token::Arrow => "`->`".to_string(),
             Token::Question => "`?`".to_string(),
+            Token::QuestionDot => "`?.`".to_string(),
             Token::Plus => "`+`".to_string(),
             Token::Minus => "`-`".to_string(),
             Token::Multiply => "`*`".to_string(),
@@ -624,10 +674,27 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             '.' => Token::Dot,
-            '?' => Token::Question,
+            '?' => {
+                // RES-363: `?.` is the optional-chain operator. Peek one
+                // character ahead; if it is `.` emit QuestionDot and
+                // advance past the `.` so it is not re-consumed.
+                if self.peek_char() == '.' {
+                    self.read_char(); // consume '.'
+                    Token::QuestionDot
+                } else {
+                    Token::Question
+                }
+            }
             ',' => Token::Comma,
             ';' => Token::Semicolon,
-            ':' => Token::Colon,
+            ':' => {
+                if self.peek_char() == ':' {
+                    self.read_char(); // consume second `:`
+                    Token::DoubleColon
+                } else {
+                    Token::Colon
+                }
+            }
             // RES-191: attribute prefix (e.g. `@pure`). The parser
             // consumes the following identifier; the lexer just
             // tags the `@` itself.
@@ -677,16 +744,24 @@ impl Lexer {
                         "match" => Token::Match,
                         "extern" => Token::Extern,
                         "use" => Token::Use,
+                        "as" => Token::As,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
                         "linear" => Token::Linear,
                         "region" => Token::Region,
                         "mut" => Token::Mut,
+                        // <EXTENSION_KEYWORDS>
+                        // Add new keyword → Token mappings here (append-only).
+                        // Merge conflicts: keep ALL arms from both sides.
                         "actor" => Token::Actor,
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
                         "const" => Token::Const,
+                        "eventually" => Token::Eventually,
+                        "try" => Token::Try,
+                        "catch" => Token::Catch,
+                        // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -1104,8 +1179,15 @@ enum Node {
     /// relative to the file containing the `use`. Resolved away by
     /// `expand_uses` (in `imports.rs`) before the program reaches the
     /// typechecker or interpreter — never seen at eval time.
+    ///
+    /// RES-360: optional `as NAME` suffix creates a namespace alias.
+    /// Declarations imported from the file are bound as `NAME::decl`
+    /// instead of being merged directly into the current scope.
     Use {
         path: String,
+        /// RES-360: namespace alias from `use "file" as name;`.
+        /// `None` preserves the original unqualified-import behaviour.
+        alias: Option<String>,
         /// RES-088: span of the `use` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -1176,10 +1258,12 @@ enum Node {
         /// variants on the caller's signature (propagation) or
         /// — in a future ticket — handle them structurally.
         fails: Vec<String>,
-        /// RES-387: `recovers_to: EXPR;` postcondition. Parsed
-        /// and stored; Z3 verification that the invariant
-        /// actually holds after recovery is a follow-up ticket.
-        #[allow(dead_code)] // consumed by RES-387 follow-up (Z3 recovers_to proof)
+        /// RES-387: `recovers_to: EXPR;` postcondition.
+        /// RES-222: consumed by the Z3 discharge path in
+        /// `typechecker::check_node` — fn declarations with a
+        /// non-empty `fails` set must prove this invariant
+        /// holds under the declared `requires`, otherwise the
+        /// compiler rejects the program.
         recovers_to: Option<Box<Node>>,
     },
     LiveBlock {
@@ -1408,6 +1492,25 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-363: `expr?.field` / `expr?.method(args)` — optional-chaining.
+    ///
+    /// If `expr` evaluates to `Value::Option(None)` or `Value::Result { ok:
+    /// false, .. }`, short-circuits to `Value::Option(None)`. Otherwise
+    /// unwraps `Value::Option(Some(inner))` (or passes any other value
+    /// through) and performs the field/method access on the inner value.
+    ///
+    /// Chains left-to-right naturally: each `?.` node produces a
+    /// `Value::Option`, so a subsequent `?.` on that result either
+    /// short-circuits again or unwraps-and-accesses.
+    OptionalChain {
+        /// The expression whose result is tested for None/Err.
+        object: Box<Node>,
+        /// What to access after the optional check.
+        access: ChainAccess,
+        /// Span of the `?.` token.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-042: anonymous fn expression. Unlike `Node::Function`, this
     /// node is not bound to a name — it evaluates to a `Value::Function`
     /// directly. Captures its defining env by value, matching existing
@@ -1597,6 +1700,11 @@ enum Node {
         state_fields: Vec<(String, String, Node)>,
         /// Boolean `always:` safety invariants.
         always_clauses: Vec<Node>,
+        /// RES-388 follow-up: bounded-liveness claims of the form
+        /// `eventually(after: <handler>): <expr>;`. Each entry carries
+        /// the target handler name whose firing is supposed to make the
+        /// post-condition hold within a bounded schedule.
+        eventually_clauses: Vec<EventuallyClause>,
         /// Receive handlers with full pre/post contracts.
         receive_handlers: Vec<ReceiveHandler>,
         /// Simpler receive handlers (used by RES-386 `Actor` path).
@@ -1614,6 +1722,23 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-224 (RES-387 follow-up): structured failure handler.
+    ///
+    /// ```text
+    /// try { callee(x); } catch Timeout { recover(); }
+    /// ```
+    ///
+    /// Each `handlers` entry pairs a failure-variant name with the
+    /// handler block's statement list. The typechecker walks `body`
+    /// with the caught variants added to the in-scope `fails` set,
+    /// so a call that declares exactly those variants type-checks
+    /// even when the enclosing fn has an empty `fails` list.
+    TryCatch {
+        #[allow(dead_code)]
+        span: span::Span,
+        body: Vec<Node>,
+        handlers: Vec<(String, Vec<Node>)>,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -1624,6 +1749,19 @@ pub(crate) struct ActorHandler {
     pub(crate) ensures: Vec<Node>,
     pub(crate) body: Box<Node>,
     #[allow(dead_code)]
+    pub(crate) span: span::Span,
+}
+
+/// RES-388 follow-up: one `eventually(after: <handler>): <expr>;`
+/// clause parsed off an `ActorDecl`. The verifier searches for an
+/// integer ranking function that strictly decreases on the target
+/// handler and is non-increasing on every other handler, with the
+/// measure reaching zero iff the post-condition holds.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct EventuallyClause {
+    pub(crate) target_handler: String,
+    pub(crate) post: Node,
     pub(crate) span: span::Span,
 }
 
@@ -1662,6 +1800,15 @@ pub(crate) struct ExternDecl {
     /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
     #[allow(dead_code)]
     pub(crate) span: span::Span,
+}
+
+/// RES-363: what to access after the `?.` short-circuit check.
+#[derive(Debug, Clone)]
+enum ChainAccess {
+    /// `?.field` — read a named field.
+    Field(String),
+    /// `?.method(args)` — call a method with arguments.
+    Method(String, Vec<Node>),
 }
 
 // Parser for creating AST from tokens
@@ -1771,6 +1918,7 @@ impl Parser {
             Token::Type => Some(self.parse_type_alias()),
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
+            Token::Try => Some(crate::try_catch::parse(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -2302,6 +2450,7 @@ impl Parser {
 
         let mut state_fields: Vec<(String, String, Node)> = Vec::new();
         let mut always_clauses: Vec<Node> = Vec::new();
+        let mut eventually_clauses: Vec<EventuallyClause> = Vec::new();
         let mut receive_handlers: Vec<ReceiveHandler> = Vec::new();
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
@@ -2394,6 +2543,98 @@ impl Parser {
                     always_clauses.push(expr);
                 }
 
+                Token::Eventually => {
+                    // `eventually(after: <HandlerName>): <expr>;`
+                    let ev_span = self.span_at_current();
+                    self.next_token(); // skip `eventually`
+                    if self.current_token != Token::LeftParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `(after: <handler>)` after `eventually` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `(`
+                    // `after` is a contextual keyword here — accept it
+                    // as an identifier so we don't hijack the name
+                    // globally.
+                    match &self.current_token {
+                        Token::Identifier(kw) if kw == "after" => {}
+                        other => {
+                            self.record_error(format!(
+                                "Expected `after:` inside `eventually(...)` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    }
+                    self.next_token(); // skip `after`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `after` in `eventually(...)` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let target = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            self.record_error(format!(
+                                "Expected handler name inside `eventually(after: ...)` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    };
+                    self.next_token(); // skip handler name
+                    if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `)` to close `eventually(after: {})` in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `)`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `eventually(after: {})` in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let post = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past post
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `eventually(after: {})` post-condition in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                    }
+                    eventually_clauses.push(EventuallyClause {
+                        target_handler: target,
+                        post,
+                        span: ev_span,
+                    });
+                }
+
                 Token::Receive => {
                     let recv_span = self.span_at_current();
                     self.next_token(); // skip `receive`
@@ -2455,7 +2696,7 @@ impl Parser {
                 other => {
                     let tok = other.clone();
                     self.record_error(format!(
-                        "Expected `state`, `always`, `receive`, or `}}` in actor `{}`, found {}",
+                        "Expected `state`, `always`, `eventually`, `receive`, or `}}` in actor `{}`, found {}",
                         name, tok
                     ));
                     // Don't infinite-loop on unexpected content.
@@ -2485,6 +2726,7 @@ impl Parser {
             name,
             state_fields,
             always_clauses,
+            eventually_clauses,
             receive_handlers,
             handlers,
             span: actor_span,
@@ -3749,7 +3991,9 @@ impl Parser {
         }
     }
 
-    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, span }`.
+    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, alias, span }`.
+    /// RES-360: `use "path" as name;` — like above but imports are scoped
+    /// under `name::` instead of being merged into the global namespace.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
         // Caller checked self.current_token == Token::Use.
@@ -3763,11 +4007,33 @@ impl Parser {
                 return None;
             }
         };
+        // RES-360: optional `as NAME` suffix.
+        let alias = if self.peek_token == Token::As {
+            self.next_token(); // consume string literal (current becomes 'as')
+            self.next_token(); // consume 'as'; current is now the alias identifier
+            match &self.current_token {
+                Token::Identifier(name) => {
+                    let name = name.clone();
+                    Some(name)
+                }
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected identifier after 'as' in use statement, found {}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Some(Node::Use {
             path,
+            alias,
             span: self.span_at_current(),
         })
     }
@@ -4523,10 +4789,38 @@ impl Parser {
         // Parse prefix expressions
         let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
-            Token::Identifier(name) => Some(Node::Identifier {
-                name: name.clone(),
-                span: tok_span,
-            }),
+            Token::Identifier(name) => {
+                let name = name.clone();
+                // RES-360: `ns::decl` scoped lookup. If the next token is
+                // `::` followed by an identifier, collapse both into a
+                // single flat identifier name `"ns::decl"`. This keeps
+                // the rest of the interpreter oblivious to namespaces —
+                // it just looks up the key `"ns::decl"` in the env.
+                if self.peek_token == Token::DoubleColon {
+                    self.next_token(); // consume identifier, current = '::'
+                    self.next_token(); // consume '::', current = member ident
+                    let member = match &self.current_token {
+                        Token::Identifier(m) => m.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected identifier after `::`, found {}",
+                                tok
+                            ));
+                            return None;
+                        }
+                    };
+                    Some(Node::Identifier {
+                        name: format!("{}::{}", name, member),
+                        span: tok_span,
+                    })
+                } else {
+                    Some(Node::Identifier {
+                        name,
+                        span: tok_span,
+                    })
+                }
+            }
             Token::IntLiteral(value) => Some(Node::IntegerLiteral {
                 value: *value,
                 span: tok_span,
@@ -4650,6 +4944,58 @@ impl Parser {
                     Some(Node::TryExpression {
                         expr: Box::new(current_left),
                         span: q_span,
+                    })
+                }
+                Token::QuestionDot => {
+                    // RES-363: `?.` — optional chaining. `peek_token` is
+                    // `QuestionDot`. Advance twice: first to make `?.` the
+                    // current token (for the span), then past it to the
+                    // field/method identifier.
+                    self.next_token(); // current = `?.`, peek = identifier
+                    let qd_span = self.span_at_current();
+                    self.next_token(); // current = identifier, peek = next
+                    let field_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected field or method name after '?.', found {}",
+                                tok
+                            ));
+                            // current_left was moved out of left_expr;
+                            // return it wrapped in Some for error recovery.
+                            return Some(current_left);
+                        }
+                    };
+                    // If the token after the identifier is `(`, this is a
+                    // method call — parse the argument list.
+                    let access = if self.peek_token == Token::LeftParen {
+                        self.next_token(); // move to `(`
+                        self.next_token(); // move past `(` into args
+                        let mut args: Vec<Node> = Vec::new();
+                        if self.current_token != Token::RightParen {
+                            if let Some(first) = self.parse_expression(0) {
+                                args.push(first);
+                            }
+                            while self.peek_token == Token::Comma {
+                                self.next_token(); // to `,`
+                                self.next_token(); // past `,`
+                                if let Some(a) = self.parse_expression(0) {
+                                    args.push(a);
+                                }
+                            }
+                            if self.peek_token == Token::RightParen {
+                                self.next_token(); // consume `)`
+                            }
+                        }
+                        ChainAccess::Method(field_name, args)
+                    } else {
+                        ChainAccess::Field(field_name)
+                    };
+                    Some(Node::OptionalChain {
+                        object: Box::new(current_left),
+                        access,
+                        span: qd_span,
                     })
                 }
                 _ => Some(current_left),
@@ -5862,6 +6208,9 @@ impl Parser {
             Token::LeftBracket => 11,
             Token::Dot => 11,
             Token::Question => 12,
+            // RES-363: `?.` has the same postfix precedence as `?` and
+            // is higher than any binary operator so chaining binds tightly.
+            Token::QuestionDot => 12,
             _ => 0,
         }
     }
@@ -5882,6 +6231,7 @@ impl Parser {
             Token::LeftBracket => 11,
             Token::Dot => 11,
             Token::Question => 12,
+            Token::QuestionDot => 12,
             _ => 0,
         }
     }
@@ -5937,6 +6287,12 @@ enum Value {
         ok: bool,
         payload: Box<Value>,
     },
+    /// RES-363: first-class Option type for optional chaining.
+    ///
+    /// `Option(None)` is the absent case — `?.` short-circuits to this.
+    /// `Option(Some(v))` wraps a present value; `?.` unwraps it before
+    /// performing the chained field/method access.
+    Option(std::option::Option<Box<Value>>),
     Return(Box<Value>),
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
@@ -6078,6 +6434,10 @@ impl std::fmt::Debug for Value {
             Value::Result { ok, payload } => {
                 write!(f, "{}({:?})", if *ok { "Ok" } else { "Err" }, payload)
             }
+            Value::Option(inner) => match inner {
+                Some(v) => write!(f, "Some({:?})", v),
+                None => write!(f, "None"),
+            },
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
@@ -6132,6 +6492,10 @@ impl std::fmt::Display for Value {
             Value::Result { ok, payload } => {
                 write!(f, "{}({})", if *ok { "Ok" } else { "Err" }, payload)
             }
+            Value::Option(inner) => match inner {
+                Some(v) => write!(f, "Some({})", v),
+                None => write!(f, "None"),
+            },
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
             Value::Map(m) => {
@@ -6326,6 +6690,26 @@ impl Environment {
             })),
         }
     }
+
+    /// RES-356: Collect every `Value::Function` in the top-level frame
+    /// that has at least one `requires` or `ensures` clause. Returns a
+    /// map from function name to `(requires_clauses, ensures_clauses)`.
+    /// Only walks the top-level store (outermost frame) — user-defined
+    /// functions live there after REPL evaluation.
+    fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
+        let frame = self.inner.borrow();
+        let mut out = HashMap::new();
+        for (name, val) in &frame.store {
+            if let Value::Function {
+                requires, ensures, ..
+            } = val
+                && (!requires.is_empty() || !ensures.is_empty())
+            {
+                out.insert(name.clone(), (requires.clone(), ensures.clone()));
+            }
+        }
+        out
+    }
 }
 
 /// Walk a `FieldAssignment` target tree, collecting the chain of field
@@ -6480,6 +6864,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-130: explicit int ↔ float conversions.
     ("to_float", builtin_to_float),
     ("to_int", builtin_to_int),
+    // RES-366: pinned-width integer casts. Wrapping truncation.
+    ("as_int8", builtin_as_int8),
+    ("as_int16", builtin_as_int16),
+    ("as_int32", builtin_as_int32),
+    ("as_int64", builtin_as_int64),
+    ("as_uint8", builtin_as_uint8),
+    ("as_uint16", builtin_as_uint16),
+    ("as_uint32", builtin_as_uint32),
+    ("as_uint64", builtin_as_uint64),
     // RES-138: read the current retry count inside a live block.
     ("live_retries", builtin_live_retries),
     // RES-141: process-wide live-block telemetry.
@@ -6499,6 +6892,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("exp", builtin_exp),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
+    // RES-358: monotonic ns clock builtins. @io (non-pure).
+    // Embedded targets stub: a DWT-based implementation is future work.
+    ("clock_now", builtin_clock_now),
+    ("clock_elapsed", builtin_clock_elapsed),
     // RES-150: seedable SplitMix64 random builtins. std-only.
     ("random_int", builtin_random_int),
     ("random_float", builtin_random_float),
@@ -6524,6 +6921,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
+    // RES-363: Option type builtins.
+    ("Some", builtin_some),
+    ("None", builtin_none),
+    ("is_some", builtin_is_some),
+    ("is_none", builtin_is_none),
+    ("unwrap_option", builtin_unwrap_option),
     // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
@@ -6554,6 +6957,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // which treats a `drop` call as the single consumption that
     // satisfies the single-use obligation.
     ("drop", builtin_drop),
+    // RES-353: StringBuilder — efficient multi-part string construction.
+    // Construction is a top-level function; methods are dispatched via
+    // the special StringBuilder method handler in `CallExpression` eval.
+    ("StringBuilder_new", builtin_string_builder_new),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -6994,6 +7401,64 @@ fn builtin_clock_ms(args: &[Value]) -> RResult<Value> {
     Ok(Value::Int(clamped))
 }
 
+/// `clock_now() -> Int` — @io — returns current monotonic time in nanoseconds
+/// since an unspecified process-lifetime epoch (same epoch as `clock_ms`).
+///
+/// The return value is a monotonically non-decreasing `Int`. It is only
+/// meaningful as a delta: capture two values with `clock_now()` and subtract
+/// to get elapsed nanoseconds, or use the `clock_elapsed` convenience builtin.
+///
+/// Embedded / no_std path: a DWT-cycle-counter implementation is future work;
+/// until then this builtin is std-only and will return `0` on bare-metal targets
+/// if/when it is wired up there.
+fn builtin_clock_now(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "clock_now: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+    let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+    // `as_nanos` returns u128; clamp to i64::MAX on overflow so
+    // long-running processes don't wrap or panic.
+    let clamped: i64 = if ns > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        ns as i64
+    };
+    Ok(Value::Int(clamped))
+}
+
+/// `clock_elapsed(start: Int) -> Int` — @io — returns nanoseconds elapsed
+/// since `start`, where `start` is a value previously returned by `clock_now()`.
+///
+/// Equivalent to `clock_now() - start`. The result is clamped to `0` if
+/// `start` is somehow in the future (e.g., due to argument misuse) so callers
+/// always receive a non-negative duration without panicking.
+fn builtin_clock_elapsed(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(start)] => {
+            let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+            let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+            let now_ns: i64 = if ns > i64::MAX as u128 {
+                i64::MAX
+            } else {
+                ns as i64
+            };
+            Ok(Value::Int(now_ns.saturating_sub(*start).max(0)))
+        }
+        [other] => Err(format!(
+            "clock_elapsed: argument must be Int (a value from clock_now()), got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "clock_elapsed: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 /// `Ok(v)` — wrap a success value as a Result.
 fn builtin_ok(args: &[Value]) -> RResult<Value> {
     match args {
@@ -7002,6 +7467,54 @@ fn builtin_ok(args: &[Value]) -> RResult<Value> {
             payload: Box::new(v.clone()),
         }),
         _ => Err(format!("Ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `Some(v)` — wrap a value as a present Option.
+fn builtin_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Option(Some(Box::new(v.clone())))),
+        _ => Err(format!("Some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `None` — the absent Option. Called with zero arguments.
+fn builtin_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [] => Ok(Value::Option(None)),
+        _ => Err(format!("None: expected 0 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-363: `is_some(o)` — true iff `o` is a present Option.
+fn builtin_is_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
+        [other] => Err(format!("is_some: expected Option, got {}", other)),
+        _ => Err(format!("is_some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `is_none(o)` — true iff `o` is an absent Option.
+fn builtin_is_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_none())),
+        [other] => Err(format!("is_none: expected Option, got {}", other)),
+        _ => Err(format!("is_none: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `unwrap_option(o)` — return the inner value of a Some or
+/// panic-diagnose at runtime if None.
+fn builtin_unwrap_option(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v))] => Ok((**v).clone()),
+        [Value::Option(None)] => Err("unwrap_option called on None".to_string()),
+        [other] => Err(format!("unwrap_option: expected Option, got {}", other)),
+        _ => Err(format!(
+            "unwrap_option: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -7519,6 +8032,82 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("to_int: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-366: pinned integer cast builtins. All of them accept any
+/// `Value::Int` (or another int), truncate/wrap to the target width,
+/// and return a `Value::Int` carrying the clamped bit pattern
+/// sign-extended to i64. Overflow wraps — no panic, no error — which
+/// matches the acceptance criteria ("overflow wraps").
+///
+/// Signed widths: two's-complement truncation via Rust `as` casts.
+/// Unsigned widths: zero-extension after masking.
+fn builtin_as_int8(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i8 as i64)),
+        [other] => Err(format!("as_int8: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int8: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int16(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i16 as i64)),
+        [other] => Err(format!("as_int16: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int16: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int32(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i32 as i64)),
+        [other] => Err(format!("as_int32: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int32: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int64(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i)),
+        [other] => Err(format!("as_int64: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int64: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_uint8(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u8) as i64)),
+        [other] => Err(format!("as_uint8: expected Int, got {:?}", other)),
+        _ => Err(format!("as_uint8: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_uint16(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u16) as i64)),
+        [other] => Err(format!("as_uint16: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint16: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+fn builtin_as_uint32(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u32) as i64)),
+        [other] => Err(format!("as_uint32: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint32: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+fn builtin_as_uint64(args: &[Value]) -> RResult<Value> {
+    match args {
+        // u64 doesn't fit in i64 for values ≥ 2^63; we store the
+        // bit pattern as a signed i64 (wrapping reinterpretation).
+        [Value::Int(i)] => Ok(Value::Int(*i as u64 as i64)),
+        [other] => Err(format!("as_uint64: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint64: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -8110,6 +8699,115 @@ fn builtin_live_retries(args: &[Value]) -> RResult<Value> {
     })
 }
 
+// ── RES-353: StringBuilder ────────────────────────────────────────────────────
+//
+// `StringBuilder_new(capacity)` allocates a fresh builder struct.
+// Methods (`append`, `append_int`, `append_float`, `append_char`, `build`,
+// `len`, `remaining`, `clear`) are dispatched in the special
+// `eval_string_builder_method` branch of `CallExpression` — they never go
+// through the generic `impl`-block / BUILTINS path because they need
+// write-back mutation of the caller's binding.
+//
+// Internal struct layout (fields in this order):
+//   _buf     : Value::String  — accumulated text
+//   _cap     : Value::Int     — capacity ceiling (bytes)
+//   _overflow: Value::Bool    — set once capacity is exceeded
+
+/// `StringBuilder_new(capacity: Int) -> StringBuilder`
+///
+/// Creates an empty StringBuilder with the given byte capacity.
+fn builtin_string_builder_new(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(cap)] => {
+            if *cap < 0 {
+                return Err(format!(
+                    "StringBuilder_new: capacity must be >= 0, got {}",
+                    cap
+                ));
+            }
+            Ok(Value::Struct {
+                name: "StringBuilder".to_string(),
+                fields: vec![
+                    ("_buf".to_string(), Value::String(String::new())),
+                    ("_cap".to_string(), Value::Int(*cap)),
+                    ("_overflow".to_string(), Value::Bool(false)),
+                ],
+            })
+        }
+        [other] => Err(format!(
+            "StringBuilder_new: capacity must be an Int, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "StringBuilder_new: expected 1 argument (capacity), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// Helper: read `_buf`, `_cap`, `_overflow` out of a StringBuilder struct.
+///
+/// Returns an error if any field is missing or has the wrong type —
+/// which should never happen for a legitimately-constructed builder, but
+/// guards against user code that manually constructs the struct with wrong
+/// field types.
+fn sb_fields(fields: &[(String, Value)]) -> RResult<(String, i64, bool)> {
+    let mut buf: Option<&str> = None;
+    let mut cap: Option<i64> = None;
+    let mut overflow: Option<bool> = None;
+
+    for (name, val) in fields {
+        match name.as_str() {
+            "_buf" => {
+                if let Value::String(s) = val {
+                    buf = Some(s);
+                } else {
+                    return Err(format!("StringBuilder._buf must be a String, got {}", val));
+                }
+            }
+            "_cap" => {
+                if let Value::Int(n) = val {
+                    cap = Some(*n);
+                } else {
+                    return Err(format!("StringBuilder._cap must be an Int, got {}", val));
+                }
+            }
+            "_overflow" => {
+                if let Value::Bool(b) = val {
+                    overflow = Some(*b);
+                } else {
+                    return Err(format!(
+                        "StringBuilder._overflow must be a Bool, got {}",
+                        val
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match (buf, cap, overflow) {
+        (Some(b), Some(c), Some(o)) => Ok((b.to_string(), c, o)),
+        _ => Err(
+            "StringBuilder: internal layout missing required fields (_buf/_cap/_overflow); \
+                  was this struct created with StringBuilder_new?"
+                .to_string(),
+        ),
+    }
+}
+
+/// Build an updated StringBuilder struct from component parts.
+fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
+    Value::Struct {
+        name: "StringBuilder".to_string(),
+        fields: vec![
+            ("_buf".to_string(), Value::String(buf)),
+            ("_cap".to_string(), Value::Int(cap)),
+            ("_overflow".to_string(), Value::Bool(overflow)),
+        ],
+    }
+}
+
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
@@ -8148,6 +8846,14 @@ impl Interpreter {
     fn with_proven_fns(mut self, proven: HashSet<String>) -> Self {
         self.proven_fns = Rc::new(proven);
         self
+    }
+
+    /// RES-356: collect every user-defined function that declares at
+    /// least one contract clause (`requires` or `ensures`). Used by the
+    /// REPL `.contracts` command. Returns a map from function name to
+    /// `(requires_clauses, ensures_clauses)`.
+    fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
+        self.env.collect_contract_fns()
     }
 
     fn eval(&mut self, node: &Node) -> RResult<Value> {
@@ -8420,7 +9126,29 @@ impl Interpreter {
                 // is an ordinary function invocation.
                 if let Node::FieldAccess { target, field, .. } = function.as_ref() {
                     let target_val = self.eval(target)?;
+                    // RES-353: StringBuilder method dispatch — intercept before
+                    // the generic impl-block lookup so these builtins can write
+                    // the mutated struct back to the caller's binding.
                     if let Value::Struct { name: sname, .. } = &target_val {
+                        if sname == "StringBuilder" {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            // Derive the root variable name for write-back.
+                            // Only simple `IDENT.method()` write-back is supported;
+                            // complex targets (field chains, temporaries) are
+                            // expression-result only — the caller can still read
+                            // the returned struct if needed.
+                            let root_name = if let Node::Identifier { name, .. } = target.as_ref() {
+                                Some(name.clone())
+                            } else {
+                                None
+                            };
+                            return self.eval_string_builder_method(
+                                target_val,
+                                field,
+                                &extra_args,
+                                root_name.as_deref(),
+                            );
+                        }
                         let mangled = format!("{}${}", sname, field);
                         if let Some(method_val) = self.env.get(&mangled) {
                             // Prepend the target as the implicit `self`.
@@ -8510,6 +9238,69 @@ impl Interpreter {
                     other => Err(format!("? operator expects a Result, got {}", other)),
                 }
             }
+            // RES-363: `expr?.field` / `expr?.method(args)` — optional chaining.
+            Node::OptionalChain { object, access, .. } => {
+                let obj_val = self.eval(object)?;
+                // Determine the inner value to operate on, or short-circuit.
+                let inner = match obj_val {
+                    // None → short-circuit to None.
+                    Value::Option(None) => return Ok(Value::Option(None)),
+                    // Some(v) → unwrap and operate on v.
+                    Value::Option(Some(inner)) => *inner,
+                    // Err(e) → short-circuit to None (treat Err as absent).
+                    Value::Result { ok: false, .. } => return Ok(Value::Option(None)),
+                    // Ok(v) → unwrap and operate on v.
+                    Value::Result { ok: true, payload } => *payload,
+                    // Any other value: pass through directly (non-optional
+                    // chaining — `?.` on a non-Option is a no-op guard).
+                    other => other,
+                };
+                // Now perform the access on `inner` and wrap in Some.
+                let result = match access {
+                    ChainAccess::Field(field) => match inner {
+                        Value::Struct { name, fields } => fields
+                            .into_iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, v)| v)
+                            .ok_or_else(|| format!("Struct {} has no field '{}'", name, field)),
+                        other => Err(format!(
+                            "Cannot access field '{}' on non-struct {:?}",
+                            field, other
+                        )),
+                    },
+                    ChainAccess::Method(method, arg_nodes) => {
+                        // Mirror the method-dispatch logic of CallExpression:
+                        // look for `<StructName>$<method>` in the environment.
+                        if let Value::Struct {
+                            name: ref sname, ..
+                        } = inner
+                        {
+                            let mangled = format!("{}${}", sname, method);
+                            if let Some(method_val) = self.env.get(&mangled) {
+                                let mut args = vec![inner];
+                                for a in arg_nodes {
+                                    args.push(self.eval(a)?);
+                                }
+                                return self
+                                    .apply_function(method_val, args)
+                                    .map(|v| Value::Option(Some(Box::new(v))));
+                            }
+                        }
+                        // Fall back to a builtin function named `method`.
+                        if let Some(func_val) = self.env.get(method) {
+                            let mut args = vec![inner];
+                            for a in arg_nodes {
+                                args.push(self.eval(a)?);
+                            }
+                            return self
+                                .apply_function(func_val, args)
+                                .map(|v| Value::Option(Some(Box::new(v))));
+                        }
+                        Err(format!("Unknown method '{}'", method))
+                    }
+                }?;
+                Ok(Value::Option(Some(Box::new(result))))
+            }
             Node::Match {
                 scrutinee, arms, ..
             } => {
@@ -8580,6 +9371,19 @@ impl Interpreter {
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
             Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {
+                Ok(Value::Void)
+            }
+            // RES-224 (RES-387 follow-up): runtime evaluation of
+            // `try { ... } catch V { ... }`. The MVP fault model does
+            // not surface a runtime Failure value yet — `fails` is
+            // statically verified and callees that declare a variant
+            // still return normally — so the handler bodies are
+            // unreachable at execution time. We still walk the body so
+            // any side-effectful statements inside it run.
+            Node::TryCatch { body, .. } => {
+                for stmt in body {
+                    self.eval(stmt)?;
+                }
                 Ok(Value::Void)
             }
             // RES-158: `impl <Struct> { ... }` evaluates each method
@@ -8933,6 +9737,200 @@ impl Interpreter {
         }
 
         Ok(result)
+    }
+
+    // ── RES-353: StringBuilder method dispatch ────────────────────────────────
+    //
+    // Called from the `CallExpression` evaluator when the receiver is a
+    // `Value::Struct { name: "StringBuilder", ... }`.
+    //
+    // Mutating methods (`append`, `append_int`, `append_float`,
+    // `append_char`, `clear`) write the updated struct back to the
+    // caller's variable if `root_name` is `Some` — this gives the
+    // `sb.append("x")` call-and-discard idiom without requiring the user
+    // to write `sb = sb.append("x")`. The updated struct is also returned
+    // so callers can chain or inspect the result.
+    //
+    // Non-mutating methods (`len`, `remaining`, `build`) do not write
+    // back; they return the computed value directly.
+    fn eval_string_builder_method(
+        &mut self,
+        sb: Value,
+        method: &str,
+        extra_args: &[Value],
+        root_name: Option<&str>,
+    ) -> RResult<Value> {
+        let Value::Struct { fields, .. } = sb else {
+            return Err("StringBuilder: internal error — receiver is not a struct".to_string());
+        };
+        let (buf, cap, overflow) = sb_fields(&fields)?;
+
+        match method {
+            // sb.append(s: String) — concat s if capacity not exceeded.
+            "append" => match extra_args {
+                [Value::String(s)] => {
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append: expected String argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_int(n: Int)
+            "append_int" => match extra_args {
+                [Value::Int(n)] => {
+                    let s = n.to_string();
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_int: expected Int argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_int: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_float(f: Float)
+            "append_float" => match extra_args {
+                [Value::Float(f)] => {
+                    let s = format!("{}", f);
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_float: expected Float argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_float: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_char(c: Int) — c is a Unicode codepoint.
+            "append_char" => match extra_args {
+                [Value::Int(cp)] => {
+                    let c = char::from_u32(*cp as u32).ok_or_else(|| {
+                        format!(
+                            "StringBuilder.append_char: {} is not a valid Unicode codepoint",
+                            cp
+                        )
+                    })?;
+                    let s = c.to_string();
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_char: expected Int (codepoint) argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_char: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.build() -> Result<String, String>
+            "build" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.build: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                if overflow {
+                    Ok(Value::Result {
+                        ok: false,
+                        payload: Box::new(Value::String("capacity exceeded".to_string())),
+                    })
+                } else {
+                    Ok(Value::Result {
+                        ok: true,
+                        payload: Box::new(Value::String(buf)),
+                    })
+                }
+            }
+            // sb.len() -> Int
+            "len" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.len: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                Ok(Value::Int(buf.len() as i64))
+            }
+            // sb.remaining() -> Int
+            "remaining" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.remaining: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                Ok(Value::Int(cap - buf.len() as i64))
+            }
+            // sb.clear() — reset buffer to empty.
+            "clear" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.clear: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                let updated = sb_struct(String::new(), cap, false);
+                if let Some(name) = root_name {
+                    let _ = self.env.reassign(name, updated.clone());
+                }
+                Ok(updated)
+            }
+            other => Err(format!("StringBuilder has no method '{}'", other)),
+        }
     }
 
     fn eval_live_block(
@@ -10260,6 +11258,7 @@ fn classify_lex_token(
         | Token::New
         | Token::Match
         | Token::Use
+        | Token::As
         | Token::Impl
         | Token::Type
         | Token::Default
@@ -10306,7 +11305,8 @@ fn classify_lex_token(
         | Token::Dot
         | Token::FatArrow
         | Token::Arrow
-        | Token::Question => (sem_tok::OPERATOR, 0),
+        | Token::Question
+        | Token::DoubleColon => (sem_tok::OPERATOR, 0),
 
         // Delimiters + internal tokens: no semantic highlight.
         _ => return None,
@@ -10651,9 +11651,24 @@ fn execute_file(
     verifier_timeout_ms: u32,
     warn_unverified: bool,
     live_log: Option<&Path>,
+    no_cache: bool,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
+
+    // RES-355: incremental cache — compute SHA-256 of the source text,
+    // check for a stored entry, and record whether this run hit the
+    // cache. The check is a pure optimisation; a miss always falls
+    // through to the normal compilation pipeline. The MVP validates
+    // correctness (source-hash + compiler-version matching) and
+    // persists entries on success; skipping the Chunk compilation on
+    // a hit is tracked as a follow-up phase.
+    let source_hash = cert_sign::sha256_hex(contents.as_bytes());
+    let cache_dir = cache::cache_dir_for(filename);
+    // Consume the result so a future phase can branch on it without
+    // changing the call-site signature. Suppresses the unused-result
+    // warning while keeping the check exercised on every run.
+    let _cache_hit = !no_cache && cache::check(&cache_dir, &source_hash) == cache::CacheResult::Hit;
 
     let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
@@ -10788,6 +11803,10 @@ fn execute_file(
         {
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
+            // RES-355: write cache entry on JIT success.
+            if !no_cache {
+                cache::write_entry(&cache_dir, &source_hash);
+            }
             return Ok(());
         }
         #[cfg(not(feature = "jit"))]
@@ -10831,6 +11850,10 @@ fn execute_file(
         })?;
         if !matches!(result, Value::Void) {
             println!("{}", result);
+        }
+        // RES-355: write cache entry on VM success.
+        if !no_cache {
+            cache::write_entry(&cache_dir, &source_hash);
         }
         return Ok(());
     }
@@ -10904,6 +11927,14 @@ fn execute_file(
             header
         }
     })?;
+
+    // RES-355: persist a cache entry so the next run can detect
+    // that this source compiled successfully. Errors here are
+    // silently ignored — a write failure must never turn a
+    // successful compilation into a failure.
+    if !no_cache {
+        cache::write_entry(&cache_dir, &source_hash);
+    }
 
     Ok(())
 }
@@ -11879,6 +12910,7 @@ COMMON FLAGS:\n\
         --explain-effects        Print the inferred effect (@pure / @io)\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
+        --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
@@ -11892,6 +12924,8 @@ COMMON FLAGS:\n\
         --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
+        --no-cache               Disable the incremental compilation cache\n\
+                                 for this run (RES-355)\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
@@ -12014,6 +13048,10 @@ fn main() {
     // development — `--no-panic-on-fault` restores the default.
     let mut panic_on_fault_flag = false;
     let mut emit_live_log: Option<PathBuf> = None;
+    // RES-355: `--no-cache` bypasses the incremental compilation cache
+    // for this run. Both cache reads and writes are skipped so the
+    // run is fully isolated from the on-disk cache state.
+    let mut no_cache = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -12025,6 +13063,13 @@ fn main() {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--deny-unproven-bounds" {
+                // RES-351: strict mode — unproven array-bounds
+                // accesses become compile errors instead of relying
+                // on the VM's runtime check. Implies --typecheck so
+                // the pass actually runs before the program executes.
+                bounds_check::set_deny_unproven_bounds(true);
+                type_check = true;
             } else if arg == "--explain-effects" {
                 // RES-347: dump one line per user fn with its
                 // inferred effect. Implies --typecheck.
@@ -12159,6 +13204,11 @@ fn main() {
                 examples_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--examples-dir=") {
                 examples_dir = Some(PathBuf::from(dir));
+            } else if arg == "--no-cache" {
+                // RES-355: bypass the incremental bytecode cache for
+                // this run. Both cache reads and writes are skipped so
+                // the compilation is isolated from any on-disk state.
+                no_cache = true;
             } else {
                 filename = arg;
             }
@@ -12292,6 +13342,7 @@ fn main() {
                 verifier_timeout_ms,
                 warn_unverified,
                 emit_live_log.as_deref(),
+                no_cache,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run
@@ -14364,6 +15415,7 @@ mod tests {
 
     #[test]
     fn random_int_stays_in_half_open_range() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(7);
         for _ in 0..200 {
             let v = builtin_random_int(&[Value::Int(10), Value::Int(20)]).unwrap();
@@ -14398,6 +15450,7 @@ mod tests {
 
     #[test]
     fn random_float_in_unit_interval() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(123);
         for _ in 0..200 {
             let v = builtin_random_float(&[]).unwrap();
@@ -16123,6 +17176,47 @@ mod tests {
     fn typecheck_rejects_try_on_non_result() {
         let err = typecheck_src("let x = 42?;").unwrap_err();
         assert!(err.contains("? operator"), "unexpected: {}", err);
+    }
+
+    // ---------- RES-366: pinned integer types ----------
+
+    #[test]
+    fn pinned_int_literal_accepted_as_int8() {
+        // A literal (Type::Int) is assignable to any pinned int type.
+        typecheck_src("let x: Int8 = 42;").unwrap();
+        typecheck_src("let x: UInt16 = 1000;").unwrap();
+        typecheck_src("let x: Int32 = -1;").unwrap();
+    }
+
+    #[test]
+    fn pinned_int_cast_builtin_accepted() {
+        // as_int8() returns Int8; assigning it to an Int8 binding should pass.
+        typecheck_src("let x: Int8 = as_int8(200);").unwrap();
+        typecheck_src("let x: UInt32 = as_uint32(65536);").unwrap();
+    }
+
+    #[test]
+    fn pinned_int_mixed_arithmetic_rejected() {
+        // Int8 + Int16 without a cast is a type error.
+        let err =
+            typecheck_src("let a = as_int8(1); let b = as_int16(2); let c = a + b;").unwrap_err();
+        assert!(
+            err.contains("Cannot apply"),
+            "expected a type error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pinned_int_same_width_arithmetic_accepted() {
+        // Int8 + Int8 is OK.
+        typecheck_src("let a = as_int8(1); let b = as_int8(2); let c = a + b;").unwrap();
+    }
+
+    #[test]
+    fn int64_alias_accepted_as_int() {
+        // Int64 is an alias for Int.
+        typecheck_src("let x: Int64 = 42;").unwrap();
     }
 
     // ---------- FFI typechecker (Task 4) ----------
