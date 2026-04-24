@@ -14129,6 +14129,7 @@ mod tests {
 
     #[test]
     fn random_int_stays_in_half_open_range() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(7);
         for _ in 0..200 {
             let v = builtin_random_int(&[Value::Int(10), Value::Int(20)]).unwrap();
@@ -14163,6 +14164,7 @@ mod tests {
 
     #[test]
     fn random_float_in_unit_interval() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(123);
         for _ in 0..200 {
             let v = builtin_random_float(&[]).unwrap();
