@@ -6437,6 +6437,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-130: explicit int ↔ float conversions.
     ("to_float", builtin_to_float),
     ("to_int", builtin_to_int),
+    // RES-366: pinned-width integer casts. Wrapping truncation.
+    ("as_int8", builtin_as_int8),
+    ("as_int16", builtin_as_int16),
+    ("as_int32", builtin_as_int32),
+    ("as_int64", builtin_as_int64),
+    ("as_uint8", builtin_as_uint8),
+    ("as_uint16", builtin_as_uint16),
+    ("as_uint32", builtin_as_uint32),
+    ("as_uint64", builtin_as_uint64),
     // RES-138: read the current retry count inside a live block.
     ("live_retries", builtin_live_retries),
     // RES-141: process-wide live-block telemetry.
@@ -7476,6 +7485,82 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("to_int: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-366: pinned integer cast builtins. All of them accept any
+/// `Value::Int` (or another int), truncate/wrap to the target width,
+/// and return a `Value::Int` carrying the clamped bit pattern
+/// sign-extended to i64. Overflow wraps — no panic, no error — which
+/// matches the acceptance criteria ("overflow wraps").
+///
+/// Signed widths: two's-complement truncation via Rust `as` casts.
+/// Unsigned widths: zero-extension after masking.
+fn builtin_as_int8(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i8 as i64)),
+        [other] => Err(format!("as_int8: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int8: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int16(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i16 as i64)),
+        [other] => Err(format!("as_int16: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int16: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int32(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i32 as i64)),
+        [other] => Err(format!("as_int32: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int32: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int64(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i)),
+        [other] => Err(format!("as_int64: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int64: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_uint8(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u8) as i64)),
+        [other] => Err(format!("as_uint8: expected Int, got {:?}", other)),
+        _ => Err(format!("as_uint8: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_uint16(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u16) as i64)),
+        [other] => Err(format!("as_uint16: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint16: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+fn builtin_as_uint32(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u32) as i64)),
+        [other] => Err(format!("as_uint32: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint32: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+fn builtin_as_uint64(args: &[Value]) -> RResult<Value> {
+    match args {
+        // u64 doesn't fit in i64 for values ≥ 2^63; we store the
+        // bit pattern as a signed i64 (wrapping reinterpretation).
+        [Value::Int(i)] => Ok(Value::Int(*i as u64 as i64)),
+        [other] => Err(format!("as_uint64: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint64: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -15943,6 +16028,47 @@ mod tests {
     fn typecheck_rejects_try_on_non_result() {
         let err = typecheck_src("let x = 42?;").unwrap_err();
         assert!(err.contains("? operator"), "unexpected: {}", err);
+    }
+
+    // ---------- RES-366: pinned integer types ----------
+
+    #[test]
+    fn pinned_int_literal_accepted_as_int8() {
+        // A literal (Type::Int) is assignable to any pinned int type.
+        typecheck_src("let x: Int8 = 42;").unwrap();
+        typecheck_src("let x: UInt16 = 1000;").unwrap();
+        typecheck_src("let x: Int32 = -1;").unwrap();
+    }
+
+    #[test]
+    fn pinned_int_cast_builtin_accepted() {
+        // as_int8() returns Int8; assigning it to an Int8 binding should pass.
+        typecheck_src("let x: Int8 = as_int8(200);").unwrap();
+        typecheck_src("let x: UInt32 = as_uint32(65536);").unwrap();
+    }
+
+    #[test]
+    fn pinned_int_mixed_arithmetic_rejected() {
+        // Int8 + Int16 without a cast is a type error.
+        let err =
+            typecheck_src("let a = as_int8(1); let b = as_int16(2); let c = a + b;").unwrap_err();
+        assert!(
+            err.contains("Cannot apply"),
+            "expected a type error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pinned_int_same_width_arithmetic_accepted() {
+        // Int8 + Int8 is OK.
+        typecheck_src("let a = as_int8(1); let b = as_int8(2); let c = a + b;").unwrap();
+    }
+
+    #[test]
+    fn int64_alias_accepted_as_int() {
+        // Int64 is an alias for Int.
+        typecheck_src("let x: Int64 = 42;").unwrap();
     }
 
     // ---------- FFI typechecker (Task 4) ----------
