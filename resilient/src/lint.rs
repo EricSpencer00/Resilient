@@ -68,6 +68,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0007", // unreachable code after unconditional `return`
     "L0008", // duplicate identical struct literal match arm
     "L0009", // integer division by zero (literal / SMT-proven-possible)
+    "L0010", // function has no requires/ensures contract
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -84,6 +85,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0007_unreachable_code(program, &mut out);
     run_l0008_duplicate_struct_match_arm(program, &mut out);
     run_l0009_division_by_zero(program, &mut out);
+    run_l0010_no_contract(program, &mut out);
 
     // Filter via allow-comments.
     let allows = collect_allow_comments(source);
@@ -440,6 +442,14 @@ fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<
         }
         Node::TryExpression { expr, .. } => {
             collect_identifier_reads_in(expr, out);
+        }
+        Node::OptionalChain { object, access, .. } => {
+            collect_identifier_reads_in(object, out);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    collect_identifier_reads_in(a, out);
+                }
+            }
         }
         Node::IndexExpression { target, index, .. } => {
             collect_identifier_reads_in(target, out);
@@ -901,6 +911,7 @@ fn span_of(node: &Node) -> Option<Span> {
         | Node::PrefixExpression { span, .. }
         | Node::CallExpression { span, .. }
         | Node::TryExpression { span, .. }
+        | Node::OptionalChain { span, .. }
         | Node::ArrayLiteral { span, .. }
         | Node::IndexExpression { span, .. }
         | Node::FieldAccess { span, .. }
@@ -1351,6 +1362,14 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
             }
         }
         Node::TryExpression { expr, .. } => f(expr),
+        Node::OptionalChain { object, access, .. } => {
+            f(object);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    f(a);
+                }
+            }
+        }
         Node::Match {
             scrutinee, arms, ..
         } => {
@@ -1431,6 +1450,56 @@ fn collect_allow_comments(source: &str) -> std::collections::HashSet<(u32, Strin
         }
     }
     out
+}
+
+// ============================================================
+// L0010: function has no requires/ensures contract
+// ============================================================
+//
+// Functions that declare neither `requires` nor `ensures` carry
+// no machine-verifiable safety contract.  In safety-critical
+// embedded code that is almost always an oversight, so we flag
+// it as a warning.  Users can suppress with:
+//   `// resilient: allow L0010`
+// or add trivial stubs (the LSP `codeAction` offers this as a
+// quick-fix: "Add contract stubs").
+//
+// Deliberately excluded from the check:
+//   - Functions that start with `_` (test helpers, entry stubs).
+//   - Anonymous functions (name == "").
+//   - Impl-block methods (those inherit the struct's invariants).
+
+fn run_l0010_no_contract(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        if let Node::Function {
+            name,
+            requires,
+            ensures,
+            span,
+            ..
+        } = &spanned.node
+        {
+            // Skip anonymous fns and underscore-prefixed helpers.
+            if name.is_empty() || name.starts_with('_') {
+                continue;
+            }
+            if requires.is_empty() && ensures.is_empty() {
+                out.push(Lint {
+                    code: "L0010".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "function `{name}` has no `requires`/`ensures` contract; \
+                         add contract stubs or suppress with `// resilient: allow L0010`"
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
 }
 
 // ============================================================
@@ -1775,6 +1844,81 @@ mod tests {
         assert!(!codes(src).contains(&"L0007".to_string()));
     }
 
+    // ---------- L0008: duplicate identical struct literal match arm (RES-369) ----------
+
+    #[test]
+    fn l0008_fires_on_duplicate_struct_literal_arm() {
+        // Two arms with the same struct + same literal field values — the
+        // second can never fire.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn f(int _d) -> int {\n\
+                let p = new Point { x: 0, y: 0 };\n\
+                return match p {\n\
+                    Point { x: 0, y: 0 } => 1,\n\
+                    Point { x: 0, y: 0 } => 2,\n\
+                    Point { .. } => 3,\n\
+                };\n\
+            }\n\
+        ";
+        assert!(
+            codes(src).contains(&"L0008".to_string()),
+            "L0008 must fire when two arms have identical struct literal patterns; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0008_silent_when_arms_differ() {
+        // Two arms with the same struct but different field values do not
+        // overlap.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn f(int _d) -> int {\n\
+                let p = new Point { x: 1, y: 2 };\n\
+                return match p {\n\
+                    Point { x: 0, y: 0 } => 1,\n\
+                    Point { x: 1, y: 1 } => 2,\n\
+                    Point { .. } => 3,\n\
+                };\n\
+            }\n\
+        ";
+        assert!(
+            !codes(src).contains(&"L0008".to_string()),
+            "L0008 must not fire when struct literal arms have different field values"
+        );
+    }
+
+    #[test]
+    fn l0008_silent_for_rest_pattern() {
+        // `Point { .. }` is a wildcard, not a duplicate literal pattern —
+        // two `Point { .. }` arms do NOT trigger L0008; the second is
+        // caught by L0002 (arm after catch-all) instead.
+        let src = "\
+            struct Point { int x, int y }\n\
+            fn f(int _d) -> int {\n\
+                let p = new Point { x: 0, y: 0 };\n\
+                return match p {\n\
+                    Point { x: 0, y: 0 } => 1,\n\
+                    Point { .. } => 2,\n\
+                    Point { .. } => 3,\n\
+                };\n\
+            }\n\
+        ";
+        assert!(
+            !codes(src).contains(&"L0008".to_string()),
+            "L0008 must not fire for rest/wildcard struct arms"
+        );
+    }
+
+    #[test]
+    fn known_codes_contains_l0008() {
+        assert!(
+            KNOWN_CODES.contains(&"L0008"),
+            "L0008 missing from KNOWN_CODES"
+        );
+    }
+
     // ---------- RES-237: L0001 false-positives for Assume / MapLiteral /
     // SetLiteral / LetDestructureStruct ----------
 
@@ -2038,6 +2182,61 @@ mod tests {
         assert!(
             codes(src).contains(&"L0005".to_string()),
             "L0005 must fire for trailing bare return inside an impl method"
+        );
+    }
+
+    // ---------- L0010: no requires/ensures contract ----------
+
+    #[test]
+    fn l0010_fires_on_fn_with_no_contract() {
+        let src = "fn f(int x) { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0010".to_string()),
+            "L0010 must fire when a function has no requires/ensures contract"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_when_requires_present() {
+        let src = "fn f(int x) requires x > 0 { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0010".to_string()),
+            "L0010 must stay silent when function has a requires clause"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_when_ensures_present() {
+        let src = "fn f(int x) -> int ensures result >= 0 { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0010".to_string()),
+            "L0010 must stay silent when function has an ensures clause"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_for_underscore_prefixed_fns() {
+        let src = "fn _helper(int x) { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0010".to_string()),
+            "L0010 must not fire on underscore-prefixed function names"
+        );
+    }
+
+    #[test]
+    fn l0010_allow_comment_suppresses() {
+        let src = "// resilient: allow L0010\nfn f(int x) { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0010".to_string()),
+            "L0010 must be suppressible with allow comment"
+        );
+    }
+
+    #[test]
+    fn l0010_in_known_codes() {
+        assert!(
+            KNOWN_CODES.contains(&"L0010"),
+            "L0010 must appear in KNOWN_CODES"
         );
     }
 }

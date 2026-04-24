@@ -1,0 +1,8 @@
+// RES-360: scoped imports golden test.
+// Two files each define `greet()`; import them under different aliases
+// so both can coexist and be called without a name collision.
+use "scoped_imports_a.rz" as a;
+use "scoped_imports_b.rz" as b;
+
+a::greet();
+b::greet();

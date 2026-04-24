@@ -639,6 +639,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::Assert { .. } => "`assert`",
         Node::Assume { .. } => "`assume`",
         Node::TryExpression { .. } => "`?` operator",
+        Node::OptionalChain { .. } => "`?.` operator",
         Node::Identifier { .. } => "identifier",
         Node::FieldAccess { .. } => "field access",
         _ => "unsupported construct",

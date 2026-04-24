@@ -1,0 +1,4 @@
+clock_now non-negative
+elapsed positive
+manual delta non-negative
+Program executed successfully

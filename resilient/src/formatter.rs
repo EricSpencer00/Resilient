@@ -139,8 +139,12 @@ impl Formatter {
 
     fn fmt_stmt(&mut self, node: &Node) {
         match node {
-            Node::Use { path, .. } => {
-                self.write(&format!("use \"{}\";", path));
+            Node::Use { path, alias, .. } => {
+                if let Some(ns) = alias {
+                    self.write(&format!("use \"{}\" as {};", path, ns));
+                } else {
+                    self.write(&format!("use \"{}\";", path));
+                }
                 self.newline();
             }
             Node::Function {
@@ -245,6 +249,7 @@ impl Formatter {
                 name,
                 state_fields,
                 always_clauses,
+                eventually_clauses,
                 receive_handlers,
                 ..
             } => {
@@ -260,6 +265,12 @@ impl Formatter {
                 for clause in always_clauses {
                     self.write("always: ");
                     self.fmt_expr(clause);
+                    self.write(";");
+                    self.newline();
+                }
+                for ev in eventually_clauses {
+                    self.write(&format!("eventually(after: {}): ", ev.target_handler));
+                    self.fmt_expr(&ev.post);
                     self.write(";");
                     self.newline();
                 }
@@ -527,6 +538,28 @@ impl Formatter {
                 self.write(";");
                 self.newline();
             }
+            // RES-224: `try { ... } catch V { ... }` structured handler.
+            Node::TryCatch { body, handlers, .. } => {
+                self.write("try {");
+                self.newline();
+                self.indent();
+                for s in body {
+                    self.fmt_stmt(s);
+                }
+                self.dedent();
+                self.write("}");
+                for (variant, handler_body) in handlers {
+                    self.write(&format!(" catch {} {{", variant));
+                    self.newline();
+                    self.indent();
+                    for s in handler_body {
+                        self.fmt_stmt(s);
+                    }
+                    self.dedent();
+                    self.write("}");
+                }
+                self.newline();
+            }
             // FFI v1: extern blocks not yet formatted (Tasks 4-8).
             Node::Extern { .. } => {}
             // Anything else was an expression; dispatch to fmt_expr
@@ -696,6 +729,25 @@ impl Formatter {
                 self.fmt_expr(expr);
                 self.write("?");
             }
+            // RES-363: optional chaining.
+            Node::OptionalChain { object, access, .. } => {
+                self.fmt_expr(object);
+                match access {
+                    crate::ChainAccess::Field(f) => {
+                        self.write(&format!("?.{}", f));
+                    }
+                    crate::ChainAccess::Method(m, args) => {
+                        self.write(&format!("?.{}(", m));
+                        for (i, a) in args.iter().enumerate() {
+                            if i > 0 {
+                                self.write(", ");
+                            }
+                            self.fmt_expr(a);
+                        }
+                        self.write(")");
+                    }
+                }
+            }
             Node::FieldAccess { target, field, .. } => {
                 self.fmt_expr(target);
                 self.write(&format!(".{}", field));
@@ -858,6 +910,7 @@ impl Formatter {
             | Node::Use { .. }
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
+            | Node::TryCatch { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
