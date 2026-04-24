@@ -1,0 +1,37 @@
+// RES-388 follow-up: bounded-liveness that the Z3 ranking search
+// can't decide.
+//
+// The `refill` handler increases state, the `consume` handler
+// decreases it — the two race. No monotone ranking function μ from
+// the MVP candidate family (`state`, `-state`, `state - 1`,
+// `1 - state`) satisfies both "strictly decreases on consume" AND
+// "non-increasing on refill", so the verifier falls through to
+// `warning[partial-proof]` — the ticket's prescribed behaviour for
+// undecidable instances.
+//
+// Build with `--features z3` to see the partial-proof warning on
+// stderr; the default interpreter path runs `main()` unchanged.
+
+actor RacyQueue {
+    state: int = 0;
+
+    always: state >= 0;
+
+    eventually(after: consume): state == 0;
+
+    receive refill()
+    {
+        self.state = self.state + 1;
+    }
+
+    receive consume()
+        requires state > 0
+    {
+        self.state = self.state - 1;
+    }
+}
+
+fn main() {
+    println("actor_eventually_nodrain: partial-proof warning expected");
+}
+main();

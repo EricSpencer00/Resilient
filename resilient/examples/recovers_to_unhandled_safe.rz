@@ -1,0 +1,31 @@
+// RES-222: unhandled fault on a non-destructive path.
+//
+// `open_valve` declares a `fails` set of hardware fault variants but
+// no handler catches them — under the MVP semantics (structured
+// try/catch is a separate ticket) that is the common "fault
+// propagates upward" shape. Because the fn declares `fails`, the
+// verifier requires Z3 to prove the `recovers_to` invariant holds
+// after any recovery path.
+//
+// Here the clause `position >= 0` is implied by the `requires`
+// precondition `position >= 0`, so the solver proves it and the
+// program compiles cleanly. This is the "non-destructive" case:
+// even if a fault fires, the declared recovery postcondition is
+// logically entailed by the assumptions the fn is allowed to make.
+fn open_valve(int position) -> int
+    requires position >= 0
+    fails HardwareFault, Timeout
+    recovers_to: position >= 0;
+{
+    return position;
+}
+
+// The `main` caller must re-declare the inherited `fails` set —
+// the RES-387 fault-propagation check otherwise rejects a caller
+// that does not propagate (or handle) the variants. Structured
+// handlers are a separate ticket; for now the only resolution is
+// to let the variants bubble up through the signature.
+fn main() fails HardwareFault, Timeout {
+    let p = open_valve(42);
+    println(p);
+}

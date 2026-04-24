@@ -1,0 +1,48 @@
+// RES-366: pinned integer types — Int8, Int16, Int32, Int64 (signed)
+// and UInt8, UInt16, UInt32, UInt64 (unsigned).
+//
+// Int is the default (alias for Int64). Explicit casts are required
+// between differently-sized pinned types. Overflow wraps.
+
+struct Sensor {
+    UInt8 id,
+    UInt16 raw_reading,
+    UInt32 timestamp,
+}
+
+fn main() {
+    // Declare variables with pinned types.
+    let a: Int8 = as_int8(100);
+    let b: Int16 = as_int16(1000);
+    let c: Int32 = as_int32(100000);
+
+    println(a);
+    println(b);
+    println(c);
+
+    // Wrapping overflow: 200 does not fit in Int8 (range -128..127)
+    let overflow: Int8 = as_int8(200);
+    println(overflow);
+
+    // UInt8 range is 0..255; 256 wraps to 0.
+    let u: UInt8 = as_uint8(255);
+    println(u);
+    let wrapped: UInt8 = as_uint8(256);
+    println(wrapped);
+
+    // Casting between widths requires explicit call.
+    let wide: Int16 = as_int16(a);
+    println(wide);
+
+    // Struct with pinned-typed fields.
+    let s = new Sensor { id: as_uint8(7), raw_reading: as_uint16(1023), timestamp: as_uint32(42) };
+    println(s.id);
+    println(s.raw_reading);
+    println(s.timestamp);
+
+    // Int64 is an alias for Int.
+    let d: Int64 = 9999;
+    println(d);
+}
+
+main();
