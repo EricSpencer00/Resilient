@@ -1200,10 +1200,12 @@ enum Node {
         /// variants on the caller's signature (propagation) or
         /// — in a future ticket — handle them structurally.
         fails: Vec<String>,
-        /// RES-387: `recovers_to: EXPR;` postcondition. Parsed
-        /// and stored; Z3 verification that the invariant
-        /// actually holds after recovery is a follow-up ticket.
-        #[allow(dead_code)] // consumed by RES-387 follow-up (Z3 recovers_to proof)
+        /// RES-387: `recovers_to: EXPR;` postcondition.
+        /// RES-222: consumed by the Z3 discharge path in
+        /// `typechecker::check_node` — fn declarations with a
+        /// non-empty `fails` set must prove this invariant
+        /// holds under the declared `requires`, otherwise the
+        /// compiler rejects the program.
         recovers_to: Option<Box<Node>>,
     },
     LiveBlock {

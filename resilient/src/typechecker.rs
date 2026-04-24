@@ -591,6 +591,34 @@ fn z3_prove_with_cert(
     (None, None, None, false)
 }
 
+/// RES-222: like `z3_prove_with_cert`, but asserts a list of
+/// boolean `axioms` alongside the clause. Used by the
+/// `recovers_to` discharge path to admit each `requires`
+/// clause as an assumption when proving the recovery
+/// invariant — the recovery point is reached only after the
+/// precondition has already been checked, so requires still
+/// hold. Without `--features z3`, returns all-`None` / `false`.
+#[cfg(feature = "z3")]
+fn z3_prove_with_axioms_and_cert(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    let (verdict, cert, cx, timed_out) =
+        crate::verifier_z3::prove_with_axioms_and_timeout(expr, bindings, axioms, timeout_ms);
+    (verdict, cert.map(|c| c.smt2), cx, timed_out)
+}
+#[cfg(not(feature = "z3"))]
+fn z3_prove_with_axioms_and_cert(
+    _expr: &Node,
+    _bindings: &HashMap<String, i64>,
+    _axioms: &[Node],
+    _timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    (None, None, None, false)
+}
+
 /// RES-217: best-effort span for a contract clause. Mirrors
 /// the helper in `infer::expr_span` — duplicated here so the
 /// typechecker stays independent of the inference module's
@@ -1602,30 +1630,111 @@ impl TypeChecker {
                 // the ticket is a follow-up; when it lands, this
                 // block becomes a weaker side-obligation.
                 //
-                // A provable contradiction (`Some(false)`) is a
-                // compile error — the recovery invariant can never
+                // RES-222: when the fn declares a non-empty `fails`
+                // set and there is no structured handler (handlers
+                // are a separate ticket — today every fault is
+                // "unhandled"), the recovery invariant becomes a
+                // real proof obligation. Z3 must show the clause
+                // holds under the requires precondition; an
+                // undecidable verdict is a compile error. Timeouts
+                // are soft — we emit a `hint: proof timed out` that
+                // mirrors the per-clause hint on requires/ensures.
+                //
+                // A provable contradiction (`Some(false)`) is always
+                // a compile error — the recovery invariant can never
                 // hold. A proven tautology (`Some(true)`) is
-                // silently discharged; an undecidable verdict is
-                // left for runtime (the runtime check fires after
-                // every return and surfaces a clear diagnostic).
+                // silently discharged.
                 if let Some(clause) = recovers_to {
+                    let clause_pos = clause_span(clause);
+                    let pos_prefix = if clause_pos.start.line == 0 {
+                        String::new()
+                    } else {
+                        format!("{}:{}: ", clause_pos.start.line, clause_pos.start.column)
+                    };
+
+                    // RES-222: admit each `requires` clause as an
+                    // axiom. The recovery point is reached only
+                    // after the precondition has been checked, so
+                    // the solver is allowed to assume them when
+                    // discharging the recovery invariant.
+                    let axioms: Vec<Node> = requires.clone();
+
                     let mut verdict = fold_const_bool(clause, &no_bindings);
                     let mut cx: Option<String> = None;
+                    let mut cert_smt2: Option<String> = None;
+                    let mut timed_out_flag = false;
                     if verdict.is_none() {
-                        let (v, _cert, c, _timed_out) =
-                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
+                        let (v, cert, c, t) = z3_prove_with_axioms_and_cert(
+                            clause,
+                            &no_bindings,
+                            &axioms,
+                            self.verifier_timeout_ms,
+                        );
                         verdict = v;
                         cx = c;
+                        cert_smt2 = cert;
+                        timed_out_flag = t;
                     }
+
+                    // Contradiction: clause is unreachable regardless
+                    // of `fails`. Always a compile error.
                     if matches!(verdict, Some(false)) {
                         let base = format!(
-                            "fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
-                            name
+                            "{}fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
+                            pos_prefix, name
                         );
                         return Err(match cx {
                             Some(m) => format!("{} — counterexample (final state): {}", base, m),
                             None => base,
                         });
+                    }
+
+                    // RES-222: account for successful discharge and
+                    // capture the SMT-LIB2 certificate so the driver
+                    // can dump it alongside requires/ensures certs.
+                    if matches!(verdict, Some(true)) {
+                        self.stats.requires_discharged_by_z3 += 1;
+                        if let Some(smt2) = cert_smt2 {
+                            self.certificates.push(CapturedCertificate {
+                                fn_name: name.clone(),
+                                kind: "recovers_to",
+                                idx: 0,
+                                smt2,
+                            });
+                        }
+                    }
+
+                    // RES-222: with a non-empty `fails` set and no
+                    // handler to catch the fault, the invariant is
+                    // a mandatory obligation. An undecidable verdict
+                    // is a compile error; a timeout degrades to a
+                    // hint (runtime check retained) so a slow solver
+                    // can't block compilation indefinitely.
+                    if verdict.is_none() && !fails.is_empty() {
+                        if timed_out_flag {
+                            self.stats.verifier_timeouts += 1;
+                            eprintln!(
+                                "hint: proof timed out after {}ms — runtime check retained (fn {}, recovers_to)",
+                                self.verifier_timeout_ms, name
+                            );
+                            if self.warn_unverified {
+                                emit_partial_proof_warning(&self.source_path, clause);
+                            }
+                        } else {
+                            if self.warn_unverified {
+                                emit_partial_proof_warning(&self.source_path, clause);
+                            }
+                            let base = format!(
+                                "{}fn {}: `recovers_to` invariant cannot be proven — fn declares `fails` {:?} but no handler catches the fault, and Z3 could not show the recovery invariant holds under the declared `requires`",
+                                pos_prefix, name, fails
+                            );
+                            return Err(match cx {
+                                Some(m) => {
+                                    format!("{} — counterexample (final state): {}", base, m)
+                                }
+                                None => base,
+                            });
+                        }
                     }
                 }
 
