@@ -1341,6 +1341,9 @@ impl TypeChecker {
             // RES-073: `use` is resolved away before typecheck. Treat
             // leftovers as void (no-op) for safety.
             Node::Use { .. } => Ok(Type::Void),
+            // RES-349: `@overflow(...)` is a top-level program attribute;
+            // the typechecker treats it as void (the interpreter picks it up).
+            Node::OverflowAttr { .. } => Ok(Type::Void),
             // FFI v1: validate extern block — reject non-primitive types.
             Node::Extern { decls, .. } => {
                 const PARAM_PRIMS: &[&str] = &["Int", "Float", "Bool", "String"];

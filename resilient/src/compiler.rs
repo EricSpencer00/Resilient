@@ -780,6 +780,10 @@ fn node_line(n: &Node) -> Option<u32> {
         // Program is wrapped in Spanned<Node> at the call site, not
         // inside the Node enum itself.
         Node::Program(_) => 0,
+
+        // RES-349: @overflow attribute carries a span but is a no-op
+        // in the compiler; the VM does not support overflow modes yet.
+        Node::OverflowAttr { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }

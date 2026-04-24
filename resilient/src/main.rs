@@ -1028,6 +1028,37 @@ impl BackoffConfig {
     }
 }
 
+/// RES-349: integer overflow handling mode for a program.
+///
+/// The default is `Trap` (checked arithmetic) matching the safety-critical
+/// embedded target profile: overflow is a runtime error, not silent data
+/// corruption.  Users may opt into `Wrap` (two's-complement wraparound) or
+/// `Saturate` (clamp to `i64::MIN` / `i64::MAX`) via the `@overflow`
+/// top-level attribute or the `--overflow-mode` CLI flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverflowMode {
+    /// Integer arithmetic raises a runtime error on overflow (default).
+    #[default]
+    Trap,
+    /// Integer arithmetic wraps around two's-complement on overflow.
+    Wrap,
+    /// Integer arithmetic saturates to `i64::MIN` / `i64::MAX` on overflow.
+    Saturate,
+}
+
+impl OverflowMode {
+    /// Parse from the string value used in `@overflow("trap")` attributes
+    /// and the `--overflow-mode <trap|wrap|saturate>` CLI flag.
+    pub fn parse_mode(s: &str) -> Option<Self> {
+        match s {
+            "trap" => Some(Self::Trap),
+            "wrap" => Some(Self::Wrap),
+            "saturate" => Some(Self::Saturate),
+            _ => None,
+        }
+    }
+}
+
 /// RES-389: declared effect set for a function.
 ///
 /// The MVP carries two bits — `pure` and `io` — sufficient to
@@ -1096,6 +1127,14 @@ enum Node {
     /// expressions inside each statement still have no spans —
     /// RES-078 / RES-079 cover those.
     Program(Vec<span::Spanned<Node>>),
+    /// RES-349: `@overflow("trap"|"wrap"|"saturate")` top-level attribute.
+    /// Sets the integer overflow mode for the entire program. The interpreter
+    /// picks this up during `eval_program` before executing any statements.
+    OverflowAttr {
+        mode: OverflowMode,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-073: top-level `use "path";` import. The path is resolved
     /// relative to the file containing the `use`. Resolved away by
     /// `expand_uses` (in `imports.rs`) before the program reaches the
@@ -1968,13 +2007,74 @@ impl Parser {
         };
         self.next_token(); // skip attribute name
 
+        // RES-349: `@overflow("trap"|"wrap"|"saturate")` is a top-level
+        // program attribute — not a fn annotation.  Handle it before the
+        // fn-only dispatch so the error message is correct.
+        if attr_name == "overflow" {
+            let attr_span = self.span_at_current();
+            // Expect `(` — e.g. `@overflow("trap")`
+            if self.current_token != Token::LeftParen {
+                self.record_error(
+                    "@overflow requires a parenthesised string argument, e.g. @overflow(\"trap\")"
+                        .to_string(),
+                );
+                return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                });
+            }
+            self.next_token(); // skip '('
+            let mode_str = match &self.current_token {
+                Token::StringLiteral(s) => s.clone(),
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "@overflow expects a string literal (\"trap\", \"wrap\", or \"saturate\"), found {}",
+                        tok
+                    ));
+                    return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    });
+                }
+            };
+            self.next_token(); // skip the string literal → current_token now on ')'
+            // Expect closing `)`.  Do NOT call next_token() here — the outer
+            // parse_program loop advances past the last consumed token
+            // (consistent with how parse_function and friends work).
+            if self.current_token != Token::RightParen {
+                self.record_error(format!(
+                    "@overflow attribute: expected `)` after mode string, found {}",
+                    self.current_token
+                ));
+            }
+            // Leave current_token on ')' for the outer loop to advance past.
+            let mode = match OverflowMode::parse_mode(&mode_str) {
+                Some(m) => m,
+                None => {
+                    self.record_error(format!(
+                        "@overflow: unknown mode {:?}; expected \"trap\", \"wrap\", or \"saturate\"",
+                        mode_str
+                    ));
+                    OverflowMode::Trap
+                }
+            };
+            return Node::OverflowAttr {
+                mode,
+                span: attr_span,
+            };
+        }
+
         let (pure_flag, effects) = match attr_name.as_str() {
             // `@pure` lights up both the legacy RES-191 strict
             // purity checker (via `pure: bool`) and the RES-389
             // effect-annotation checker (via `EffectSet::pure()`).
             "pure" => (true, EffectSet::pure()),
             other => {
-                self.record_error(format!("Unknown attribute `@{}`. Known: @pure", other));
+                self.record_error(format!(
+                    "Unknown attribute `@{}`. Known: @pure, @overflow",
+                    other
+                ));
                 // Fall through — treat as if no attribute was
                 // present; the fn still parses with the default
                 // `io` effect set and the purity flag off.
@@ -8040,6 +8140,12 @@ struct Interpreter {
     /// the runtime check entirely. Empty by default; populated by
     /// `with_proven_fns` after typecheck.
     proven_fns: Rc<HashSet<String>>,
+    /// RES-349: integer overflow mode for this execution. Set from the
+    /// `--overflow-mode` CLI flag or a top-level `@overflow("...")` attribute.
+    overflow_mode: OverflowMode,
+    /// RES-349: when true the mode was set by the CLI `--overflow-mode` flag
+    /// and the `@overflow` attribute in the source must not override it.
+    overflow_mode_locked: bool,
 }
 
 impl Interpreter {
@@ -8050,6 +8156,8 @@ impl Interpreter {
             env,
             statics: Rc::new(RefCell::new(HashMap::new())),
             proven_fns: Rc::new(HashSet::new()),
+            overflow_mode: OverflowMode::Trap,
+            overflow_mode_locked: false,
         }
     }
 
@@ -8057,6 +8165,15 @@ impl Interpreter {
     /// interpreter. Their `requires` clauses won't fire at runtime.
     fn with_proven_fns(mut self, proven: HashSet<String>) -> Self {
         self.proven_fns = Rc::new(proven);
+        self
+    }
+
+    /// RES-349: set the integer overflow mode from the CLI `--overflow-mode`
+    /// flag.  Marks the mode as locked so the `@overflow` source attribute
+    /// cannot override the CLI choice.
+    fn with_overflow_mode(mut self, mode: OverflowMode) -> Self {
+        self.overflow_mode = mode;
+        self.overflow_mode_locked = true;
         self
     }
 
@@ -8071,6 +8188,11 @@ impl Interpreter {
             // expand_uses. Stubs here so the interpreter is silent if
             // any slip through; real dispatch lands in Tasks 4-8.
             Node::Extern { .. } => Ok(Value::Void),
+            // RES-349: `@overflow(...)` sets the overflow mode for this
+            // interpreter. `eval_program` applies it in a pre-pass before
+            // running any user code; encountering it here during the main
+            // execution pass is a no-op (already applied or CLI locked).
+            Node::OverflowAttr { .. } => Ok(Value::Void),
             Node::Function {
                 name,
                 parameters,
@@ -8647,6 +8769,20 @@ impl Interpreter {
     }
 
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
+        // RES-349: apply any top-level `@overflow(...)` attribute before
+        // hoisting function definitions or running any other code, so
+        // arithmetic inside functions sees the correct mode from the start.
+        // If the CLI set an explicit mode (`--overflow-mode`), the attribute
+        // is silently skipped — the CLI always wins.  Multiple `@overflow`
+        // attributes use the last one (last-write-wins, consistent with Rust).
+        if !self.overflow_mode_locked {
+            for statement in statements {
+                if let Node::OverflowAttr { mode, .. } = &statement.node {
+                    self.overflow_mode = *mode;
+                }
+            }
+        }
+
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
         // are Rc<RefCell> so the post-hoist mutation of the env is
@@ -8670,7 +8806,7 @@ impl Interpreter {
         for statement in statements {
             if matches!(
                 statement.node,
-                Node::Function { .. } | Node::ImplBlock { .. }
+                Node::Function { .. } | Node::ImplBlock { .. } | Node::OverflowAttr { .. }
             ) {
                 continue;
             }
@@ -8979,7 +9115,15 @@ impl Interpreter {
 
     fn eval_minus_prefix_operator_expression(&mut self, right: Value) -> RResult<Value> {
         match right {
-            Value::Int(i) => Ok(Value::Int(-i)),
+            // RES-349: unary negation of i64::MIN overflows; apply the overflow mode.
+            Value::Int(i) => match self.overflow_mode {
+                OverflowMode::Trap => i
+                    .checked_neg()
+                    .map(Value::Int)
+                    .ok_or_else(|| format!("integer overflow: -{}", i)),
+                OverflowMode::Wrap => Ok(Value::Int(i.wrapping_neg())),
+                OverflowMode::Saturate => Ok(Value::Int(i.saturating_neg())),
+            },
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => Err(format!("Unknown operator: -{}", right)),
         }
@@ -9037,10 +9181,34 @@ impl Interpreter {
         left: i64,
         right: i64,
     ) -> RResult<Value> {
+        // RES-349: apply overflow mode to arithmetic operations.
+        // Comparison and bitwise operators are not affected.
+        let mode = self.overflow_mode;
         match operator {
-            "+" => Ok(Value::Int(left + right)),
-            "-" => Ok(Value::Int(left - right)),
-            "*" => Ok(Value::Int(left * right)),
+            "+" => match mode {
+                OverflowMode::Trap => left
+                    .checked_add(right)
+                    .map(Value::Int)
+                    .ok_or_else(|| format!("integer overflow: {} + {}", left, right)),
+                OverflowMode::Wrap => Ok(Value::Int(left.wrapping_add(right))),
+                OverflowMode::Saturate => Ok(Value::Int(left.saturating_add(right))),
+            },
+            "-" => match mode {
+                OverflowMode::Trap => left
+                    .checked_sub(right)
+                    .map(Value::Int)
+                    .ok_or_else(|| format!("integer overflow: {} - {}", left, right)),
+                OverflowMode::Wrap => Ok(Value::Int(left.wrapping_sub(right))),
+                OverflowMode::Saturate => Ok(Value::Int(left.saturating_sub(right))),
+            },
+            "*" => match mode {
+                OverflowMode::Trap => left
+                    .checked_mul(right)
+                    .map(Value::Int)
+                    .ok_or_else(|| format!("integer overflow: {} * {}", left, right)),
+                OverflowMode::Wrap => Ok(Value::Int(left.wrapping_mul(right))),
+                OverflowMode::Saturate => Ok(Value::Int(left.saturating_mul(right))),
+            },
             "/" => {
                 if right == 0 {
                     Err("Division by zero".to_string())
@@ -9190,6 +9358,9 @@ impl Interpreter {
                     env: extended_env,
                     statics: self.statics.clone(),
                     proven_fns: self.proven_fns.clone(),
+                    // RES-349: propagate overflow mode into function call frames.
+                    overflow_mode: self.overflow_mode,
+                    overflow_mode_locked: self.overflow_mode_locked,
                 };
 
                 // RES-035: check each `requires` clause BEFORE running
@@ -10416,6 +10587,7 @@ fn execute_file(
     verifier_timeout_ms: u32,
     warn_unverified: bool,
     live_log: Option<&Path>,
+    overflow_mode_override: Option<OverflowMode>,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
@@ -10614,7 +10786,13 @@ fn execute_file(
     };
     let _live_telemetry_guard = install_live_run_telemetry(basename, log_writer);
 
+    // RES-349: the CLI flag takes precedence over any `@overflow(...)` attribute
+    // in the source.  When the flag was not given, `eval_program` will pick up
+    // the attribute (if any) or leave the default Trap mode in place.
     let mut interpreter = Interpreter::new().with_proven_fns(proven_fns);
+    if let Some(mode) = overflow_mode_override {
+        interpreter = interpreter.with_overflow_mode(mode);
+    }
 
     // FFI v1: resolve every `Node::Extern` block ahead of eval, bind as
     // Value::Foreign in the root env so the tree-walker can call through.
@@ -11655,6 +11833,8 @@ COMMON FLAGS:\n\
                                  abort with exit 1 on the first fault\n\
         --no-panic-on-fault      Restore default retry behaviour\n\
         --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
+        --overflow-mode MODE     Integer overflow mode: trap (default),\n\
+                                 wrap, or saturate (RES-349)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
 \n\
@@ -11779,6 +11959,10 @@ fn main() {
     // development — `--no-panic-on-fault` restores the default.
     let mut panic_on_fault_flag = false;
     let mut emit_live_log: Option<PathBuf> = None;
+    // RES-349: `--overflow-mode <trap|wrap|saturate>` overrides any
+    // `@overflow(...)` attribute in the source.  `None` means "use
+    // whatever the source says (or Trap if the source is silent)".
+    let mut overflow_mode_override: Option<OverflowMode> = None;
     let mut filename = "";
 
     // Simple argument parsing
@@ -11904,6 +12088,34 @@ fn main() {
                 // retry behaviour even if an earlier arg or wrapper
                 // script set `--panic-on-fault`.
                 panic_on_fault_flag = false;
+            } else if arg == "--overflow-mode" {
+                // RES-349: override the integer overflow mode.
+                // Overrides any `@overflow(...)` attribute in the source.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!(
+                        "Error: --overflow-mode requires an argument: trap, wrap, or saturate"
+                    );
+                    std::process::exit(2);
+                }
+                overflow_mode_override =
+                    Some(OverflowMode::parse_mode(&args[i]).unwrap_or_else(|| {
+                        eprintln!(
+                            "Error: --overflow-mode: unknown mode {:?}; \
+                             expected trap, wrap, or saturate",
+                            args[i]
+                        );
+                        std::process::exit(2);
+                    }));
+            } else if let Some(val) = arg.strip_prefix("--overflow-mode=") {
+                overflow_mode_override = Some(OverflowMode::parse_mode(val).unwrap_or_else(|| {
+                    eprintln!(
+                        "Error: --overflow-mode: unknown mode {:?}; \
+                         expected trap, wrap, or saturate",
+                        val
+                    );
+                    std::process::exit(2);
+                }));
             } else if arg == "--emit-live-log" {
                 i += 1;
                 if i >= args.len() {
@@ -12057,6 +12269,7 @@ fn main() {
                 verifier_timeout_ms,
                 warn_unverified,
                 emit_live_log.as_deref(),
+                overflow_mode_override,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run
@@ -20178,6 +20391,221 @@ mod tests {
             "expected undeclared-region message, got: {:?}",
             borrow_errs
         );
+    }
+
+    // =========================================================================
+    // RES-349: overflow-safe integer arithmetic modes
+    // =========================================================================
+
+    /// Helper: evaluate a one-expression program with a given overflow mode
+    /// and return the `RResult<Value>` from the interpreter.
+    fn eval_with_overflow(src: &str, mode: OverflowMode) -> RResult<Value> {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors for {:?}: {:?}", src, errs);
+        let mut interp = Interpreter::new().with_overflow_mode(mode);
+        interp.eval(&program)
+    }
+
+    /// Extract i64 from a `Value::Int`, panicking otherwise.
+    fn unwrap_int(v: Value) -> i64 {
+        match v {
+            Value::Int(n) => n,
+            other => panic!("expected Value::Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res349_trap_add_overflow_is_error() {
+        let max = i64::MAX;
+        let src = format!("{} + 1", max);
+        let result = eval_with_overflow(&src, OverflowMode::Trap);
+        assert!(
+            result.is_err(),
+            "trap mode: i64::MAX + 1 should be an error, got {:?}",
+            result
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("overflow"),
+            "expected 'overflow' in error message, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn res349_wrap_add_overflow_wraps() {
+        let max = i64::MAX;
+        let src = format!("{} + 1", max);
+        let result = eval_with_overflow(&src, OverflowMode::Wrap);
+        assert_eq!(
+            unwrap_int(result.unwrap()),
+            i64::MIN,
+            "wrap mode: i64::MAX + 1 should equal i64::MIN"
+        );
+    }
+
+    #[test]
+    fn res349_saturate_add_overflow_saturates() {
+        let max = i64::MAX;
+        let src = format!("{} + 1", max);
+        let result = eval_with_overflow(&src, OverflowMode::Saturate);
+        assert_eq!(
+            unwrap_int(result.unwrap()),
+            i64::MAX,
+            "saturate mode: i64::MAX + 1 should stay i64::MAX"
+        );
+    }
+
+    #[test]
+    fn res349_trap_sub_overflow_is_error() {
+        // -2 - i64::MAX  ==  -(i64::MAX + 2)  which overflows i64::MIN - 1
+        let src = format!("0 - 2 - {}", i64::MAX);
+        let result = eval_with_overflow(&src, OverflowMode::Trap);
+        assert!(
+            result.is_err(),
+            "trap mode: (i64::MIN - 1) should be an error, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn res349_wrap_sub_overflow_wraps() {
+        // 0 - 2 - i64::MAX overflows in the same way as i64::MIN - 1
+        let src = format!("0 - 2 - {}", i64::MAX);
+        let result = eval_with_overflow(&src, OverflowMode::Wrap);
+        // -2 - i64::MAX wraps: (0-2) = -2, then -2 - i64::MAX = i64::MIN - 1 wraps = i64::MAX
+        let got = unwrap_int(result.unwrap());
+        assert_eq!(
+            got,
+            (-2i64).wrapping_sub(i64::MAX),
+            "wrap sub should equal wrapping_sub result"
+        );
+    }
+
+    #[test]
+    fn res349_saturate_sub_overflow_saturates() {
+        let src = format!("0 - 2 - {}", i64::MAX);
+        let result = eval_with_overflow(&src, OverflowMode::Saturate);
+        assert_eq!(
+            unwrap_int(result.unwrap()),
+            i64::MIN,
+            "saturate sub should clamp to i64::MIN"
+        );
+    }
+
+    #[test]
+    fn res349_trap_mul_overflow_is_error() {
+        let src = format!("{} * 2", i64::MAX);
+        let result = eval_with_overflow(&src, OverflowMode::Trap);
+        assert!(
+            result.is_err(),
+            "trap mode: i64::MAX * 2 should be an error"
+        );
+    }
+
+    #[test]
+    fn res349_wrap_mul_overflow_wraps() {
+        // i64::MAX * 2 in two's complement
+        let src = format!("{} * 2", i64::MAX);
+        let result = eval_with_overflow(&src, OverflowMode::Wrap);
+        assert_eq!(
+            unwrap_int(result.unwrap()),
+            i64::MAX.wrapping_mul(2),
+            "wrap mul should equal wrapping_mul result"
+        );
+    }
+
+    #[test]
+    fn res349_saturate_mul_overflow_saturates() {
+        let src = format!("{} * 2", i64::MAX);
+        let result = eval_with_overflow(&src, OverflowMode::Saturate);
+        assert_eq!(unwrap_int(result.unwrap()), i64::MAX);
+    }
+
+    #[test]
+    fn res349_no_overflow_in_normal_range_trap() {
+        // Operations that don't overflow must still work correctly in trap mode.
+        let result = eval_with_overflow("3 + 4", OverflowMode::Trap);
+        assert_eq!(unwrap_int(result.unwrap()), 7);
+        let result = eval_with_overflow("10 - 3", OverflowMode::Trap);
+        assert_eq!(unwrap_int(result.unwrap()), 7);
+        let result = eval_with_overflow("3 * 4", OverflowMode::Trap);
+        assert_eq!(unwrap_int(result.unwrap()), 12);
+    }
+
+    #[test]
+    fn res349_attribute_sets_wrap_mode() {
+        // `@overflow("wrap")` at the top of a program enables wrap mode.
+        let src = "9223372036854775807 + 1";
+        let full_src = format!("@overflow(\"wrap\")\n{}", src);
+        let (program, errs) = parse(&full_src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new(); // default Trap
+        let result = interp.eval(&program);
+        // The attribute inside the program should have switched to Wrap.
+        assert_eq!(
+            unwrap_int(result.unwrap()),
+            i64::MIN,
+            "@overflow(\"wrap\") should give i64::MIN for i64::MAX + 1"
+        );
+    }
+
+    #[test]
+    fn res349_attribute_sets_saturate_mode() {
+        let src = "9223372036854775807 + 1";
+        let full_src = format!("@overflow(\"saturate\")\n{}", src);
+        let (program, errs) = parse(&full_src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program);
+        assert_eq!(
+            unwrap_int(result.unwrap()),
+            i64::MAX,
+            "@overflow(\"saturate\") should give i64::MAX for i64::MAX + 1"
+        );
+    }
+
+    #[test]
+    fn res349_attribute_sets_trap_mode() {
+        // Explicit @overflow("trap") — same as default.
+        let src = "9223372036854775807 + 1";
+        let full_src = format!("@overflow(\"trap\")\n{}", src);
+        let (program, errs) = parse(&full_src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program);
+        assert!(
+            result.is_err(),
+            "@overflow(\"trap\") should produce an error for i64::MAX + 1"
+        );
+    }
+
+    #[test]
+    fn res349_cli_override_beats_attribute() {
+        // Source says wrap, but CLI sets trap — CLI wins.
+        let src = "9223372036854775807 + 1";
+        let full_src = format!("@overflow(\"wrap\")\n{}", src);
+        let (program, errs) = parse(&full_src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new().with_overflow_mode(OverflowMode::Trap);
+        let result = interp.eval(&program);
+        assert!(
+            result.is_err(),
+            "CLI trap mode should override @overflow(\"wrap\")"
+        );
+    }
+
+    #[test]
+    fn res349_overflow_mode_parse_mode() {
+        assert_eq!(OverflowMode::parse_mode("trap"), Some(OverflowMode::Trap));
+        assert_eq!(OverflowMode::parse_mode("wrap"), Some(OverflowMode::Wrap));
+        assert_eq!(
+            OverflowMode::parse_mode("saturate"),
+            Some(OverflowMode::Saturate)
+        );
+        assert_eq!(OverflowMode::parse_mode(""), None);
+        assert_eq!(OverflowMode::parse_mode("TRAP"), None);
+        assert_eq!(OverflowMode::parse_mode("unknown"), None);
     }
 }
 

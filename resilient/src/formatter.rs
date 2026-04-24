@@ -861,6 +861,17 @@ impl Formatter {
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
+            // RES-349: @overflow attribute — render as the source form so
+            // round-trip formatting preserves the declaration.
+            Node::OverflowAttr { mode, .. } => {
+                let mode_str = match mode {
+                    crate::OverflowMode::Trap => "trap",
+                    crate::OverflowMode::Wrap => "wrap",
+                    crate::OverflowMode::Saturate => "saturate",
+                };
+                self.write(&format!("@overflow(\"{}\")", mode_str));
+                self.newline();
+            }
         }
     }
 

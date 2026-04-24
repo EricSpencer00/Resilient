@@ -111,6 +111,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // FFI v1: extern blocks don't introduce Resilient bindings
         // at the source level; driver resolves them separately.
         Node::Extern { .. } => {}
+        // RES-349: @overflow attribute introduces no bindings.
+        Node::OverflowAttr { .. } => {}
 
         // ---- Blocks introduce scope ----
         Node::Block { stmts, .. } => {
