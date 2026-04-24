@@ -141,6 +141,27 @@ pub enum Op {
     /// `#[cfg(feature = "ffi")]` at dispatch time but the variant exists
     /// unconditionally so the compiler/disassembler don't need feature flags.
     CallForeign(u16),
+    /// RES-335: build a `Value::Struct` from `field_count` `(name, value)`
+    /// pairs on the operand stack. Stack layout on entry (top → bottom):
+    /// `[v_N, k_N, ..., v_1, k_1, struct_type_name, ...]` — each `k_i`
+    /// is a `Value::String` holding the field name and `v_i` is its
+    /// value. The struct type name is carried as an interned constant
+    /// at `name_const`, not popped from the stack, so the compiler can
+    /// assert the shape statically.
+    ///
+    /// Field names live in the constant pool as `Value::String` so
+    /// `Op` stays `Copy` and `sizeof::<Op>() <= 8`.
+    StructLiteral { name_const: u16, field_count: u16 },
+    /// RES-335: pop a `Value::Struct`, push the value of the field
+    /// whose name is `chunk.constants[name_const]` (a `Value::String`).
+    /// Missing field surfaces as `VmError::UnknownField`.
+    GetField { name_const: u16 },
+    /// RES-335: pop a value `v`, pop a `Value::Struct`, write
+    /// `struct.fields[name] = v`, then push the modified struct back
+    /// so the enclosing compile pattern (`StoreLocal` after
+    /// `SetField`) can commit the update to the binding. Name is
+    /// `chunk.constants[name_const]` (a `Value::String`).
+    SetField { name_const: u16 },
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
