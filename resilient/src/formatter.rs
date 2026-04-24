@@ -351,6 +351,22 @@ impl Formatter {
                 self.write(";");
                 self.newline();
             }
+            // RES-361: format `const NAME: T = expr;`
+            Node::Const {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
+                if let Some(ty) = type_annot {
+                    self.write(&format!("const {}: {} = ", name, ty));
+                } else {
+                    self.write(&format!("const {} = ", name));
+                }
+                self.fmt_expr(value);
+                self.write(";");
+                self.newline();
+            }
             Node::LetDestructureStruct {
                 struct_name,
                 fields,
@@ -896,6 +912,7 @@ impl Formatter {
             | Node::Assume { .. }
             | Node::LetStatement { .. }
             | Node::StaticLet { .. }
+            | Node::Const { .. }
             | Node::Assignment { .. }
             | Node::ReturnStatement { .. }
             | Node::ExpressionStatement { .. }

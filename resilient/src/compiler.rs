@@ -820,9 +820,10 @@ fn compile_expr(
 /// line in those cases.
 fn node_line(n: &Node) -> Option<u32> {
     let line: u32 = match n {
-        // Statement variants (RES-079).
+        // Statement variants (RES-079, RES-361).
         Node::LetStatement { span, .. }
         | Node::StaticLet { span, .. }
+        | Node::Const { span, .. }
         | Node::Assignment { span, .. }
         | Node::ReturnStatement { span, .. }
         | Node::IfStatement { span, .. }
@@ -908,6 +909,7 @@ fn node_kind(n: &Node) -> &'static str {
         Node::Block { .. } => "Block",
         Node::LetStatement { .. } => "LetStatement",
         Node::StaticLet { .. } => "StaticLet",
+        Node::Const { .. } => "Const",
         Node::Assignment { .. } => "Assignment",
         Node::ReturnStatement { .. } => "ReturnStatement",
         Node::IfStatement { .. } => "IfStatement",
