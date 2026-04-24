@@ -1,0 +1,29 @@
+// RES-222: handled fault where Z3 discharges the recovery invariant.
+//
+// `reset_counter` declares `fails Overflow` and a `recovers_to`
+// clause that depends on its `requires` precondition. At the
+// recovery point the solver is allowed to assume the precondition
+// (the fn only enters the body once it has been checked), so
+// `limit >= 1` trivially implies `limit >= 0` — which is what the
+// recovery invariant demands.
+//
+// This is the acceptance path where a fault variant is declared
+// *and* the verifier can produce evidence that the restarted
+// supervisor will observe a safe state. No runtime check is
+// needed: the proof is discharged statically.
+fn reset_counter(int limit) -> int
+    requires limit >= 1
+    fails Overflow
+    recovers_to: limit >= 0;
+{
+    return 0;
+}
+
+// `main` propagates the declared `fails` set — the RES-387
+// fault-propagation check otherwise rejects any caller that
+// invokes a fallible fn without either handling or re-declaring
+// the variant.
+fn main() fails Overflow {
+    let c = reset_counter(5);
+    println(c);
+}

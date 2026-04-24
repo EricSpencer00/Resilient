@@ -1,0 +1,36 @@
+// RES-388 follow-up: bounded-liveness via `eventually`.
+//
+// Draining queue — the `drain` handler strictly decreases the
+// ranking measure μ(state) = state, and the only other handler
+// (`peek`) leaves state alone, so μ is non-increasing off-target.
+// μ reaches 0 exactly when the post-condition `state == 0` holds,
+// so the Z3 ranking search discharges every obligation the liveness
+// verifier emits.
+//
+// Build with `--features z3` to see the proof path; the default
+// interpreter path just runs `main()`.
+
+actor DrainingQueue {
+    state: int = 0;
+
+    always: state >= 0;
+
+    eventually(after: drain): state == 0;
+
+    receive drain()
+        requires state > 0
+    {
+        self.state = self.state - 1;
+    }
+
+    receive peek()
+        requires state >= 0
+    {
+        self.state = self.state;
+    }
+}
+
+fn main() {
+    println("actor_eventually_drain: eventually(after: drain) state == 0");
+}
+main();

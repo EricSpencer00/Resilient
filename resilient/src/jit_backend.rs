@@ -509,6 +509,21 @@ pub enum JitError {
     LinkError(String),
     /// Top-level Program had no `return EXPR;` statement to JIT.
     EmptyProgram,
+    /// RES-380: an array index or pop reached a runtime bounds
+    /// violation. The shim panics with a `JitAbort::OutOfBounds`;
+    /// the JIT driver catches the unwind and translates it into
+    /// this variant so callers never see a raw panic.
+    OutOfBounds { index: i64, len: i64 },
+    /// RES-380: `pop` was called on an empty array. Reported as a
+    /// distinct variant so callers can diagnose the specific
+    /// misuse — the length is always 0 by construction, so only
+    /// the variant tag is meaningful.
+    EmptyPop,
+    /// RES-380: the JIT-compiled function unwound with a payload
+    /// the driver did not recognise. Preserves the panic message
+    /// (when available) for diagnostics; should never appear in a
+    /// well-formed program.
+    UnknownAbort(String),
 }
 
 impl std::fmt::Display for JitError {
@@ -518,11 +533,155 @@ impl std::fmt::Display for JitError {
             JitError::IsaInit(msg) => write!(f, "jit: ISA init failed: {}", msg),
             JitError::LinkError(msg) => write!(f, "jit: link error: {}", msg),
             JitError::EmptyProgram => write!(f, "jit: program has no top-level return"),
+            JitError::OutOfBounds { index, len } => write!(
+                f,
+                "jit: array index out of bounds: index {} for array of length {}",
+                index, len
+            ),
+            JitError::EmptyPop => write!(f, "jit: pop on empty array"),
+            JitError::UnknownAbort(msg) => write!(f, "jit: aborted: {}", msg),
         }
     }
 }
 
 impl std::error::Error for JitError {}
+
+/// RES-380: payload the array / pop runtime shims raise on a
+/// runtime failure. The JIT driver establishes a setjmp landing
+/// pad immediately before entering JIT-compiled code; the abort
+/// shims stash one of these variants in `JIT_LAST_ABORT` and
+/// `longjmp` back to that pad so the driver can surface a
+/// structured `JitError`.
+///
+/// We don't rely on stack unwinding across the JIT frame —
+/// Cranelift does not publish `eh_frame` CFI for JIT-compiled code
+/// on macOS, which causes `libunwind` to abort the process when a
+/// Rust panic tries to cross that frame. setjmp/longjmp skips the
+/// unwind machinery entirely; the JIT call site owns no Rust
+/// values with drop impls, so there are no leaks.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum JitAbort {
+    OutOfBounds { index: i64, len: usize },
+    EmptyPop,
+}
+
+// RES-380: minimal libc bindings for setjmp / longjmp. The real
+// `jmp_buf` is a platform-specific opaque blob; we over-allocate a
+// 256-byte slot which is comfortably larger than any POSIX
+// implementation (macOS uses 148 bytes, Linux 200). Using `extern`
+// directly avoids pulling in `libc` as a new dependency.
+#[cfg(unix)]
+#[repr(C, align(16))]
+struct JitJmpBuf([u64; 32]);
+
+#[cfg(unix)]
+unsafe extern "C" {
+    /// POSIX `setjmp` — saves the current execution state in
+    /// `env` and returns 0. A matching `longjmp` unwinds back
+    /// here and returns the non-zero `val` from the matching
+    /// `longjmp`.
+    fn setjmp(env: *mut JitJmpBuf) -> i32;
+    /// POSIX `longjmp` — restores `env` and forces `setjmp` to
+    /// return `val` (which is normalised to 1 if zero is passed).
+    /// Never returns in the caller's frame.
+    fn longjmp(env: *mut JitJmpBuf, val: i32) -> !;
+}
+
+thread_local! {
+    /// RES-380: the matching jump buffer set up by the driver
+    /// before invoking the JIT entrypoint. The abort shims read
+    /// this to `longjmp` past the JIT frame back to the driver
+    /// when a bounds check fails.
+    static JIT_JMP_BUF: std::cell::Cell<*mut JitJmpBuf> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// RES-380: slot the abort shims write into before jumping
+    /// back, so the driver can construct the matching
+    /// `JitError`. Always overwritten before any `longjmp`.
+    static JIT_LAST_ABORT: std::cell::Cell<Option<JitAbort>> = const { std::cell::Cell::new(None) };
+}
+
+/// RES-380: from an abort shim, stash `abort` in the thread-local
+/// slot and `longjmp` back to the driver's landing pad. When no
+/// buffer is installed — i.e. the shim is being called directly
+/// from Rust test code rather than from JIT-compiled code — we
+/// fall back to `panic_any` so the existing `#[should_panic]`
+/// unit tests continue to see a panic. The fallback panic is
+/// allowed to unwind because it originates in a pure-Rust frame
+/// (no JIT code on the stack above us).
+#[cfg(unix)]
+fn trigger_jit_abort(abort: JitAbort) -> ! {
+    let env = JIT_JMP_BUF.with(|slot| slot.get());
+    if env.is_null() {
+        std::panic::panic_any(abort);
+    }
+    JIT_LAST_ABORT.with(|slot| slot.set(Some(abort)));
+    // SAFETY: the driver installed `env` via `setjmp` before
+    // entering JIT code and has not yet cleared it; the JIT frame
+    // holds no Rust values with drop impls, so skipping it by
+    // longjmp is safe.
+    unsafe { longjmp(env, 1) }
+}
+
+#[cfg(not(unix))]
+fn trigger_jit_abort(abort: JitAbort) -> ! {
+    // Non-unix hosts: fall through to a panic. The abort shims
+    // are declared `extern "C-unwind"` so this works from Rust
+    // callers; JIT callers on non-unix targets will see a
+    // process-level abort if a bounds check ever fires, which
+    // matches the pre-RES-380 behaviour of those targets (the
+    // JIT backend is secondary on Windows).
+    std::panic::panic_any(abort);
+}
+
+/// RES-380: invoke a JIT-compiled entrypoint, catching any
+/// abort-shim `longjmp` and translating it to a `JitError`. The
+/// caller supplies a closure that actually calls the compiled
+/// function pointer; we wrap the call in a setjmp landing pad.
+///
+/// On a successful return, the closure's result is returned as
+/// `Ok`. On an abort, the closure is unwound past via `longjmp`
+/// and we synthesise the matching `JitError` from the stashed
+/// payload. If the closure ever both succeeds and triggers an
+/// abort (impossible by construction but guarded anyway), the
+/// abort wins.
+fn jit_invoke_with_abort_catch<F: FnOnce() -> i64>(f: F) -> Result<i64, JitError> {
+    #[cfg(unix)]
+    {
+        let mut env = JitJmpBuf([0u64; 32]);
+        // Save the previous state so nested JIT invocations
+        // (unlikely but legal — e.g. FFI back into Rust back into
+        // JIT) can't clobber an outer buffer.
+        let prev_env = JIT_JMP_BUF.with(|s| s.replace(&mut env as *mut _));
+        let prev_abort = JIT_LAST_ABORT.with(|s| s.replace(None));
+
+        // SAFETY: setjmp is always safe; longjmp is called only
+        // from `trigger_jit_abort` with the matching buffer.
+        let setjmp_rv = unsafe { setjmp(&mut env as *mut _) };
+        let outcome = if setjmp_rv == 0 {
+            let result = f();
+            Ok(result)
+        } else {
+            let abort = JIT_LAST_ABORT.with(|s| s.replace(None));
+            Err(match abort {
+                Some(JitAbort::OutOfBounds { index, len }) => JitError::OutOfBounds {
+                    index,
+                    len: len as i64,
+                },
+                Some(JitAbort::EmptyPop) => JitError::EmptyPop,
+                None => {
+                    JitError::UnknownAbort("jit abort with no payload (driver bug)".to_string())
+                }
+            })
+        };
+
+        JIT_JMP_BUF.with(|s| s.set(prev_env));
+        JIT_LAST_ABORT.with(|s| s.set(prev_abort));
+        outcome
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(f())
+    }
+}
 
 /// RES-380: `FuncId`s for runtime symbols registered on the
 /// `JITBuilder` (`res_array_*`, `res_jit_*`). Declared as imports
@@ -539,6 +698,10 @@ pub(crate) struct JitRuntimeImports {
     pub res_jit_len_array: FuncId,
     pub res_jit_max: FuncId,
     pub res_jit_min: FuncId,
+    /// RES-380: noreturn abort shim for out-of-bounds index / store.
+    pub res_jit_abort_oob: FuncId,
+    /// RES-380: noreturn abort shim for `pop` on an empty array.
+    pub res_jit_abort_empty_pop: FuncId,
 }
 
 fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImports, JitError> {
@@ -599,6 +762,26 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         .declare_function("res_jit_min", Linkage::Import, &sig2mm)
         .map_err(|e| JitError::LinkError(e.to_string()))?;
 
+    // RES-380: abort shims. Both return i64 to satisfy cranelift's
+    // insistence on a concrete return type; neither actually returns
+    // (each panics with a `JitAbort` the driver's `catch_unwind`
+    // recovers). The lowering emits a `trap` after each call so
+    // control flow is well-defined even if someone later mistakes
+    // the shim for something that can fall through.
+    let mut sig_abort_oob = module.make_signature();
+    sig_abort_oob.params.push(AbiParam::new(types::I64));
+    sig_abort_oob.params.push(AbiParam::new(types::I64));
+    sig_abort_oob.returns.push(AbiParam::new(types::I64));
+    let res_jit_abort_oob = module
+        .declare_function("res_jit_abort_oob", Linkage::Import, &sig_abort_oob)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
+    let mut sig_abort_empty = module.make_signature();
+    sig_abort_empty.returns.push(AbiParam::new(types::I64));
+    let res_jit_abort_empty_pop = module
+        .declare_function("res_jit_abort_empty_pop", Linkage::Import, &sig_abort_empty)
+        .map_err(|e| JitError::LinkError(e.to_string()))?;
+
     Ok(JitRuntimeImports {
         res_array_new,
         res_array_len,
@@ -610,6 +793,8 @@ fn declare_jit_runtime_imports(module: &mut JITModule) -> Result<JitRuntimeImpor
         res_jit_len_array,
         res_jit_max,
         res_jit_min,
+        res_jit_abort_oob,
+        res_jit_abort_empty_pop,
     })
 }
 
@@ -624,6 +809,16 @@ fn make_module() -> Result<JITModule, JitError> {
         .map_err(|e| JitError::IsaInit(e.to_string()))?;
     flag_builder
         .set("is_pic", "false")
+        .map_err(|e| JitError::IsaInit(e.to_string()))?;
+    // RES-380: emit DWARF/Win64 unwind info so panics raised from
+    // the runtime shims (bounds-check abort, empty-pop abort) can
+    // unwind across the JIT frame back into Rust's
+    // `catch_unwind`. Without this setting the host panic
+    // machinery can't find a CFI entry for the JIT frame and the
+    // process aborts instead of translating the panic into a
+    // clean `JitError::OutOfBounds` / `EmptyPop`.
+    flag_builder
+        .set("unwind_info", "true")
         .map_err(|e| JitError::IsaInit(e.to_string()))?;
     let isa_builder = cranelift_native::builder().map_err(|e| JitError::IsaInit(e.to_string()))?;
     let isa = isa_builder
@@ -733,7 +928,7 @@ pub(crate) mod runtime_shims {
         // pointer's validity for the duration of this call.
         let arr_ref = unsafe { &*arr };
         if i < 0 || (i as usize) >= arr_ref.items.len() {
-            std::panic::panic_any(super::JitAbort::OutOfBounds {
+            super::trigger_jit_abort(super::JitAbort::OutOfBounds {
                 index: i,
                 len: arr_ref.items.len(),
             });
@@ -750,7 +945,7 @@ pub(crate) mod runtime_shims {
         // SAFETY: same as `res_array_get`.
         let arr_ref = unsafe { &mut *arr };
         if i < 0 || (i as usize) >= arr_ref.items.len() {
-            std::panic::panic_any(super::JitAbort::OutOfBounds {
+            super::trigger_jit_abort(super::JitAbort::OutOfBounds {
                 index: i,
                 len: arr_ref.items.len(),
             });
@@ -794,11 +989,37 @@ pub(crate) mod runtime_shims {
         assert!(!arr.is_null(), "res_array_pop_copy: null array pointer");
         let arr_ref = unsafe { &*arr };
         if arr_ref.items.is_empty() {
-            std::panic::panic_any(super::JitAbort::EmptyPop);
+            super::trigger_jit_abort(super::JitAbort::EmptyPop);
         }
         let mut items = arr_ref.items.clone();
         items.pop();
         Box::into_raw(Box::new(ResArray { items })) as i64
+    }
+
+    /// RES-380: noreturn abort shim invoked from the JIT when an
+    /// inline bounds check fails. Cranelift has no native way to
+    /// raise a structured error, so lowering calls this function
+    /// with the failing index and the array length; the shim
+    /// longjmps back to the driver via `trigger_jit_abort` which
+    /// the driver's setjmp landing pad translates into
+    /// `JitError::OutOfBounds`.
+    ///
+    /// The return type is `i64` only to satisfy Cranelift's call
+    /// signature — the call never returns in practice because
+    /// `longjmp` skips past it. Lowering emits an unreachable /
+    /// trap after the call so downstream code is well-typed even
+    /// if, hypothetically, the shim were replaced with a no-op.
+    pub extern "C-unwind" fn res_jit_abort_oob(index: i64, len: i64) -> i64 {
+        super::trigger_jit_abort(super::JitAbort::OutOfBounds {
+            index,
+            len: len.max(0) as usize,
+        });
+    }
+
+    /// RES-380: noreturn abort shim for `pop` on an empty array.
+    /// Same ABI rationale as `res_jit_abort_oob`.
+    pub extern "C-unwind" fn res_jit_abort_empty_pop() -> i64 {
+        super::trigger_jit_abort(super::JitAbort::EmptyPop);
     }
 
     /// Free an array previously produced by `res_array_new`. A
@@ -847,6 +1068,15 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "res_array_pop_copy",
         runtime_shims::res_array_pop_copy as *const u8,
+    );
+    // RES-380: abort shims used by inline bounds checks.
+    builder.symbol(
+        "res_jit_abort_oob",
+        runtime_shims::res_jit_abort_oob as *const u8,
+    );
+    builder.symbol(
+        "res_jit_abort_empty_pop",
+        runtime_shims::res_jit_abort_empty_pop as *const u8,
     );
     // RES-167a: register the JIT-side builtin shims alongside the
     // array runtime shims. Both surfaces use the same absolute-
@@ -1180,8 +1410,21 @@ fn run_internal(program: &Node) -> Result<(i64, JitCache), JitError> {
     // signature `extern "C" fn() -> i64`; we constructed that
     // signature ourselves above. The JITModule keeps the code
     // alive — `module` outlives this call.
+    //
+    // RES-380: the compiled code may invoke an abort shim that
+    // longjmps back past this call. `jit_invoke_with_abort_catch`
+    // installs the matching setjmp buffer before dispatching so
+    // the abort returns as `JitError::OutOfBounds` / `EmptyPop`.
     let f: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(raw) };
-    let result = unsafe { f() };
+    let result = match jit_invoke_with_abort_catch(|| unsafe { f() }) {
+        Ok(v) => v,
+        Err(e) => {
+            // Still fold cache stats so an abort doesn't skew
+            // the counters downward on subsequent runs.
+            flush_cache_stats_to_globals(&cache);
+            return Err(e);
+        }
+    };
     // RES-174: fold this run's cache stats into the process-wide
     // counters so `--jit-cache-stats` can print lifetime totals
     // from `main.rs` at exit. Counters are relaxed-atomic — no
@@ -1356,11 +1599,18 @@ pub(crate) fn jit_run_ast_with_entries(
         .map_err(|e| JitError::LinkError(e.to_string()))?;
 
     let raw = module.get_finalized_function(main_id);
-    // SAFETY: `raw` points at a freshly-finalized function with
-    // signature `extern "C" fn() -> i64`; we constructed that
-    // signature ourselves above. The JITModule keeps the code alive.
+    // SAFETY: see `run_internal` — same ABI, same abort-catch
+    // wrapper. RES-380 routes shim aborts through the setjmp
+    // landing pad so bounds-check failures surface as
+    // `JitError::OutOfBounds` / `EmptyPop`.
     let f: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(raw) };
-    let result = unsafe { f() };
+    let result = match jit_invoke_with_abort_catch(|| unsafe { f() }) {
+        Ok(v) => v,
+        Err(e) => {
+            flush_cache_stats_to_globals(&cache);
+            return Err(e);
+        }
+    };
     flush_cache_stats_to_globals(&cache);
     Ok(result)
 }
@@ -2115,9 +2365,17 @@ fn lower_index_read(
     bcx.append_block_param(merge_bb, types::I64);
     bcx.ins().brif(ok, ok_bb, &[], bad_bb, &[]);
 
+    // RES-380: on a failed bounds check, call the abort shim with
+    // `(index, len)`. The shim panics with `JitAbort::OutOfBounds`;
+    // the driver's `catch_unwind` translates that into
+    // `JitError::OutOfBounds` so callers never see a raw panic.
+    // The `trap` after the call is unreachable at runtime but keeps
+    // the block well-terminated for cranelift's verifier.
     bcx.switch_to_block(bad_bb);
     bcx.seal_block(bad_bb);
-    bcx.ins().trap(TrapCode::HeapOutOfBounds);
+    let fabort = module.declare_func_in_func(imp.res_jit_abort_oob, bcx.func);
+    bcx.ins().call(fabort, &[idx, len_v]);
+    bcx.ins().trap(TrapCode::UnreachableCodeReached);
 
     bcx.switch_to_block(ok_bb);
     bcx.seal_block(ok_bb);
@@ -2161,9 +2419,12 @@ fn lower_index_store(
     let bad_bb = bcx.create_block();
     bcx.ins().brif(ok, ok_bb, &[], bad_bb, &[]);
 
+    // RES-380: same abort-shim strategy as `lower_index_read`.
     bcx.switch_to_block(bad_bb);
     bcx.seal_block(bad_bb);
-    bcx.ins().trap(TrapCode::HeapOutOfBounds);
+    let fabort = module.declare_func_in_func(imp.res_jit_abort_oob, bcx.func);
+    bcx.ins().call(fabort, &[idx, len_v]);
+    bcx.ins().trap(TrapCode::UnreachableCodeReached);
 
     bcx.switch_to_block(ok_bb);
     bcx.seal_block(ok_bb);
@@ -2320,9 +2581,15 @@ fn lower_expr(
                 let merge_bb = bcx.create_block();
                 bcx.append_block_param(merge_bb, types::I64);
                 bcx.ins().brif(empty, bad_bb, &[], ok_bb, &[]);
+                // RES-380: on an empty-array pop, call the abort shim.
+                // The shim panics with `JitAbort::EmptyPop`; the driver
+                // translates that into `JitError::EmptyPop`.
                 bcx.switch_to_block(bad_bb);
                 bcx.seal_block(bad_bb);
-                bcx.ins().trap(TrapCode::HeapOutOfBounds);
+                let fabort_ep =
+                    module.declare_func_in_func(ctx.imports.res_jit_abort_empty_pop, bcx.func);
+                bcx.ins().call(fabort_ep, &[]);
+                bcx.ins().trap(TrapCode::UnreachableCodeReached);
                 bcx.switch_to_block(ok_bb);
                 bcx.seal_block(ok_bb);
                 let fref = module.declare_func_in_func(ctx.imports.res_array_pop_copy, bcx.func);
@@ -4012,6 +4279,182 @@ return a[0] * 10000 + a[1] * 1000 + a[2] * 100 + a[3] * 10 + a[4];
 "#;
         let p = parse_program(src);
         assert_eq!(run(&p).unwrap(), 12589);
+    }
+
+    // ============================================================
+    // RES-380: JIT array error paths — bounds checks return a
+    // structured `JitError` instead of unwinding past the driver.
+    // ============================================================
+
+    #[test]
+    fn res380_jit_index_out_of_bounds_returns_error() {
+        // Reading past the end of an array must surface as
+        // `JitError::OutOfBounds { index, len }` — never a raw
+        // panic across the catch_unwind boundary.
+        let p = parse_program("let a = [10, 20, 30]; return a[5];");
+        let err = run(&p).expect_err("expected JitError::OutOfBounds");
+        match err {
+            JitError::OutOfBounds { index, len } => {
+                assert_eq!(index, 5);
+                assert_eq!(len, 3);
+            }
+            other => panic!("expected OutOfBounds, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res380_jit_index_negative_returns_out_of_bounds() {
+        // Negative indices are distinct from the interpreter's
+        // Python-style wrap-around: the JIT treats them as
+        // out-of-bounds, matching the `res_array_get` shim
+        // contract on the VM side.
+        let p = parse_program("let a = [1, 2, 3]; return a[0 - 1];");
+        let err = run(&p).expect_err("expected JitError::OutOfBounds");
+        match err {
+            JitError::OutOfBounds { index, len } => {
+                assert_eq!(index, -1);
+                assert_eq!(len, 3);
+            }
+            other => panic!("expected OutOfBounds, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res380_jit_index_store_out_of_bounds_returns_error() {
+        // `a[i] = v` for `i >= len(a)` takes the same error path
+        // as reads — call through the abort shim, caught by the
+        // driver, translated to JitError::OutOfBounds.
+        let src = r#"
+let a = [1, 2, 3];
+a[7] = 99;
+return a[0];
+"#;
+        let p = parse_program(src);
+        let err = run(&p).expect_err("expected JitError::OutOfBounds");
+        match err {
+            JitError::OutOfBounds { index, len } => {
+                assert_eq!(index, 7);
+                assert_eq!(len, 3);
+            }
+            other => panic!("expected OutOfBounds, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res380_jit_pop_empty_returns_empty_pop() {
+        // Popping an empty array must surface `JitError::EmptyPop`
+        // instead of panicking the host. The abort shim is wired
+        // the same way as the bounds-check shim; this pins the
+        // variant.
+        let p = parse_program("let a = [1]; let b = pop(a); let c = pop(b); return 0;");
+        let err = run(&p).expect_err("expected JitError::EmptyPop");
+        assert_eq!(err, JitError::EmptyPop);
+    }
+
+    #[test]
+    fn res380_jit_oob_error_display_is_descriptive() {
+        // The ticket mandates a clean diagnostic path. Pin the
+        // Display format so a future refactor doesn't silently
+        // drop the index/len payload.
+        let e = JitError::OutOfBounds { index: 4, len: 2 };
+        assert_eq!(
+            e.to_string(),
+            "jit: array index out of bounds: index 4 for array of length 2"
+        );
+        assert_eq!(JitError::EmptyPop.to_string(), "jit: pop on empty array");
+    }
+
+    #[test]
+    fn res380_jit_array_index_store_and_read_roundtrip() {
+        // Sanity: the happy path still works end-to-end via the
+        // JIT after the abort-shim rewiring. A regression here
+        // would suggest the ok-block fell out of phase with the
+        // bad-block's altered terminator.
+        let src = r#"
+let a = [0, 0, 0];
+a[0] = 7;
+a[1] = 11;
+a[2] = 13;
+return a[0] + a[1] + a[2];
+"#;
+        let p = parse_program(src);
+        assert_eq!(run(&p).unwrap(), 31);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn res380_jit_invoke_catches_oob_abort() {
+        // Unit-test the setjmp landing pad directly: a closure
+        // that invokes the abort shim must come back as
+        // `JitError::OutOfBounds` rather than aborting the
+        // process. This is the non-JIT half of the end-to-end
+        // test — useful because it pins the abort-catch
+        // machinery independently of cranelift.
+        use super::runtime_shims::res_jit_abort_oob;
+        let err = super::jit_invoke_with_abort_catch(|| {
+            let _ = res_jit_abort_oob(3, 2);
+            // Unreachable — the shim longjmps. Fabricate a value
+            // to satisfy the closure's return type.
+            0
+        })
+        .expect_err("abort must surface as JitError");
+        match err {
+            JitError::OutOfBounds { index, len } => {
+                assert_eq!(index, 3);
+                assert_eq!(len, 2);
+            }
+            other => panic!("expected OutOfBounds, got {:?}", other),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn res380_jit_invoke_catches_empty_pop_abort() {
+        use super::runtime_shims::res_jit_abort_empty_pop;
+        let err = super::jit_invoke_with_abort_catch(|| {
+            let _ = res_jit_abort_empty_pop();
+            0
+        })
+        .expect_err("abort must surface as JitError");
+        assert_eq!(err, JitError::EmptyPop);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn res380_jit_invoke_passes_through_successful_return() {
+        // Sanity: the landing pad must not swallow a successful
+        // return. This pins the happy path so a regression
+        // around the setjmp return-value discrimination is
+        // caught immediately.
+        let v = super::jit_invoke_with_abort_catch(|| 1234i64).expect("ok");
+        assert_eq!(v, 1234);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn res380_jit_invoke_restores_outer_jmp_buf() {
+        // Nested `jit_invoke_with_abort_catch` calls must each
+        // own a fresh buffer AND restore the outer's buffer on
+        // exit, so a later abort from an outer context doesn't
+        // escape into a stale inner landing pad.
+        let outer = super::jit_invoke_with_abort_catch(|| {
+            // Inner runs happily and returns normally.
+            let inner = super::jit_invoke_with_abort_catch(|| 99i64).expect("inner ok");
+            assert_eq!(inner, 99);
+            7
+        })
+        .expect("outer ok");
+        assert_eq!(outer, 7);
+    }
+
+    #[test]
+    fn res380_jit_array_literal_of_len_zero_builds() {
+        // Degenerate: an empty literal shouldn't crash the
+        // lowering. `len` on the result is 0. Exercise the
+        // ArrayLiteral path with n=0 so nobody regresses it into
+        // "array literal too small" or similar.
+        let p = parse_program("let a = []; return len(a);");
+        assert_eq!(run(&p).unwrap(), 0);
     }
 
     // ============================================================
