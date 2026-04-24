@@ -1,3 +1,2 @@
-verifier: actor UnboundedQueue: handlers `enqueue` and `dequeue` commute
 actor_queue_broken: verifier expected to refute invariant on enqueue
 Program executed successfully

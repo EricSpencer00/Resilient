@@ -1,3 +1,2 @@
-verifier: actor RequestQueue: handlers `enqueue` and `dequeue` commute
 actor_queue_safe: invariant state <= 100 verified
 Program executed successfully

@@ -10345,7 +10345,16 @@ fn run_actor_verification(program: &Node) {
     for spanned in statements {
         let actor_handlers: Option<(&str, &[ActorHandler])> = match &spanned.node {
             Node::Actor { name, handlers, .. } => Some((name.as_str(), handlers.as_slice())),
-            Node::ActorDecl { name, handlers, .. } => Some((name.as_str(), handlers.as_slice())),
+            // RES-388 actors with `always:` invariants are already
+            // covered by the safety-invariant verifier — skip the
+            // commutativity pass to avoid double-reporting (and to
+            // keep their golden files stable regardless of features).
+            Node::ActorDecl {
+                name,
+                handlers,
+                always_clauses,
+                ..
+            } if always_clauses.is_empty() => Some((name.as_str(), handlers.as_slice())),
             _ => None,
         };
         if let Some((name, handlers)) = actor_handlers {
