@@ -27,7 +27,7 @@ fn tmp_file(tag: &str, body: &str) -> PathBuf {
 fn lint_exits_zero_on_clean_program() {
     let src = tmp_file(
         "clean",
-        "fn f(int a) {\n    let used = a + 1;\n    return used;\n}\n",
+        "// resilient: allow L0010\nfn f(int a) {\n    let used = a + 1;\n    return used;\n}\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -94,7 +94,7 @@ fn lint_deny_escalates_to_error_exit_two() {
 fn lint_allow_flag_suppresses_code() {
     let src = tmp_file(
         "allow",
-        "fn f(int a) {\n    let unused = 42;\n    return a;\n}\n",
+        "// resilient: allow L0010\nfn f(int a) {\n    let unused = 42;\n    return a;\n}\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
