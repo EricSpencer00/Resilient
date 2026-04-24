@@ -120,3 +120,41 @@ fn check_short_quiet_flag() {
     assert_eq!(output.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&output.stdout).is_empty());
 }
+
+#[test]
+fn check_rejects_nonexhaustive_struct_match() {
+    // RES-369: `match` on a struct without a wildcard arm must be a
+    // type error.  `examples/match_struct_nonexhaustive.rz` is the
+    // golden error-case file for this feature.
+    let output = Command::new(bin())
+        .args(["check", "examples/match_struct_nonexhaustive.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for non-exhaustive struct match; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Non-exhaustive match on struct"),
+        "expected non-exhaustive diagnostic in stderr; got: {stderr}"
+    );
+}
+
+#[test]
+fn check_accepts_exhaustive_struct_match() {
+    // RES-369: `match` with a `Point { .. }` wildcard arm is exhaustive
+    // and must type-check cleanly.
+    let output = Command::new(bin())
+        .args(["check", "examples/match_struct_exhaustive.rz"])
+        .output()
+        .expect("spawn resilient check");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected exit 0 for exhaustive struct match; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

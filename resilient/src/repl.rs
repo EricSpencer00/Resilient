@@ -1,6 +1,7 @@
 // Enhanced REPL for Resilient language
+use crate::formatter::Formatter;
 use crate::typechecker;
-use crate::{Lexer, Parser, Value};
+use crate::{Lexer, Node, Parser, Value};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result as RustylineResult};
 use std::env;
@@ -164,6 +165,21 @@ impl EnhancedREPL {
             return;
         }
 
+        // RES-356: `.contracts [fn_name]` — list contracts table.
+        if input == ".contracts" {
+            print!("{}", self.contracts_output(None));
+            return;
+        }
+        if let Some(rest) = input.strip_prefix(".contracts ") {
+            let fn_name = rest.trim();
+            if fn_name.is_empty() {
+                print!("{}", self.contracts_output(None));
+            } else {
+                print!("{}", self.contracts_output(Some(fn_name)));
+            }
+            return;
+        }
+
         // Regular code evaluation
         let lexer = Lexer::new(input.to_string());
         let mut parser = Parser::new(lexer);
@@ -230,6 +246,14 @@ impl EnhancedREPL {
             } else {
                 format!("{}disabled{}", YELLOW, RESET)
             }
+        );
+        println!(
+            "  {}.contracts{}          - List all function contracts (requires/ensures)",
+            GREEN, RESET
+        );
+        println!(
+            "  {}.contracts <fn_name>{} - Show contracts for one function",
+            GREEN, RESET
         );
 
         println!("\n{}Resilient Language Syntax:{}", CYAN, RESET);
@@ -350,6 +374,64 @@ impl EnhancedREPL {
         }
         Ok(out)
     }
+
+    /// RES-356: Render a contract expression node to a compact single-line
+    /// string. Uses the canonical formatter; trims trailing whitespace and
+    /// newlines so each clause fits on one table row.
+    fn format_contract_node(node: &Node) -> String {
+        Formatter::format(node)
+            .trim_end_matches('\n')
+            .trim_end_matches(';')
+            .trim()
+            .to_string()
+    }
+
+    /// RES-356: Build the `.contracts` output table as a String.
+    ///
+    /// Each row: `fn_name  requires|ensures  <expr>  unverified`
+    ///
+    /// When `filter` is `Some(name)`, only rows for that function are
+    /// included. Output is sorted by function name (then by clause order
+    /// within each function).
+    pub(crate) fn contracts_output(&self, filter: Option<&str>) -> String {
+        let map = self.interpreter.collect_contract_fns();
+
+        // Collect and sort function names.
+        let mut names: Vec<&String> = map.keys().collect();
+        names.sort();
+
+        let mut out = String::new();
+        let mut any = false;
+
+        for name in names {
+            if let Some(f) = filter
+                && name != f
+            {
+                continue;
+            }
+            let (requires, ensures) = &map[name];
+            for clause in requires {
+                let expr = Self::format_contract_node(clause);
+                out.push_str(&format!("{}  requires  {}  unverified\n", name, expr));
+                any = true;
+            }
+            for clause in ensures {
+                let expr = Self::format_contract_node(clause);
+                out.push_str(&format!("{}  ensures   {}  unverified\n", name, expr));
+                any = true;
+            }
+        }
+
+        if !any {
+            if let Some(f) = filter {
+                out.push_str(&format!("(no contracts for '{}')\n", f));
+            } else {
+                out.push_str("(no contracts defined)\n");
+            }
+        }
+
+        out
+    }
 }
 
 #[cfg(test)]
@@ -411,5 +493,167 @@ mod tests {
     fn default_constructor_leaves_examples_dir_unset() {
         let repl = EnhancedREPL::new();
         assert!(repl.examples_dir.is_none());
+    }
+
+    // RES-356: contracts command tests
+    //
+    // These tests exercise `contracts_output` directly (no stdout
+    // capture needed) by evaluating Resilient source into the REPL's
+    // interpreter and then inspecting the returned string.
+
+    fn eval_in_repl(repl: &mut EnhancedREPL, src: &str) {
+        // Drive process_input line-by-line so multi-statement sources
+        // are handled correctly (each top-level statement on one call).
+        for line in src.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                repl.process_input(trimmed);
+            }
+        }
+    }
+
+    #[test]
+    fn contracts_empty_when_no_fns_defined() {
+        let repl = EnhancedREPL::new();
+        let out = repl.contracts_output(None);
+        assert!(
+            out.contains("(no contracts defined)"),
+            "expected empty message, got: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_empty_when_fns_have_no_clauses() {
+        let mut repl = EnhancedREPL::new();
+        eval_in_repl(&mut repl, "fn plain(int x) { return x; }");
+        let out = repl.contracts_output(None);
+        assert!(
+            out.contains("(no contracts defined)"),
+            "expected empty message for fn without contracts, got: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_shows_requires_clause() {
+        let mut repl = EnhancedREPL::new();
+        eval_in_repl(&mut repl, "fn positive(int x) requires x > 0 { return x; }");
+        let out = repl.contracts_output(None);
+        assert!(
+            out.contains("positive"),
+            "expected fn name 'positive' in output:\n{}",
+            out
+        );
+        assert!(
+            out.contains("requires"),
+            "expected 'requires' in output:\n{}",
+            out
+        );
+        assert!(
+            out.contains("unverified"),
+            "expected 'unverified' in output:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_shows_ensures_clause() {
+        let mut repl = EnhancedREPL::new();
+        eval_in_repl(
+            &mut repl,
+            "fn nonneg(int x) ensures result >= 0 { return x * x; }",
+        );
+        let out = repl.contracts_output(None);
+        assert!(
+            out.contains("nonneg"),
+            "expected fn name 'nonneg' in output:\n{}",
+            out
+        );
+        assert!(
+            out.contains("ensures"),
+            "expected 'ensures' in output:\n{}",
+            out
+        );
+        assert!(
+            out.contains("unverified"),
+            "expected 'unverified' in output:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_sorted_by_function_name() {
+        let mut repl = EnhancedREPL::new();
+        eval_in_repl(&mut repl, "fn zebra(int x) requires x > 0 { return x; }");
+        eval_in_repl(
+            &mut repl,
+            "fn alpha(int x) ensures result >= 0 { return x; }",
+        );
+        let out = repl.contracts_output(None);
+        let pos_alpha = out.find("alpha").unwrap_or(usize::MAX);
+        let pos_zebra = out.find("zebra").unwrap_or(usize::MAX);
+        assert!(
+            pos_alpha < pos_zebra,
+            "expected 'alpha' before 'zebra' (sorted), got:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_filtered_to_single_function() {
+        let mut repl = EnhancedREPL::new();
+        eval_in_repl(&mut repl, "fn first(int x) requires x > 0 { return x; }");
+        eval_in_repl(
+            &mut repl,
+            "fn second(int x) ensures result > 0 { return x; }",
+        );
+        let out = repl.contracts_output(Some("first"));
+        assert!(
+            out.contains("first"),
+            "expected 'first' in filtered output:\n{}",
+            out
+        );
+        assert!(
+            !out.contains("second"),
+            "expected 'second' to be filtered out:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_filter_unknown_fn_shows_no_contracts_message() {
+        let repl = EnhancedREPL::new();
+        let out = repl.contracts_output(Some("nonexistent"));
+        assert!(
+            out.contains("no contracts for 'nonexistent'"),
+            "expected 'no contracts' message for unknown fn, got: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn contracts_shows_both_requires_and_ensures_clauses() {
+        let mut repl = EnhancedREPL::new();
+        eval_in_repl(
+            &mut repl,
+            "fn bounded(int x) requires x > 0 ensures result > 0 { return x; }",
+        );
+        let out = repl.contracts_output(None);
+        assert!(
+            out.contains("requires"),
+            "expected 'requires' in output:\n{}",
+            out
+        );
+        assert!(
+            out.contains("ensures"),
+            "expected 'ensures' in output:\n{}",
+            out
+        );
+        // Both clauses should be on separate rows.
+        let req_count = out.matches("requires").count();
+        let ens_count = out.matches("ensures").count();
+        assert_eq!(req_count, 1, "expected 1 requires row:\n{}", out);
+        assert_eq!(ens_count, 1, "expected 1 ensures row:\n{}", out);
     }
 }

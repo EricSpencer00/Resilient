@@ -139,8 +139,12 @@ impl Formatter {
 
     fn fmt_stmt(&mut self, node: &Node) {
         match node {
-            Node::Use { path, .. } => {
-                self.write(&format!("use \"{}\";", path));
+            Node::Use { path, alias, .. } => {
+                if let Some(ns) = alias {
+                    self.write(&format!("use \"{}\" as {};", path, ns));
+                } else {
+                    self.write(&format!("use \"{}\";", path));
+                }
                 self.newline();
             }
             Node::Function {
@@ -724,6 +728,25 @@ impl Formatter {
             Node::TryExpression { expr, .. } => {
                 self.fmt_expr(expr);
                 self.write("?");
+            }
+            // RES-363: optional chaining.
+            Node::OptionalChain { object, access, .. } => {
+                self.fmt_expr(object);
+                match access {
+                    crate::ChainAccess::Field(f) => {
+                        self.write(&format!("?.{}", f));
+                    }
+                    crate::ChainAccess::Method(m, args) => {
+                        self.write(&format!("?.{}(", m));
+                        for (i, a) in args.iter().enumerate() {
+                            if i > 0 {
+                                self.write(", ");
+                            }
+                            self.fmt_expr(a);
+                        }
+                        self.write(")");
+                    }
+                }
             }
             Node::FieldAccess { target, field, .. } => {
                 self.fmt_expr(target);

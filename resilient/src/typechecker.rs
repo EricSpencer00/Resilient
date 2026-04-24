@@ -635,7 +635,8 @@ fn clause_span(node: &Node) -> Span {
         | Node::InfixExpression { span, .. }
         | Node::PrefixExpression { span, .. }
         | Node::CallExpression { span, .. }
-        | Node::TryExpression { span, .. } => *span,
+        | Node::TryExpression { span, .. }
+        | Node::OptionalChain { span, .. } => *span,
         _ => Span::default(),
     }
 }
@@ -2038,6 +2039,19 @@ impl TypeChecker {
                 Ok(Type::Any)
             }
 
+            // RES-363: `expr?.field` / `expr?.method(args)` — optional
+            // chaining. Yields `Any` at MVP; a future ticket can refine
+            // this to `Option<T>` once the type system carries generics.
+            Node::OptionalChain { object, access, .. } => {
+                self.check_node(object)?;
+                if let crate::ChainAccess::Method(_, args) = access {
+                    for a in args {
+                        self.check_node(a)?;
+                    }
+                }
+                Ok(Type::Any)
+            }
+
             Node::FunctionLiteral {
                 parameters, body, ..
             } => {
@@ -3191,6 +3205,14 @@ fn check_body_purity(
         Node::TryExpression { expr, .. } => {
             check_body_purity(expr, fn_name, pure_fns)?;
         }
+        Node::OptionalChain { object, access, .. } => {
+            check_body_purity(object, fn_name, pure_fns)?;
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    check_body_purity(a, fn_name, pure_fns)?;
+                }
+            }
+        }
         // Pure literals / identifier reads / etc — no work.
         Node::IntegerLiteral { .. }
         | Node::FloatLiteral { .. }
@@ -3458,6 +3480,16 @@ fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<String, bool
         }
         Node::ExpressionStatement { expr, .. } => body_reaches_io(expr, effects),
         Node::TryExpression { expr, .. } => body_reaches_io(expr, effects),
+        Node::OptionalChain { object, access, .. } => {
+            if body_reaches_io(object, effects) {
+                return true;
+            }
+            if let crate::ChainAccess::Method(_, args) = access {
+                args.iter().any(|a| body_reaches_io(a, effects))
+            } else {
+                false
+            }
+        }
         // Nested fn decls are rare but handled — recurse into
         // their body too. Today the parser doesn't emit these;
         // future closures will.
@@ -3681,6 +3713,14 @@ fn check_body_effects(
         }
         Node::ExpressionStatement { expr, .. } => check_body_effects(expr, fn_effects)?,
         Node::TryExpression { expr, .. } => check_body_effects(expr, fn_effects)?,
+        Node::OptionalChain { object, access, .. } => {
+            check_body_effects(object, fn_effects)?;
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    check_body_effects(a, fn_effects)?;
+                }
+            }
+        }
         Node::Function { body, .. } => check_body_effects(body, fn_effects)?,
         // Literals, identifier reads, durations — nothing to do.
         _ => {}
