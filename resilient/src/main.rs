@@ -4946,8 +4946,6 @@ impl Parser {
         }
     }
 
-
-
     /// RES-390: parse `cluster Name { member: ActorType; ... cluster_invariant: EXPR; ... }`.
     fn parse_cluster_decl(&mut self) -> Node {
         let stmt_span = self.span_at_current();
@@ -8482,7 +8480,9 @@ impl Interpreter {
             // RES-386/RES-388/RES-390: actor/cluster declarations are
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
-            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => Ok(Value::Void),
+            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {
+                Ok(Value::Void)
+            }
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.

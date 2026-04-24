@@ -57,7 +57,10 @@ use crate::{ActorHandler, Node};
 // The cluster verifier only needs field names + initializers (not type names).
 #[cfg(feature = "z3")]
 fn extract_state(state_fields: &[(String, String, Node)]) -> Vec<(String, Node)> {
-    state_fields.iter().map(|(_, n, v)| (n.clone(), v.clone())).collect()
+    state_fields
+        .iter()
+        .map(|(_, n, v)| (n.clone(), v.clone()))
+        .collect()
 }
 
 /// RES-390: per-actor spec — (state fields, handlers) — used by the
@@ -106,7 +109,10 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
             ..
         } = &spanned.node
         {
-            actors.insert(name.clone(), (extract_state(state_fields), handlers.clone()));
+            actors.insert(
+                name.clone(),
+                (extract_state(state_fields), handlers.clone()),
+            );
         }
     }
 
