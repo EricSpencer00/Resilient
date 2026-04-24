@@ -152,6 +152,9 @@ enum Token {
     /// pattern.
     Default,
     Question,
+    /// RES-375: `??` — Option coalescing operator. `opt ?? default`
+    /// returns the inner value if `opt` is `Some(v)`, else `default`.
+    DoubleQuestion,
     /// RES-363: `?.` — optional-chaining operator. Emitted by the lexer
     /// when `?` is immediately followed by `.`. The parser desugars it
     /// into `Node::OptionalChain`.
@@ -202,6 +205,8 @@ enum Token {
     ConcurrentEnsures,
     /// RES-388: actor-level `always: <expr>;` safety invariant.
     Always,
+    /// RES-361: `const NAME: T = expr;` — compile-time constant declaration.
+    Const,
     /// RES-388 follow-up: actor-level
     /// `eventually(after: <handler>): <expr>;` bounded liveness claim.
     Eventually,
@@ -336,6 +341,7 @@ impl Token {
             Token::Receive => "`receive`".to_string(),
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
             Token::Always => "`always`".to_string(),
+            Token::Const => "`const`".to_string(),
             Token::Eventually => "`eventually`".to_string(),
             Token::Try => "`try`".to_string(),
             Token::Catch => "`catch`".to_string(),
@@ -345,6 +351,7 @@ impl Token {
             Token::FatArrow => "`=>`".to_string(),
             Token::Arrow => "`->`".to_string(),
             Token::Question => "`?`".to_string(),
+            Token::DoubleQuestion => "`??`".to_string(),
             Token::QuestionDot => "`?.`".to_string(),
             Token::Plus => "`+`".to_string(),
             Token::Minus => "`-`".to_string(),
@@ -671,6 +678,12 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             '.' => Token::Dot,
+            // RES-375: `??` coalescing operator (must precede lone `?`).
+            '?' if self.peek_char() == '?' => {
+                self.read_char(); // consume second `?`
+                Token::DoubleQuestion
+            }
+            '?' => Token::Question,
             '?' => {
                 // RES-363: `?.` is the optional-chain operator. Peek one
                 // character ahead; if it is `.` emit QuestionDot and
@@ -754,6 +767,7 @@ impl Lexer {
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
+                        "const" => Token::Const,
                         "eventually" => Token::Eventually,
                         "try" => Token::Try,
                         "catch" => Token::Catch,
@@ -1063,6 +1077,11 @@ enum Pattern {
         fields: Vec<(String, Box<Pattern>)>,
         has_rest: bool,
     },
+    /// RES-375: `Some(x)` — matches a present Option and binds the
+    /// inner value to `x`. The inner pattern is an arbitrary sub-pattern.
+    Some(Box<Pattern>),
+    /// RES-375: `None` — matches an absent Option.
+    None,
 }
 
 /// RES-139: exponential-backoff policy for a `live` block. Sleep
@@ -1381,6 +1400,17 @@ enum Node {
     StaticLet {
         name: String,
         value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-361: `const NAME: T = expr;` — compile-time constant.
+    /// The expression is evaluated once before the program runs.
+    /// Constants are inlined at every use site; reassignment is an error.
+    Const {
+        name: String,
+        value: Box<Node>,
+        #[allow(dead_code)]
+        type_annot: Option<String>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -1947,6 +1977,7 @@ impl Parser {
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
+            Token::Const => Some(self.parse_const_statement()),
             Token::Return => Some(self.parse_return_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
@@ -3683,6 +3714,75 @@ impl Parser {
         }
     }
 
+    /// RES-361: `const NAME: T = expr;` — compile-time constant.
+    /// Parsed like a let statement but produces a Node::Const so the
+    /// const-eval pass can evaluate it before execution.
+    fn parse_const_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `const`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'const', found {}", tok));
+                return Node::Const {
+                    name: String::new(),
+                    value: Box::new(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    }),
+                    type_annot: None,
+                    span: stmt_span,
+                };
+            }
+        };
+
+        self.next_token(); // skip name
+
+        let type_annot = if self.current_token == Token::Colon {
+            self.next_token(); // skip `:`
+            self.parse_type_annotation("after ':'")
+        } else {
+            None
+        };
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after 'const {}', found {}",
+                name, tok
+            ));
+            return Node::Const {
+                name,
+                value: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
+                type_annot,
+                span: stmt_span,
+            };
+        }
+
+        self.next_token(); // skip `=`
+
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
+
+        if self.peek_token == Token::Semicolon {
+            self.next_token(); // skip to semicolon
+        }
+
+        Node::Const {
+            name,
+            value: Box::new(value),
+            type_annot,
+            span: stmt_span,
+        }
+    }
+
     fn parse_let_statement(&mut self) -> Node {
         // RES-079: capture span of the `let` keyword BEFORE we
         // advance. The parse method's end position would otherwise
@@ -4938,6 +5038,22 @@ impl Parser {
                     self.next_token();
                     self.parse_infix_expression(current_left)
                 }
+                // RES-375: `opt ?? default` — Option coalescing.
+                Token::DoubleQuestion => {
+                    let op_span = self.span_at_current();
+                    self.next_token(); // current_token = `??`
+                    self.next_token(); // current_token = start of rhs
+                    let rhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                        value: 0,
+                        span: op_span,
+                    });
+                    Some(Node::InfixExpression {
+                        left: Box::new(current_left),
+                        operator: "??".to_string(),
+                        right: Box::new(rhs),
+                        span: op_span,
+                    })
+                }
                 Token::LeftParen => {
                     self.next_token();
                     self.parse_call_expression(current_left)
@@ -5800,6 +5916,18 @@ impl Parser {
             }),
             Token::Identifier(name) => {
                 let name = name.clone();
+                // RES-375: `Some(inner_pattern)` — Option presence pattern.
+                if name == "Some" && self.peek_token == Token::LeftParen {
+                    self.next_token(); // current = `(`
+                    self.next_token(); // current = start of inner pattern
+                    let inner = self.parse_pattern_atom();
+                    self.next_token(); // current = `)`
+                    return Pattern::Some(Box::new(inner));
+                }
+                // RES-375: `None` — Option absence pattern.
+                if name == "None" {
+                    return Pattern::None;
+                }
                 if self.peek_token == Token::LeftBrace {
                     return self.parse_match_struct_pattern(name);
                 }
@@ -6209,6 +6337,12 @@ impl Parser {
 
     fn current_precedence(&self) -> u8 {
         match &self.current_token {
+            // RES-375: `??` has very low precedence — below `||` so
+            // `a || b ?? c` is `(a || b) ?? c`. Assigned below Or(1)
+            // at level 1 itself to satisfy the > 0 parse-loop invariant;
+            // we never call current_precedence on `??` as an infix
+            // operator (it's handled in its own branch).
+            Token::DoubleQuestion => 1,
             Token::Or => 1,
             Token::And => 2,
             Token::BitOr => 3,
@@ -6232,6 +6366,8 @@ impl Parser {
 
     fn peek_precedence(&self) -> u8 {
         match &self.peek_token {
+            // RES-375: `??` has very low precedence — see current_precedence.
+            Token::DoubleQuestion => 1,
             Token::Or => 1,
             Token::And => 2,
             Token::BitOr => 3,
@@ -6302,6 +6438,11 @@ enum Value {
         ok: bool,
         payload: Box<Value>,
     },
+    /// RES-375: first-class Option type.
+    ///
+    /// `Some(None)` is `Value::Option(None)` — i.e. the outer `Option`
+    /// is the Rust-level discriminant, matching `None` / `Some(inner)`.
+    Option(Option<Box<Value>>),
     /// RES-363: first-class Option type for optional chaining.
     ///
     /// `Option(None)` is the absent case — `?.` short-circuits to this.
@@ -6936,6 +7077,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
+    // RES-375: Option<T> constructors and free-function methods.
+    // `None` is registered as a Value directly in Interpreter::new, not
+    // here, because the builtins table only holds functions.
+    ("Some", builtin_some),
+    ("is_some", builtin_is_some),
+    ("is_none", builtin_is_none),
+    ("option_unwrap", builtin_option_unwrap),
+    ("option_unwrap_or", builtin_option_unwrap_or),
     // RES-363: Option type builtins.
     ("Some", builtin_some),
     ("None", builtin_none),
@@ -7596,6 +7745,60 @@ fn builtin_unwrap_err(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("unwrap_err: expected Result, got {}", other)),
         _ => Err(format!(
             "unwrap_err: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+// ─── RES-375: Option<T> builtins ───────────────────────────────────────────
+
+/// `Some(v)` — wrap a value as a present Option.
+fn builtin_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Option(Some(Box::new(v.clone())))),
+        _ => Err(format!("Some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `is_some(opt)` — true iff `opt` is `Some(_)`.
+fn builtin_is_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
+        [other] => Err(format!("is_some: expected Option, got {}", other)),
+        _ => Err(format!("is_some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `is_none(opt)` — true iff `opt` is `None`.
+fn builtin_is_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_none())),
+        [other] => Err(format!("is_none: expected Option, got {}", other)),
+        _ => Err(format!("is_none: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// `option_unwrap(opt)` — return the inner value or runtime error.
+fn builtin_option_unwrap(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v))] => Ok((**v).clone()),
+        [Value::Option(None)] => Err("unwrap called on None".to_string()),
+        [other] => Err(format!("option_unwrap: expected Option, got {}", other)),
+        _ => Err(format!(
+            "option_unwrap: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `option_unwrap_or(opt, default)` — return inner value or `default`.
+fn builtin_option_unwrap_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v)), _] => Ok((**v).clone()),
+        [Value::Option(None), default] => Ok(default.clone()),
+        [other, _] => Err(format!("option_unwrap_or: expected Option, got {}", other)),
+        _ => Err(format!(
+            "option_unwrap_or: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -8831,6 +9034,10 @@ struct Interpreter {
     /// Keyed by the static's identifier (caveat: two functions using the
     /// same static name currently share — good enough for MVP).
     statics: Rc<RefCell<HashMap<String, Value>>>,
+    /// RES-361: compile-time constants. Evaluated once before the program
+    /// runs; inlined at every identifier lookup. Shared (read-only) across
+    /// all sub-interpreters so that constants are visible inside functions.
+    consts: Rc<HashMap<String, Value>>,
     /// RES-068: function names whose `requires` clauses were 100%
     /// statically discharged across every observed call site. The
     /// runtime check for these is provably redundant — when binding a
@@ -8850,9 +9057,13 @@ impl Interpreter {
     fn new() -> Self {
         let mut env = Environment::new();
         register_builtins(&mut env);
+        // RES-375: register `None` as the absent-Option constant.
+        // `Some` is already in the builtins table as a function.
+        env.set("None".to_string(), Value::Option(None));
         Interpreter {
             env,
             statics: Rc::new(RefCell::new(HashMap::new())),
+            consts: Rc::new(HashMap::new()),
             proven_fns: Rc::new(HashSet::new()),
             overflow_mode: OverflowMode::Trap,
             overflow_mode_locked: false,
@@ -9020,6 +9231,10 @@ impl Interpreter {
                 Ok(Value::Void)
             }
             Node::Assignment { name, value, .. } => {
+                // RES-361: const names are immutable.
+                if self.consts.contains_key(name) {
+                    return Err(format!("Cannot assign to compile-time constant '{}'", name));
+                }
                 let val = self.eval(value)?;
                 if matches!(val, Value::Return(_)) {
                     return Ok(val);
@@ -9102,8 +9317,13 @@ impl Interpreter {
                 }
             }
             Node::ExpressionStatement { expr, .. } => self.eval(expr),
+            // RES-361: const declarations are handled in the pre-pass;
+            // at runtime they are a no-op.
+            Node::Const { .. } => Ok(Value::Void),
             Node::Identifier { name, .. } => {
-                if let Some(value) = self.env.get(name) {
+                if let Some(value) = self.consts.get(name) {
+                    Ok(value.clone())
+                } else if let Some(value) = self.env.get(name) {
                     Ok(value)
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
                     Ok(value)
@@ -9147,6 +9367,27 @@ impl Interpreter {
                 // is an ordinary function invocation.
                 if let Node::FieldAccess { target, field, .. } = function.as_ref() {
                     let target_val = self.eval(target)?;
+                    // RES-375: Option method dispatch — `.is_some()`,
+                    // `.is_none()`, `.unwrap()`, `.unwrap_or(default)`.
+                    if let Value::Option(ref inner) = target_val {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        return match field.as_str() {
+                            "is_some" => Ok(Value::Bool(inner.is_some())),
+                            "is_none" => Ok(Value::Bool(inner.is_none())),
+                            "unwrap" => match inner {
+                                Some(v) => Ok((**v).clone()),
+                                None => Err("unwrap called on None".to_string()),
+                            },
+                            "unwrap_or" => match (inner, extra_args.first()) {
+                                (Some(v), _) => Ok((**v).clone()),
+                                (None, Some(d)) => Ok(d.clone()),
+                                (None, None) => {
+                                    Err("unwrap_or: expected a default argument".to_string())
+                                }
+                            },
+                            other => Err(format!("Option has no method `{}`", other)),
+                        };
+                    }
                     // RES-353: StringBuilder method dispatch — intercept before
                     // the generic impl-block lookup so these builtins can write
                     // the mutated struct back to the caller's binding.
@@ -9256,7 +9497,15 @@ impl Interpreter {
                             payload,
                         })))
                     }
-                    other => Err(format!("? operator expects a Result, got {}", other)),
+                    // RES-375: `?` propagation for Option — `expr?` in a
+                    // function returning `Option<T>` returns `None` early
+                    // when `expr` is `None`; otherwise unwraps `Some(v)`.
+                    Value::Option(Some(inner_val)) => Ok(*inner_val),
+                    Value::Option(None) => Ok(Value::Return(Box::new(Value::Option(None)))),
+                    other => Err(format!(
+                        "? operator expects a Result or Option, got {}",
+                        other
+                    )),
                 }
             }
             // RES-363: `expr?.field` / `expr?.method(args)` — optional chaining.
@@ -9570,6 +9819,135 @@ impl Interpreter {
         }
     }
 
+    /// RES-361: evaluate all `const` declarations before program execution.
+    ///
+    /// Walks the top-level statements in source order. For each `Node::Const`
+    /// it evaluates the value expression using only previously-evaluated
+    /// constants (stored in a temporary `HashMap`). Cycle detection is done
+    /// with a `HashSet` of names currently being evaluated; if a constant
+    /// reference tries to look up a name that is still on the stack, we
+    /// emit a clear error.
+    ///
+    /// The resulting `HashMap<String, Value>` is installed into
+    /// `self.consts` (behind an `Rc`) so every sub-interpreter created
+    /// for function calls sees the same set of constants.
+    fn const_eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<()> {
+        let mut resolved: HashMap<String, Value> = HashMap::new();
+
+        for stmt in statements {
+            let Node::Const { name, value, .. } = &stmt.node else {
+                continue;
+            };
+            // Push the current const's name onto the evaluation stack
+            // so that any reference to itself (direct self-reference or
+            // mutual recursion that circles back here) is detected.
+            let mut evaluating: Vec<String> = vec![name.clone()];
+            let v = Self::eval_const_expr(value, &resolved, &mut evaluating)
+                .map_err(|e| decorate_runtime_error(e, &stmt.span))?;
+            resolved.insert(name.clone(), v);
+        }
+
+        self.consts = Rc::new(resolved);
+        Ok(())
+    }
+
+    /// Evaluate a constant expression recursively.
+    ///
+    /// Allowed sub-expressions:
+    /// - Integer and float literals
+    /// - Boolean literals
+    /// - String literals
+    /// - Prefix negation/not over a constant sub-expression
+    /// - Infix arithmetic / comparison over constant sub-expressions
+    /// - Identifiers that refer to an already-resolved constant
+    ///
+    /// Any other node (function call, array literal, etc.) is rejected
+    /// with a diagnostic describing what is allowed.
+    fn eval_const_expr(
+        node: &Node,
+        resolved: &HashMap<String, Value>,
+        evaluating: &mut Vec<String>,
+    ) -> RResult<Value> {
+        match node {
+            Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
+            Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
+            Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
+            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            Node::Identifier { name, .. } => {
+                if evaluating.contains(name) {
+                    return Err(format!("error: circular constant definition: '{}'", name));
+                }
+                resolved.get(name).cloned().ok_or_else(|| {
+                    format!(
+                        "error: '{}' is not a compile-time constant (constants may only \
+                         reference other constants defined before them)",
+                        name
+                    )
+                })
+            }
+            Node::PrefixExpression {
+                operator, right, ..
+            } => {
+                let rv = Self::eval_const_expr(right, resolved, evaluating)?;
+                match (operator.as_str(), rv) {
+                    ("-", Value::Int(i)) => Ok(Value::Int(-i)),
+                    ("-", Value::Float(f)) => Ok(Value::Float(-f)),
+                    ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
+                    (op, v) => Err(format!(
+                        "error: operator '{}' cannot be applied to {} in a constant expression",
+                        op, v
+                    )),
+                }
+            }
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } => {
+                let lv = Self::eval_const_expr(left, resolved, evaluating)?;
+                let rv = Self::eval_const_expr(right, resolved, evaluating)?;
+                match (operator.as_str(), lv, rv) {
+                    ("+", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+                    ("-", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+                    ("*", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+                    ("/", Value::Int(a), Value::Int(b)) => {
+                        if b == 0 {
+                            Err("error: division by zero in constant expression".to_string())
+                        } else {
+                            Ok(Value::Int(a / b))
+                        }
+                    }
+                    ("%", Value::Int(a), Value::Int(b)) => {
+                        if b == 0 {
+                            Err("error: modulo by zero in constant expression".to_string())
+                        } else {
+                            Ok(Value::Int(a % b))
+                        }
+                    }
+                    ("+", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+                    ("-", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+                    ("*", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+                    ("/", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+                    (op, lv, rv) => Err(format!(
+                        "error: operator '{}' on ({}, {}) is not supported in a constant expression",
+                        op, lv, rv
+                    )),
+                }
+            }
+            other => Err(format!(
+                "error: '{}' is not a valid constant expression; \
+                 only literals, arithmetic, and constant references are allowed",
+                match other {
+                    Node::CallExpression { .. } => "function call".to_string(),
+                    Node::ArrayLiteral { .. } => "array literal".to_string(),
+                    Node::Block { .. } => "block".to_string(),
+                    _ => format!("{:?}", std::mem::discriminant(other)),
+                }
+            )),
+        }
+    }
+
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
         // RES-349: apply any top-level `@overflow(...)` attribute before
         // hoisting function definitions or running any other code, so
@@ -9584,6 +9962,9 @@ impl Interpreter {
                 }
             }
         }
+        // RES-361: evaluate all `const` declarations first, before any
+        // function hoisting or statement execution.
+        self.const_eval_program(statements)?;
 
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
@@ -10131,6 +10512,22 @@ impl Interpreter {
         left: Value,
         right: Value,
     ) -> RResult<Value> {
+        // RES-375: `??` — Option coalescing. Handled before the type-dispatch
+        // below because the right-hand side must not be eagerly evaluated when
+        // the left-hand side is `Some` (short-circuit). However, since both
+        // sides were evaluated before this function is called, the semantics
+        // are value-based here. If the left is Some(v) return v; else right.
+        if operator == "??" {
+            return match left {
+                Value::Option(Some(inner)) => Ok(*inner),
+                Value::Option(None) => Ok(right),
+                other => Err(format!(
+                    "`??` operator requires an Option on the left, got {}",
+                    other
+                )),
+            };
+        }
+
         // String + <primitive> coercion (RES-008): when `+` has a string on
         // either side and the other side is a primitive (int / float / bool),
         // coerce the primitive to its textual form and concatenate. This only
@@ -10353,6 +10750,7 @@ impl Interpreter {
                 let mut interpreter = Interpreter {
                     env: extended_env,
                     statics: self.statics.clone(),
+                    consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
                     // RES-349: propagate overflow mode into function call frames.
                     overflow_mode: self.overflow_mode,
@@ -10440,6 +10838,7 @@ impl Interpreter {
                 let mut contract_interp = Interpreter {
                     env: contract_env.clone(),
                     statics: self.statics.clone(),
+                    consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
                 };
                 for pre in &requires {
@@ -10460,6 +10859,7 @@ impl Interpreter {
                     let mut post_interp = Interpreter {
                         env: contract_env,
                         statics: self.statics.clone(),
+                        consts: self.consts.clone(),
                         proven_fns: self.proven_fns.clone(),
                     };
                     post_interp.env.set("result".to_string(), result.clone());
@@ -10556,6 +10956,17 @@ impl Interpreter {
                 }
                 Ok(Some(bindings))
             }
+            // RES-375: `Some(inner_pattern)` — matches `Value::Option(Some(_))`
+            // and recurses into the inner value.
+            Pattern::Some(inner_pat) => match value {
+                Value::Option(Some(inner_val)) => self.match_pattern(inner_pat, inner_val),
+                _ => Ok(None),
+            },
+            // RES-375: `None` — matches only `Value::Option(None)`.
+            Pattern::None => match value {
+                Value::Option(None) => Ok(Some(vec![])),
+                _ => Ok(None),
+            },
         }
     }
 
@@ -11586,6 +11997,7 @@ fn execute_file(
     warn_unverified: bool,
     live_log: Option<&Path>,
     overflow_mode_override: Option<OverflowMode>,
+    #[cfg(feature = "z3")] z3_theory: verifier_z3::Z3Theory,
     no_cache: bool,
 ) -> RResult<()> {
     let contents =
@@ -11672,7 +12084,7 @@ fn execute_file(
     let mut proven_fns: HashSet<String> = HashSet::new();
     if want_typecheck {
         println!("Running type checker...");
-        let mut tc = typechecker::TypeChecker::new()
+        let tc_base = typechecker::TypeChecker::new()
             // RES-137: apply the driver's --verifier-timeout-ms
             // value. A fresh `TypeChecker::new()` defaults to 5000;
             // passing the CLI value through keeps the flag
@@ -11682,6 +12094,11 @@ fn execute_file(
             // default (on) surfaces `warning[partial-proof]`
             // diagnostics whenever Z3 returns Unknown.
             .with_warn_unverified(warn_unverified);
+        // RES-354: apply the --z3-theory flag when z3 feature is on.
+        #[cfg(feature = "z3")]
+        let mut tc = tc_base.with_z3_theory(z3_theory);
+        #[cfg(not(feature = "z3"))]
+        let mut tc = tc_base;
         // RES-080: pass the source filename so per-statement errors
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
@@ -12635,6 +13052,9 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut quiet = false;
     let mut verifier_timeout_ms: u32 = 5000;
+    // RES-354: theory selection (z3-gated; default Auto).
+    #[cfg(feature = "z3")]
+    let mut z3_theory: verifier_z3::Z3Theory = verifier_z3::Z3Theory::Auto;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
@@ -12661,6 +13081,46 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                     return Some(2);
                 }
             };
+        } else if a == "--z3-theory" {
+            // RES-354: SMT theory override for `check` subcommand.
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --z3-theory requires an argument: bv, lia, or auto");
+                return Some(2);
+            }
+            #[cfg(feature = "z3")]
+            {
+                z3_theory = match args[i].as_str() {
+                    "bv" => verifier_z3::Z3Theory::Bv,
+                    "lia" => verifier_z3::Z3Theory::Lia,
+                    "auto" => verifier_z3::Z3Theory::Auto,
+                    other => {
+                        eprintln!(
+                            "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                            other
+                        );
+                        return Some(2);
+                    }
+                };
+            }
+        } else if let Some(val) = a.strip_prefix("--z3-theory=") {
+            #[cfg(feature = "z3")]
+            {
+                z3_theory = match val {
+                    "bv" => verifier_z3::Z3Theory::Bv,
+                    "lia" => verifier_z3::Z3Theory::Lia,
+                    "auto" => verifier_z3::Z3Theory::Auto,
+                    other => {
+                        eprintln!(
+                            "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                            other
+                        );
+                        return Some(2);
+                    }
+                };
+            }
+            #[cfg(not(feature = "z3"))]
+            let _ = val;
         } else if file.is_none() && !a.starts_with('-') {
             file = Some(PathBuf::from(a));
         } else {
@@ -12711,9 +13171,14 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 
     // Type-check (Z3 verifier runs automatically when built with --features z3).
-    let mut tc = typechecker::TypeChecker::new()
+    let tc_base = typechecker::TypeChecker::new()
         .with_verifier_timeout_ms(verifier_timeout_ms)
         .with_warn_unverified(!quiet);
+    // RES-354: apply the --z3-theory flag when z3 feature is on.
+    #[cfg(feature = "z3")]
+    let mut tc = tc_base.with_z3_theory(z3_theory);
+    #[cfg(not(feature = "z3"))]
+    let mut tc = tc_base;
     match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
         Ok(_) => {
             // RES-390: distributed-invariant verification runs
@@ -12982,6 +13447,11 @@ fn main() {
     // never silent; `--no-warn-unverified` suppresses them for CI
     // pipelines that deliberately accept best-effort verification.
     let mut warn_unverified: bool = true;
+    // RES-354: SMT theory selection. Default Auto (BV32 if bitwise ops
+    // present, LIA otherwise). `--z3-theory=bv` forces BV32;
+    // `--z3-theory=lia` forces LIA (bails to None if bitwise ops found).
+    #[cfg(feature = "z3")]
+    let mut z3_theory: verifier_z3::Z3Theory = verifier_z3::Z3Theory::Auto;
     // RES-150: `--seed <u64>` pins the RNG seed for determinism.
     // `None` → fall back to clock-derived seed at startup.
     let mut seed_override: Option<u64> = None;
@@ -13104,6 +13574,48 @@ fn main() {
                 // Intended for CI pipelines that already gate on
                 // verification signals and don't want the noise.
                 warn_unverified = false;
+            } else if arg == "--z3-theory" {
+                // RES-354: override SMT theory selection.
+                // `--z3-theory bv` forces BV32; `--z3-theory lia`
+                // forces LIA (fails on bitwise ops); default: auto.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --z3-theory requires an argument: bv, lia, or auto");
+                    std::process::exit(2);
+                }
+                #[cfg(feature = "z3")]
+                {
+                    z3_theory = match args[i].as_str() {
+                        "bv" => verifier_z3::Z3Theory::Bv,
+                        "lia" => verifier_z3::Z3Theory::Lia,
+                        "auto" => verifier_z3::Z3Theory::Auto,
+                        other => {
+                            eprintln!(
+                                "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                                other
+                            );
+                            std::process::exit(2);
+                        }
+                    };
+                }
+            } else if let Some(val) = arg.strip_prefix("--z3-theory=") {
+                #[cfg(feature = "z3")]
+                {
+                    z3_theory = match val {
+                        "bv" => verifier_z3::Z3Theory::Bv,
+                        "lia" => verifier_z3::Z3Theory::Lia,
+                        "auto" => verifier_z3::Z3Theory::Auto,
+                        other => {
+                            eprintln!(
+                                "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                                other
+                            );
+                            std::process::exit(2);
+                        }
+                    };
+                }
+                #[cfg(not(feature = "z3"))]
+                let _ = val; // silence unused warning on non-z3 builds
             } else if arg == "--seed" {
                 // RES-150: `--seed <u64>` pins the SplitMix64 PRNG.
                 // Reproducible runs: same seed → same sequence.
@@ -13318,6 +13830,8 @@ fn main() {
                 warn_unverified,
                 emit_live_log.as_deref(),
                 overflow_mode_override,
+                #[cfg(feature = "z3")]
+                z3_theory,
                 no_cache,
             );
             // RES-174: print cache stats on exit whenever the
@@ -21654,6 +22168,19 @@ mod tests {
             unwrap_int(result.unwrap()),
             i64::MAX,
             "@overflow(\"saturate\") should give i64::MAX for i64::MAX + 1"
+    // --- RES-361: compile-time constants ---
+
+    #[test]
+    fn const_simple_integer_evaluates() {
+        let src = "const X: Int = 42;\nprintln(X);\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("should execute");
+        assert!(
+            matches!(interp.consts.get("X"), Some(Value::Int(42))),
+            "const X should be 42, got: {:?}",
+            interp.consts.get("X")
         );
     }
 
@@ -21669,6 +22196,20 @@ mod tests {
         assert!(
             result.is_err(),
             "@overflow(\"trap\") should produce an error for i64::MAX + 1"
+    fn const_arithmetic_over_other_consts() {
+        let src = "\
+            const A: Int = 16;\n\
+            const B: Int = 4;\n\
+            const C: Int = A * B;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("should execute");
+        assert!(
+            matches!(interp.consts.get("C"), Some(Value::Int(64))),
+            "const C should be 64, got: {:?}",
+            interp.consts.get("C")
         );
     }
 
@@ -21684,6 +22225,22 @@ mod tests {
         assert!(
             result.is_err(),
             "CLI trap mode should override @overflow(\"wrap\")"
+    fn const_forward_reference_before_definition_is_error() {
+        // B is not yet defined when A tries to reference it.
+        let src = "\
+            const A: Int = B;\n\
+            const B: Int = 5;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("forward-ref const must fail");
+        assert!(
+            err.contains("'B'"),
+            "expected message about B, got: {}",
+            err
         );
     }
 
@@ -21698,6 +22255,55 @@ mod tests {
         assert_eq!(OverflowMode::parse_mode(""), None);
         assert_eq!(OverflowMode::parse_mode("TRAP"), None);
         assert_eq!(OverflowMode::parse_mode("unknown"), None);
+    fn const_self_reference_is_circular_error() {
+        // A refers to itself — circular definition.
+        let src = "const A: Int = A;\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).expect_err("self-ref const must fail");
+        assert!(
+            err.contains("'A'"),
+            "expected message about A, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn const_assignment_is_error() {
+        // Trying to rebind a const name at runtime must be an error.
+        let src = "\
+            const MAX: Int = 10;\n\
+            MAX = 20;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("reassigning const must fail");
+        assert!(
+            err.contains("constant"),
+            "expected constant-reassignment message, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn const_visible_inside_function() {
+        // Constants must be accessible inside function bodies.
+        let src = "\
+            const LIMIT: Int = 100;\n\
+            fn get_limit(int _d) {\n\
+                return LIMIT;\n\
+            }\n\
+            get_limit(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program).expect("should execute");
+        assert!(matches!(result, Value::Int(100)));
     }
 }
 

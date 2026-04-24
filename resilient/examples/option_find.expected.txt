@@ -1,0 +1,12 @@
+found: 42
+not found
+coalesce some: 100
+coalesce none: 0
+is_some: true
+is_none: false
+unwrap: 55
+unwrap_or some: 55
+unwrap_or none: 99
+double_first: 6
+double_first empty: none
+Program executed successfully

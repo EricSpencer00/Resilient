@@ -1,0 +1,24 @@
+// RES-354: shift and XOR — BV32 theory smoke test.
+//
+// Uses shift (`>>`) and XOR (`^`) operators to compute a rotated nibble.
+// With `--features z3`, the verifier's BV32 path handles the bitwise
+// operations. The runtime output shows that shifting right by 4 bits
+// gives a predictable result.
+//
+// This example uses an `.interactive` sidecar so the golden harness
+// skips it; the z3-gated smoke test in tests/examples_smoke.rs
+// exercises the full pipeline.
+fn shift_and_xor(int x) -> int {
+    let shifted = x >> 4;
+    let result = shifted ^ 0;
+    return result;
+}
+
+fn main() {
+    let r = shift_and_xor(256);
+    println(r);
+    let s = shift_and_xor(16);
+    println(s);
+}
+
+main();

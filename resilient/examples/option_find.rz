@@ -1,0 +1,76 @@
+// option_find.rz — RES-375: Option<T> golden example.
+//
+// Demonstrates:
+//   - `Some(v)` constructor and `None` literal
+//   - `match` with `Some(x)` and `None` patterns
+//   - `??` coalescing operator
+//   - `.is_some()`, `.is_none()`, `.unwrap()`, `.unwrap_or(d)` methods
+//   - `?` propagation in a function returning Option
+
+// Find the first element of an array satisfying a predicate.
+// Returns Some(element) or None.
+fn find_in(int target, int a, int b, int c) -> int {
+    if a == target { return Some(a); }
+    if b == target { return Some(b); }
+    if c == target { return Some(c); }
+    return None;
+}
+
+// Safe head: returns Some(first element) or None.
+fn safe_first(int a, int has_elements) -> int {
+    if has_elements == 0 { return None; }
+    return Some(a);
+}
+
+// ? propagation: unwraps Some or early-returns None.
+fn double_first(int a, int has_elements) -> int {
+    let first = safe_first(a, has_elements)?;
+    return Some(first * 2);
+}
+
+fn main() {
+    // Basic Some/None construction and match.
+    let found = find_in(42, 10, 42, 99);
+    match found {
+        Some(v) => println("found: " + v),
+        None    => println("not found"),
+    }
+
+    let missing = find_in(7, 10, 42, 99);
+    match missing {
+        Some(v) => println("found: " + v),
+        None    => println("not found"),
+    }
+
+    // ?? coalescing operator.
+    let present = Some(100);
+    let absent = None;
+    let r1 = present ?? 0;
+    let r2 = absent ?? 0;
+    println("coalesce some: " + r1);
+    println("coalesce none: " + r2);
+
+    // Method syntax.
+    let opt = Some(55);
+    println("is_some: " + opt.is_some());
+    println("is_none: " + opt.is_none());
+    println("unwrap: " + opt.unwrap());
+    println("unwrap_or some: " + opt.unwrap_or(99));
+    let none_val = None;
+    println("unwrap_or none: " + none_val.unwrap_or(99));
+
+    // ? propagation.
+    let d1 = double_first(3, 1);
+    match d1 {
+        Some(v) => println("double_first: " + v),
+        None    => println("double_first: none"),
+    }
+
+    let d2 = double_first(3, 0);
+    match d2 {
+        Some(v) => println("double_first empty: " + v),
+        None    => println("double_first empty: none"),
+    }
+}
+
+main();

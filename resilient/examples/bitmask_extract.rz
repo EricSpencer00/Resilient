@@ -1,0 +1,23 @@
+// RES-354: bitmask extraction — BV32 theory smoke test.
+//
+// Extracts the low nibble of an integer by masking with 15 (0xF).
+// The function uses the `&` bitwise-AND operator. With `--features z3`,
+// the verifier's BV32 path handles the bitwise operation. The runtime
+// output is the low nibble of the input.
+//
+// This example uses an `.interactive` sidecar so the golden harness
+// skips it; the z3-gated smoke test in tests/examples_smoke.rs
+// exercises the full pipeline.
+fn extract_nibble(int x) -> int {
+    let nibble = x & 15;
+    return nibble;
+}
+
+fn main() {
+    let n = extract_nibble(255);
+    println(n);
+    let m = extract_nibble(0);
+    println(m);
+}
+
+main();

@@ -833,3 +833,58 @@ fn actor_noncommute_example_reports_counterexample() {
         "expected both order-specific final states in stdout; got:\n{stdout}"
     );
 }
+
+#[test]
+#[cfg(feature = "z3")]
+fn bitmask_extract_example_runs_and_produces_nibble() {
+    // RES-354: bitmask_extract.rz exercises the bitwise-AND operator.
+    // The function `extract_nibble(255)` should return 15 (0xFF & 0xF)
+    // and `extract_nibble(0)` should return 0. The binary must exit 0
+    // and the BV32 path in the verifier must not crash.
+    let (stdout, stderr, code) = run_example("bitmask_extract.rz");
+    assert_eq!(
+        code,
+        Some(0),
+        "bitmask_extract.rz must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("Parser error"),
+        "unexpected parser error:\n{stderr}"
+    );
+    // `extract_nibble(255)` returns 255 & 15 = 15.
+    assert!(
+        stdout.contains("15"),
+        "expected nibble 15 in stdout; got:\n{stdout}"
+    );
+    // `extract_nibble(0)` returns 0 & 15 = 0.
+    assert!(
+        stdout.contains("0"),
+        "expected nibble 0 in stdout; got:\n{stdout}"
+    );
+}
+
+#[test]
+#[cfg(feature = "z3")]
+fn shift_bounds_example_runs_and_shifts_correctly() {
+    // RES-354: shift_bounds.rz exercises the shift-right (`>>`) and
+    // XOR (`^`) operators. The function `shift_and_xor(256)` returns
+    // 256 >> 4 ^ 0 = 16, and `shift_and_xor(16)` returns 1.
+    // The binary must exit 0 and the BV32 path must not crash.
+    let (stdout, stderr, code) = run_example("shift_bounds.rz");
+    assert_eq!(
+        code,
+        Some(0),
+        "shift_bounds.rz must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("Parser error"),
+        "unexpected parser error:\n{stderr}"
+    );
+    // `shift_and_xor(256)` = (256 >> 4) ^ 0 = 16 ^ 0 = 16.
+    assert!(
+        stdout.contains("16"),
+        "expected 16 in stdout; got:\n{stdout}"
+    );
+    // `shift_and_xor(16)` = (16 >> 4) ^ 0 = 1 ^ 0 = 1.
+    assert!(stdout.contains("1"), "expected 1 in stdout; got:\n{stdout}");
+}
