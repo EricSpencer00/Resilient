@@ -1,0 +1,24 @@
+// RES-369: exhaustiveness checking for struct patterns in `match`.
+// This example is exhaustive: a specific arm plus `Point { .. }` covers
+// every possible Point value.
+
+struct Point {
+    int x,
+    int y,
+}
+
+fn classify(Point p) -> string {
+    return match p {
+        Point { x: 0, y: 0 } => "origin",
+        Point { .. }          => "other",
+    };
+}
+
+fn main() {
+    let origin = new Point { x: 0, y: 0 };
+    let other  = new Point { x: 3, y: 4 };
+    println(classify(origin));
+    println(classify(other));
+}
+
+main();
