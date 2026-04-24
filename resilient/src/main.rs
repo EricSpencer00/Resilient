@@ -35,6 +35,11 @@ mod cluster_verifier;
 // parser / typechecker can consume its types; the Z3 path is a no-op
 // when the `z3` feature is off.
 mod verifier_actors;
+// RES-388 follow-up: bounded-liveness verifier for actor-level
+// `eventually(after: <handler>): <expr>;` claims. Compiled
+// unconditionally so the parser / typechecker can consume its types;
+// the Z3 ranking search is a no-op without the `z3` feature.
+mod verifier_liveness;
 mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
@@ -85,6 +90,15 @@ mod ffi_trampolines;
 // used in type-annotation strings, plus the single-use-enforcement
 // pass invoked from the typechecker.
 mod linear;
+// RES-351: array bounds — static Z3 proof of `0 <= i < len(arr)`
+// at every index site, with an optional strict `--deny-unproven-bounds`
+// mode for safety-critical embedded builds.
+mod bounds_check;
+
+// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
+// failure handlers. Holds parser + typechecker logic for the feature;
+// the main module only touches the extension-point blocks.
+mod try_catch;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -154,6 +168,10 @@ enum Token {
     /// outside of types the parser surfaces it as an ordinary
     /// unexpected-token error.
     Mut,
+    // <EXTENSION_TOKENS>
+    // Add new keyword tokens here — one variant per line with RES-NNN doc comment.
+    // This block is append-only; merge conflicts in this section are safe to resolve
+    // by keeping ALL variants from both sides.
     /// RES-386: `actor Name { state: T = expr; concurrent_ensures: ...;
     /// receive name() ensures expr; { body } }` — actor declaration.
     /// The minimum slice only uses the `actor` / `receive` /
@@ -168,6 +186,16 @@ enum Token {
     ConcurrentEnsures,
     /// RES-388: actor-level `always: <expr>;` safety invariant.
     Always,
+    /// RES-388 follow-up: actor-level
+    /// `eventually(after: <handler>): <expr>;` bounded liveness claim.
+    Eventually,
+    /// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`
+    /// structured failure handler — statement-level keyword.
+    Try,
+    /// RES-224 (RES-387 follow-up): `catch VariantName { ... }` arm
+    /// attached to a `try` block.
+    Catch,
+    // </EXTENSION_TOKENS>
 
     // Literals
     Identifier(String),
@@ -290,6 +318,9 @@ impl Token {
             Token::Receive => "`receive`".to_string(),
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
             Token::Always => "`always`".to_string(),
+            Token::Eventually => "`eventually`".to_string(),
+            Token::Try => "`try`".to_string(),
+            Token::Catch => "`catch`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -679,10 +710,17 @@ impl Lexer {
                         "linear" => Token::Linear,
                         "region" => Token::Region,
                         "mut" => Token::Mut,
+                        // <EXTENSION_KEYWORDS>
+                        // Add new keyword → Token mappings here (append-only).
+                        // Merge conflicts: keep ALL arms from both sides.
                         "actor" => Token::Actor,
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
+                        "eventually" => Token::Eventually,
+                        "try" => Token::Try,
+                        "catch" => Token::Catch,
+                        // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -1211,10 +1249,12 @@ enum Node {
         /// variants on the caller's signature (propagation) or
         /// — in a future ticket — handle them structurally.
         fails: Vec<String>,
-        /// RES-387: `recovers_to: EXPR;` postcondition. Parsed
-        /// and stored; Z3 verification that the invariant
-        /// actually holds after recovery is a follow-up ticket.
-        #[allow(dead_code)] // consumed by RES-387 follow-up (Z3 recovers_to proof)
+        /// RES-387: `recovers_to: EXPR;` postcondition.
+        /// RES-222: consumed by the Z3 discharge path in
+        /// `typechecker::check_node` — fn declarations with a
+        /// non-empty `fails` set must prove this invariant
+        /// holds under the declared `requires`, otherwise the
+        /// compiler rejects the program.
         recovers_to: Option<Box<Node>>,
     },
     LiveBlock {
@@ -1621,6 +1661,11 @@ enum Node {
         state_fields: Vec<(String, String, Node)>,
         /// Boolean `always:` safety invariants.
         always_clauses: Vec<Node>,
+        /// RES-388 follow-up: bounded-liveness claims of the form
+        /// `eventually(after: <handler>): <expr>;`. Each entry carries
+        /// the target handler name whose firing is supposed to make the
+        /// post-condition hold within a bounded schedule.
+        eventually_clauses: Vec<EventuallyClause>,
         /// Receive handlers with full pre/post contracts.
         receive_handlers: Vec<ReceiveHandler>,
         /// Simpler receive handlers (used by RES-386 `Actor` path).
@@ -1638,6 +1683,23 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-224 (RES-387 follow-up): structured failure handler.
+    ///
+    /// ```text
+    /// try { callee(x); } catch Timeout { recover(); }
+    /// ```
+    ///
+    /// Each `handlers` entry pairs a failure-variant name with the
+    /// handler block's statement list. The typechecker walks `body`
+    /// with the caught variants added to the in-scope `fails` set,
+    /// so a call that declares exactly those variants type-checks
+    /// even when the enclosing fn has an empty `fails` list.
+    TryCatch {
+        #[allow(dead_code)]
+        span: span::Span,
+        body: Vec<Node>,
+        handlers: Vec<(String, Vec<Node>)>,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -1648,6 +1710,19 @@ pub(crate) struct ActorHandler {
     pub(crate) ensures: Vec<Node>,
     pub(crate) body: Box<Node>,
     #[allow(dead_code)]
+    pub(crate) span: span::Span,
+}
+
+/// RES-388 follow-up: one `eventually(after: <handler>): <expr>;`
+/// clause parsed off an `ActorDecl`. The verifier searches for an
+/// integer ranking function that strictly decreases on the target
+/// handler and is non-increasing on every other handler, with the
+/// measure reaching zero iff the post-condition holds.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct EventuallyClause {
+    pub(crate) target_handler: String,
+    pub(crate) post: Node,
     pub(crate) span: span::Span,
 }
 
@@ -1795,6 +1870,7 @@ impl Parser {
             Token::Type => Some(self.parse_type_alias()),
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
+            Token::Try => Some(crate::try_catch::parse(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -2386,6 +2462,7 @@ impl Parser {
 
         let mut state_fields: Vec<(String, String, Node)> = Vec::new();
         let mut always_clauses: Vec<Node> = Vec::new();
+        let mut eventually_clauses: Vec<EventuallyClause> = Vec::new();
         let mut receive_handlers: Vec<ReceiveHandler> = Vec::new();
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
@@ -2478,6 +2555,98 @@ impl Parser {
                     always_clauses.push(expr);
                 }
 
+                Token::Eventually => {
+                    // `eventually(after: <HandlerName>): <expr>;`
+                    let ev_span = self.span_at_current();
+                    self.next_token(); // skip `eventually`
+                    if self.current_token != Token::LeftParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `(after: <handler>)` after `eventually` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `(`
+                    // `after` is a contextual keyword here — accept it
+                    // as an identifier so we don't hijack the name
+                    // globally.
+                    match &self.current_token {
+                        Token::Identifier(kw) if kw == "after" => {}
+                        other => {
+                            self.record_error(format!(
+                                "Expected `after:` inside `eventually(...)` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    }
+                    self.next_token(); // skip `after`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `after` in `eventually(...)` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let target = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            self.record_error(format!(
+                                "Expected handler name inside `eventually(after: ...)` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    };
+                    self.next_token(); // skip handler name
+                    if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `)` to close `eventually(after: {})` in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `)`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `eventually(after: {})` in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let post = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past post
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `eventually(after: {})` post-condition in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                    }
+                    eventually_clauses.push(EventuallyClause {
+                        target_handler: target,
+                        post,
+                        span: ev_span,
+                    });
+                }
+
                 Token::Receive => {
                     let recv_span = self.span_at_current();
                     self.next_token(); // skip `receive`
@@ -2539,7 +2708,7 @@ impl Parser {
                 other => {
                     let tok = other.clone();
                     self.record_error(format!(
-                        "Expected `state`, `always`, `receive`, or `}}` in actor `{}`, found {}",
+                        "Expected `state`, `always`, `eventually`, `receive`, or `}}` in actor `{}`, found {}",
                         name, tok
                     ));
                     // Don't infinite-loop on unexpected content.
@@ -2569,6 +2738,7 @@ impl Parser {
             name,
             state_fields,
             always_clauses,
+            eventually_clauses,
             receive_handlers,
             handlers,
             span: actor_span,
@@ -6495,6 +6665,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-130: explicit int ↔ float conversions.
     ("to_float", builtin_to_float),
     ("to_int", builtin_to_int),
+    // RES-366: pinned-width integer casts. Wrapping truncation.
+    ("as_int8", builtin_as_int8),
+    ("as_int16", builtin_as_int16),
+    ("as_int32", builtin_as_int32),
+    ("as_int64", builtin_as_int64),
+    ("as_uint8", builtin_as_uint8),
+    ("as_uint16", builtin_as_uint16),
+    ("as_uint32", builtin_as_uint32),
+    ("as_uint64", builtin_as_uint64),
     // RES-138: read the current retry count inside a live block.
     ("live_retries", builtin_live_retries),
     // RES-141: process-wide live-block telemetry.
@@ -7534,6 +7713,82 @@ fn builtin_to_int(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("to_int: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-366: pinned integer cast builtins. All of them accept any
+/// `Value::Int` (or another int), truncate/wrap to the target width,
+/// and return a `Value::Int` carrying the clamped bit pattern
+/// sign-extended to i64. Overflow wraps — no panic, no error — which
+/// matches the acceptance criteria ("overflow wraps").
+///
+/// Signed widths: two's-complement truncation via Rust `as` casts.
+/// Unsigned widths: zero-extension after masking.
+fn builtin_as_int8(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i8 as i64)),
+        [other] => Err(format!("as_int8: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int8: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int16(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i16 as i64)),
+        [other] => Err(format!("as_int16: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int16: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int32(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i as i32 as i64)),
+        [other] => Err(format!("as_int32: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int32: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_int64(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(*i)),
+        [other] => Err(format!("as_int64: expected Int, got {:?}", other)),
+        _ => Err(format!("as_int64: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_uint8(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u8) as i64)),
+        [other] => Err(format!("as_uint8: expected Int, got {:?}", other)),
+        _ => Err(format!("as_uint8: expected 1 argument, got {}", args.len())),
+    }
+}
+fn builtin_as_uint16(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u16) as i64)),
+        [other] => Err(format!("as_uint16: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint16: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+fn builtin_as_uint32(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int((*i as u32) as i64)),
+        [other] => Err(format!("as_uint32: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint32: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+fn builtin_as_uint64(args: &[Value]) -> RResult<Value> {
+    match args {
+        // u64 doesn't fit in i64 for values ≥ 2^63; we store the
+        // bit pattern as a signed i64 (wrapping reinterpretation).
+        [Value::Int(i)] => Ok(Value::Int(*i as u64 as i64)),
+        [other] => Err(format!("as_uint64: expected Int, got {:?}", other)),
+        _ => Err(format!(
+            "as_uint64: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -8603,6 +8858,19 @@ impl Interpreter {
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
             Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {
+                Ok(Value::Void)
+            }
+            // RES-224 (RES-387 follow-up): runtime evaluation of
+            // `try { ... } catch V { ... }`. The MVP fault model does
+            // not surface a runtime Failure value yet — `fails` is
+            // statically verified and callees that declare a variant
+            // still return normally — so the handler bodies are
+            // unreachable at execution time. We still walk the body so
+            // any side-effectful statements inside it run.
+            Node::TryCatch { body, .. } => {
+                for stmt in body {
+                    self.eval(stmt)?;
+                }
                 Ok(Value::Void)
             }
             // RES-158: `impl <Struct> { ... }` evaluates each method
@@ -11822,6 +12090,7 @@ COMMON FLAGS:\n\
         --explain-effects        Print the inferred effect (@pure / @io)\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
+        --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
@@ -11974,6 +12243,13 @@ fn main() {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--deny-unproven-bounds" {
+                // RES-351: strict mode — unproven array-bounds
+                // accesses become compile errors instead of relying
+                // on the VM's runtime check. Implies --typecheck so
+                // the pass actually runs before the program executes.
+                bounds_check::set_deny_unproven_bounds(true);
+                type_check = true;
             } else if arg == "--explain-effects" {
                 // RES-347: dump one line per user fn with its
                 // inferred effect. Implies --typecheck.
@@ -14342,6 +14618,7 @@ mod tests {
 
     #[test]
     fn random_int_stays_in_half_open_range() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(7);
         for _ in 0..200 {
             let v = builtin_random_int(&[Value::Int(10), Value::Int(20)]).unwrap();
@@ -14376,6 +14653,7 @@ mod tests {
 
     #[test]
     fn random_float_in_unit_interval() {
+        let _g = RNG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rng(123);
         for _ in 0..200 {
             let v = builtin_random_float(&[]).unwrap();
@@ -16101,6 +16379,47 @@ mod tests {
     fn typecheck_rejects_try_on_non_result() {
         let err = typecheck_src("let x = 42?;").unwrap_err();
         assert!(err.contains("? operator"), "unexpected: {}", err);
+    }
+
+    // ---------- RES-366: pinned integer types ----------
+
+    #[test]
+    fn pinned_int_literal_accepted_as_int8() {
+        // A literal (Type::Int) is assignable to any pinned int type.
+        typecheck_src("let x: Int8 = 42;").unwrap();
+        typecheck_src("let x: UInt16 = 1000;").unwrap();
+        typecheck_src("let x: Int32 = -1;").unwrap();
+    }
+
+    #[test]
+    fn pinned_int_cast_builtin_accepted() {
+        // as_int8() returns Int8; assigning it to an Int8 binding should pass.
+        typecheck_src("let x: Int8 = as_int8(200);").unwrap();
+        typecheck_src("let x: UInt32 = as_uint32(65536);").unwrap();
+    }
+
+    #[test]
+    fn pinned_int_mixed_arithmetic_rejected() {
+        // Int8 + Int16 without a cast is a type error.
+        let err =
+            typecheck_src("let a = as_int8(1); let b = as_int16(2); let c = a + b;").unwrap_err();
+        assert!(
+            err.contains("Cannot apply"),
+            "expected a type error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pinned_int_same_width_arithmetic_accepted() {
+        // Int8 + Int8 is OK.
+        typecheck_src("let a = as_int8(1); let b = as_int8(2); let c = a + b;").unwrap();
+    }
+
+    #[test]
+    fn int64_alias_accepted_as_int() {
+        // Int64 is an alias for Int.
+        typecheck_src("let x: Int64 = 42;").unwrap();
     }
 
     // ---------- FFI typechecker (Task 4) ----------

@@ -22,7 +22,21 @@ pub struct LetTypeHint {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    /// The default integer type — also the type of integer literals
+    /// and the canonical name for `Int64` (`Int` and `Int64` alias
+    /// each other at the type level). RES-366: narrower pinned types
+    /// do NOT implicitly convert to/from `Int`; use an explicit cast.
     Int,
+    /// RES-366: pinned signed integer types. `Int` is the alias for
+    /// `Int64`. Narrower types require explicit `as_intN` casts.
+    Int8,
+    Int16,
+    Int32,
+    /// RES-366: pinned unsigned integer types. Overflow wraps on cast.
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
     Float,
     String,
     Bool,
@@ -67,6 +81,13 @@ impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Type::Int => write!(f, "int"),
+            Type::Int8 => write!(f, "Int8"),
+            Type::Int16 => write!(f, "Int16"),
+            Type::Int32 => write!(f, "Int32"),
+            Type::UInt8 => write!(f, "UInt8"),
+            Type::UInt16 => write!(f, "UInt16"),
+            Type::UInt32 => write!(f, "UInt32"),
+            Type::UInt64 => write!(f, "UInt64"),
             Type::Float => write!(f, "float"),
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
@@ -99,8 +120,28 @@ impl std::fmt::Display for Type {
 
 /// RES-053: Two types are compatible if they're equal or if either is
 /// Any. Used everywhere we need "same type, or we don't know yet."
+///
+/// RES-366: `Type::Int` (the type of integer literals) is compatible
+/// with every pinned integer type — assigning a literal `42` to an
+/// `Int8` binding is always legal. Pinned types are NOT compatible
+/// with each other: `Int8 ↔ Int16` requires an explicit `as_int16`
+/// cast.
 fn compatible(a: &Type, b: &Type) -> bool {
-    a == b || matches!(a, Type::Any) || matches!(b, Type::Any)
+    if a == b {
+        return true;
+    }
+    if matches!(a, Type::Any) || matches!(b, Type::Any) {
+        return true;
+    }
+    // Integer literals produce Type::Int; allow assigning them to any
+    // pinned integer type without an explicit cast.
+    if *a == Type::Int && is_pinned_int(b) {
+        return true;
+    }
+    if is_pinned_int(a) && *b == Type::Int {
+        return true;
+    }
+    false
 }
 
 /// RES-160: collect the binding names a pattern introduces, in
@@ -228,6 +269,22 @@ fn pattern_is_exhaustive_wrt_scrutinee(
 /// Returns the result type on success or a type-error diagnostic
 /// pointing users at the explicit `to_float(x)` / `to_int(x)`
 /// conversions when they mixed the two.
+/// RES-366: helper — is this type a pinned integer (any width/sign)?
+/// `Type::Int` (= Int64) is the generic integer type and is NOT
+/// in this set; it's handled separately to allow literal assignment.
+fn is_pinned_int(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64
+    )
+}
+
 fn check_numeric_same_type(op: &str, left: &Type, right: &Type) -> Result<Type, String> {
     match (left, right) {
         (Type::Int, Type::Int) => Ok(Type::Int),
@@ -240,6 +297,18 @@ fn check_numeric_same_type(op: &str, left: &Type, right: &Type) -> Result<Type, 
         (Type::Int, Type::Float) | (Type::Float, Type::Int) => Err(format!(
             "Cannot apply '{}' to int and float — Resilient does not implicitly coerce between numeric types. Use `to_float(x)` or `to_int(x)` explicitly.",
             op
+        )),
+        // RES-366: pinned integer types — same width/sign is OK;
+        // Any pairs with any pinned type.
+        (a, b) if a == b && is_pinned_int(a) => Ok(a.clone()),
+        (a, Type::Any) if is_pinned_int(a) => Ok(a.clone()),
+        (Type::Any, b) if is_pinned_int(b) => Ok(b.clone()),
+        (a, b) if is_pinned_int(a) && is_pinned_int(b) => Err(format!(
+            "Cannot apply '{}' to {} and {} — use an explicit cast (e.g. `as_{}(x)`) to convert between pinned integer widths.",
+            op,
+            a,
+            b,
+            b.to_string().to_lowercase()
         )),
         _ => Err(format!("Cannot apply '{}' to {} and {}", op, left, right)),
     }
@@ -517,6 +586,34 @@ fn z3_prove_with_cert(
 fn z3_prove_with_cert(
     _expr: &Node,
     _bindings: &HashMap<String, i64>,
+    _timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    (None, None, None, false)
+}
+
+/// RES-222: like `z3_prove_with_cert`, but asserts a list of
+/// boolean `axioms` alongside the clause. Used by the
+/// `recovers_to` discharge path to admit each `requires`
+/// clause as an assumption when proving the recovery
+/// invariant — the recovery point is reached only after the
+/// precondition has already been checked, so requires still
+/// hold. Without `--features z3`, returns all-`None` / `false`.
+#[cfg(feature = "z3")]
+fn z3_prove_with_axioms_and_cert(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    let (verdict, cert, cx, timed_out) =
+        crate::verifier_z3::prove_with_axioms_and_timeout(expr, bindings, axioms, timeout_ms);
+    (verdict, cert.map(|c| c.smt2), cx, timed_out)
+}
+#[cfg(not(feature = "z3"))]
+fn z3_prove_with_axioms_and_cert(
+    _expr: &Node,
+    _bindings: &HashMap<String, i64>,
+    _axioms: &[Node],
     _timeout_ms: u32,
 ) -> (Option<bool>, Option<String>, Option<String>, bool) {
     (None, None, None, false)
@@ -873,6 +970,51 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+
+        // RES-366: pinned-width integer cast builtins. All accept
+        // Any (the call site holds whatever the source width is) and
+        // return the target type so the typechecker propagates the
+        // narrowed type into the surrounding expression.
+        let fn_any_to_int8 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int8),
+        };
+        let fn_any_to_int16 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int16),
+        };
+        let fn_any_to_int32 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int32),
+        };
+        let fn_any_to_int = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int),
+        };
+        let fn_any_to_uint8 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::UInt8),
+        };
+        let fn_any_to_uint16 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::UInt16),
+        };
+        let fn_any_to_uint32 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::UInt32),
+        };
+        let fn_any_to_uint64 = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::UInt64),
+        };
+        env.set("as_int8".to_string(), fn_any_to_int8());
+        env.set("as_int16".to_string(), fn_any_to_int16());
+        env.set("as_int32".to_string(), fn_any_to_int32());
+        env.set("as_int64".to_string(), fn_any_to_int());
+        env.set("as_uint8".to_string(), fn_any_to_uint8());
+        env.set("as_uint16".to_string(), fn_any_to_uint16());
+        env.set("as_uint32".to_string(), fn_any_to_uint32());
+        env.set("as_uint64".to_string(), fn_any_to_uint64());
 
         // RES-138: current retry counter of the enclosing live block.
         env.set(
@@ -1250,6 +1392,15 @@ impl TypeChecker {
                 // RES-385: single-use enforcement for linear types.
                 crate::linear::check_linear_usage(program, source_path)?;
 
+                // <EXTENSION_PASSES>
+                // Add new compiler pass calls here (append-only).
+                // Pattern: crate::your_feature::check(program, source_path)?;
+                // Merge conflicts: keep ALL calls from both sides.
+                crate::try_catch::check(program, source_path)?;
+                crate::verifier_liveness::check(program, source_path)?;
+                crate::bounds_check::check_array_bounds(program, source_path)?;
+                // </EXTENSION_PASSES>
+
                 // RES-192: IO-effect inference. Binary lattice
                 // (pure / IO). Fixpoint over the call graph: a fn
                 // is tagged IO iff it calls an impure builtin, an
@@ -1483,30 +1634,111 @@ impl TypeChecker {
                 // the ticket is a follow-up; when it lands, this
                 // block becomes a weaker side-obligation.
                 //
-                // A provable contradiction (`Some(false)`) is a
-                // compile error — the recovery invariant can never
+                // RES-222: when the fn declares a non-empty `fails`
+                // set and there is no structured handler (handlers
+                // are a separate ticket — today every fault is
+                // "unhandled"), the recovery invariant becomes a
+                // real proof obligation. Z3 must show the clause
+                // holds under the requires precondition; an
+                // undecidable verdict is a compile error. Timeouts
+                // are soft — we emit a `hint: proof timed out` that
+                // mirrors the per-clause hint on requires/ensures.
+                //
+                // A provable contradiction (`Some(false)`) is always
+                // a compile error — the recovery invariant can never
                 // hold. A proven tautology (`Some(true)`) is
-                // silently discharged; an undecidable verdict is
-                // left for runtime (the runtime check fires after
-                // every return and surfaces a clear diagnostic).
+                // silently discharged.
                 if let Some(clause) = recovers_to {
+                    let clause_pos = clause_span(clause);
+                    let pos_prefix = if clause_pos.start.line == 0 {
+                        String::new()
+                    } else {
+                        format!("{}:{}: ", clause_pos.start.line, clause_pos.start.column)
+                    };
+
+                    // RES-222: admit each `requires` clause as an
+                    // axiom. The recovery point is reached only
+                    // after the precondition has been checked, so
+                    // the solver is allowed to assume them when
+                    // discharging the recovery invariant.
+                    let axioms: Vec<Node> = requires.clone();
+
                     let mut verdict = fold_const_bool(clause, &no_bindings);
                     let mut cx: Option<String> = None;
+                    let mut cert_smt2: Option<String> = None;
+                    let mut timed_out_flag = false;
                     if verdict.is_none() {
-                        let (v, _cert, c, _timed_out) =
-                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
+                        let (v, cert, c, t) = z3_prove_with_axioms_and_cert(
+                            clause,
+                            &no_bindings,
+                            &axioms,
+                            self.verifier_timeout_ms,
+                        );
                         verdict = v;
                         cx = c;
+                        cert_smt2 = cert;
+                        timed_out_flag = t;
                     }
+
+                    // Contradiction: clause is unreachable regardless
+                    // of `fails`. Always a compile error.
                     if matches!(verdict, Some(false)) {
                         let base = format!(
-                            "fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
-                            name
+                            "{}fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
+                            pos_prefix, name
                         );
                         return Err(match cx {
                             Some(m) => format!("{} — counterexample (final state): {}", base, m),
                             None => base,
                         });
+                    }
+
+                    // RES-222: account for successful discharge and
+                    // capture the SMT-LIB2 certificate so the driver
+                    // can dump it alongside requires/ensures certs.
+                    if matches!(verdict, Some(true)) {
+                        self.stats.requires_discharged_by_z3 += 1;
+                        if let Some(smt2) = cert_smt2 {
+                            self.certificates.push(CapturedCertificate {
+                                fn_name: name.clone(),
+                                kind: "recovers_to",
+                                idx: 0,
+                                smt2,
+                            });
+                        }
+                    }
+
+                    // RES-222: with a non-empty `fails` set and no
+                    // handler to catch the fault, the invariant is
+                    // a mandatory obligation. An undecidable verdict
+                    // is a compile error; a timeout degrades to a
+                    // hint (runtime check retained) so a slow solver
+                    // can't block compilation indefinitely.
+                    if verdict.is_none() && !fails.is_empty() {
+                        if timed_out_flag {
+                            self.stats.verifier_timeouts += 1;
+                            eprintln!(
+                                "hint: proof timed out after {}ms — runtime check retained (fn {}, recovers_to)",
+                                self.verifier_timeout_ms, name
+                            );
+                            if self.warn_unverified {
+                                emit_partial_proof_warning(&self.source_path, clause);
+                            }
+                        } else {
+                            if self.warn_unverified {
+                                emit_partial_proof_warning(&self.source_path, clause);
+                            }
+                            let base = format!(
+                                "{}fn {}: `recovers_to` invariant cannot be proven — fn declares `fails` {:?} but no handler catches the fault, and Z3 could not show the recovery invariant holds under the declared `requires`",
+                                pos_prefix, name, fails
+                            );
+                            return Err(match cx {
+                                Some(m) => {
+                                    format!("{} — counterexample (final state): {}", base, m)
+                                }
+                                None => base,
+                            });
+                        }
                     }
                 }
 
@@ -1993,6 +2225,27 @@ impl TypeChecker {
             // RES-391: `region <Name>;` is compile-time metadata — Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
 
+            // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`.
+            // Extend the in-scope `fails` set with every caught
+            // variant while type-checking the body, then restore for
+            // the handler bodies (a handler is not inside its own
+            // `catch` scope — it runs once the body already failed).
+            Node::TryCatch { body, handlers, .. } => {
+                let augmented =
+                    crate::try_catch::augmented_fn_fails(self.current_fn_fails.as_ref(), handlers);
+                let saved = self.current_fn_fails.replace(augmented);
+                for stmt in body {
+                    self.check_node(stmt)?;
+                }
+                self.current_fn_fails = saved;
+                for (_, handler_body) in handlers {
+                    for stmt in handler_body {
+                        self.check_node(stmt)?;
+                    }
+                }
+                Ok(Type::Void)
+            }
+
             // RES-386: commutativity actor type-checks as Void.
             Node::Actor { .. } => Ok(Type::Void),
 
@@ -2005,6 +2258,7 @@ impl TypeChecker {
                 name,
                 state_fields,
                 always_clauses,
+                eventually_clauses,
                 receive_handlers,
                 ..
             } => {
@@ -2030,6 +2284,24 @@ impl TypeChecker {
                         return Err(format!(
                             "actor `{}` `always` invariant must be Bool, got {}",
                             name, ty
+                        ));
+                    }
+                }
+                // RES-388 follow-up: `eventually(after: h): P;` — `P`
+                // must type-check as Bool against the actor's state
+                // environment, and `h` must name a real handler.
+                for ev in eventually_clauses {
+                    let ty = self.check_node(&ev.post)?;
+                    if ty != Type::Bool && ty != Type::Any {
+                        return Err(format!(
+                            "actor `{}` `eventually` post-condition must be Bool, got {}",
+                            name, ty
+                        ));
+                    }
+                    if !receive_handlers.iter().any(|h| h.name == ev.target_handler) {
+                        return Err(format!(
+                            "actor `{}` `eventually(after: {})` references unknown handler",
+                            name, ev.target_handler
                         ));
                     }
                 }
@@ -2280,6 +2552,7 @@ impl TypeChecker {
                         if right_type != Type::Int
                             && right_type != Type::Float
                             && right_type != Type::Any
+                            && !is_pinned_int(&right_type)
                         {
                             return Err(format!("Cannot apply '-' to {}", right_type));
                         }
@@ -2330,10 +2603,18 @@ impl TypeChecker {
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "&" | "|" | "^" | "<<" | ">>" => {
-                        // Bitwise operators are int-only.
-                        if compatible(&left_type, &Type::Int) && compatible(&right_type, &Type::Int)
-                        {
-                            Ok(Type::Int)
+                        // Bitwise operators are int-only. Same-width
+                        // pinned integer types are also accepted.
+                        let left_is_int = compatible(&left_type, &Type::Int)
+                            || is_pinned_int(&left_type)
+                            || left_type == Type::Any;
+                        let right_is_int = compatible(&right_type, &Type::Int)
+                            || is_pinned_int(&right_type)
+                            || right_type == Type::Any;
+                        if left_is_int && right_is_int {
+                            // Delegate to check_numeric_same_type for
+                            // width-matching on pinned types.
+                            check_numeric_same_type(operator, &left_type, &right_type)
                         } else {
                             Err(format!(
                                 "Bitwise '{}' requires int operands, got {} and {}",
@@ -2390,8 +2671,8 @@ impl TypeChecker {
                         };
                         if !declared {
                             return Err(format!(
-                                "unhandled failure variant {} — declare `fails {}` on the caller or handle at call site (from call to `{}`)",
-                                variant, variant, callee_name
+                                "unhandled failure variant {} — declare `fails {}` on the caller or wrap the call in `try {{ ... }} catch {} {{ ... }}` (from call to `{}`)",
+                                variant, variant, variant, callee_name
                             ));
                         }
                     }
@@ -2561,7 +2842,17 @@ impl TypeChecker {
             return self.parse_type_name_inner(rest, seen);
         }
         match name {
-            "int" => Ok(Type::Int),
+            // RES-366: `Int64` is the long-form alias for `Int`.
+            "int" | "Int" | "Int64" => Ok(Type::Int),
+            // RES-366: pinned signed integer widths.
+            "Int8" => Ok(Type::Int8),
+            "Int16" => Ok(Type::Int16),
+            "Int32" => Ok(Type::Int32),
+            // RES-366: pinned unsigned integer widths.
+            "UInt8" => Ok(Type::UInt8),
+            "UInt16" => Ok(Type::UInt16),
+            "UInt32" => Ok(Type::UInt32),
+            "UInt64" => Ok(Type::UInt64),
             "float" => Ok(Type::Float),
             "string" => Ok(Type::String),
             "bool" => Ok(Type::Bool),

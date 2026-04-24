@@ -1,0 +1,2 @@
+actor_eventually_nodrain: partial-proof warning expected
+Program executed successfully

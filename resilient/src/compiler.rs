@@ -168,9 +168,15 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         // Skip fn/extern decls — handled in earlier passes.
         // RES-391: `region <Name>;` is compile-time metadata only;
         // it emits no code in either the tree-walker or the VM.
+        // RES-335: `struct <Name> { ... }` decls are likewise
+        // compile-time metadata — the `StructLiteral` opcode carries
+        // the type name directly and does not consult a decl table.
         if matches!(
             spanned.node,
-            Node::Function { .. } | Node::Extern { .. } | Node::RegionDecl { .. }
+            Node::Function { .. }
+                | Node::Extern { .. }
+                | Node::RegionDecl { .. }
+                | Node::StructDecl { .. }
         ) {
             continue;
         }
@@ -279,6 +285,42 @@ fn compile_stmt(
             compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::StoreIndex, line);
+            chunk.emit(Op::StoreLocal(slot), line);
+            Ok(())
+        }
+        // RES-335: `p.field = v;` where `p` is a bare Identifier.
+        // Lowered as:
+        //   LoadLocal(p), <v>, SetField { field }, StoreLocal(p)
+        // The struct on top of the stack after `SetField` IS the
+        // mutated one (VM dispatch pushes it back), so writing it
+        // through `StoreLocal` commits the update. Mirrors the
+        // `IndexAssignment` lowering.
+        Node::FieldAssignment {
+            target,
+            field,
+            value,
+            ..
+        } => {
+            let local_name = match target.as_ref() {
+                Node::Identifier { name, .. } => name.clone(),
+                _ => {
+                    return Err(CompileError::Unsupported(
+                        "nested field assignment (non-identifier target)",
+                    ));
+                }
+            };
+            let slot = *locals
+                .get(&local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+            chunk.emit(Op::LoadLocal(slot), line);
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            chunk.emit(
+                Op::SetField {
+                    name_const: fname_idx,
+                },
+                line,
+            );
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
@@ -451,6 +493,38 @@ fn compile_stmt_in_fn(
             compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             chunk.emit(Op::StoreIndex, line);
+            chunk.emit(Op::StoreLocal(slot), line);
+            Ok(())
+        }
+        // RES-335: `p.field = v;` inside a fn body. Mirrors the
+        // `compile_stmt` arm above; duplicated because the two
+        // dispatchers handle `return` differently.
+        Node::FieldAssignment {
+            target,
+            field,
+            value,
+            ..
+        } => {
+            let local_name = match target.as_ref() {
+                Node::Identifier { name, .. } => name.clone(),
+                _ => {
+                    return Err(CompileError::Unsupported(
+                        "nested field assignment (non-identifier target)",
+                    ));
+                }
+            };
+            let slot = *locals
+                .get(&local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+            chunk.emit(Op::LoadLocal(slot), line);
+            compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
+            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            chunk.emit(
+                Op::SetField {
+                    name_const: fname_idx,
+                },
+                line,
+            );
             chunk.emit(Op::StoreLocal(slot), line);
             Ok(())
         }
@@ -696,6 +770,44 @@ fn compile_expr(
             chunk.emit(Op::LoadIndex, line);
             Ok(())
         }
+        // RES-335: `Name { f1: e1, f2: e2 }` struct literal. Lowered
+        // as alternating `(field-name-const, value)` pushes followed
+        // by `StructLiteral { name_const, field_count }`. Field names
+        // live in the constant pool so `Op` stays `Copy`.
+        Node::StructLiteral { name, fields, .. } => {
+            if fields.len() > u16::MAX as usize {
+                return Err(CompileError::TooManyFields(name.clone()));
+            }
+            let name_const = chunk.add_constant(Value::String(name.clone()))?;
+            for (field_name, field_expr) in fields {
+                let fname_idx = chunk.add_constant(Value::String(field_name.clone()))?;
+                chunk.emit(Op::Const(fname_idx), line);
+                compile_expr(field_expr, chunk, locals, fn_index, ffi_index, line)?;
+            }
+            chunk.emit(
+                Op::StructLiteral {
+                    name_const,
+                    field_count: fields.len() as u16,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-335: `target.field` read → push target, emit `GetField`.
+        // Nested reads (`a.b.c`) fall out of the recursion because
+        // `compile_expr(target)` re-enters this arm for inner
+        // `FieldAccess` nodes.
+        Node::FieldAccess { target, field, .. } => {
+            compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
+            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            chunk.emit(
+                Op::GetField {
+                    name_const: fname_idx,
+                },
+                line,
+            );
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -769,7 +881,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::Actor { span, .. }
         | Node::ActorDecl { span, .. }
         | Node::ClusterDecl { span, .. }
-        | Node::FunctionLiteral { span, .. } => span.start.line as u32,
+        | Node::FunctionLiteral { span, .. }
+        | Node::TryCatch { span, .. } => span.start.line as u32,
 
         // RES-142: duration literal carries the span of its integer
         // part; only emitted inside live-clause position so it
@@ -817,6 +930,9 @@ fn node_kind(n: &Node) -> &'static str {
         Node::IndexExpression { .. } => "IndexExpression",
         Node::IndexAssignment { .. } => "IndexAssignment",
         Node::RegionDecl { .. } => "RegionDecl",
+        Node::StructLiteral { .. } => "StructLiteral",
+        Node::FieldAccess { .. } => "FieldAccess",
+        Node::FieldAssignment { .. } => "FieldAssignment",
         _ => "<other>",
     }
 }
