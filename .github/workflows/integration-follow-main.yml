@@ -28,13 +28,15 @@ jobs:
       - name: Fast-forward agents/integration to main
         run: |
           set -euo pipefail
-          git fetch origin agents/integration main
+          git fetch origin main
+          # agents/integration may not exist yet — tolerate failure.
+          git fetch origin agents/integration 2>/dev/null || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if ! git rev-parse --verify origin/agents/integration >/dev/null 2>&1; then
             echo "agents/integration does not exist — creating from main"
-            git push origin main:refs/heads/agents/integration
+            git push origin "$(git rev-parse origin/main):refs/heads/agents/integration"
             exit 0
           fi
 
