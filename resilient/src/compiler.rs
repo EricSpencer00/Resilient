@@ -737,9 +737,9 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::FieldAssignment { span, .. } => span.start.line as u32,
 
         // Tuple-struct conversions (RES-086).
-        Node::ArrayLiteral { span, .. } | Node::TryExpression { span, .. } => {
-            span.start.line as u32
-        }
+        Node::ArrayLiteral { span, .. }
+        | Node::TryExpression { span, .. }
+        | Node::OptionalChain { span, .. } => span.start.line as u32,
 
         // RES-148: map literal carries a span at its opening brace.
         Node::MapLiteral { span, .. } => span.start.line as u32,

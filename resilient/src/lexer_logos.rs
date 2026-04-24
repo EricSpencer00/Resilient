@@ -110,6 +110,10 @@ enum Tok {
     Colon,
     #[token(".")]
     Dot,
+    // RES-363: `?.` — optional-chain operator. Must precede lone `?`
+    // so logos's longer-match priority picks it up.
+    #[token("?.")]
+    QuestionDot,
     #[token("?")]
     Question,
     // RES-191: attribute prefix (`@pure`, etc.). Emitted as a bare
@@ -585,6 +589,7 @@ fn convert(t: Tok) -> Token {
         Tok::Semi => Token::Semicolon,
         Tok::Colon => Token::Colon,
         Tok::Dot => Token::Dot,
+        Tok::QuestionDot => Token::QuestionDot,
         Tok::Question => Token::Question,
         Tok::At => Token::At,
         Tok::HexInt(n) => Token::IntLiteral(n),

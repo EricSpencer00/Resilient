@@ -608,7 +608,8 @@ fn expr_span(node: &Node) -> Span {
         | Node::InfixExpression { span, .. }
         | Node::PrefixExpression { span, .. }
         | Node::CallExpression { span, .. }
-        | Node::TryExpression { span, .. } => *span,
+        | Node::TryExpression { span, .. }
+        | Node::OptionalChain { span, .. } => *span,
         _ => Span::default(),
     }
 }
