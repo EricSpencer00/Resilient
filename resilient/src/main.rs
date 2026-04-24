@@ -35,6 +35,11 @@ mod cluster_verifier;
 // parser / typechecker can consume its types; the Z3 path is a no-op
 // when the `z3` feature is off.
 mod verifier_actors;
+// RES-388 follow-up: bounded-liveness verifier for actor-level
+// `eventually(after: <handler>): <expr>;` claims. Compiled
+// unconditionally so the parser / typechecker can consume its types;
+// the Z3 ranking search is a no-op without the `z3` feature.
+mod verifier_liveness;
 mod vm;
 // RES-108: opt-in logos-based lexer. See module docs; the feature
 // flag gates the routing so the legacy hand-rolled scanner stays
@@ -181,6 +186,9 @@ enum Token {
     ConcurrentEnsures,
     /// RES-388: actor-level `always: <expr>;` safety invariant.
     Always,
+    /// RES-388 follow-up: actor-level
+    /// `eventually(after: <handler>): <expr>;` bounded liveness claim.
+    Eventually,
     /// RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`
     /// structured failure handler — statement-level keyword.
     Try,
@@ -310,6 +318,7 @@ impl Token {
             Token::Receive => "`receive`".to_string(),
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
             Token::Always => "`always`".to_string(),
+            Token::Eventually => "`eventually`".to_string(),
             Token::Try => "`try`".to_string(),
             Token::Catch => "`catch`".to_string(),
             Token::Underscore => "`_`".to_string(),
@@ -708,6 +717,7 @@ impl Lexer {
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
+                        "eventually" => Token::Eventually,
                         "try" => Token::Try,
                         "catch" => Token::Catch,
                         // </EXTENSION_KEYWORDS>
@@ -1612,6 +1622,11 @@ enum Node {
         state_fields: Vec<(String, String, Node)>,
         /// Boolean `always:` safety invariants.
         always_clauses: Vec<Node>,
+        /// RES-388 follow-up: bounded-liveness claims of the form
+        /// `eventually(after: <handler>): <expr>;`. Each entry carries
+        /// the target handler name whose firing is supposed to make the
+        /// post-condition hold within a bounded schedule.
+        eventually_clauses: Vec<EventuallyClause>,
         /// Receive handlers with full pre/post contracts.
         receive_handlers: Vec<ReceiveHandler>,
         /// Simpler receive handlers (used by RES-386 `Actor` path).
@@ -1656,6 +1671,19 @@ pub(crate) struct ActorHandler {
     pub(crate) ensures: Vec<Node>,
     pub(crate) body: Box<Node>,
     #[allow(dead_code)]
+    pub(crate) span: span::Span,
+}
+
+/// RES-388 follow-up: one `eventually(after: <handler>): <expr>;`
+/// clause parsed off an `ActorDecl`. The verifier searches for an
+/// integer ranking function that strictly decreases on the target
+/// handler and is non-increasing on every other handler, with the
+/// measure reaching zero iff the post-condition holds.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct EventuallyClause {
+    pub(crate) target_handler: String,
+    pub(crate) post: Node,
     pub(crate) span: span::Span,
 }
 
@@ -2334,6 +2362,7 @@ impl Parser {
 
         let mut state_fields: Vec<(String, String, Node)> = Vec::new();
         let mut always_clauses: Vec<Node> = Vec::new();
+        let mut eventually_clauses: Vec<EventuallyClause> = Vec::new();
         let mut receive_handlers: Vec<ReceiveHandler> = Vec::new();
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
@@ -2426,6 +2455,98 @@ impl Parser {
                     always_clauses.push(expr);
                 }
 
+                Token::Eventually => {
+                    // `eventually(after: <HandlerName>): <expr>;`
+                    let ev_span = self.span_at_current();
+                    self.next_token(); // skip `eventually`
+                    if self.current_token != Token::LeftParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `(after: <handler>)` after `eventually` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `(`
+                    // `after` is a contextual keyword here — accept it
+                    // as an identifier so we don't hijack the name
+                    // globally.
+                    match &self.current_token {
+                        Token::Identifier(kw) if kw == "after" => {}
+                        other => {
+                            self.record_error(format!(
+                                "Expected `after:` inside `eventually(...)` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    }
+                    self.next_token(); // skip `after`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `after` in `eventually(...)` in actor `{}`, found {}",
+                            name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let target = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        other => {
+                            self.record_error(format!(
+                                "Expected handler name inside `eventually(after: ...)` in actor `{}`, found {}",
+                                name, other
+                            ));
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
+                    };
+                    self.next_token(); // skip handler name
+                    if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `)` to close `eventually(after: {})` in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `)`
+                    if self.current_token != Token::Colon {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `:` after `eventually(after: {})` in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                        self.skip_until_stmt_end();
+                        continue;
+                    }
+                    self.next_token(); // skip `:`
+                    let post = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+                        value: true,
+                        span: span::Span::default(),
+                    });
+                    self.next_token(); // past post
+                    if self.current_token == Token::Semicolon {
+                        self.next_token();
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `;` after `eventually(after: {})` post-condition in actor `{}`, found {}",
+                            target, name, tok
+                        ));
+                    }
+                    eventually_clauses.push(EventuallyClause {
+                        target_handler: target,
+                        post,
+                        span: ev_span,
+                    });
+                }
+
                 Token::Receive => {
                     let recv_span = self.span_at_current();
                     self.next_token(); // skip `receive`
@@ -2487,7 +2608,7 @@ impl Parser {
                 other => {
                     let tok = other.clone();
                     self.record_error(format!(
-                        "Expected `state`, `always`, `receive`, or `}}` in actor `{}`, found {}",
+                        "Expected `state`, `always`, `eventually`, `receive`, or `}}` in actor `{}`, found {}",
                         name, tok
                     ));
                     // Don't infinite-loop on unexpected content.
@@ -2517,6 +2638,7 @@ impl Parser {
             name,
             state_fields,
             always_clauses,
+            eventually_clauses,
             receive_handlers,
             handlers,
             span: actor_span,

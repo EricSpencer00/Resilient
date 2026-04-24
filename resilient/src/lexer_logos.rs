@@ -219,6 +219,9 @@ enum Tok {
     ConcurrentEnsures,
     #[token("always")]
     Always,
+    // RES-388 follow-up: bounded-liveness `eventually(after: h): expr;`.
+    #[token("eventually")]
+    Eventually,
     // RES-224 (RES-387 follow-up): structured failure handler keywords.
     #[token("try")]
     Try,
@@ -559,6 +562,7 @@ fn convert(t: Tok) -> Token {
         Tok::Receive => Token::Receive,
         Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
         Tok::Always => Token::Always,
+        Tok::Eventually => Token::Eventually,
         Tok::Try => Token::Try,
         Tok::Catch => Token::Catch,
         // </EXTENSION_KEYWORDS>

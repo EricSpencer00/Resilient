@@ -1,0 +1,2 @@
+actor_eventually_drain: eventually(after: drain) state == 0
+Program executed successfully
