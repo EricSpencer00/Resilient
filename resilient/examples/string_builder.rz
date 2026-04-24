@@ -1,0 +1,45 @@
+// RES-353: StringBuilder demo — efficient multi-part string construction.
+//
+// Demonstrates:
+//   - StringBuilder_new(capacity)        create with byte cap
+//   - sb.append(s)                       append a string
+//   - sb.append_int(n)                   append an integer
+//   - sb.append_float(f)                 append a float
+//   - sb.append_char(c)                  append a Unicode codepoint
+//   - sb.build()                         produce Ok(string) or Err("capacity exceeded")
+//   - sb.len() / sb.remaining()          inspect current length
+//   - sb.clear()                         reset the buffer
+//   - overflow detection with tiny cap
+
+fn main() {
+    // Build a CSV row: "SENSOR,42,3.14"
+    let sb = StringBuilder_new(256);
+    sb.append("SENSOR,");
+    sb.append_int(42);
+    sb.append(",");
+    sb.append_float(3.14);
+
+    let result = sb.build();
+    println(unwrap(result));
+    println(sb.len());
+    println(sb.remaining());
+
+    // Append a character by Unicode codepoint: 65 = 'A'
+    sb.clear();
+    sb.append_char(65);
+    sb.append_char(66);
+    sb.append_char(67);
+    let chars_result = sb.build();
+    println(unwrap(chars_result));
+
+    // Overflow detection: capacity of 5 bytes, try to write 10.
+    let tiny = StringBuilder_new(5);
+    tiny.append("hello");
+    tiny.append(" world");    // exceeds cap
+    let overflow_result = tiny.build();
+    if is_err(overflow_result) {
+        println("overflow: " + unwrap_err(overflow_result));
+    }
+}
+
+main();

@@ -6469,6 +6469,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // which treats a `drop` call as the single consumption that
     // satisfies the single-use obligation.
     ("drop", builtin_drop),
+    // RES-353: StringBuilder — efficient multi-part string construction.
+    // Construction is a top-level function; methods are dispatched via
+    // the special StringBuilder method handler in `CallExpression` eval.
+    ("StringBuilder_new", builtin_string_builder_new),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -8025,6 +8029,115 @@ fn builtin_live_retries(args: &[Value]) -> RResult<Value> {
     })
 }
 
+// ── RES-353: StringBuilder ────────────────────────────────────────────────────
+//
+// `StringBuilder_new(capacity)` allocates a fresh builder struct.
+// Methods (`append`, `append_int`, `append_float`, `append_char`, `build`,
+// `len`, `remaining`, `clear`) are dispatched in the special
+// `eval_string_builder_method` branch of `CallExpression` — they never go
+// through the generic `impl`-block / BUILTINS path because they need
+// write-back mutation of the caller's binding.
+//
+// Internal struct layout (fields in this order):
+//   _buf     : Value::String  — accumulated text
+//   _cap     : Value::Int     — capacity ceiling (bytes)
+//   _overflow: Value::Bool    — set once capacity is exceeded
+
+/// `StringBuilder_new(capacity: Int) -> StringBuilder`
+///
+/// Creates an empty StringBuilder with the given byte capacity.
+fn builtin_string_builder_new(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(cap)] => {
+            if *cap < 0 {
+                return Err(format!(
+                    "StringBuilder_new: capacity must be >= 0, got {}",
+                    cap
+                ));
+            }
+            Ok(Value::Struct {
+                name: "StringBuilder".to_string(),
+                fields: vec![
+                    ("_buf".to_string(), Value::String(String::new())),
+                    ("_cap".to_string(), Value::Int(*cap)),
+                    ("_overflow".to_string(), Value::Bool(false)),
+                ],
+            })
+        }
+        [other] => Err(format!(
+            "StringBuilder_new: capacity must be an Int, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "StringBuilder_new: expected 1 argument (capacity), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// Helper: read `_buf`, `_cap`, `_overflow` out of a StringBuilder struct.
+///
+/// Returns an error if any field is missing or has the wrong type —
+/// which should never happen for a legitimately-constructed builder, but
+/// guards against user code that manually constructs the struct with wrong
+/// field types.
+fn sb_fields(fields: &[(String, Value)]) -> RResult<(String, i64, bool)> {
+    let mut buf: Option<&str> = None;
+    let mut cap: Option<i64> = None;
+    let mut overflow: Option<bool> = None;
+
+    for (name, val) in fields {
+        match name.as_str() {
+            "_buf" => {
+                if let Value::String(s) = val {
+                    buf = Some(s);
+                } else {
+                    return Err(format!("StringBuilder._buf must be a String, got {}", val));
+                }
+            }
+            "_cap" => {
+                if let Value::Int(n) = val {
+                    cap = Some(*n);
+                } else {
+                    return Err(format!("StringBuilder._cap must be an Int, got {}", val));
+                }
+            }
+            "_overflow" => {
+                if let Value::Bool(b) = val {
+                    overflow = Some(*b);
+                } else {
+                    return Err(format!(
+                        "StringBuilder._overflow must be a Bool, got {}",
+                        val
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match (buf, cap, overflow) {
+        (Some(b), Some(c), Some(o)) => Ok((b.to_string(), c, o)),
+        _ => Err(
+            "StringBuilder: internal layout missing required fields (_buf/_cap/_overflow); \
+                  was this struct created with StringBuilder_new?"
+                .to_string(),
+        ),
+    }
+}
+
+/// Build an updated StringBuilder struct from component parts.
+fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
+    Value::Struct {
+        name: "StringBuilder".to_string(),
+        fields: vec![
+            ("_buf".to_string(), Value::String(buf)),
+            ("_cap".to_string(), Value::Int(cap)),
+            ("_overflow".to_string(), Value::Bool(overflow)),
+        ],
+    }
+}
+
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
@@ -8321,7 +8434,29 @@ impl Interpreter {
                 // is an ordinary function invocation.
                 if let Node::FieldAccess { target, field, .. } = function.as_ref() {
                     let target_val = self.eval(target)?;
+                    // RES-353: StringBuilder method dispatch — intercept before
+                    // the generic impl-block lookup so these builtins can write
+                    // the mutated struct back to the caller's binding.
                     if let Value::Struct { name: sname, .. } = &target_val {
+                        if sname == "StringBuilder" {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            // Derive the root variable name for write-back.
+                            // Only simple `IDENT.method()` write-back is supported;
+                            // complex targets (field chains, temporaries) are
+                            // expression-result only — the caller can still read
+                            // the returned struct if needed.
+                            let root_name = if let Node::Identifier { name, .. } = target.as_ref() {
+                                Some(name.clone())
+                            } else {
+                                None
+                            };
+                            return self.eval_string_builder_method(
+                                target_val,
+                                field,
+                                &extra_args,
+                                root_name.as_deref(),
+                            );
+                        }
                         let mangled = format!("{}${}", sname, field);
                         if let Some(method_val) = self.env.get(&mangled) {
                             // Prepend the target as the implicit `self`.
@@ -8701,6 +8836,200 @@ impl Interpreter {
         }
 
         Ok(result)
+    }
+
+    // ── RES-353: StringBuilder method dispatch ────────────────────────────────
+    //
+    // Called from the `CallExpression` evaluator when the receiver is a
+    // `Value::Struct { name: "StringBuilder", ... }`.
+    //
+    // Mutating methods (`append`, `append_int`, `append_float`,
+    // `append_char`, `clear`) write the updated struct back to the
+    // caller's variable if `root_name` is `Some` — this gives the
+    // `sb.append("x")` call-and-discard idiom without requiring the user
+    // to write `sb = sb.append("x")`. The updated struct is also returned
+    // so callers can chain or inspect the result.
+    //
+    // Non-mutating methods (`len`, `remaining`, `build`) do not write
+    // back; they return the computed value directly.
+    fn eval_string_builder_method(
+        &mut self,
+        sb: Value,
+        method: &str,
+        extra_args: &[Value],
+        root_name: Option<&str>,
+    ) -> RResult<Value> {
+        let Value::Struct { fields, .. } = sb else {
+            return Err("StringBuilder: internal error — receiver is not a struct".to_string());
+        };
+        let (buf, cap, overflow) = sb_fields(&fields)?;
+
+        match method {
+            // sb.append(s: String) — concat s if capacity not exceeded.
+            "append" => match extra_args {
+                [Value::String(s)] => {
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append: expected String argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_int(n: Int)
+            "append_int" => match extra_args {
+                [Value::Int(n)] => {
+                    let s = n.to_string();
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_int: expected Int argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_int: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_float(f: Float)
+            "append_float" => match extra_args {
+                [Value::Float(f)] => {
+                    let s = format!("{}", f);
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_float: expected Float argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_float: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_char(c: Int) — c is a Unicode codepoint.
+            "append_char" => match extra_args {
+                [Value::Int(cp)] => {
+                    let c = char::from_u32(*cp as u32).ok_or_else(|| {
+                        format!(
+                            "StringBuilder.append_char: {} is not a valid Unicode codepoint",
+                            cp
+                        )
+                    })?;
+                    let s = c.to_string();
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_char: expected Int (codepoint) argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_char: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.build() -> Result<String, String>
+            "build" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.build: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                if overflow {
+                    Ok(Value::Result {
+                        ok: false,
+                        payload: Box::new(Value::String("capacity exceeded".to_string())),
+                    })
+                } else {
+                    Ok(Value::Result {
+                        ok: true,
+                        payload: Box::new(Value::String(buf)),
+                    })
+                }
+            }
+            // sb.len() -> Int
+            "len" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.len: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                Ok(Value::Int(buf.len() as i64))
+            }
+            // sb.remaining() -> Int
+            "remaining" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.remaining: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                Ok(Value::Int(cap - buf.len() as i64))
+            }
+            // sb.clear() — reset buffer to empty.
+            "clear" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.clear: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                let updated = sb_struct(String::new(), cap, false);
+                if let Some(name) = root_name {
+                    let _ = self.env.reassign(name, updated.clone());
+                }
+                Ok(updated)
+            }
+            other => Err(format!("StringBuilder has no method '{}'", other)),
+        }
     }
 
     fn eval_live_block(
