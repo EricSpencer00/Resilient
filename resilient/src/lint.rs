@@ -68,12 +68,34 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0007", // unreachable code after unconditional `return`
     "L0008", // duplicate identical struct literal match arm
     "L0009", // integer division by zero (literal / SMT-proven-possible)
+    "L0010", // public fn missing `ensures` clause
 ];
 
-/// RES-198: top-level entry. Runs every lint, filters via the
-/// `// resilient: allow LXXXX` comments found in `source`, and
-/// returns the surviving diagnostics sorted by (line, column).
-pub fn check(program: &Node, source: &str) -> Vec<Lint> {
+/// RES-344: options that control which "default-off" lints fire.
+/// Default-off lints are not emitted by the plain `check()` shim;
+/// they need the caller to opt in via the relevant flag.
+#[derive(Debug, Default, Clone)]
+pub struct LintOptions {
+    /// When `true`, L0010 (missing `ensures` on public fns) fires as a
+    /// warning. Controlled by `--deny-missing-contracts` on the CLI.
+    pub deny_missing_contracts: bool,
+    /// When `true`, L0010 is suppressed even if `deny_missing_contracts`
+    /// is set. Controlled by `--allow-missing-contracts` on the CLI.
+    /// `--allow-missing-contracts` takes precedence over
+    /// `--deny-missing-contracts`.
+    pub allow_missing_contracts: bool,
+}
+
+/// RES-198 / RES-344: top-level lint entry-point.
+///
+/// Runs every enabled lint, filters via the `// resilient: allow LXXXX`
+/// comments found in `source`, and returns the surviving diagnostics
+/// sorted by `(line, column)`.
+///
+/// Default-off lints (e.g. L0010 / `--deny-missing-contracts`) are
+/// enabled via `opts`. Pass `&LintOptions::default()` to run only the
+/// always-on lints.
+pub fn check_with_options(program: &Node, source: &str, opts: &LintOptions) -> Vec<Lint> {
     let mut out = Vec::new();
     run_l0001_unused_local(program, &mut out);
     run_l0002_unreachable_arm(program, &mut out);
@@ -84,6 +106,11 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0007_unreachable_code(program, &mut out);
     run_l0008_duplicate_struct_match_arm(program, &mut out);
     run_l0009_division_by_zero(program, &mut out);
+    // RES-344: L0010 is default-off; only runs when explicitly requested
+    // and not globally suppressed.
+    if opts.deny_missing_contracts && !opts.allow_missing_contracts {
+        run_l0010_missing_ensures(program, &mut out);
+    }
 
     // Filter via allow-comments.
     let allows = collect_allow_comments(source);
@@ -1405,6 +1432,65 @@ fn recurse_children<F: FnMut(&Node)>(node: &Node, f: &mut F) {
 }
 
 // ============================================================
+// L0010: public fn missing `ensures` clause (RES-344)
+// ============================================================
+//
+// For every top-level `fn` in the program, check whether it has
+// at least one `ensures` clause. If not, emit a warning.
+//
+// Exemptions:
+// - Functions whose name starts with `_` (conventional "private /
+//   helper" marker, mirrors the L0001 underscore convention).
+// - Functions that appear inside a `mod test` block — the language
+//   does not have a `mod` keyword today, so this exemption covers
+//   fns whose name starts with "test_" (the conventional test
+//   naming pattern in Resilient source files).
+//
+// The lint is "default-off": it only fires when the caller sets
+// `LintOptions::deny_missing_contracts`. Use
+// `--deny-missing-contracts` on the `resilient lint` command line.
+
+fn run_l0010_missing_ensures(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        // Don't descend into impl blocks — method contracts are
+        // a separate concern (RES-344 scopes to top-level fns only).
+        if let Node::Function {
+            name,
+            ensures,
+            span,
+            ..
+        } = &spanned.node
+        {
+            // Skip underscore-prefixed helpers.
+            if name.starts_with('_') {
+                continue;
+            }
+            // Skip conventional test functions (names starting with "test_").
+            // These are the Resilient-source equivalent of Rust's #[test] fns.
+            if name.starts_with("test_") {
+                continue;
+            }
+            if ensures.is_empty() {
+                out.push(Lint {
+                    code: "L0010".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "public fn `{}` has no `ensures` clause — add a postcondition \
+                         or silence with `// resilient: allow L0010`",
+                        name
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
+}
+
+// ============================================================
 // Suppress-comment scanning
 // ============================================================
 //
@@ -1445,7 +1531,7 @@ mod tests {
     fn lint(src: &str) -> Vec<Lint> {
         let (program, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {errs:?}");
-        check(&program, src)
+        check_with_options(&program, src, &LintOptions::default())
     }
 
     fn codes(src: &str) -> Vec<String> {
@@ -2038,6 +2124,112 @@ mod tests {
         assert!(
             codes(src).contains(&"L0005".to_string()),
             "L0005 must fire for trailing bare return inside an impl method"
+        );
+    }
+
+    // ---------- L0010: missing `ensures` clause (RES-344) ----------
+
+    fn codes_with_deny_contracts(src: &str) -> Vec<String> {
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let opts = LintOptions {
+            deny_missing_contracts: true,
+            allow_missing_contracts: false,
+        };
+        check_with_options(&program, src, &opts)
+            .into_iter()
+            .map(|l| l.code)
+            .collect()
+    }
+
+    #[test]
+    fn l0010_fires_on_public_fn_without_ensures() {
+        // A plain function with no `ensures` clause should trigger L0010
+        // when --deny-missing-contracts is active.
+        let src = "fn add(int a, int b) -> int {\n    return a + b;\n}\n";
+        assert!(
+            codes_with_deny_contracts(src).contains(&"L0010".to_string()),
+            "L0010 must fire on a public fn with no ensures clause"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_when_ensures_present() {
+        // A function that has an `ensures` clause must not trigger L0010.
+        let src = "fn add(int a, int b) -> int ensures result == a + b {\n    return a + b;\n}\n";
+        assert!(
+            !codes_with_deny_contracts(src).contains(&"L0010".to_string()),
+            "L0010 must not fire when an ensures clause is present"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_for_underscore_prefixed_fn() {
+        // Functions whose name starts with `_` are treated as private
+        // helpers and are exempt from the missing-ensures lint.
+        let src = "fn _helper(int x) -> int {\n    return x + 1;\n}\n";
+        assert!(
+            !codes_with_deny_contracts(src).contains(&"L0010".to_string()),
+            "L0010 must not fire for underscore-prefixed fn names"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_for_test_fn() {
+        // Functions whose name starts with `test_` are treated as test
+        // helpers and are exempt from the missing-ensures lint.
+        let src = "fn test_roundtrip(int x) -> int {\n    return x;\n}\n";
+        assert!(
+            !codes_with_deny_contracts(src).contains(&"L0010".to_string()),
+            "L0010 must not fire for test_ prefixed fn names"
+        );
+    }
+
+    #[test]
+    fn l0010_silent_by_default_without_flag() {
+        // Without --deny-missing-contracts the lint must not fire even
+        // on a fn that clearly lacks an ensures clause.
+        let src = "fn no_contract(int x) -> int {\n    return x;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0010".to_string()),
+            "L0010 must be silent by default (--deny-missing-contracts not set)"
+        );
+    }
+
+    #[test]
+    fn l0010_suppressed_by_allow_missing_contracts() {
+        // --allow-missing-contracts suppresses L0010 even when
+        // --deny-missing-contracts is also set.
+        let src = "fn no_contract(int x) -> int {\n    return x;\n}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let opts = LintOptions {
+            deny_missing_contracts: true,
+            allow_missing_contracts: true,
+        };
+        let lints = check_with_options(&program, src, &opts);
+        assert!(
+            !lints.iter().any(|l| l.code == "L0010"),
+            "--allow-missing-contracts must suppress L0010"
+        );
+    }
+
+    #[test]
+    fn l0010_suppressed_by_allow_comment() {
+        // The standard `// resilient: allow L0010` comment on the line
+        // above the fn declaration should suppress the diagnostic.
+        let src = "// resilient: allow L0010\nfn no_contract(int x) -> int {\n    return x;\n}\n";
+        assert!(
+            !codes_with_deny_contracts(src).contains(&"L0010".to_string()),
+            "L0010 must be suppressible by the allow comment"
+        );
+    }
+
+    #[test]
+    fn known_codes_contains_l0010() {
+        assert!(
+            KNOWN_CODES.contains(&"L0010"),
+            "L0010 missing from KNOWN_CODES"
         );
     }
 }

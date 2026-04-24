@@ -11292,6 +11292,10 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut deny: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut allow: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // RES-344: --deny-missing-contracts / --allow-missing-contracts are
+    // shorthand aliases for --deny L0010 / --allow L0010 respectively.
+    let mut deny_missing_contracts = false;
+    let mut allow_missing_contracts = false;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
@@ -11347,6 +11351,14 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
                 return Some(2);
             }
             allow.insert(code.to_string());
+        } else if a == "--deny-missing-contracts" {
+            // RES-344: shorthand for --deny L0010 (missing `ensures`).
+            deny_missing_contracts = true;
+        } else if a == "--allow-missing-contracts" {
+            // RES-344: shorthand for --allow L0010; suppresses the
+            // missing-ensures warning even when --deny-missing-contracts
+            // is also present.
+            allow_missing_contracts = true;
         } else if file.is_none() {
             file = Some(PathBuf::from(a));
         } else {
@@ -11379,8 +11391,14 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
         return Some(2);
     }
 
+    // RES-344: build lint options from the parsed flags.
+    let lint_opts = lint::LintOptions {
+        deny_missing_contracts,
+        allow_missing_contracts,
+    };
+
     // Run lints.
-    let mut lints = lint::check(&program, &src);
+    let mut lints = lint::check_with_options(&program, &src, &lint_opts);
 
     // Apply `--allow` (drop) and `--deny` (severity bump).
     lints.retain(|l| !allow.contains(&l.code));
