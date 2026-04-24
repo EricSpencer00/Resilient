@@ -19,19 +19,20 @@ use std::sync::Mutex;
 
 use tower_lsp::jsonrpc::Result as JsonResult;
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, Location,
-    MarkedString, MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams,
-    RenameOptions, RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions,
-    WorkspaceEdit, WorkspaceSymbolParams,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
+    InlayHintServerCapabilities, Location, MarkedString, MessageType, OneOf, Position,
+    PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -1334,6 +1335,12 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
                 }),
+                // RES-357: advertise code-action support. Today only
+                // the "Add contract stubs" QuickFix is produced (for
+                // missing-contract diagnostics). Additional actions
+                // can be appended to the handler without changing
+                // this capability advertisement.
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -1862,6 +1869,67 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(items)))
     }
 
+    /// RES-357: respond to `textDocument/codeAction` — return
+    /// quick-fix actions for diagnostics in the requested range.
+    ///
+    /// Today we handle one diagnostic code: any diagnostic whose
+    /// message contains "missing contract" or whose source is
+    /// "resilient" and code is "L0003". For each such diagnostic we
+    /// emit an "Add contract stubs" QuickFix that inserts
+    /// `    requires true;\n    ensures true;\n` immediately after
+    /// the function's opening `{`.
+    ///
+    /// Returns `Ok(None)` when the document text isn't cached or
+    /// no actionable diagnostics are in the range.
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> JsonResult<Option<Vec<CodeActionOrCommand>>> {
+        let uri = params.text_document.uri;
+        let text = match self.documents_text.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(text) = text else {
+            return Ok(None);
+        };
+
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+
+        // Walk the diagnostics the client sent with the request.
+        // Clients include only the diagnostics that overlap the
+        // selected range — we honour all of them.
+        for diag in &params.context.diagnostics {
+            let is_missing_contract = diag.message.contains("missing contract")
+                || diag
+                    .source
+                    .as_deref()
+                    .map(|s| s == "resilient")
+                    .unwrap_or(false)
+                    && diag
+                        .code
+                        .as_ref()
+                        .map(|c| matches!(c, tower_lsp::lsp_types::NumberOrString::String(s) if s == "L0003"))
+                        .unwrap_or(false);
+
+            if !is_missing_contract {
+                continue;
+            }
+
+            if let Some(action) =
+                contract_stub_code_action(uri.clone(), &text, diag.range.start.line, diag.range)
+            {
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+        }
+
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
+    }
+
     /// RES-187: respond to `textDocument/semanticTokens/full` with
     /// a full-file token stream. Reads the cached source text,
     /// runs the lexer-driven classifier, and returns the delta-
@@ -1936,6 +2004,85 @@ impl LanguageServer for Backend {
         }
         Ok(Some(out))
     }
+}
+
+/// RES-357: scan forward from `from_line` (0-indexed LSP line) in
+/// `src` looking for the `{` that opens a function body. Returns
+/// the 0-indexed line number of the first line that contains a `{`
+/// at or after `from_line`, or `None` if we reach EOF without
+/// finding one.
+///
+/// The search is intentionally simple: find the first `{` after the
+/// diagnostic line. For normal Resilient function declarations the
+/// opening brace is on the same line as `fn name(...)`, possibly
+/// with a return-type annotation before it, so the search terminates
+/// in one step. Multi-line signatures are also handled because we
+/// scan forward.
+pub(crate) fn find_function_brace_line(src: &str, from_line: u32) -> Option<u32> {
+    for (idx, line) in src.lines().enumerate() {
+        if (idx as u32) < from_line {
+            continue;
+        }
+        if line.contains('{') {
+            return Some(idx as u32);
+        }
+    }
+    None
+}
+
+/// RES-357: build a "Add contract stubs" `CodeAction` for a
+/// missing-contract diagnostic. Returns `None` when there is no
+/// `{` on or after `diag_line` in `src` (can't place the insert).
+///
+/// The produced action inserts `    requires true;\n    ensures true;\n`
+/// at the start of the line immediately after the opening `{`,
+/// which is the conventional position for `requires`/`ensures`
+/// clauses in Resilient function bodies.
+pub(crate) fn contract_stub_code_action(
+    uri: Url,
+    src: &str,
+    diag_line: u32,
+    diag_range: Range,
+) -> Option<CodeAction> {
+    let brace_line = find_function_brace_line(src, diag_line)?;
+    let insert_pos = Position {
+        line: brace_line + 1,
+        character: 0,
+    };
+    let new_text = "    requires true;\n    ensures true;\n".to_string();
+    let edit = TextEdit {
+        range: Range {
+            start: insert_pos,
+            end: insert_pos,
+        },
+        new_text,
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri, vec![edit]);
+    Some(CodeAction {
+        title: "Add contract stubs".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![Diagnostic {
+            range: diag_range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            code: None,
+            code_description: None,
+            source: Some("resilient".into()),
+            message: "missing contract".to_string(),
+            related_information: None,
+            tags: None,
+            data: None,
+        }]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        }),
+        command: None,
+        is_preferred: Some(true),
+        disabled: None,
+        data: None,
+    })
 }
 
 /// Run the LSP server on stdin/stdout until the client shuts down.
@@ -3230,5 +3377,77 @@ fn main(int n) {\n\
         let defs = build_top_level_defs(&prog);
         let collision = find_top_level_def(&defs, "total").is_some();
         assert!(!collision, "unexpected collision for fresh name `total`");
+    }
+
+    // ============================================================
+    // RES-357: code action — add contract stubs
+    // ============================================================
+
+    #[test]
+    fn res357_find_function_brace_line_same_line() {
+        // Brace is on the same line as `fn`: expect line 0 back.
+        let src = "fn foo(int n) { return n; }";
+        let result = find_function_brace_line(src, 0);
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn res357_find_function_brace_line_next_line() {
+        // Brace is on the line AFTER the fn signature.
+        let src = "fn foo(int n)\n{\n    return n;\n}\n";
+        let result = find_function_brace_line(src, 0);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn res357_find_function_brace_line_from_offset() {
+        // Two functions: scanning from line 2 should find the second
+        // function's `{`, not the first.
+        let src = "fn a() { return 0; }\nfn b(int n)\n{\n    return n;\n}\n";
+        // from_line 2 skips lines 0–1, first `{` is on line 2.
+        let result = find_function_brace_line(src, 2);
+        assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn res357_find_function_brace_line_none_when_missing() {
+        // No brace anywhere in the source.
+        let src = "fn foo(int n)\n    return n;\n";
+        let result = find_function_brace_line(src, 0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn res357_contract_stub_code_action_inserts_after_brace() {
+        let src = "fn foo(int n) {\n    return n;\n}\n";
+        let uri = Url::parse("file:///tmp/test.rz").unwrap();
+        let diag_range = Range::new(Position::new(0, 0), Position::new(0, 0));
+        let action = contract_stub_code_action(uri.clone(), src, 0, diag_range);
+        let action = action.expect("expected a code action");
+
+        assert_eq!(action.title, "Add contract stubs");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+
+        // The workspace edit must insert the stubs after line 0 (the
+        // `{` line), i.e. at Position { line: 1, character: 0 }.
+        let edit = action.edit.expect("expected workspace edit");
+        let changes = edit.changes.expect("expected changes map");
+        let edits = changes.get(&uri).expect("expected edits for uri");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].range.start.line, 1);
+        assert_eq!(edits[0].range.start.character, 0);
+        assert_eq!(edits[0].range.end, edits[0].range.start); // pure insertion
+        assert_eq!(edits[0].new_text, "    requires true;\n    ensures true;\n");
+    }
+
+    #[test]
+    fn res357_contract_stub_code_action_none_without_brace() {
+        // If the source has no `{`, the action cannot be produced.
+        let src = "fn foo(int n)\n";
+        let uri = Url::parse("file:///tmp/test.rz").unwrap();
+        let diag_range = Range::new(Position::new(0, 0), Position::new(0, 0));
+        let result = contract_stub_code_action(uri, src, 0, diag_range);
+        assert!(result.is_none());
     }
 }
