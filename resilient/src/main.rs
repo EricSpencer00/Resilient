@@ -10343,7 +10343,12 @@ fn run_actor_verification(program: &Node) {
         return;
     };
     for spanned in statements {
-        if let Node::Actor { name, handlers, .. } = &spanned.node {
+        let actor_handlers: Option<(&str, &[ActorHandler])> = match &spanned.node {
+            Node::Actor { name, handlers, .. } => Some((name.as_str(), handlers.as_slice())),
+            Node::ActorDecl { name, handlers, .. } => Some((name.as_str(), handlers.as_slice())),
+            _ => None,
+        };
+        if let Some((name, handlers)) = actor_handlers {
             let verification = verifier_z3::check_actor_commutativity(name, handlers);
             for (a, b, result) in &verification.pairs {
                 match result {
