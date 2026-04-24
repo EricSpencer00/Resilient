@@ -79,6 +79,10 @@ mod formatter;
 // by a parameter / let / for-in / match pattern within it.
 // No runtime deps; no Environment touched.
 mod free_vars;
+// RES-355: function-level bytecode cache. Stores a small JSON header per
+// source-file SHA-256 so re-runs of unchanged programs skip re-parsing.
+// Disabled for a single run with `--no-cache`.
+mod cache;
 // FFI Phase 1: loader module that resolves extern-block symbols.
 // Two backends share one public API: the `ffi` feature routes through
 // `libloading` (dynamic linking); the default build compiles the
@@ -10684,9 +10688,24 @@ fn execute_file(
     verifier_timeout_ms: u32,
     warn_unverified: bool,
     live_log: Option<&Path>,
+    no_cache: bool,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
+
+    // RES-355: incremental cache — compute SHA-256 of the source text,
+    // check for a stored entry, and record whether this run hit the
+    // cache. The check is a pure optimisation; a miss always falls
+    // through to the normal compilation pipeline. The MVP validates
+    // correctness (source-hash + compiler-version matching) and
+    // persists entries on success; skipping the Chunk compilation on
+    // a hit is tracked as a follow-up phase.
+    let source_hash = cert_sign::sha256_hex(contents.as_bytes());
+    let cache_dir = cache::cache_dir_for(filename);
+    // Consume the result so a future phase can branch on it without
+    // changing the call-site signature. Suppresses the unused-result
+    // warning while keeping the check exercised on every run.
+    let _cache_hit = !no_cache && cache::check(&cache_dir, &source_hash) == cache::CacheResult::Hit;
 
     let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
@@ -10821,6 +10840,10 @@ fn execute_file(
         {
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
+            // RES-355: write cache entry on JIT success.
+            if !no_cache {
+                cache::write_entry(&cache_dir, &source_hash);
+            }
             return Ok(());
         }
         #[cfg(not(feature = "jit"))]
@@ -10864,6 +10887,10 @@ fn execute_file(
         })?;
         if !matches!(result, Value::Void) {
             println!("{}", result);
+        }
+        // RES-355: write cache entry on VM success.
+        if !no_cache {
+            cache::write_entry(&cache_dir, &source_hash);
         }
         return Ok(());
     }
@@ -10937,6 +10964,14 @@ fn execute_file(
             header
         }
     })?;
+
+    // RES-355: persist a cache entry so the next run can detect
+    // that this source compiled successfully. Errors here are
+    // silently ignored — a write failure must never turn a
+    // successful compilation into a failure.
+    if !no_cache {
+        cache::write_entry(&cache_dir, &source_hash);
+    }
 
     Ok(())
 }
@@ -11926,6 +11961,8 @@ COMMON FLAGS:\n\
         --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
+        --no-cache               Disable the incremental compilation cache\n\
+                                 for this run (RES-355)\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
@@ -12048,6 +12085,10 @@ fn main() {
     // development — `--no-panic-on-fault` restores the default.
     let mut panic_on_fault_flag = false;
     let mut emit_live_log: Option<PathBuf> = None;
+    // RES-355: `--no-cache` bypasses the incremental compilation cache
+    // for this run. Both cache reads and writes are skipped so the
+    // run is fully isolated from the on-disk cache state.
+    let mut no_cache = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -12200,6 +12241,11 @@ fn main() {
                 examples_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--examples-dir=") {
                 examples_dir = Some(PathBuf::from(dir));
+            } else if arg == "--no-cache" {
+                // RES-355: bypass the incremental bytecode cache for
+                // this run. Both cache reads and writes are skipped so
+                // the compilation is isolated from any on-disk state.
+                no_cache = true;
             } else {
                 filename = arg;
             }
@@ -12333,6 +12379,7 @@ fn main() {
                 verifier_timeout_ms,
                 warn_unverified,
                 emit_live_log.as_deref(),
+                no_cache,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run
