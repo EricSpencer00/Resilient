@@ -1370,6 +1370,7 @@ impl TypeChecker {
                 // Merge conflicts: keep ALL calls from both sides.
                 crate::try_catch::check(program, source_path)?;
                 crate::verifier_liveness::check(program, source_path)?;
+                crate::bounds_check::check_array_bounds(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
