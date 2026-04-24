@@ -1,3 +1,16 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/main.rs": {
+      "branch": "res-224-try-catch",
+      "claimed_at": "2026-04-24T14:24:28Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-224-try-catch",
+      "claimed_at": "2026-04-24T14:24:28Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-224-try-catch",
+      "claimed_at": "2026-04-24T14:24:28Z"
+    }
+  }
 }
