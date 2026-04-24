@@ -245,6 +245,7 @@ impl Formatter {
                 name,
                 state_fields,
                 always_clauses,
+                eventually_clauses,
                 receive_handlers,
                 ..
             } => {
@@ -260,6 +261,12 @@ impl Formatter {
                 for clause in always_clauses {
                     self.write("always: ");
                     self.fmt_expr(clause);
+                    self.write(";");
+                    self.newline();
+                }
+                for ev in eventually_clauses {
+                    self.write(&format!("eventually(after: {}): ", ev.target_handler));
+                    self.fmt_expr(&ev.post);
                     self.write(";");
                     self.newline();
                 }

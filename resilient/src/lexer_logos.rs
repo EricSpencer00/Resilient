@@ -219,6 +219,9 @@ enum Tok {
     ConcurrentEnsures,
     #[token("always")]
     Always,
+    // RES-388 follow-up: bounded-liveness `eventually(after: h): expr;`.
+    #[token("eventually")]
+    Eventually,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -554,6 +557,7 @@ fn convert(t: Tok) -> Token {
         Tok::Receive => Token::Receive,
         Tok::ConcurrentEnsures => Token::ConcurrentEnsures,
         Tok::Always => Token::Always,
+        Tok::Eventually => Token::Eventually,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

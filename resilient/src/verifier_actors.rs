@@ -140,6 +140,21 @@ pub(crate) fn verify_actor(
     out
 }
 
+/// RES-388 follow-up: public wrapper so the liveness verifier can
+/// reuse the same state-substitution routine without duplicating it.
+/// The module-private `substitute_state` stays the single source of
+/// truth.
+pub(crate) fn substitute_state_public(expr: &Node, state_name: &str, value: &Node) -> Node {
+    substitute_state(expr, state_name, value)
+}
+
+/// RES-388 follow-up: public wrapper so the liveness verifier can
+/// reuse the straight-line body walker. Returns `None` when the body
+/// contains unsupported constructs, matching the private helper.
+pub(crate) fn straight_line_post_public(body: &Node, state_name: &str) -> Option<Node> {
+    straight_line_post(body, state_name)
+}
+
 /// Substitute every `Identifier(state_name)` and every
 /// `FieldAccess { target = Identifier("self"), field = state_name }`
 /// inside `expr` with `value`. Returns a fresh node; `expr` is

@@ -1254,6 +1254,7 @@ impl TypeChecker {
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
                 // Merge conflicts: keep ALL calls from both sides.
+                crate::verifier_liveness::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -2008,6 +2009,7 @@ impl TypeChecker {
                 name,
                 state_fields,
                 always_clauses,
+                eventually_clauses,
                 receive_handlers,
                 ..
             } => {
@@ -2033,6 +2035,24 @@ impl TypeChecker {
                         return Err(format!(
                             "actor `{}` `always` invariant must be Bool, got {}",
                             name, ty
+                        ));
+                    }
+                }
+                // RES-388 follow-up: `eventually(after: h): P;` — `P`
+                // must type-check as Bool against the actor's state
+                // environment, and `h` must name a real handler.
+                for ev in eventually_clauses {
+                    let ty = self.check_node(&ev.post)?;
+                    if ty != Type::Bool && ty != Type::Any {
+                        return Err(format!(
+                            "actor `{}` `eventually` post-condition must be Bool, got {}",
+                            name, ty
+                        ));
+                    }
+                    if !receive_handlers.iter().any(|h| h.name == ev.target_handler) {
+                        return Err(format!(
+                            "actor `{}` `eventually(after: {})` references unknown handler",
+                            name, ev.target_handler
                         ));
                     }
                 }
