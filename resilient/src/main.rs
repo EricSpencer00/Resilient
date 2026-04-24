@@ -168,6 +168,8 @@ enum Token {
     ConcurrentEnsures,
     /// RES-388: actor-level `always: <expr>;` safety invariant.
     Always,
+    /// RES-361: `const NAME: T = expr;` — compile-time constant declaration.
+    Const,
 
     // Literals
     Identifier(String),
@@ -290,6 +292,7 @@ impl Token {
             Token::Receive => "`receive`".to_string(),
             Token::ConcurrentEnsures => "`concurrent_ensures`".to_string(),
             Token::Always => "`always`".to_string(),
+            Token::Const => "`const`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -683,6 +686,7 @@ impl Lexer {
                         "receive" => Token::Receive,
                         "concurrent_ensures" => Token::ConcurrentEnsures,
                         "always" => Token::Always,
+                        "const" => Token::Const,
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
                         // for `_` at the top of a match arm.
@@ -1261,6 +1265,17 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-361: `const NAME: T = expr;` — compile-time constant.
+    /// The expression is evaluated once before the program runs.
+    /// Constants are inlined at every use site; reassignment is an error.
+    Const {
+        name: String,
+        value: Box<Node>,
+        #[allow(dead_code)]
+        type_annot: Option<String>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-017: re-bind an existing variable. Fails at runtime if the
     /// name has not been declared with `let` or `static let`.
     Assignment {
@@ -1760,6 +1775,7 @@ impl Parser {
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
+            Token::Const => Some(self.parse_const_statement()),
             Token::Return => Some(self.parse_return_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
@@ -3338,6 +3354,75 @@ impl Parser {
                 name, value, span, ..
             } => Node::StaticLet { name, value, span },
             other => other, // error paths return a degenerate LetStatement
+        }
+    }
+
+    /// RES-361: `const NAME: T = expr;` — compile-time constant.
+    /// Parsed like a let statement but produces a Node::Const so the
+    /// const-eval pass can evaluate it before execution.
+    fn parse_const_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `const`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected identifier after 'const', found {}", tok));
+                return Node::Const {
+                    name: String::new(),
+                    value: Box::new(Node::IntegerLiteral {
+                        value: 0,
+                        span: span::Span::default(),
+                    }),
+                    type_annot: None,
+                    span: stmt_span,
+                };
+            }
+        };
+
+        self.next_token(); // skip name
+
+        let type_annot = if self.current_token == Token::Colon {
+            self.next_token(); // skip `:`
+            self.parse_type_annotation("after ':'")
+        } else {
+            None
+        };
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after 'const {}', found {}",
+                name, tok
+            ));
+            return Node::Const {
+                name,
+                value: Box::new(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }),
+                type_annot,
+                span: stmt_span,
+            };
+        }
+
+        self.next_token(); // skip `=`
+
+        let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
+
+        if self.peek_token == Token::Semicolon {
+            self.next_token(); // skip to semicolon
+        }
+
+        Node::Const {
+            name,
+            value: Box::new(value),
+            type_annot,
+            span: stmt_span,
         }
     }
 
@@ -8033,6 +8118,10 @@ struct Interpreter {
     /// Keyed by the static's identifier (caveat: two functions using the
     /// same static name currently share — good enough for MVP).
     statics: Rc<RefCell<HashMap<String, Value>>>,
+    /// RES-361: compile-time constants. Evaluated once before the program
+    /// runs; inlined at every identifier lookup. Shared (read-only) across
+    /// all sub-interpreters so that constants are visible inside functions.
+    consts: Rc<HashMap<String, Value>>,
     /// RES-068: function names whose `requires` clauses were 100%
     /// statically discharged across every observed call site. The
     /// runtime check for these is provably redundant — when binding a
@@ -8049,6 +8138,7 @@ impl Interpreter {
         Interpreter {
             env,
             statics: Rc::new(RefCell::new(HashMap::new())),
+            consts: Rc::new(HashMap::new()),
             proven_fns: Rc::new(HashSet::new()),
         }
     }
@@ -8194,6 +8284,10 @@ impl Interpreter {
                 Ok(Value::Void)
             }
             Node::Assignment { name, value, .. } => {
+                // RES-361: const names are immutable.
+                if self.consts.contains_key(name) {
+                    return Err(format!("Cannot assign to compile-time constant '{}'", name));
+                }
                 let val = self.eval(value)?;
                 if matches!(val, Value::Return(_)) {
                     return Ok(val);
@@ -8276,8 +8370,13 @@ impl Interpreter {
                 }
             }
             Node::ExpressionStatement { expr, .. } => self.eval(expr),
+            // RES-361: const declarations are handled in the pre-pass;
+            // at runtime they are a no-op.
+            Node::Const { .. } => Ok(Value::Void),
             Node::Identifier { name, .. } => {
-                if let Some(value) = self.env.get(name) {
+                if let Some(value) = self.consts.get(name) {
+                    Ok(value.clone())
+                } else if let Some(value) = self.env.get(name) {
                     Ok(value)
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
                     Ok(value)
@@ -8646,7 +8745,140 @@ impl Interpreter {
         }
     }
 
+    /// RES-361: evaluate all `const` declarations before program execution.
+    ///
+    /// Walks the top-level statements in source order. For each `Node::Const`
+    /// it evaluates the value expression using only previously-evaluated
+    /// constants (stored in a temporary `HashMap`). Cycle detection is done
+    /// with a `HashSet` of names currently being evaluated; if a constant
+    /// reference tries to look up a name that is still on the stack, we
+    /// emit a clear error.
+    ///
+    /// The resulting `HashMap<String, Value>` is installed into
+    /// `self.consts` (behind an `Rc`) so every sub-interpreter created
+    /// for function calls sees the same set of constants.
+    fn const_eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<()> {
+        let mut resolved: HashMap<String, Value> = HashMap::new();
+
+        for stmt in statements {
+            let Node::Const { name, value, .. } = &stmt.node else {
+                continue;
+            };
+            // Push the current const's name onto the evaluation stack
+            // so that any reference to itself (direct self-reference or
+            // mutual recursion that circles back here) is detected.
+            let mut evaluating: Vec<String> = vec![name.clone()];
+            let v = Self::eval_const_expr(value, &resolved, &mut evaluating)
+                .map_err(|e| decorate_runtime_error(e, &stmt.span))?;
+            resolved.insert(name.clone(), v);
+        }
+
+        self.consts = Rc::new(resolved);
+        Ok(())
+    }
+
+    /// Evaluate a constant expression recursively.
+    ///
+    /// Allowed sub-expressions:
+    /// - Integer and float literals
+    /// - Boolean literals
+    /// - String literals
+    /// - Prefix negation/not over a constant sub-expression
+    /// - Infix arithmetic / comparison over constant sub-expressions
+    /// - Identifiers that refer to an already-resolved constant
+    ///
+    /// Any other node (function call, array literal, etc.) is rejected
+    /// with a diagnostic describing what is allowed.
+    fn eval_const_expr(
+        node: &Node,
+        resolved: &HashMap<String, Value>,
+        evaluating: &mut Vec<String>,
+    ) -> RResult<Value> {
+        match node {
+            Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
+            Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
+            Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
+            Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            Node::Identifier { name, .. } => {
+                if evaluating.contains(name) {
+                    return Err(format!("error: circular constant definition: '{}'", name));
+                }
+                resolved.get(name).cloned().ok_or_else(|| {
+                    format!(
+                        "error: '{}' is not a compile-time constant (constants may only \
+                         reference other constants defined before them)",
+                        name
+                    )
+                })
+            }
+            Node::PrefixExpression {
+                operator, right, ..
+            } => {
+                let rv = Self::eval_const_expr(right, resolved, evaluating)?;
+                match (operator.as_str(), rv) {
+                    ("-", Value::Int(i)) => Ok(Value::Int(-i)),
+                    ("-", Value::Float(f)) => Ok(Value::Float(-f)),
+                    ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
+                    (op, v) => Err(format!(
+                        "error: operator '{}' cannot be applied to {} in a constant expression",
+                        op, v
+                    )),
+                }
+            }
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } => {
+                let lv = Self::eval_const_expr(left, resolved, evaluating)?;
+                let rv = Self::eval_const_expr(right, resolved, evaluating)?;
+                match (operator.as_str(), lv, rv) {
+                    ("+", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+                    ("-", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+                    ("*", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+                    ("/", Value::Int(a), Value::Int(b)) => {
+                        if b == 0 {
+                            Err("error: division by zero in constant expression".to_string())
+                        } else {
+                            Ok(Value::Int(a / b))
+                        }
+                    }
+                    ("%", Value::Int(a), Value::Int(b)) => {
+                        if b == 0 {
+                            Err("error: modulo by zero in constant expression".to_string())
+                        } else {
+                            Ok(Value::Int(a % b))
+                        }
+                    }
+                    ("+", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+                    ("-", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+                    ("*", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+                    ("/", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+                    (op, lv, rv) => Err(format!(
+                        "error: operator '{}' on ({}, {}) is not supported in a constant expression",
+                        op, lv, rv
+                    )),
+                }
+            }
+            other => Err(format!(
+                "error: '{}' is not a valid constant expression; \
+                 only literals, arithmetic, and constant references are allowed",
+                match other {
+                    Node::CallExpression { .. } => "function call".to_string(),
+                    Node::ArrayLiteral { .. } => "array literal".to_string(),
+                    Node::Block { .. } => "block".to_string(),
+                    _ => format!("{:?}", std::mem::discriminant(other)),
+                }
+            )),
+        }
+    }
+
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {
+        // RES-361: evaluate all `const` declarations first, before any
+        // function hoisting or statement execution.
+        self.const_eval_program(statements)?;
+
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
         // are Rc<RefCell> so the post-hoist mutation of the env is
@@ -9189,6 +9421,7 @@ impl Interpreter {
                 let mut interpreter = Interpreter {
                     env: extended_env,
                     statics: self.statics.clone(),
+                    consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
                 };
 
@@ -9273,6 +9506,7 @@ impl Interpreter {
                 let mut contract_interp = Interpreter {
                     env: contract_env.clone(),
                     statics: self.statics.clone(),
+                    consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
                 };
                 for pre in &requires {
@@ -9293,6 +9527,7 @@ impl Interpreter {
                     let mut post_interp = Interpreter {
                         env: contract_env,
                         statics: self.statics.clone(),
+                        consts: self.consts.clone(),
                         proven_fns: self.proven_fns.clone(),
                     };
                     post_interp.env.set("result".to_string(), result.clone());
@@ -20178,6 +20413,112 @@ mod tests {
             "expected undeclared-region message, got: {:?}",
             borrow_errs
         );
+    }
+
+    // --- RES-361: compile-time constants ---
+
+    #[test]
+    fn const_simple_integer_evaluates() {
+        let src = "const X: Int = 42;\nprintln(X);\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("should execute");
+        assert!(
+            matches!(interp.consts.get("X"), Some(Value::Int(42))),
+            "const X should be 42, got: {:?}",
+            interp.consts.get("X")
+        );
+    }
+
+    #[test]
+    fn const_arithmetic_over_other_consts() {
+        let src = "\
+            const A: Int = 16;\n\
+            const B: Int = 4;\n\
+            const C: Int = A * B;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("should execute");
+        assert!(
+            matches!(interp.consts.get("C"), Some(Value::Int(64))),
+            "const C should be 64, got: {:?}",
+            interp.consts.get("C")
+        );
+    }
+
+    #[test]
+    fn const_forward_reference_before_definition_is_error() {
+        // B is not yet defined when A tries to reference it.
+        let src = "\
+            const A: Int = B;\n\
+            const B: Int = 5;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("forward-ref const must fail");
+        assert!(
+            err.contains("'B'"),
+            "expected message about B, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn const_self_reference_is_circular_error() {
+        // A refers to itself — circular definition.
+        let src = "const A: Int = A;\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).expect_err("self-ref const must fail");
+        assert!(
+            err.contains("'A'"),
+            "expected message about A, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn const_assignment_is_error() {
+        // Trying to rebind a const name at runtime must be an error.
+        let src = "\
+            const MAX: Int = 10;\n\
+            MAX = 20;\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("reassigning const must fail");
+        assert!(
+            err.contains("constant"),
+            "expected constant-reassignment message, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn const_visible_inside_function() {
+        // Constants must be accessible inside function bodies.
+        let src = "\
+            const LIMIT: Int = 100;\n\
+            fn get_limit(int _d) {\n\
+                return LIMIT;\n\
+            }\n\
+            get_limit(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let result = interp.eval(&program).expect("should execute");
+        assert!(matches!(result, Value::Int(100)));
     }
 }
 

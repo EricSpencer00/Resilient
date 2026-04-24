@@ -2156,6 +2156,31 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
+            // RES-361: `const NAME: T = expr;` — type-check the value
+            // and bind the name as a constant in the type environment.
+            Node::Const {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
+                let value_type = self.check_node(value)?;
+                let bind_type = if let Some(ty_name) = type_annot {
+                    let declared = self.parse_type_name(ty_name)?;
+                    if !compatible(&declared, &value_type) {
+                        return Err(format!(
+                            "const {}: {} — value has type {}",
+                            name, declared, value_type
+                        ));
+                    }
+                    declared
+                } else {
+                    value_type.clone()
+                };
+                self.env.set(name.clone(), bind_type);
+                Ok(Type::Void)
+            }
+
             Node::Assignment { name, value, .. } => {
                 let _ = self.check_node(value)?;
                 // RES-063: any reassignment kills const-tracking. We
