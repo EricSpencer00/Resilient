@@ -6414,6 +6414,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("exp", builtin_exp),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
+    // RES-358: monotonic ns clock builtins. @io (non-pure).
+    // Embedded targets stub: a DWT-based implementation is future work.
+    ("clock_now", builtin_clock_now),
+    ("clock_elapsed", builtin_clock_elapsed),
     // RES-150: seedable SplitMix64 random builtins. std-only.
     ("random_int", builtin_random_int),
     ("random_float", builtin_random_float),
@@ -6907,6 +6911,64 @@ fn builtin_clock_ms(args: &[Value]) -> RResult<Value> {
         ms as i64
     };
     Ok(Value::Int(clamped))
+}
+
+/// `clock_now() -> Int` — @io — returns current monotonic time in nanoseconds
+/// since an unspecified process-lifetime epoch (same epoch as `clock_ms`).
+///
+/// The return value is a monotonically non-decreasing `Int`. It is only
+/// meaningful as a delta: capture two values with `clock_now()` and subtract
+/// to get elapsed nanoseconds, or use the `clock_elapsed` convenience builtin.
+///
+/// Embedded / no_std path: a DWT-cycle-counter implementation is future work;
+/// until then this builtin is std-only and will return `0` on bare-metal targets
+/// if/when it is wired up there.
+fn builtin_clock_now(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "clock_now: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+    let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+    // `as_nanos` returns u128; clamp to i64::MAX on overflow so
+    // long-running processes don't wrap or panic.
+    let clamped: i64 = if ns > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        ns as i64
+    };
+    Ok(Value::Int(clamped))
+}
+
+/// `clock_elapsed(start: Int) -> Int` — @io — returns nanoseconds elapsed
+/// since `start`, where `start` is a value previously returned by `clock_now()`.
+///
+/// Equivalent to `clock_now() - start`. The result is clamped to `0` if
+/// `start` is somehow in the future (e.g., due to argument misuse) so callers
+/// always receive a non-negative duration without panicking.
+fn builtin_clock_elapsed(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(start)] => {
+            let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+            let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+            let now_ns: i64 = if ns > i64::MAX as u128 {
+                i64::MAX
+            } else {
+                ns as i64
+            };
+            Ok(Value::Int(now_ns.saturating_sub(*start).max(0)))
+        }
+        [other] => Err(format!(
+            "clock_elapsed: argument must be Int (a value from clock_now()), got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "clock_elapsed: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// `Ok(v)` — wrap a success value as a Result.

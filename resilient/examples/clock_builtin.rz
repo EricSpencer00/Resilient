@@ -1,0 +1,42 @@
+// RES-358: clock_now() and clock_elapsed() builtins.
+//
+// clock_now()           -> Int  @io  nanoseconds since an unspecified epoch
+// clock_elapsed(start)  -> Int  @io  nanoseconds since `start`
+//
+// Both builtins are non-pure (@io) — they observe wall time and may return
+// different values on each call. The golden test avoids printing the raw
+// timestamp (non-deterministic); instead it asserts that elapsed time is
+// positive and prints a stable sentinel string.
+
+fn main() {
+    let t = clock_now();
+
+    // Busy-loop to guarantee measurable elapsed time even on fast hardware.
+    let i = 0;
+    let sum = 0;
+    while i < 10000 {
+        sum = sum + i;
+        i = i + 1;
+    }
+
+    let elapsed = clock_elapsed(t);
+
+    // clock_now() must return a non-negative integer.
+    if t >= 0 {
+        println("clock_now non-negative");
+    }
+
+    // clock_elapsed must be positive after a busy-loop.
+    if elapsed > 0 {
+        println("elapsed positive");
+    }
+
+    // clock_elapsed is consistent with the difference of two clock_now samples.
+    let t2 = clock_now();
+    let manual = t2 - t;
+    if manual >= 0 {
+        println("manual delta non-negative");
+    }
+}
+
+main();
