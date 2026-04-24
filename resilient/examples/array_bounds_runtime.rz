@@ -1,0 +1,21 @@
+// RES-351 demo: the index `pick` here is NOT bounded by any
+// in-scope `requires` clause or for-loop axiom, so the bounds-check
+// pass leaves the runtime check in place. On an out-of-range input
+// the VM returns `VmError::ArrayIndexOutOfBounds` — a recoverable
+// error, NOT a panic.
+//
+// Add `--deny-unproven-bounds` to turn this into a compile error.
+fn pick_one(int pick) -> int {
+    let xs = [100, 200, 300];
+    let y = xs[pick];
+    return y;
+}
+
+fn main() {
+    let a = pick_one(0);
+    let b = pick_one(2);
+    println(a);
+    println(b);
+}
+
+main();

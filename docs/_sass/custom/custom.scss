@@ -1,4 +1,4 @@
-// Brand colors
+// ── Brand tokens (consumed by just-the-docs) ─────────────────────────
 $link-color: #664bd3;
 $btn-primary-color: #664bd3;
 $body-heading-color: #2d1f60;
@@ -7,11 +7,17 @@ $sidebar-color: #f9f8ff;
 $base-button-color: #664bd3;
 $feedback-color: darken(#664bd3, 10%);
 
-// Brand font — Korigan ITC Std Light with Cormorant as web fallback
+// Internal aliases
+$rl-purple:       #664bd3;
+$rl-purple-light: #9b7ff0;
+$rl-dark:         #0e0b1e;
+$rl-mono:         "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+
+// ── Fonts ─────────────────────────────────────────────────────────────
 $heading-font-family: "Korigan ITC Std Light", "Cormorant", "Cormorant Garamond", Georgia, serif;
 $body-font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
-// Headings
+// ── Global heading styles ──────────────────────────────────────────────
 h1, h2, h3, h4, h5, h6,
 .site-title,
 .site-nav .nav-list-link {
@@ -20,56 +26,387 @@ h1, h2, h3, h4, h5, h6,
   letter-spacing: 0.02em;
 }
 
-// Site title (top-left wordmark area)
 .site-title {
   font-size: 1.6rem;
-  color: #664bd3 !important;
+  color: $rl-purple !important;
   letter-spacing: 0.04em;
 }
 
-// Logo sizing in sidebar
 .site-logo img {
   max-height: 48px;
   width: auto;
 }
 
-// Active nav item accent
 .nav-list-item .nav-list-link.active {
-  color: #664bd3;
-  border-left: 3px solid #664bd3;
+  color: $rl-purple;
+  border-left: 3px solid $rl-purple;
   padding-left: 0.75rem;
-  background-color: rgba(102, 75, 211, 0.06);
+  background-color: rgba($rl-purple, 0.06);
 }
 
-// Primary buttons
 .btn-primary {
-  background-color: #664bd3;
-  border-color: #664bd3;
-
+  background-color: $rl-purple;
+  border-color: $rl-purple;
   &:hover {
-    background-color: darken(#664bd3, 8%);
-    border-color: darken(#664bd3, 8%);
+    background-color: darken($rl-purple, 8%);
+    border-color: darken($rl-purple, 8%);
   }
 }
 
-// Code block accent
 .highlight {
-  border-left: 3px solid #664bd3;
+  border-left: 3px solid $rl-purple;
 }
 
-// Inline code
 code {
   color: #4a32a8;
-  background-color: rgba(102, 75, 211, 0.06);
+  background-color: rgba($rl-purple, 0.06);
 }
 
-// Horizontal rules
 hr {
-  border-color: #e8e4fa;
+  border-color: $border-color;
 }
 
-// Search highlight
 .search-result-highlight {
-  color: #664bd3;
+  color: $rl-purple;
   font-weight: 600;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// HERO
+// ═══════════════════════════════════════════════════════════════════════
+
+.rl-hero {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+  margin: -0.5rem 0 3rem;
+  padding: 2.5rem;
+  background: linear-gradient(145deg, #0e0b1e 0%, #1c1438 55%, #0e0b1e 100%);
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: -100px;
+    left: -60px;
+    width: 520px;
+    height: 520px;
+    background: radial-gradient(circle, rgba($rl-purple, 0.17) 0%, transparent 65%);
+    pointer-events: none;
+  }
+
+  @media (max-width: 860px) {
+    flex-direction: column;
+    padding: 2rem 1.5rem;
+  }
+}
+
+.rl-hero__left {
+  flex: 0 0 40%;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.rl-hero__right {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.rl-hero__eyebrow {
+  font-family: $rl-mono;
+  font-size: 0.67rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: $rl-purple-light;
+  margin-bottom: 1.1rem;
+}
+
+// Override just-the-docs h1 inside the dark hero
+.rl-hero h1 {
+  font-family: $heading-font-family !important;
+  font-size: clamp(2rem, 4vw, 3.2rem) !important;
+  font-weight: 300 !important;
+  line-height: 1.1 !important;
+  color: #ffffff !important;
+  margin: 0 0 1.1rem !important;
+  border-bottom: none !important;
+  padding-bottom: 0 !important;
+
+  em {
+    color: $rl-purple-light;
+    font-style: normal;
+  }
+}
+
+.rl-hero__sub {
+  font-size: 0.97rem;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 1.75rem;
+  max-width: 42ch;
+
+  code {
+    background: rgba($rl-purple, 0.28) !important;
+    color: #c4adf7 !important;
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    font-size: 0.9em;
+  }
+}
+
+.rl-hero__actions {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.rl-btn {
+  display: inline-block;
+  padding: 0.5rem 1.2rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none !important;
+  transition: all 0.18s ease;
+
+  &--primary {
+    background: $rl-purple;
+    color: #fff !important;
+    border: 1px solid $rl-purple;
+    &:hover {
+      background: lighten($rl-purple, 8%);
+      border-color: lighten($rl-purple, 8%);
+      transform: translateY(-1px);
+    }
+  }
+
+  &--secondary {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7) !important;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    &:hover {
+      border-color: rgba(255, 255, 255, 0.45);
+      color: #fff !important;
+    }
+  }
+}
+
+.rl-hero__badges {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.rl-badge {
+  font-family: $rl-mono;
+  font-size: 0.63rem;
+  letter-spacing: 0.07em;
+  color: rgba($rl-purple-light, 0.85);
+  background: rgba($rl-purple, 0.12);
+  border: 1px solid rgba($rl-purple, 0.25);
+  border-radius: 4px;
+  padding: 0.18rem 0.5rem;
+}
+
+// ── Code frame (hero right panel) ─────────────────────────────────────
+
+.rl-code-frame {
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba($rl-purple, 0.35);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.rl-code-frame__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.52rem 0.9rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba($rl-purple, 0.2);
+}
+
+.rl-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  &--red    { background: #ff5f57; }
+  &--yellow { background: #ffbd2e; }
+  &--green  { background: #28ca41; }
+}
+
+.rl-code-frame__label {
+  margin-left: auto;
+  font-family: $rl-mono;
+  font-size: 0.63rem;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.04em;
+}
+
+.rl-code {
+  display: block;
+  margin: 0 !important;
+  padding: 1.3rem 1.4rem !important;
+  background: transparent !important;
+  border: none !important;
+  border-left: none !important;
+  font-family: $rl-mono !important;
+  font-size: 0.79rem !important;
+  line-height: 1.65 !important;
+  color: #d4d0f0 !important;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+// Syntax token colours (used inside .rl-code)
+.rl-kw { color: #c792ea; font-weight: 500; }  // keywords
+.rl-fn { color: #82aaff; }                      // function names
+.rl-ty { color: #ffcb6b; }                      // types
+.rl-cm { color: #546e91; font-style: italic; }  // comments
+.rl-st { color: #c3e88d; }                      // strings
+.rl-nu { color: #f78c6c; }                      // numbers
+
+// ═══════════════════════════════════════════════════════════════════════
+// FEATURE CARDS
+// ═══════════════════════════════════════════════════════════════════════
+
+.rl-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 2.5rem;
+}
+
+.rl-card {
+  background: #f9f8ff;
+  border: 1px solid $border-color;
+  border-radius: 10px;
+  padding: 1.4rem 1.25rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+
+  &:hover {
+    border-color: #c5b8f5;
+    box-shadow: 0 4px 20px rgba($rl-purple, 0.09);
+  }
+
+  &__glyph {
+    font-family: $rl-mono;
+    font-size: 0.68rem;
+    color: $rl-purple;
+    background: rgba($rl-purple, 0.08);
+    border: 1px solid rgba($rl-purple, 0.18);
+    border-radius: 4px;
+    padding: 0.15rem 0.45rem;
+    display: inline-block;
+    margin-bottom: 0.85rem;
+    letter-spacing: 0.04em;
+  }
+
+  &__title {
+    font-family: $heading-font-family;
+    font-size: 1.15rem;
+    font-weight: 400;
+    color: $body-heading-color;
+    margin: 0 0 0.55rem;
+    display: block;
+    letter-spacing: 0.01em;
+  }
+
+  &__body {
+    font-size: 0.875rem;
+    color: #555;
+    line-height: 1.55;
+    margin: 0;
+
+    code {
+      font-size: 0.82em;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// STATS STRIP
+// ═══════════════════════════════════════════════════════════════════════
+
+.rl-stats {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 0 2.5rem;
+  background: #f9f8ff;
+  border: 1px solid $border-color;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.rl-stat {
+  flex: 1 1 0;
+  min-width: 110px;
+  padding: 1.1rem 1.4rem;
+  border-right: 1px solid $border-color;
+
+  &:last-child { border-right: none; }
+
+  &__value {
+    font-family: $rl-mono;
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: $rl-purple;
+    line-height: 1;
+    margin-bottom: 0.28rem;
+  }
+
+  &__label {
+    font-size: 0.71rem;
+    color: #888;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TERMINAL / COMPILER OUTPUT
+// ═══════════════════════════════════════════════════════════════════════
+
+.rl-terminal {
+  background: $rl-dark;
+  border: 1px solid rgba($rl-purple, 0.3);
+  border-radius: 9px;
+  overflow: hidden;
+  margin: 0.5rem 0 2.5rem;
+
+  &__bar {
+    padding: 0.5rem 0.9rem;
+    background: rgba(0, 0, 0, 0.32);
+    border-bottom: 1px solid rgba($rl-purple, 0.2);
+    font-family: $rl-mono;
+    font-size: 0.63rem;
+    color: rgba(255, 255, 255, 0.3);
+  }
+
+  pre {
+    margin: 0 !important;
+    padding: 1.2rem 1.4rem !important;
+    background: transparent !important;
+    border: none !important;
+    border-left: none !important;
+    font-family: $rl-mono !important;
+    font-size: 0.8rem !important;
+    line-height: 1.7 !important;
+    color: #a8b4cc !important;
+    overflow-x: auto;
+  }
+}
+
+// Terminal token colours
+.rl-ok   { color: #28ca41; }
+.rl-warn { color: #ffbd2e; }
+.rl-err  { color: #ff5f57; }
+.rl-path { color: #82aaff; }
+.rl-cert { color: #c4adf7; }
