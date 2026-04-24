@@ -10416,6 +10416,7 @@ fn execute_file(
     verifier_timeout_ms: u32,
     warn_unverified: bool,
     live_log: Option<&Path>,
+    #[cfg(feature = "z3")] z3_theory: verifier_z3::Z3Theory,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
@@ -10487,7 +10488,7 @@ fn execute_file(
     let mut proven_fns: HashSet<String> = HashSet::new();
     if want_typecheck {
         println!("Running type checker...");
-        let mut tc = typechecker::TypeChecker::new()
+        let tc_base = typechecker::TypeChecker::new()
             // RES-137: apply the driver's --verifier-timeout-ms
             // value. A fresh `TypeChecker::new()` defaults to 5000;
             // passing the CLI value through keeps the flag
@@ -10497,6 +10498,11 @@ fn execute_file(
             // default (on) surfaces `warning[partial-proof]`
             // diagnostics whenever Z3 returns Unknown.
             .with_warn_unverified(warn_unverified);
+        // RES-354: apply the --z3-theory flag when z3 feature is on.
+        #[cfg(feature = "z3")]
+        let mut tc = tc_base.with_z3_theory(z3_theory);
+        #[cfg(not(feature = "z3"))]
+        let mut tc = tc_base;
         // RES-080: pass the source filename so per-statement errors
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
@@ -11428,6 +11434,9 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut quiet = false;
     let mut verifier_timeout_ms: u32 = 5000;
+    // RES-354: theory selection (z3-gated; default Auto).
+    #[cfg(feature = "z3")]
+    let mut z3_theory: verifier_z3::Z3Theory = verifier_z3::Z3Theory::Auto;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
@@ -11454,6 +11463,46 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                     return Some(2);
                 }
             };
+        } else if a == "--z3-theory" {
+            // RES-354: SMT theory override for `check` subcommand.
+            i += 1;
+            if i >= args.len() {
+                eprintln!("Error: --z3-theory requires an argument: bv, lia, or auto");
+                return Some(2);
+            }
+            #[cfg(feature = "z3")]
+            {
+                z3_theory = match args[i].as_str() {
+                    "bv" => verifier_z3::Z3Theory::Bv,
+                    "lia" => verifier_z3::Z3Theory::Lia,
+                    "auto" => verifier_z3::Z3Theory::Auto,
+                    other => {
+                        eprintln!(
+                            "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                            other
+                        );
+                        return Some(2);
+                    }
+                };
+            }
+        } else if let Some(val) = a.strip_prefix("--z3-theory=") {
+            #[cfg(feature = "z3")]
+            {
+                z3_theory = match val {
+                    "bv" => verifier_z3::Z3Theory::Bv,
+                    "lia" => verifier_z3::Z3Theory::Lia,
+                    "auto" => verifier_z3::Z3Theory::Auto,
+                    other => {
+                        eprintln!(
+                            "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                            other
+                        );
+                        return Some(2);
+                    }
+                };
+            }
+            #[cfg(not(feature = "z3"))]
+            let _ = val;
         } else if file.is_none() && !a.starts_with('-') {
             file = Some(PathBuf::from(a));
         } else {
@@ -11504,9 +11553,14 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 
     // Type-check (Z3 verifier runs automatically when built with --features z3).
-    let mut tc = typechecker::TypeChecker::new()
+    let tc_base = typechecker::TypeChecker::new()
         .with_verifier_timeout_ms(verifier_timeout_ms)
         .with_warn_unverified(!quiet);
+    // RES-354: apply the --z3-theory flag when z3 feature is on.
+    #[cfg(feature = "z3")]
+    let mut tc = tc_base.with_z3_theory(z3_theory);
+    #[cfg(not(feature = "z3"))]
+    let mut tc = tc_base;
     match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
         Ok(_) => {
             // RES-390: distributed-invariant verification runs
@@ -11770,6 +11824,11 @@ fn main() {
     // never silent; `--no-warn-unverified` suppresses them for CI
     // pipelines that deliberately accept best-effort verification.
     let mut warn_unverified: bool = true;
+    // RES-354: SMT theory selection. Default Auto (BV32 if bitwise ops
+    // present, LIA otherwise). `--z3-theory=bv` forces BV32;
+    // `--z3-theory=lia` forces LIA (bails to None if bitwise ops found).
+    #[cfg(feature = "z3")]
+    let mut z3_theory: verifier_z3::Z3Theory = verifier_z3::Z3Theory::Auto;
     // RES-150: `--seed <u64>` pins the RNG seed for determinism.
     // `None` → fall back to clock-derived seed at startup.
     let mut seed_override: Option<u64> = None;
@@ -11877,6 +11936,48 @@ fn main() {
                 // Intended for CI pipelines that already gate on
                 // verification signals and don't want the noise.
                 warn_unverified = false;
+            } else if arg == "--z3-theory" {
+                // RES-354: override SMT theory selection.
+                // `--z3-theory bv` forces BV32; `--z3-theory lia`
+                // forces LIA (fails on bitwise ops); default: auto.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --z3-theory requires an argument: bv, lia, or auto");
+                    std::process::exit(2);
+                }
+                #[cfg(feature = "z3")]
+                {
+                    z3_theory = match args[i].as_str() {
+                        "bv" => verifier_z3::Z3Theory::Bv,
+                        "lia" => verifier_z3::Z3Theory::Lia,
+                        "auto" => verifier_z3::Z3Theory::Auto,
+                        other => {
+                            eprintln!(
+                                "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                                other
+                            );
+                            std::process::exit(2);
+                        }
+                    };
+                }
+            } else if let Some(val) = arg.strip_prefix("--z3-theory=") {
+                #[cfg(feature = "z3")]
+                {
+                    z3_theory = match val {
+                        "bv" => verifier_z3::Z3Theory::Bv,
+                        "lia" => verifier_z3::Z3Theory::Lia,
+                        "auto" => verifier_z3::Z3Theory::Auto,
+                        other => {
+                            eprintln!(
+                                "Error: --z3-theory must be `bv`, `lia`, or `auto`; got {:?}",
+                                other
+                            );
+                            std::process::exit(2);
+                        }
+                    };
+                }
+                #[cfg(not(feature = "z3"))]
+                let _ = val; // silence unused warning on non-z3 builds
             } else if arg == "--seed" {
                 // RES-150: `--seed <u64>` pins the SplitMix64 PRNG.
                 // Reproducible runs: same seed → same sequence.
@@ -12057,6 +12158,8 @@ fn main() {
                 verifier_timeout_ms,
                 warn_unverified,
                 emit_live_log.as_deref(),
+                #[cfg(feature = "z3")]
+                z3_theory,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run

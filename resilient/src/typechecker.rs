@@ -502,15 +502,35 @@ fn z3_prove(_expr: &Node, _bindings: &HashMap<String, i64>) -> Option<bool> {
 /// diagnostics. RES-137: fourth slot is `true` when Z3 returned
 /// Unknown (per-query timeout fired); callers bump the timed-out
 /// audit counter and emit a hint instead of treating as a proof
-/// failure. Without `--features z3`, returns all-`None` / `false`.
+/// failure. RES-354: `theory` selects the SMT encoding (Auto/Bv/Lia).
+/// Without `--features z3`, returns all-`None` / `false`.
 #[cfg(feature = "z3")]
+#[allow(dead_code)]
 fn z3_prove_with_cert(
     expr: &Node,
     bindings: &HashMap<String, i64>,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    z3_prove_with_cert_theory(
+        expr,
+        bindings,
+        timeout_ms,
+        crate::verifier_z3::Z3Theory::Auto,
+    )
+}
+
+/// RES-354: theory-aware variant of `z3_prove_with_cert`. Uses
+/// `prove_auto` which auto-selects BV32/LIA based on the theory hint
+/// and the presence of bitwise operations.
+#[cfg(feature = "z3")]
+fn z3_prove_with_cert_theory(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+    theory: crate::verifier_z3::Z3Theory,
+) -> (Option<bool>, Option<String>, Option<String>, bool) {
     let (verdict, cert, cx, timed_out) =
-        crate::verifier_z3::prove_with_timeout(expr, bindings, timeout_ms);
+        crate::verifier_z3::prove_auto(expr, bindings, theory, timeout_ms);
     (verdict, cert.map(|c| c.smt2), cx, timed_out)
 }
 #[cfg(not(feature = "z3"))]
@@ -649,6 +669,11 @@ pub struct TypeChecker {
     /// blocks) cannot raise checked failures today and must only
     /// invoke fns with an empty `fails` set.
     current_fn_fails: Option<Vec<String>>,
+    /// RES-354: SMT theory selection. Auto-detect (BV32 if bitwise
+    /// ops are present, LIA otherwise) by default. The driver
+    /// overrides this from `--z3-theory <bv|lia|auto>`.
+    #[cfg(feature = "z3")]
+    z3_theory: crate::verifier_z3::Z3Theory,
 }
 
 impl TypeChecker {
@@ -1078,6 +1103,9 @@ impl TypeChecker {
             let_type_hints: Vec::new(),
             // RES-387: no enclosing fn at program start.
             current_fn_fails: None,
+            // RES-354: auto-detect theory by default.
+            #[cfg(feature = "z3")]
+            z3_theory: crate::verifier_z3::Z3Theory::Auto,
         }
     }
 
@@ -1099,6 +1127,16 @@ impl TypeChecker {
     /// for CI runs that want a quieter stderr.
     pub fn with_warn_unverified(mut self, on: bool) -> Self {
         self.warn_unverified = on;
+        self
+    }
+
+    /// RES-354: override the SMT theory used for Z3 encoding.
+    /// `Z3Theory::Auto` (default) picks BV32 when bitwise ops are
+    /// detected; `Bv` forces BV32; `Lia` forces LIA (bails on
+    /// bitwise ops). Driver calls this from `--z3-theory`.
+    #[cfg(feature = "z3")]
+    pub fn with_z3_theory(mut self, theory: crate::verifier_z3::Z3Theory) -> Self {
+        self.z3_theory = theory;
         self
     }
 
@@ -1411,8 +1449,22 @@ impl TypeChecker {
                         // RES-071: capture the SMT-LIB2 certificate
                         // alongside the verdict so the driver can dump
                         // it to disk if --emit-certificate is set.
-                        let (v, cert, cx, timed_out) =
-                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
+                        // RES-354: thread the theory selection through.
+                        let (v, cert, cx, timed_out) = {
+                            #[cfg(feature = "z3")]
+                            {
+                                z3_prove_with_cert_theory(
+                                    clause,
+                                    &no_bindings,
+                                    self.verifier_timeout_ms,
+                                    self.z3_theory,
+                                )
+                            }
+                            #[cfg(not(feature = "z3"))]
+                            {
+                                z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms)
+                            }
+                        };
                         verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
@@ -1490,8 +1542,22 @@ impl TypeChecker {
                     let mut verdict = fold_const_bool(clause, &no_bindings);
                     let mut cx: Option<String> = None;
                     if verdict.is_none() {
-                        let (v, _cert, c, _timed_out) =
-                            z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms);
+                        // RES-354: use theory-aware prover.
+                        let (v, _cert, c, _timed_out) = {
+                            #[cfg(feature = "z3")]
+                            {
+                                z3_prove_with_cert_theory(
+                                    clause,
+                                    &no_bindings,
+                                    self.verifier_timeout_ms,
+                                    self.z3_theory,
+                                )
+                            }
+                            #[cfg(not(feature = "z3"))]
+                            {
+                                z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms)
+                            }
+                        };
                         verdict = v;
                         cx = c;
                     }
@@ -2411,8 +2477,22 @@ impl TypeChecker {
                         // (only when the binary was built --features z3).
                         if verdict.is_none() {
                             // RES-071: also capture certificate.
-                            let (v, cert, cx, timed_out) =
-                                z3_prove_with_cert(clause, &bindings, self.verifier_timeout_ms);
+                            // RES-354: use theory-aware prover.
+                            let (v, cert, cx, timed_out) = {
+                                #[cfg(feature = "z3")]
+                                {
+                                    z3_prove_with_cert_theory(
+                                        clause,
+                                        &bindings,
+                                        self.verifier_timeout_ms,
+                                        self.z3_theory,
+                                    )
+                                }
+                                #[cfg(not(feature = "z3"))]
+                                {
+                                    z3_prove_with_cert(clause, &bindings, self.verifier_timeout_ms)
+                                }
+                            };
                             verdict = v;
                             if verdict.is_some() {
                                 self.stats.requires_discharged_by_z3 += 1;
