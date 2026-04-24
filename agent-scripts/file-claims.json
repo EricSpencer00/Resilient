@@ -1,3 +1,16 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/main.rs": {
+      "branch": "res-143-array-bounds",
+      "claimed_at": "2026-04-24T14:35:04Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-143-array-bounds",
+      "claimed_at": "2026-04-24T14:35:04Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-143-array-bounds",
+      "claimed_at": "2026-04-24T14:35:04Z"
+    }
+  }
 }

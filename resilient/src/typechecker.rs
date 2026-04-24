@@ -1254,6 +1254,7 @@ impl TypeChecker {
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
                 // Merge conflicts: keep ALL calls from both sides.
+                crate::bounds_check::check_array_bounds(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
