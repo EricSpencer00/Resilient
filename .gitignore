@@ -20,3 +20,5 @@ benchmarks/sum/sum_native
 !.claude/file-claims.json
 .worktrees/
 docs/.DS_Store
+# RES-355: incremental compilation cache (local, per-source-dir)
+**/.resilient_cache/

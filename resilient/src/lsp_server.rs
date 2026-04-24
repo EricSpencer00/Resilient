@@ -626,6 +626,14 @@ fn walk_call_sites(node: &Node, target: &str, out: &mut Vec<Range>) {
         Node::FieldAccess { target: obj, .. } | Node::TryExpression { expr: obj, .. } => {
             walk_call_sites(obj, target, out);
         }
+        Node::OptionalChain { object, access, .. } => {
+            walk_call_sites(object, target, out);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    walk_call_sites(a, target, out);
+                }
+            }
+        }
         Node::FieldAssignment {
             target: obj, value, ..
         } => {

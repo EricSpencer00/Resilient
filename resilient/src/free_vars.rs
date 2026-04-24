@@ -338,6 +338,14 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             }
         }
         Node::TryExpression { expr, .. } => walk(expr, bound, free),
+        Node::OptionalChain { object, access, .. } => {
+            walk(object, bound, free);
+            if let crate::ChainAccess::Method(_, args) = access {
+                for a in args {
+                    walk(a, bound, free);
+                }
+            }
+        }
         Node::IndexExpression { target, index, .. } => {
             walk(target, bound, free);
             walk(index, bound, free);

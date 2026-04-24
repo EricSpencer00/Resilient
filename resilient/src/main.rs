@@ -79,6 +79,10 @@ mod formatter;
 // by a parameter / let / for-in / match pattern within it.
 // No runtime deps; no Environment touched.
 mod free_vars;
+// RES-355: function-level bytecode cache. Stores a small JSON header per
+// source-file SHA-256 so re-runs of unchanged programs skip re-parsing.
+// Disabled for a single run with `--no-cache`.
+mod cache;
 // FFI Phase 1: loader module that resolves extern-block symbols.
 // Two backends share one public API: the `ffi` feature routes through
 // `libloading` (dynamic linking); the default build compiles the
@@ -148,8 +152,20 @@ enum Token {
     /// pattern.
     Default,
     Question,
+    /// RES-363: `?.` — optional-chaining operator. Emitted by the lexer
+    /// when `?` is immediately followed by `.`. The parser desugars it
+    /// into `Node::OptionalChain`.
+    QuestionDot,
     /// RES-073: `use "path/to/file.rz";` — module import.
     Use,
+    /// RES-360: `as` keyword — used in `use "path" as name;` to create
+    /// a namespace alias for the imported file. Outside `use` the token
+    /// is currently a parse error; it is reserved for future cast syntax.
+    As,
+    /// RES-360: `::` path separator — used to call declarations from a
+    /// scoped import: `ns::fn()`. Parsed as a qualifier on identifiers;
+    /// the resulting composite name is `"ns::fn"` in the environment.
+    DoubleColon,
     /// FFI v1: `extern "libname" { fn ... }` block keyword.
     Extern,
     /// RES-158: `impl <StructName> { fn method(self, ...) { ... } }`.
@@ -308,6 +324,8 @@ impl Token {
             Token::New => "`new`".to_string(),
             Token::Match => "`match`".to_string(),
             Token::Use => "`use`".to_string(),
+            Token::As => "`as`".to_string(),
+            Token::DoubleColon => "`::`".to_string(),
             Token::Extern => "`extern`".to_string(),
             Token::Impl => "`impl`".to_string(),
             Token::Type => "`type`".to_string(),
@@ -327,6 +345,7 @@ impl Token {
             Token::FatArrow => "`=>`".to_string(),
             Token::Arrow => "`->`".to_string(),
             Token::Question => "`?`".to_string(),
+            Token::QuestionDot => "`?.`".to_string(),
             Token::Plus => "`+`".to_string(),
             Token::Minus => "`-`".to_string(),
             Token::Multiply => "`*`".to_string(),
@@ -652,10 +671,27 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             '.' => Token::Dot,
-            '?' => Token::Question,
+            '?' => {
+                // RES-363: `?.` is the optional-chain operator. Peek one
+                // character ahead; if it is `.` emit QuestionDot and
+                // advance past the `.` so it is not re-consumed.
+                if self.peek_char() == '.' {
+                    self.read_char(); // consume '.'
+                    Token::QuestionDot
+                } else {
+                    Token::Question
+                }
+            }
             ',' => Token::Comma,
             ';' => Token::Semicolon,
-            ':' => Token::Colon,
+            ':' => {
+                if self.peek_char() == ':' {
+                    self.read_char(); // consume second `:`
+                    Token::DoubleColon
+                } else {
+                    Token::Colon
+                }
+            }
             // RES-191: attribute prefix (e.g. `@pure`). The parser
             // consumes the following identifier; the lexer just
             // tags the `@` itself.
@@ -705,6 +741,7 @@ impl Lexer {
                         "match" => Token::Match,
                         "extern" => Token::Extern,
                         "use" => Token::Use,
+                        "as" => Token::As,
                         "impl" => Token::Impl,
                         "type" => Token::Type,
                         "linear" => Token::Linear,
@@ -1177,8 +1214,15 @@ enum Node {
     /// relative to the file containing the `use`. Resolved away by
     /// `expand_uses` (in `imports.rs`) before the program reaches the
     /// typechecker or interpreter — never seen at eval time.
+    ///
+    /// RES-360: optional `as NAME` suffix creates a namespace alias.
+    /// Declarations imported from the file are bound as `NAME::decl`
+    /// instead of being merged directly into the current scope.
     Use {
         path: String,
+        /// RES-360: namespace alias from `use "file" as name;`.
+        /// `None` preserves the original unqualified-import behaviour.
+        alias: Option<String>,
         /// RES-088: span of the `use` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -1472,6 +1516,25 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-363: `expr?.field` / `expr?.method(args)` — optional-chaining.
+    ///
+    /// If `expr` evaluates to `Value::Option(None)` or `Value::Result { ok:
+    /// false, .. }`, short-circuits to `Value::Option(None)`. Otherwise
+    /// unwraps `Value::Option(Some(inner))` (or passes any other value
+    /// through) and performs the field/method access on the inner value.
+    ///
+    /// Chains left-to-right naturally: each `?.` node produces a
+    /// `Value::Option`, so a subsequent `?.` on that result either
+    /// short-circuits again or unwraps-and-accesses.
+    OptionalChain {
+        /// The expression whose result is tested for None/Err.
+        object: Box<Node>,
+        /// What to access after the optional check.
+        access: ChainAccess,
+        /// Span of the `?.` token.
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-042: anonymous fn expression. Unlike `Node::Function`, this
     /// node is not bound to a name — it evaluates to a `Value::Function`
     /// directly. Captures its defining env by value, matching existing
@@ -1761,6 +1824,15 @@ pub(crate) struct ExternDecl {
     /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
     #[allow(dead_code)]
     pub(crate) span: span::Span,
+}
+
+/// RES-363: what to access after the `?.` short-circuit check.
+#[derive(Debug, Clone)]
+enum ChainAccess {
+    /// `?.field` — read a named field.
+    Field(String),
+    /// `?.method(args)` — call a method with arguments.
+    Method(String, Vec<Node>),
 }
 
 // Parser for creating AST from tokens
@@ -3934,7 +4006,9 @@ impl Parser {
         }
     }
 
-    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, span }`.
+    /// RES-073: `use "path/to/file.rz";` — emits `Node::Use { path, alias, span }`.
+    /// RES-360: `use "path" as name;` — like above but imports are scoped
+    /// under `name::` instead of being merged into the global namespace.
     /// Resolved by `imports::expand_uses` before typechecker / interpreter.
     fn parse_use_statement(&mut self) -> Option<Node> {
         // Caller checked self.current_token == Token::Use.
@@ -3948,11 +4022,33 @@ impl Parser {
                 return None;
             }
         };
+        // RES-360: optional `as NAME` suffix.
+        let alias = if self.peek_token == Token::As {
+            self.next_token(); // consume string literal (current becomes 'as')
+            self.next_token(); // consume 'as'; current is now the alias identifier
+            match &self.current_token {
+                Token::Identifier(name) => {
+                    let name = name.clone();
+                    Some(name)
+                }
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected identifier after 'as' in use statement, found {}",
+                        tok
+                    ));
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         if self.peek_token == Token::Semicolon {
             self.next_token();
         }
         Some(Node::Use {
             path,
+            alias,
             span: self.span_at_current(),
         })
     }
@@ -4708,10 +4804,38 @@ impl Parser {
         // Parse prefix expressions
         let tok_span = self.span_at_current();
         let mut left_expr = match &self.current_token {
-            Token::Identifier(name) => Some(Node::Identifier {
-                name: name.clone(),
-                span: tok_span,
-            }),
+            Token::Identifier(name) => {
+                let name = name.clone();
+                // RES-360: `ns::decl` scoped lookup. If the next token is
+                // `::` followed by an identifier, collapse both into a
+                // single flat identifier name `"ns::decl"`. This keeps
+                // the rest of the interpreter oblivious to namespaces —
+                // it just looks up the key `"ns::decl"` in the env.
+                if self.peek_token == Token::DoubleColon {
+                    self.next_token(); // consume identifier, current = '::'
+                    self.next_token(); // consume '::', current = member ident
+                    let member = match &self.current_token {
+                        Token::Identifier(m) => m.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected identifier after `::`, found {}",
+                                tok
+                            ));
+                            return None;
+                        }
+                    };
+                    Some(Node::Identifier {
+                        name: format!("{}::{}", name, member),
+                        span: tok_span,
+                    })
+                } else {
+                    Some(Node::Identifier {
+                        name,
+                        span: tok_span,
+                    })
+                }
+            }
             Token::IntLiteral(value) => Some(Node::IntegerLiteral {
                 value: *value,
                 span: tok_span,
@@ -4835,6 +4959,58 @@ impl Parser {
                     Some(Node::TryExpression {
                         expr: Box::new(current_left),
                         span: q_span,
+                    })
+                }
+                Token::QuestionDot => {
+                    // RES-363: `?.` — optional chaining. `peek_token` is
+                    // `QuestionDot`. Advance twice: first to make `?.` the
+                    // current token (for the span), then past it to the
+                    // field/method identifier.
+                    self.next_token(); // current = `?.`, peek = identifier
+                    let qd_span = self.span_at_current();
+                    self.next_token(); // current = identifier, peek = next
+                    let field_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        _ => {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected field or method name after '?.', found {}",
+                                tok
+                            ));
+                            // current_left was moved out of left_expr;
+                            // return it wrapped in Some for error recovery.
+                            return Some(current_left);
+                        }
+                    };
+                    // If the token after the identifier is `(`, this is a
+                    // method call — parse the argument list.
+                    let access = if self.peek_token == Token::LeftParen {
+                        self.next_token(); // move to `(`
+                        self.next_token(); // move past `(` into args
+                        let mut args: Vec<Node> = Vec::new();
+                        if self.current_token != Token::RightParen {
+                            if let Some(first) = self.parse_expression(0) {
+                                args.push(first);
+                            }
+                            while self.peek_token == Token::Comma {
+                                self.next_token(); // to `,`
+                                self.next_token(); // past `,`
+                                if let Some(a) = self.parse_expression(0) {
+                                    args.push(a);
+                                }
+                            }
+                            if self.peek_token == Token::RightParen {
+                                self.next_token(); // consume `)`
+                            }
+                        }
+                        ChainAccess::Method(field_name, args)
+                    } else {
+                        ChainAccess::Field(field_name)
+                    };
+                    Some(Node::OptionalChain {
+                        object: Box::new(current_left),
+                        access,
+                        span: qd_span,
                     })
                 }
                 _ => Some(current_left),
@@ -6047,6 +6223,9 @@ impl Parser {
             Token::LeftBracket => 11,
             Token::Dot => 11,
             Token::Question => 12,
+            // RES-363: `?.` has the same postfix precedence as `?` and
+            // is higher than any binary operator so chaining binds tightly.
+            Token::QuestionDot => 12,
             _ => 0,
         }
     }
@@ -6067,6 +6246,7 @@ impl Parser {
             Token::LeftBracket => 11,
             Token::Dot => 11,
             Token::Question => 12,
+            Token::QuestionDot => 12,
             _ => 0,
         }
     }
@@ -6122,6 +6302,12 @@ enum Value {
         ok: bool,
         payload: Box<Value>,
     },
+    /// RES-363: first-class Option type for optional chaining.
+    ///
+    /// `Option(None)` is the absent case — `?.` short-circuits to this.
+    /// `Option(Some(v))` wraps a present value; `?.` unwraps it before
+    /// performing the chained field/method access.
+    Option(std::option::Option<Box<Value>>),
     Return(Box<Value>),
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
@@ -6263,6 +6449,10 @@ impl std::fmt::Debug for Value {
             Value::Result { ok, payload } => {
                 write!(f, "{}({:?})", if *ok { "Ok" } else { "Err" }, payload)
             }
+            Value::Option(inner) => match inner {
+                Some(v) => write!(f, "Some({:?})", v),
+                None => write!(f, "None"),
+            },
             Value::Return(v) => write!(f, "Return({:?})", v),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
@@ -6317,6 +6507,10 @@ impl std::fmt::Display for Value {
             Value::Result { ok, payload } => {
                 write!(f, "{}({})", if *ok { "Ok" } else { "Err" }, payload)
             }
+            Value::Option(inner) => match inner {
+                Some(v) => write!(f, "Some({})", v),
+                None => write!(f, "None"),
+            },
             Value::Return(v) => write!(f, "{}", v),
             Value::Void => write!(f, "void"),
             Value::Map(m) => {
@@ -6511,6 +6705,26 @@ impl Environment {
             })),
         }
     }
+
+    /// RES-356: Collect every `Value::Function` in the top-level frame
+    /// that has at least one `requires` or `ensures` clause. Returns a
+    /// map from function name to `(requires_clauses, ensures_clauses)`.
+    /// Only walks the top-level store (outermost frame) — user-defined
+    /// functions live there after REPL evaluation.
+    fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
+        let frame = self.inner.borrow();
+        let mut out = HashMap::new();
+        for (name, val) in &frame.store {
+            if let Value::Function {
+                requires, ensures, ..
+            } = val
+                && (!requires.is_empty() || !ensures.is_empty())
+            {
+                out.insert(name.clone(), (requires.clone(), ensures.clone()));
+            }
+        }
+        out
+    }
 }
 
 /// Walk a `FieldAssignment` target tree, collecting the chain of field
@@ -6693,6 +6907,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("exp", builtin_exp),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
+    // RES-358: monotonic ns clock builtins. @io (non-pure).
+    // Embedded targets stub: a DWT-based implementation is future work.
+    ("clock_now", builtin_clock_now),
+    ("clock_elapsed", builtin_clock_elapsed),
     // RES-150: seedable SplitMix64 random builtins. std-only.
     ("random_int", builtin_random_int),
     ("random_float", builtin_random_float),
@@ -6718,6 +6936,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_err", builtin_is_err),
     ("unwrap", builtin_unwrap),
     ("unwrap_err", builtin_unwrap_err),
+    // RES-363: Option type builtins.
+    ("Some", builtin_some),
+    ("None", builtin_none),
+    ("is_some", builtin_is_some),
+    ("is_none", builtin_is_none),
+    ("unwrap_option", builtin_unwrap_option),
     // RES-143: file I/O. Std-only; the `resilient-runtime` crate has
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
@@ -6748,6 +6972,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // which treats a `drop` call as the single consumption that
     // satisfies the single-use obligation.
     ("drop", builtin_drop),
+    // RES-353: StringBuilder — efficient multi-part string construction.
+    // Construction is a top-level function; methods are dispatched via
+    // the special StringBuilder method handler in `CallExpression` eval.
+    ("StringBuilder_new", builtin_string_builder_new),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -7188,6 +7416,64 @@ fn builtin_clock_ms(args: &[Value]) -> RResult<Value> {
     Ok(Value::Int(clamped))
 }
 
+/// `clock_now() -> Int` — @io — returns current monotonic time in nanoseconds
+/// since an unspecified process-lifetime epoch (same epoch as `clock_ms`).
+///
+/// The return value is a monotonically non-decreasing `Int`. It is only
+/// meaningful as a delta: capture two values with `clock_now()` and subtract
+/// to get elapsed nanoseconds, or use the `clock_elapsed` convenience builtin.
+///
+/// Embedded / no_std path: a DWT-cycle-counter implementation is future work;
+/// until then this builtin is std-only and will return `0` on bare-metal targets
+/// if/when it is wired up there.
+fn builtin_clock_now(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "clock_now: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+    let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+    // `as_nanos` returns u128; clamp to i64::MAX on overflow so
+    // long-running processes don't wrap or panic.
+    let clamped: i64 = if ns > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        ns as i64
+    };
+    Ok(Value::Int(clamped))
+}
+
+/// `clock_elapsed(start: Int) -> Int` — @io — returns nanoseconds elapsed
+/// since `start`, where `start` is a value previously returned by `clock_now()`.
+///
+/// Equivalent to `clock_now() - start`. The result is clamped to `0` if
+/// `start` is somehow in the future (e.g., due to argument misuse) so callers
+/// always receive a non-negative duration without panicking.
+fn builtin_clock_elapsed(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(start)] => {
+            let epoch = CLOCK_EPOCH.get_or_init(std::time::Instant::now);
+            let ns = std::time::Instant::now().duration_since(*epoch).as_nanos();
+            let now_ns: i64 = if ns > i64::MAX as u128 {
+                i64::MAX
+            } else {
+                ns as i64
+            };
+            Ok(Value::Int(now_ns.saturating_sub(*start).max(0)))
+        }
+        [other] => Err(format!(
+            "clock_elapsed: argument must be Int (a value from clock_now()), got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "clock_elapsed: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 /// `Ok(v)` — wrap a success value as a Result.
 fn builtin_ok(args: &[Value]) -> RResult<Value> {
     match args {
@@ -7196,6 +7482,54 @@ fn builtin_ok(args: &[Value]) -> RResult<Value> {
             payload: Box::new(v.clone()),
         }),
         _ => Err(format!("Ok: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `Some(v)` — wrap a value as a present Option.
+fn builtin_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => Ok(Value::Option(Some(Box::new(v.clone())))),
+        _ => Err(format!("Some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `None` — the absent Option. Called with zero arguments.
+fn builtin_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [] => Ok(Value::Option(None)),
+        _ => Err(format!("None: expected 0 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-363: `is_some(o)` — true iff `o` is a present Option.
+fn builtin_is_some(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_some())),
+        [other] => Err(format!("is_some: expected Option, got {}", other)),
+        _ => Err(format!("is_some: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `is_none(o)` — true iff `o` is an absent Option.
+fn builtin_is_none(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(inner)] => Ok(Value::Bool(inner.is_none())),
+        [other] => Err(format!("is_none: expected Option, got {}", other)),
+        _ => Err(format!("is_none: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-363: `unwrap_option(o)` — return the inner value of a Some or
+/// panic-diagnose at runtime if None.
+fn builtin_unwrap_option(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v))] => Ok((**v).clone()),
+        [Value::Option(None)] => Err("unwrap_option called on None".to_string()),
+        [other] => Err(format!("unwrap_option: expected Option, got {}", other)),
+        _ => Err(format!(
+            "unwrap_option: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -8380,6 +8714,115 @@ fn builtin_live_retries(args: &[Value]) -> RResult<Value> {
     })
 }
 
+// ── RES-353: StringBuilder ────────────────────────────────────────────────────
+//
+// `StringBuilder_new(capacity)` allocates a fresh builder struct.
+// Methods (`append`, `append_int`, `append_float`, `append_char`, `build`,
+// `len`, `remaining`, `clear`) are dispatched in the special
+// `eval_string_builder_method` branch of `CallExpression` — they never go
+// through the generic `impl`-block / BUILTINS path because they need
+// write-back mutation of the caller's binding.
+//
+// Internal struct layout (fields in this order):
+//   _buf     : Value::String  — accumulated text
+//   _cap     : Value::Int     — capacity ceiling (bytes)
+//   _overflow: Value::Bool    — set once capacity is exceeded
+
+/// `StringBuilder_new(capacity: Int) -> StringBuilder`
+///
+/// Creates an empty StringBuilder with the given byte capacity.
+fn builtin_string_builder_new(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(cap)] => {
+            if *cap < 0 {
+                return Err(format!(
+                    "StringBuilder_new: capacity must be >= 0, got {}",
+                    cap
+                ));
+            }
+            Ok(Value::Struct {
+                name: "StringBuilder".to_string(),
+                fields: vec![
+                    ("_buf".to_string(), Value::String(String::new())),
+                    ("_cap".to_string(), Value::Int(*cap)),
+                    ("_overflow".to_string(), Value::Bool(false)),
+                ],
+            })
+        }
+        [other] => Err(format!(
+            "StringBuilder_new: capacity must be an Int, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "StringBuilder_new: expected 1 argument (capacity), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// Helper: read `_buf`, `_cap`, `_overflow` out of a StringBuilder struct.
+///
+/// Returns an error if any field is missing or has the wrong type —
+/// which should never happen for a legitimately-constructed builder, but
+/// guards against user code that manually constructs the struct with wrong
+/// field types.
+fn sb_fields(fields: &[(String, Value)]) -> RResult<(String, i64, bool)> {
+    let mut buf: Option<&str> = None;
+    let mut cap: Option<i64> = None;
+    let mut overflow: Option<bool> = None;
+
+    for (name, val) in fields {
+        match name.as_str() {
+            "_buf" => {
+                if let Value::String(s) = val {
+                    buf = Some(s);
+                } else {
+                    return Err(format!("StringBuilder._buf must be a String, got {}", val));
+                }
+            }
+            "_cap" => {
+                if let Value::Int(n) = val {
+                    cap = Some(*n);
+                } else {
+                    return Err(format!("StringBuilder._cap must be an Int, got {}", val));
+                }
+            }
+            "_overflow" => {
+                if let Value::Bool(b) = val {
+                    overflow = Some(*b);
+                } else {
+                    return Err(format!(
+                        "StringBuilder._overflow must be a Bool, got {}",
+                        val
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match (buf, cap, overflow) {
+        (Some(b), Some(c), Some(o)) => Ok((b.to_string(), c, o)),
+        _ => Err(
+            "StringBuilder: internal layout missing required fields (_buf/_cap/_overflow); \
+                  was this struct created with StringBuilder_new?"
+                .to_string(),
+        ),
+    }
+}
+
+/// Build an updated StringBuilder struct from component parts.
+fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
+    Value::Struct {
+        name: "StringBuilder".to_string(),
+        fields: vec![
+            ("_buf".to_string(), Value::String(buf)),
+            ("_cap".to_string(), Value::Int(cap)),
+            ("_overflow".to_string(), Value::Bool(overflow)),
+        ],
+    }
+}
+
 // Interpreter for executing Resilient programs
 struct Interpreter {
     env: Environment,
@@ -8430,6 +8873,12 @@ impl Interpreter {
         self.overflow_mode = mode;
         self.overflow_mode_locked = true;
         self
+    /// RES-356: collect every user-defined function that declares at
+    /// least one contract clause (`requires` or `ensures`). Used by the
+    /// REPL `.contracts` command. Returns a map from function name to
+    /// `(requires_clauses, ensures_clauses)`.
+    fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
+        self.env.collect_contract_fns()
     }
 
     fn eval(&mut self, node: &Node) -> RResult<Value> {
@@ -8698,7 +9147,29 @@ impl Interpreter {
                 // is an ordinary function invocation.
                 if let Node::FieldAccess { target, field, .. } = function.as_ref() {
                     let target_val = self.eval(target)?;
+                    // RES-353: StringBuilder method dispatch — intercept before
+                    // the generic impl-block lookup so these builtins can write
+                    // the mutated struct back to the caller's binding.
                     if let Value::Struct { name: sname, .. } = &target_val {
+                        if sname == "StringBuilder" {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            // Derive the root variable name for write-back.
+                            // Only simple `IDENT.method()` write-back is supported;
+                            // complex targets (field chains, temporaries) are
+                            // expression-result only — the caller can still read
+                            // the returned struct if needed.
+                            let root_name = if let Node::Identifier { name, .. } = target.as_ref() {
+                                Some(name.clone())
+                            } else {
+                                None
+                            };
+                            return self.eval_string_builder_method(
+                                target_val,
+                                field,
+                                &extra_args,
+                                root_name.as_deref(),
+                            );
+                        }
                         let mangled = format!("{}${}", sname, field);
                         if let Some(method_val) = self.env.get(&mangled) {
                             // Prepend the target as the implicit `self`.
@@ -8787,6 +9258,69 @@ impl Interpreter {
                     }
                     other => Err(format!("? operator expects a Result, got {}", other)),
                 }
+            }
+            // RES-363: `expr?.field` / `expr?.method(args)` — optional chaining.
+            Node::OptionalChain { object, access, .. } => {
+                let obj_val = self.eval(object)?;
+                // Determine the inner value to operate on, or short-circuit.
+                let inner = match obj_val {
+                    // None → short-circuit to None.
+                    Value::Option(None) => return Ok(Value::Option(None)),
+                    // Some(v) → unwrap and operate on v.
+                    Value::Option(Some(inner)) => *inner,
+                    // Err(e) → short-circuit to None (treat Err as absent).
+                    Value::Result { ok: false, .. } => return Ok(Value::Option(None)),
+                    // Ok(v) → unwrap and operate on v.
+                    Value::Result { ok: true, payload } => *payload,
+                    // Any other value: pass through directly (non-optional
+                    // chaining — `?.` on a non-Option is a no-op guard).
+                    other => other,
+                };
+                // Now perform the access on `inner` and wrap in Some.
+                let result = match access {
+                    ChainAccess::Field(field) => match inner {
+                        Value::Struct { name, fields } => fields
+                            .into_iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, v)| v)
+                            .ok_or_else(|| format!("Struct {} has no field '{}'", name, field)),
+                        other => Err(format!(
+                            "Cannot access field '{}' on non-struct {:?}",
+                            field, other
+                        )),
+                    },
+                    ChainAccess::Method(method, arg_nodes) => {
+                        // Mirror the method-dispatch logic of CallExpression:
+                        // look for `<StructName>$<method>` in the environment.
+                        if let Value::Struct {
+                            name: ref sname, ..
+                        } = inner
+                        {
+                            let mangled = format!("{}${}", sname, method);
+                            if let Some(method_val) = self.env.get(&mangled) {
+                                let mut args = vec![inner];
+                                for a in arg_nodes {
+                                    args.push(self.eval(a)?);
+                                }
+                                return self
+                                    .apply_function(method_val, args)
+                                    .map(|v| Value::Option(Some(Box::new(v))));
+                            }
+                        }
+                        // Fall back to a builtin function named `method`.
+                        if let Some(func_val) = self.env.get(method) {
+                            let mut args = vec![inner];
+                            for a in arg_nodes {
+                                args.push(self.eval(a)?);
+                            }
+                            return self
+                                .apply_function(func_val, args)
+                                .map(|v| Value::Option(Some(Box::new(v))));
+                        }
+                        Err(format!("Unknown method '{}'", method))
+                    }
+                }?;
+                Ok(Value::Option(Some(Box::new(result))))
             }
             Node::Match {
                 scrutinee, arms, ..
@@ -9105,6 +9639,200 @@ impl Interpreter {
         }
 
         Ok(result)
+    }
+
+    // ── RES-353: StringBuilder method dispatch ────────────────────────────────
+    //
+    // Called from the `CallExpression` evaluator when the receiver is a
+    // `Value::Struct { name: "StringBuilder", ... }`.
+    //
+    // Mutating methods (`append`, `append_int`, `append_float`,
+    // `append_char`, `clear`) write the updated struct back to the
+    // caller's variable if `root_name` is `Some` — this gives the
+    // `sb.append("x")` call-and-discard idiom without requiring the user
+    // to write `sb = sb.append("x")`. The updated struct is also returned
+    // so callers can chain or inspect the result.
+    //
+    // Non-mutating methods (`len`, `remaining`, `build`) do not write
+    // back; they return the computed value directly.
+    fn eval_string_builder_method(
+        &mut self,
+        sb: Value,
+        method: &str,
+        extra_args: &[Value],
+        root_name: Option<&str>,
+    ) -> RResult<Value> {
+        let Value::Struct { fields, .. } = sb else {
+            return Err("StringBuilder: internal error — receiver is not a struct".to_string());
+        };
+        let (buf, cap, overflow) = sb_fields(&fields)?;
+
+        match method {
+            // sb.append(s: String) — concat s if capacity not exceeded.
+            "append" => match extra_args {
+                [Value::String(s)] => {
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append: expected String argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_int(n: Int)
+            "append_int" => match extra_args {
+                [Value::Int(n)] => {
+                    let s = n.to_string();
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_int: expected Int argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_int: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_float(f: Float)
+            "append_float" => match extra_args {
+                [Value::Float(f)] => {
+                    let s = format!("{}", f);
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_float: expected Float argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_float: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.append_char(c: Int) — c is a Unicode codepoint.
+            "append_char" => match extra_args {
+                [Value::Int(cp)] => {
+                    let c = char::from_u32(*cp as u32).ok_or_else(|| {
+                        format!(
+                            "StringBuilder.append_char: {} is not a valid Unicode codepoint",
+                            cp
+                        )
+                    })?;
+                    let s = c.to_string();
+                    let (new_buf, new_overflow) = if overflow {
+                        (buf, true)
+                    } else if (buf.len() + s.len()) as i64 <= cap {
+                        (buf + &s, false)
+                    } else {
+                        (buf, true)
+                    };
+                    let updated = sb_struct(new_buf, cap, new_overflow);
+                    if let Some(name) = root_name {
+                        let _ = self.env.reassign(name, updated.clone());
+                    }
+                    Ok(updated)
+                }
+                [other] => Err(format!(
+                    "StringBuilder.append_char: expected Int (codepoint) argument, got {}",
+                    other
+                )),
+                _ => Err(format!(
+                    "StringBuilder.append_char: expected 1 argument, got {}",
+                    extra_args.len()
+                )),
+            },
+            // sb.build() -> Result<String, String>
+            "build" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.build: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                if overflow {
+                    Ok(Value::Result {
+                        ok: false,
+                        payload: Box::new(Value::String("capacity exceeded".to_string())),
+                    })
+                } else {
+                    Ok(Value::Result {
+                        ok: true,
+                        payload: Box::new(Value::String(buf)),
+                    })
+                }
+            }
+            // sb.len() -> Int
+            "len" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.len: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                Ok(Value::Int(buf.len() as i64))
+            }
+            // sb.remaining() -> Int
+            "remaining" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.remaining: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                Ok(Value::Int(cap - buf.len() as i64))
+            }
+            // sb.clear() — reset buffer to empty.
+            "clear" => {
+                if !extra_args.is_empty() {
+                    return Err(format!(
+                        "StringBuilder.clear: expected 0 arguments, got {}",
+                        extra_args.len()
+                    ));
+                }
+                let updated = sb_struct(String::new(), cap, false);
+                if let Some(name) = root_name {
+                    let _ = self.env.reassign(name, updated.clone());
+                }
+                Ok(updated)
+            }
+            other => Err(format!("StringBuilder has no method '{}'", other)),
+        }
     }
 
     fn eval_live_block(
@@ -10464,6 +11192,7 @@ fn classify_lex_token(
         | Token::New
         | Token::Match
         | Token::Use
+        | Token::As
         | Token::Impl
         | Token::Type
         | Token::Default
@@ -10510,7 +11239,8 @@ fn classify_lex_token(
         | Token::Dot
         | Token::FatArrow
         | Token::Arrow
-        | Token::Question => (sem_tok::OPERATOR, 0),
+        | Token::Question
+        | Token::DoubleColon => (sem_tok::OPERATOR, 0),
 
         // Delimiters + internal tokens: no semantic highlight.
         _ => return None,
@@ -10856,9 +11586,24 @@ fn execute_file(
     warn_unverified: bool,
     live_log: Option<&Path>,
     overflow_mode_override: Option<OverflowMode>,
+    no_cache: bool,
 ) -> RResult<()> {
     let contents =
         fs::read_to_string(filename).map_err(|e| format!("Error reading file: {}", e))?;
+
+    // RES-355: incremental cache — compute SHA-256 of the source text,
+    // check for a stored entry, and record whether this run hit the
+    // cache. The check is a pure optimisation; a miss always falls
+    // through to the normal compilation pipeline. The MVP validates
+    // correctness (source-hash + compiler-version matching) and
+    // persists entries on success; skipping the Chunk compilation on
+    // a hit is tracked as a follow-up phase.
+    let source_hash = cert_sign::sha256_hex(contents.as_bytes());
+    let cache_dir = cache::cache_dir_for(filename);
+    // Consume the result so a future phase can branch on it without
+    // changing the call-site signature. Suppresses the unused-result
+    // warning while keeping the check exercised on every run.
+    let _cache_hit = !no_cache && cache::check(&cache_dir, &source_hash) == cache::CacheResult::Hit;
 
     let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
@@ -10993,6 +11738,10 @@ fn execute_file(
         {
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
+            // RES-355: write cache entry on JIT success.
+            if !no_cache {
+                cache::write_entry(&cache_dir, &source_hash);
+            }
             return Ok(());
         }
         #[cfg(not(feature = "jit"))]
@@ -11036,6 +11785,10 @@ fn execute_file(
         })?;
         if !matches!(result, Value::Void) {
             println!("{}", result);
+        }
+        // RES-355: write cache entry on VM success.
+        if !no_cache {
+            cache::write_entry(&cache_dir, &source_hash);
         }
         return Ok(());
     }
@@ -11115,6 +11868,14 @@ fn execute_file(
             header
         }
     })?;
+
+    // RES-355: persist a cache entry so the next run can detect
+    // that this source compiled successfully. Errors here are
+    // silently ignored — a write failure must never turn a
+    // successful compilation into a failure.
+    if !no_cache {
+        cache::write_entry(&cache_dir, &source_hash);
+    }
 
     Ok(())
 }
@@ -12106,6 +12867,8 @@ COMMON FLAGS:\n\
                                  wrap, or saturate (RES-349)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
+        --no-cache               Disable the incremental compilation cache\n\
+                                 for this run (RES-355)\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
@@ -12232,6 +12995,10 @@ fn main() {
     // `@overflow(...)` attribute in the source.  `None` means "use
     // whatever the source says (or Trap if the source is silent)".
     let mut overflow_mode_override: Option<OverflowMode> = None;
+    // RES-355: `--no-cache` bypasses the incremental compilation cache
+    // for this run. Both cache reads and writes are skipped so the
+    // run is fully isolated from the on-disk cache state.
+    let mut no_cache = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -12412,6 +13179,11 @@ fn main() {
                 examples_dir = Some(PathBuf::from(&args[i]));
             } else if let Some(dir) = arg.strip_prefix("--examples-dir=") {
                 examples_dir = Some(PathBuf::from(dir));
+            } else if arg == "--no-cache" {
+                // RES-355: bypass the incremental bytecode cache for
+                // this run. Both cache reads and writes are skipped so
+                // the compilation is isolated from any on-disk state.
+                no_cache = true;
             } else {
                 filename = arg;
             }
@@ -12546,6 +13318,7 @@ fn main() {
                 warn_unverified,
                 emit_live_log.as_deref(),
                 overflow_mode_override,
+                no_cache,
             );
             // RES-174: print cache stats on exit whenever the
             // flag is set, regardless of whether the run

@@ -1,0 +1,6 @@
+// RES-360: scoped imports — helper file B.
+// Imported via `use "scoped_imports_b.rz" as b;`; callers reach
+// this function as `b::greet()`.
+fn greet() {
+    println("hello from B");
+}
