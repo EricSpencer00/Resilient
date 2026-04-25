@@ -320,6 +320,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         }
         Node::Assert { condition, .. } => walk(condition, bound, free),
         Node::Assume { condition, .. } => walk(condition, bound, free),
+        // RES-222: invariant statement carries one boolean expression.
+        Node::InvariantStatement { expr, .. } => walk(expr, bound, free),
 
         // ---- Expressions ----
         Node::PrefixExpression { right, .. } => walk(right, bound, free),

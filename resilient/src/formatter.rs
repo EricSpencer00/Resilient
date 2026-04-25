@@ -538,6 +538,14 @@ impl Formatter {
                 self.write(");");
                 self.newline();
             }
+            // RES-222: `invariant EXPR;` statement form. Only valid
+            // inside a loop body; the typechecker rejects elsewhere.
+            Node::InvariantStatement { expr, .. } => {
+                self.write("invariant ");
+                self.fmt_expr(expr);
+                self.write(";");
+                self.newline();
+            }
             Node::Block { stmts, .. } => {
                 self.write("{");
                 self.newline();
@@ -910,6 +918,7 @@ impl Formatter {
             | Node::LiveBlock { .. }
             | Node::Assert { .. }
             | Node::Assume { .. }
+            | Node::InvariantStatement { .. }
             | Node::LetStatement { .. }
             | Node::StaticLet { .. }
             | Node::Const { .. }
