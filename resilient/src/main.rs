@@ -109,6 +109,13 @@ mod try_catch;
 // module per the feature-isolation pattern in CLAUDE.md.
 mod loop_invariants;
 
+// RES-318: Z3 inductive verification of loop invariants. Best-effort
+// pass — the runtime check from `loop_invariants` always fires;
+// the verifier only adds an SMT-LIB2 proof certificate + a verbose
+// `-- invariant proven, runtime check elided` line when both base
+// and inductive goals discharge.
+mod verifier_loop_invariants;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -11832,6 +11839,7 @@ fn execute_file(
     use_jit: bool,
     verifier_timeout_ms: u32,
     warn_unverified: bool,
+    verbose_invariants: bool,
     live_log: Option<&Path>,
     #[cfg(feature = "z3")] z3_theory: verifier_z3::Z3Theory,
     no_cache: bool,
@@ -11929,7 +11937,10 @@ fn execute_file(
             // RES-217: `--no-warn-unverified` flips this off; the
             // default (on) surfaces `warning[partial-proof]`
             // diagnostics whenever Z3 returns Unknown.
-            .with_warn_unverified(warn_unverified);
+            .with_warn_unverified(warn_unverified)
+            // RES-318: `--verbose` opts into per-loop-invariant
+            // proof messages on stderr.
+            .with_verbose_loop_invariants(verbose_invariants);
         // RES-354: apply the --z3-theory flag when z3 feature is on.
         #[cfg(feature = "z3")]
         let mut tc = tc_base.with_z3_theory(z3_theory);
@@ -13143,6 +13154,8 @@ COMMON FLAGS:\n\
     -h, --help                   Show this help and exit\n\
     -t, --typecheck              Run the static type checker\n\
         --audit                  Print the verification audit trail\n\
+        --verbose                Print one stderr line per loop\n\
+                                 invariant statically proven (RES-318)\n\
         --explain-effects        Print the inferred effect (@pure / @io)\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
@@ -13241,6 +13254,10 @@ fn main() {
 
     let mut type_check = false;
     let mut audit = false;
+    // RES-318: --verbose enables one stderr line per loop invariant
+    // statically discharged by the Z3 verifier. Off by default so
+    // the regular build is silent.
+    let mut verbose_invariants = false;
     // RES-347: `--explain-effects` prints the inferred effect
     // (@pure / @io) for every user fn after typechecking. Implies
     // `--typecheck` so the fixpoint has run and `stats.fn_effects`
@@ -13304,6 +13321,13 @@ fn main() {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--verbose" {
+                // RES-318: emit one `-- invariant proven, runtime
+                // check elided at L:C` line per discharged loop
+                // invariant. Implies --typecheck so the verifier
+                // pass actually runs.
+                verbose_invariants = true;
+                type_check = true;
             } else if arg == "--deny-unproven-bounds" {
                 // RES-351: strict mode — unproven array-bounds
                 // accesses become compile errors instead of relying
@@ -13624,6 +13648,7 @@ fn main() {
                 use_jit,
                 verifier_timeout_ms,
                 warn_unverified,
+                verbose_invariants,
                 emit_live_log.as_deref(),
                 #[cfg(feature = "z3")]
                 z3_theory,

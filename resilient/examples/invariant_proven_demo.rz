@@ -1,0 +1,28 @@
+// RES-318 demo: a `while` loop whose invariant the SMT verifier
+// statically discharges via Hoare-rule induction.
+//
+// The body is straight-line assignment, the condition + invariants
+// live in the integer subset Z3 understands, and the bindings (`n`)
+// stay constant across iterations. The verifier proves both:
+//   1. base case: `i >= 0` holds before entry (i = 0).
+//   2. inductive step: assuming `(i >= 0 /\ i < n)`, the post-body
+//      state `i' = i + 1` still satisfies `i' >= 0`.
+//
+// With `--verbose`, the driver prints
+//   `-- invariant proven, runtime check elided at L:C`
+// to stderr per discharged invariant. The runtime check still fires
+// (the codegen elision is a separate ticket); this golden only
+// asserts the printed program output.
+
+fn main() {
+    let i = 0;
+    let n = 5;
+    while i < n {
+        invariant i >= 0;
+        invariant i <= n;
+        i = i + 1;
+    }
+    println("ok");
+}
+
+main();
