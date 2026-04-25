@@ -104,6 +104,11 @@ mod bounds_check;
 // the main module only touches the extension-point blocks.
 mod try_catch;
 
+// RES-222: `invariant EXPR;` statement inside `while` / `for` bodies.
+// All parser, typechecker, and runtime-check logic lives in this
+// module per the feature-isolation pattern in CLAUDE.md.
+mod loop_invariants;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -1754,6 +1759,13 @@ enum Node {
         body: Vec<Node>,
         handlers: Vec<(String, Vec<Node>)>,
     },
+    /// RES-222: `invariant EXPR;` statement, valid only inside a
+    /// `while` / `for` body. The interpreter sweeps these out at the
+    /// top of every iteration via
+    /// [`crate::loop_invariants::collect_body_invariants`]. Standalone
+    /// occurrences are rejected by the typechecker pass
+    /// [`crate::loop_invariants::check`].
+    InvariantStatement { expr: Box<Node>, span: span::Span },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -1946,6 +1958,10 @@ impl Parser {
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
+            // RES-222: `invariant EXPR;` statement form. Validity
+            // (must be inside a loop body) is enforced by the
+            // typechecker pass `crate::loop_invariants::check`.
+            Token::Invariant => Some(crate::loop_invariants::parse_invariant_statement(self)),
             Token::Unknown(ch) => {
                 // RES-114: if the offending char is alphabetic (in
                 // the Unicode sense), the lexer's ASCII-only
@@ -9013,6 +9029,12 @@ impl Interpreter {
             Node::Assume {
                 condition, message, ..
             } => self.eval_assume(condition, message),
+            // RES-222: in-body `invariant EXPR;` is a no-op when the
+            // block walks past it — the iteration-top sweep in the
+            // enclosing while/for already evaluated it. Standalone
+            // occurrences are rejected by the typechecker pass, so
+            // this arm only fires inside a loop body.
+            Node::InvariantStatement { .. } => Ok(Value::Void),
             Node::Block {
                 stmts: statements, ..
             } => self.eval_block_statement(statements),
@@ -9103,15 +9125,23 @@ impl Interpreter {
                 name,
                 iterable,
                 body,
-                ..
+                invariants,
+                span,
             } => {
                 let iter_val = self.eval(iterable)?;
                 let items = match iter_val {
                     Value::Array(v) => v,
                     other => return Err(format!("`for` iterable must be an array, got {}", other)),
                 };
+                // RES-222: extract body-level invariants once.
+                let body_invs = crate::loop_invariants::collect_body_invariants(body);
                 for item in items {
                     self.env.set(name.clone(), item);
+                    // RES-222: invariant holds at the top of every
+                    // iteration with the loop variable bound.
+                    crate::loop_invariants::check_invariants_at_iteration(
+                        self, invariants, &body_invs, span,
+                    )?;
                     let result = self.eval(body)?;
                     if let Value::Return(_) = result {
                         return Ok(result);
@@ -9120,13 +9150,18 @@ impl Interpreter {
                 Ok(Value::Void)
             }
             Node::WhileStatement {
-                condition, body, ..
+                condition,
+                body,
+                invariants,
+                span,
             } => {
                 // Cap iterations as a safety net so a buggy loop can't
                 // freeze the interpreter. 1M is big enough for
                 // realistic work and small enough to catch runaways.
                 const MAX_ITERS: usize = 1_000_000;
                 let mut iters = 0usize;
+                // RES-222: extract body-level invariants once.
+                let body_invs = crate::loop_invariants::collect_body_invariants(body);
                 loop {
                     iters += 1;
                     if iters > MAX_ITERS {
@@ -9134,6 +9169,12 @@ impl Interpreter {
                             "while loop exceeded {MAX_ITERS} iterations (runaway?)"
                         ));
                     }
+                    // RES-222: invariant must hold at the top of
+                    // every iteration (entry-pre and after-body
+                    // collapse to the same check point).
+                    crate::loop_invariants::check_invariants_at_iteration(
+                        self, invariants, &body_invs, span,
+                    )?;
                     let cond_val = self.eval(condition)?;
                     if !self.is_truthy(&cond_val) {
                         break;

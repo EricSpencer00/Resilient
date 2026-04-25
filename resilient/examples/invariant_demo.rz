@@ -1,0 +1,22 @@
+// RES-222 demo: `invariant EXPR;` statement inside a `while` loop.
+//
+// The invariant is checked at the top of every iteration. The loop
+// counter `i` stays in `[0, n]` for the entire run, so this program
+// terminates and prints "ok".
+//
+// Removing the bound — or changing the invariant to something the
+// body doesn't preserve — would halt with `runtime error: loop
+// invariant violated at L:C`.
+
+fn main() {
+    let i = 0;
+    let n = 5;
+    while i < n {
+        invariant i >= 0;
+        invariant i <= n;
+        i = i + 1;
+    }
+    println("ok");
+}
+
+main();

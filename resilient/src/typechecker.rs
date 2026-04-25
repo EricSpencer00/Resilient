@@ -1446,6 +1446,7 @@ impl TypeChecker {
                 crate::try_catch::check(program, source_path)?;
                 crate::verifier_liveness::check(program, source_path)?;
                 crate::bounds_check::check_array_bounds(program, source_path)?;
+                crate::loop_invariants::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -1925,6 +1926,13 @@ impl TypeChecker {
                 }
 
                 Ok(Type::Void)
+            }
+
+            // RES-222: `invariant EXPR;` — the body must typecheck
+            // as bool. Position validity (must sit in a loop body)
+            // is enforced by `crate::loop_invariants::check`.
+            Node::InvariantStatement { expr, .. } => {
+                crate::loop_invariants::typecheck_invariant_statement(self, expr)
             }
 
             // RES-133a: assume has the same type rules as assert
