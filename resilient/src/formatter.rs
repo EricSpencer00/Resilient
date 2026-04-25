@@ -901,6 +901,31 @@ impl Formatter {
                     self.write(&format!("{}ns", nanos));
                 }
             }
+            // RES-330: `(forall|exists) v in <range>: <body>`.
+            Node::Quantifier {
+                kind,
+                var,
+                range,
+                body,
+                ..
+            } => {
+                self.write(kind.keyword());
+                self.write(" ");
+                self.write(var);
+                self.write(" in ");
+                match range {
+                    crate::quantifiers::QuantRange::Range { lo, hi } => {
+                        self.fmt_expr(lo);
+                        self.write("..");
+                        self.fmt_expr(hi);
+                    }
+                    crate::quantifiers::QuantRange::Iterable(expr) => {
+                        self.fmt_expr(expr);
+                    }
+                }
+                self.write(": ");
+                self.fmt_expr(body);
+            }
             // Statement-shaped nodes that ended up in expression
             // position: degrade gracefully to their statement form.
             Node::Block { .. }

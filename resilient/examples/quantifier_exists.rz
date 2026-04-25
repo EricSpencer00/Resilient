@@ -1,0 +1,22 @@
+// RES-330 demo: `exists v in iterable: body` quantifier expression.
+//
+// `exists` short-circuits on the first true witness. The iterable form
+// (over an array, set, or bytes value) is evaluated at runtime —
+// the SMT verifier only models the bounded-range form because
+// arbitrary program values aren't lifted into Z3's array theory.
+
+fn main() {
+    let any_big = exists x in [1, 5, 9]: x > 4;
+    println(any_big);
+
+    let any_negative = exists x in [1, 5, 9]: x < 0;
+    println(any_negative);
+
+    let has_two = exists i in 0..5: i == 2;
+    println(has_two);
+
+    let empty = exists i in 5..5: true;
+    println(empty);
+}
+
+main();

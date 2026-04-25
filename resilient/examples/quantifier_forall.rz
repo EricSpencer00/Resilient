@@ -1,0 +1,19 @@
+// RES-330 demo: `forall i in lo..hi: body` quantifier expression.
+//
+// Runtime: `forall` short-circuits on the first false witness.
+// With `--features z3`, the bounded-range form is encoded as a
+// universally quantified Int with the range constraint as the
+// antecedent — provable without unrolling the loop.
+
+fn main() {
+    let all_nonneg = forall i in 0..5: i >= 0;
+    println(all_nonneg);
+
+    let all_under_three = forall i in 0..5: i < 3;
+    println(all_under_three);
+
+    let vacuous = forall i in 7..7: false;
+    println(vacuous);
+}
+
+main();

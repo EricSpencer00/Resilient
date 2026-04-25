@@ -620,6 +620,27 @@ fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
     }
 }
 
+/// RES-330: thin pub(crate) wrapper around `translate_int` so the
+/// `quantifiers` module (which lives outside this file) can encode
+/// the bounds of a `lo..hi` range into the Z3 LIA fragment.
+pub(crate) fn translate_int_pub<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<Int<'c>> {
+    translate_int(ctx, node, bindings)
+}
+
+/// RES-330: thin pub(crate) wrapper around `translate_bool` so the
+/// `quantifiers` module can encode quantifier bodies.
+pub(crate) fn translate_bool_pub<'c>(
+    ctx: &'c z3::Context,
+    node: &Node,
+    bindings: &HashMap<String, i64>,
+) -> Option<Bool<'c>> {
+    translate_bool(ctx, node, bindings)
+}
+
 fn translate_bool<'c>(
     ctx: &'c z3::Context,
     node: &Node,
@@ -627,6 +648,16 @@ fn translate_bool<'c>(
 ) -> Option<Bool<'c>> {
     match node {
         Node::BooleanLiteral { value: b, .. } => Some(Bool::from_bool(ctx, *b)),
+        // RES-330: dispatch quantifier nodes into the dedicated encoder.
+        // Iterable quantifiers return None and the caller falls back to
+        // the runtime check.
+        Node::Quantifier {
+            kind,
+            var,
+            range,
+            body,
+            ..
+        } => crate::quantifiers::z3_encode(ctx, *kind, var, range, body, bindings),
         Node::PrefixExpression {
             operator, right, ..
         } if operator == "!" => translate_bool(ctx, right, bindings).map(|b| b.not()),

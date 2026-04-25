@@ -1538,6 +1538,24 @@ impl TypeChecker {
         }
     }
 
+    /// RES-330: scope `var: ty` in a fresh enclosed env, type-check
+    /// `body`, then pop the binding. Used by `quantifiers::typecheck_quantifier`
+    /// so the quantified variable does not leak into the outer scope.
+    pub(crate) fn with_quantifier_binding(
+        &mut self,
+        var: &str,
+        ty: Type,
+        body: &Node,
+    ) -> Result<Type, String> {
+        let saved = self.env.clone();
+        let mut inner = TypeEnvironment::new_enclosed(saved.clone());
+        inner.set(var.to_string(), ty);
+        self.env = inner;
+        let result = self.check_node(body);
+        self.env = saved;
+        result
+    }
+
     pub fn check_node(&mut self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Program(_statements) => self.check_program(node),
@@ -2337,6 +2355,12 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
+
+            // RES-330: quantifier expression. Body must be Bool with
+            // the bound variable in scope. Logic in `quantifiers.rs`.
+            Node::Quantifier {
+                var, range, body, ..
+            } => crate::quantifiers::typecheck_quantifier(self, var, range, body),
 
             // RES-386: commutativity actor type-checks as Void.
             Node::Actor { .. } => Ok(Type::Void),
