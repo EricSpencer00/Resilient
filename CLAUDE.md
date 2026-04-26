@@ -158,6 +158,8 @@ the 3-line extension blocks — conflicts that are always safe to resolve by kee
 - Add or expand documentation (README, docs/, SYNTAX.md, LSP.md).
 - Update `Cargo.toml` dependency versions (patch-level only without asking).
 - Open draft PRs and push to feature branches.
+- Resolve merge conflicts on any PR branch, including checking out branches,
+  editing conflicting files, and force-pushing to unblock stalled PRs.
 
 ## Agent autonomy — STOP and ask first
 
