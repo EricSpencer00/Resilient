@@ -419,6 +419,27 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 truncate_to(bound, hsnap);
             }
         }
+
+        // RES-330: `(forall|exists) v in <range>: <body>` — `v` is
+        // bound only inside the body. The range expressions are
+        // evaluated in the outer scope and may reference free names.
+        Node::Quantifier {
+            var, range, body, ..
+        } => {
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    walk(lo, bound, free);
+                    walk(hi, bound, free);
+                }
+                crate::quantifiers::QuantRange::Iterable(expr) => {
+                    walk(expr, bound, free);
+                }
+            }
+            let snapshot = bound.len();
+            bound.insert(var.clone());
+            walk(body, bound, free);
+            truncate_to(bound, snapshot);
+        }
     }
 }
 

@@ -1,12 +1,20 @@
 {
   "claims": {
-    "resilient/src/typechecker.rs": {
-      "branch": "res-318-smt-loop-invariants",
-      "claimed_at": "2026-04-25T17:08:37Z"
+    "resilient/src/main.rs": {
+      "branch": "res-330-quantifiers",
+      "claimed_at": "2026-04-25T16:14:34Z"
     },
-    "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-318-smt-loop-invariants",
-      "claimed_at": "2026-04-25T17:08:37Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-330-quantifiers",
+      "claimed_at": "2026-04-25T16:14:34Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-330-quantifiers",
+      "claimed_at": "2026-04-25T16:14:34Z"
+    },
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-330-quantifiers",
+      "claimed_at": "2026-04-25T16:14:34Z"
     }
   }
 }

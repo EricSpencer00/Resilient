@@ -884,7 +884,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::ActorDecl { span, .. }
         | Node::ClusterDecl { span, .. }
         | Node::FunctionLiteral { span, .. }
-        | Node::TryCatch { span, .. } => span.start.line as u32,
+        | Node::TryCatch { span, .. }
+        | Node::Quantifier { span, .. } => span.start.line as u32,
 
         // RES-142: duration literal carries the span of its integer
         // part; only emitted inside live-clause position so it

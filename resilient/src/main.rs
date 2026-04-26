@@ -104,6 +104,12 @@ mod bounds_check;
 // the main module only touches the extension-point blocks.
 mod try_catch;
 
+// RES-330: `forall` / `exists` quantifier expressions in assertions.
+// All parser, interpreter, typechecker, and Z3 logic for quantifiers
+// lives here; the main module only touches the extension-point blocks
+// and the dispatch hooks in `parse_expression` / `eval` / `check_node`.
+mod quantifiers;
+
 // RES-222: `invariant EXPR;` statement inside `while` / `for` bodies.
 // All parser, typechecker, and runtime-check logic lives in this
 // module per the feature-isolation pattern in CLAUDE.md.
@@ -228,6 +234,18 @@ enum Token {
     /// RES-224 (RES-387 follow-up): `catch VariantName { ... }` arm
     /// attached to a `try` block.
     Catch,
+    /// RES-330: `forall <ident> in <range>: <bool>` universal quantifier
+    /// expression — discharged by Z3 when the range is bounded, otherwise
+    /// short-circuits at runtime on the first false witness.
+    Forall,
+    /// RES-330: `exists <ident> in <range>: <bool>` existential quantifier
+    /// expression — discharged by Z3 when the range is bounded, otherwise
+    /// short-circuits at runtime on the first true witness.
+    Exists,
+    /// RES-330: `..` half-open range separator (`lo..hi`). Currently
+    /// only meaningful inside a quantifier `range_expr`; the parser
+    /// rejects it elsewhere.
+    DotDot,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -357,6 +375,9 @@ impl Token {
             Token::Eventually => "`eventually`".to_string(),
             Token::Try => "`try`".to_string(),
             Token::Catch => "`catch`".to_string(),
+            Token::Forall => "`forall`".to_string(),
+            Token::Exists => "`exists`".to_string(),
+            Token::DotDot => "`..`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -689,7 +710,16 @@ impl Lexer {
             // literals are still fine because read_number consumes `.`
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
-            '.' => Token::Dot,
+            // RES-330: peek for `..` so quantifier ranges (`forall i in
+            // 0..n`) lex as a single `DotDot` token.
+            '.' => {
+                if self.peek_char() == '.' {
+                    self.read_char(); // consume second `.`
+                    Token::DotDot
+                } else {
+                    Token::Dot
+                }
+            }
             // RES-375: `??` coalescing operator (must precede lone `?`).
             '?' if self.peek_char() == '?' => {
                 self.read_char(); // consume second `?`
@@ -783,6 +813,8 @@ impl Lexer {
                         "eventually" => Token::Eventually,
                         "try" => Token::Try,
                         "catch" => Token::Catch,
+                        "forall" => Token::Forall,
+                        "exists" => Token::Exists,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -868,6 +900,13 @@ impl Lexer {
 
         while self.is_digit(self.ch) || self.ch == '.' {
             if self.ch == '.' {
+                // RES-330: stop on the range operator `..` so quantifier
+                // ranges like `0..n` lex as IntLiteral(0), DotDot, IDENT.
+                // Without this, the greedy float scanner would swallow
+                // the leading `.` and the literal would parse as a float.
+                if self.peek_char() == '.' {
+                    break;
+                }
                 is_float = true;
             }
             self.read_char();
@@ -1765,6 +1804,24 @@ enum Node {
         span: span::Span,
         body: Vec<Node>,
         handlers: Vec<(String, Vec<Node>)>,
+    },
+    /// RES-330: universal / existential quantifier expression.
+    ///
+    /// ```text
+    /// forall i in 0..len(xs): xs[i] >= 0
+    /// exists x in candidates: x.score > threshold
+    /// ```
+    ///
+    /// `range` is either an integer half-open range (`lo..hi`) or any
+    /// iterable expression. Z3 only encodes the range form; iterable
+    /// quantifiers fall back to runtime evaluation. The bound variable
+    /// is scoped strictly to `body` — it does not leak outside.
+    Quantifier {
+        kind: crate::quantifiers::QuantifierKind,
+        var: String,
+        range: crate::quantifiers::QuantRange,
+        body: Box<Node>,
+        span: span::Span,
     },
     /// RES-222: `invariant EXPR;` statement, valid only inside a
     /// `while` / `for` body. The interpreter sweeps these out at the
@@ -3804,6 +3861,22 @@ impl Parser {
 
             // Rest pattern `..` — must be the last element before `}`.
             // We accept it mid-list leniently but don't reorder.
+            // RES-330: `..` now lexes as a single `DotDot` token.
+            if self.current_token == Token::DotDot {
+                has_rest = true;
+                self.next_token(); // advance past `..` to `,` or `}`
+                if self.current_token == Token::Comma {
+                    self.next_token(); // trailing `,` after `..`
+                }
+                if self.current_token != Token::RightBrace {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "After `..` rest pattern, expected `}}`, found {}",
+                        tok
+                    ));
+                }
+                break;
+            }
             if self.current_token == Token::Dot {
                 if self.peek_token == Token::Dot {
                     self.next_token(); // second `.`
@@ -3948,6 +4021,22 @@ impl Parser {
 
         loop {
             if self.current_token == Token::RightBrace {
+                break;
+            }
+            // RES-330: `..` lexes as a single `DotDot` token.
+            if self.current_token == Token::DotDot {
+                has_rest = true;
+                self.next_token(); // past `..`
+                if self.current_token == Token::Comma {
+                    self.next_token();
+                }
+                if self.current_token != Token::RightBrace {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "After `..` in struct match pattern, expected `}}`, found {}",
+                        tok
+                    ));
+                }
                 break;
             }
             if self.current_token == Token::Dot {
@@ -4929,6 +5018,10 @@ impl Parser {
             Token::New => Some(self.parse_struct_literal()),
             Token::Match => Some(self.parse_match_expression()),
             Token::Function => Some(self.parse_function_literal()),
+            // RES-330: quantifier expressions delegate parsing entirely
+            // to the quantifiers module so the prefix dispatch stays
+            // append-only and conflict-resistant.
+            Token::Forall | Token::Exists => crate::quantifiers::parse_quantifier(self),
             _ => None,
         };
 
@@ -9548,6 +9641,17 @@ impl Interpreter {
                 }
                 Ok(Value::Void)
             }
+            // RES-330: short-circuit interpreter evaluation for
+            // `forall` / `exists` expressions. All logic lives in the
+            // quantifiers module; this dispatch line is the only touch
+            // in the interpreter for the feature.
+            Node::Quantifier {
+                kind,
+                var,
+                range,
+                body,
+                ..
+            } => crate::quantifiers::eval_quantifier(self, *kind, var, range, body),
             // RES-158: `impl <Struct> { ... }` evaluates each method
             // as if it were a top-level `fn` decl. Methods are already
             // mangled to `<Struct>$<method>` by the parser.

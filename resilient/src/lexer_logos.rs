@@ -241,6 +241,15 @@ enum Tok {
     Try,
     #[token("catch")]
     Catch,
+    // RES-330: quantifier keywords + range separator. Logos picks the
+    // longer-match `..` over `.` automatically so no priority hint
+    // needed.
+    #[token("forall")]
+    Forall,
+    #[token("exists")]
+    Exists,
+    #[token("..")]
+    DotDot,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -581,6 +590,10 @@ fn convert(t: Tok) -> Token {
         Tok::Eventually => Token::Eventually,
         Tok::Try => Token::Try,
         Tok::Catch => Token::Catch,
+        // RES-330: quantifier tokens.
+        Tok::Forall => Token::Forall,
+        Tok::Exists => Token::Exists,
+        Tok::DotDot => Token::DotDot,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
