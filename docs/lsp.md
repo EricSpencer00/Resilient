@@ -27,18 +27,17 @@ The LSP server pulls in `tower-lsp` + `tokio`, so it's gated behind
 a feature flag. Default builds don't pay the cost.
 
 ```bash
-cd resilient
-cargo build --features lsp --release
-# Binary: resilient/target/release/resilient
+cargo install --path resilient --features lsp
+# `rz` lands in ~/.cargo/bin/rz with LSP support compiled in.
 ```
 
-Running `resilient --lsp` without the feature emits a helpful error
-and exits non-zero.
+Running `rz --lsp` against a build without the feature emits a helpful
+error and exits non-zero.
 
 ## Start the server
 
 ```bash
-resilient --lsp
+rz --lsp
 ```
 
 The server communicates over stdin/stdout using the standard
@@ -111,7 +110,7 @@ lspconfig.resilient.setup({})
 ```
 
 Replace `/absolute/path/to/resilient` with the path to your built
-binary (e.g. `~/GitHub/Resilient/resilient/target/release/resilient`).
+binary (e.g. `~/GitHub/Resilient/resilient/target/release/rz`).
 
 ### VS Code
 

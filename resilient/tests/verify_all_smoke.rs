@@ -23,7 +23,7 @@ use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 fn tmp_dir(tag: &str) -> PathBuf {

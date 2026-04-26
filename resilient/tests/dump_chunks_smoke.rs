@@ -11,7 +11,7 @@ use std::io::Write;
 use std::process::Command;
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 fn write_temp(contents: &str, tag: &str) -> std::path::PathBuf {

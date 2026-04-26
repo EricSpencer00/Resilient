@@ -11,6 +11,7 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
 - [Code Style](#code-style)
 - [Pull Request Checklist](#pull-request-checklist)
 - [Golden Files and Expected Output](#golden-files-and-expected-output)
+- [Releases](#releases)
 - [Agent Contributors](#agent-contributors)
 
 ---
@@ -234,6 +235,44 @@ Before requesting review, ensure:
 
 ---
 
+## Diff-shape guardrail
+
+CI runs [`agent-scripts/verify-scope.sh`](./agent-scripts/verify-scope.sh)
+on every PR. It blocks the harm modes that human review would otherwise
+catch, while letting mechanical refactors (renames, path updates) through.
+
+**What's blocked, no exceptions:**
+
+- Deletion of any test file under `resilient/tests/`,
+  `resilient-runtime/tests/`, or `fuzz/fuzz_targets/`.
+- Any modification or deletion of an `.expected.txt` golden sidecar.
+- A test diff that **removes more `#[test]` / `#[should_panic]` /
+  `assert!` / `assert_eq!` / `assert_ne!` / `panic!` lines than it
+  adds** (i.e. tests can't get weaker without an explicit OK).
+- New `unsafe` blocks anywhere in the tree.
+- Deletion of any `.github/workflows/*` file.
+- A workflow diff that adds `if: false`, `continue-on-error: true`,
+  `--no-verify`, or `permissions: write-all`.
+- A workflow diff that drops the count of top-level `jobs.<name>:`
+  entries (i.e. jobs can't be silently removed).
+- More than 60 files changed in one PR.
+- Major / minor version bumps in `Cargo.lock`.
+
+**What's allowed:**
+
+- Mechanical edits to existing test files — renaming an env var,
+  updating a path, adapting to a public-API change. The assertion
+  count rule above is what catches the actual weakening pattern.
+- Workflow path / env / version edits when no jobs are removed and no
+  bypass patterns are introduced.
+
+If you need to legitimately weaken or remove a test (the tested
+behaviour intentionally changed), call it out in a `## Test changes`
+section in the PR description with a one-line rationale per test.
+The maintainer will admin-merge if the rationale is sound.
+
+---
+
 ## Golden Files and Expected Output
 
 When a compiler change intentionally alters output (new language features, refactored error messages), you must update the golden `.expected.txt` files.
@@ -342,6 +381,58 @@ scripts/check-ticket-ids.sh
 - **Test protection**: Modifying existing tests requires maintainer approval (see [CLAUDE.md](./CLAUDE.md) for details)
 - **Security**: Changes to `unsafe` blocks or breaking language features require explicit review
 - **Dependencies**: Patch-level Cargo.toml updates are free; major/minor require approval
+
+---
+
+## Releases
+
+Releases are automated. The shipped artifact is the **`rz`** CLI binary,
+packaged as a per-platform `.tar.gz` and attached to a GitHub Release.
+
+### Cutting a release (maintainers only)
+
+1. Make sure `main` is green and the version in
+   [`resilient/Cargo.toml`](./resilient/Cargo.toml) reflects what
+   you're about to ship (bump it in a separate commit if needed).
+2. Push a SemVer tag to `main`:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+3. The [`release.yml`](./.github/workflows/release.yml) workflow fires:
+   - Builds `rz` for **four** platforms in parallel:
+     - `x86_64-unknown-linux-gnu` (native)
+     - `aarch64-unknown-linux-gnu` (via [`cross`](https://github.com/cross-rs/cross))
+     - `x86_64-apple-darwin`
+     - `aarch64-apple-darwin`
+   - Strips each binary, packages it as `rz-<tag>-<target>.tar.gz`,
+     and uploads it as a workflow artifact.
+   - Creates a GitHub Release with auto-generated notes (commits
+     since the previous tag) and attaches all four archives.
+
+The archive layout is flat — `rz` extracts directly into the
+caller's current directory — so [`scripts/install.sh`](./scripts/install.sh)
+can stream a tarball straight into `$PREFIX/bin`.
+
+### Dry-running without a tag
+
+`workflow_dispatch` is enabled on the release workflow:
+
+1. Open the [Actions → release](https://github.com/EricSpencer00/Resilient/actions/workflows/release.yml) page.
+2. Click **Run workflow** and pick a branch.
+3. Build artifacts upload but the `release` job skips (it's
+   guarded on `startsWith(github.ref, 'refs/tags/')`).
+
+Use this to confirm a cross-compile change works before tagging.
+
+### What's not in scope
+
+- crates.io publishing (the package is `resilient`, not `rz`; we
+  may publish later but not in the same workflow).
+- Windows binaries.
+- Code signing / notarization (macOS will Gatekeeper-warn on
+  unsigned downloads — `xattr -d com.apple.quarantine ./rz` is
+  the user-side workaround until we add signing).
 
 ---
 

@@ -51,10 +51,10 @@ fuzz_target!(|data: &[u8]| {
     f.write_all(src.as_bytes()).expect("write to tempfile");
     f.flush().expect("flush tempfile");
 
-    // Step 3: spawn the resilient binary. Prefer
+    // Step 3: spawn the `rz` binary. Prefer
     // `RESILIENT_FUZZ_BIN` (CI sets this), fall back to PATH.
     let bin = std::env::var("RESILIENT_FUZZ_BIN")
-        .unwrap_or_else(|_| "resilient".to_string());
+        .unwrap_or_else(|_| "rz".to_string());
     let status = Command::new(&bin)
         .arg("-t")
         .arg("--seed")

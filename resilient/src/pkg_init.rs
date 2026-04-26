@@ -88,8 +88,8 @@ impl std::fmt::Display for PkgInitError {
         match self {
             Self::MissingName => write!(
                 f,
-                "`resilient pkg init` requires a project name: \
-                 `resilient pkg init <name>` or `resilient pkg init --name <n>`"
+                "`rz pkg init` requires a project name: \
+                 `rz pkg init <name>` or `rz pkg init --name <n>`"
             ),
             Self::InvalidName(n) => write!(
                 f,

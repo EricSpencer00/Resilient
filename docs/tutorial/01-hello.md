@@ -15,20 +15,25 @@ Install the compiler, run your first program, pick a backend.
 
 ## Install
 
-Resilient is a Rust crate today. The fastest path is to build
-from source:
+Pick the path that fits — see [Getting Started]({{ site.baseurl }}/getting-started#install)
+for the full menu. The shortest path:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EricSpencer00/Resilient/main/scripts/install.sh | bash
+# Then add ~/.rz/bin to $PATH (the script prints the line for your shell).
+rz --version
+```
+
+If you have Rust locally and prefer to build from source:
 
 ```bash
 git clone https://github.com/EricSpencer00/Resilient.git
-cd Resilient/resilient
-cargo build --release
+cd Resilient
+cargo install --path resilient
+# `rz` lands in ~/.cargo/bin/rz
 ```
 
-That leaves a single binary at
-`target/release/resilient`. Add `resilient/target/release/` to
-your `$PATH` or copy the binary wherever your shell looks.
-
-If you don't want Rust locally, the [Docker image]({{ site.baseurl }}/getting-started#docker-res-203)
+If you don't want anything local, the [Docker image]({{ site.baseurl }}/getting-started#docker-res-203)
 is a one-liner:
 
 ```bash
@@ -49,7 +54,7 @@ main();
 Then run it:
 
 ```bash
-resilient hello.rz
+rz hello.rz
 ```
 
 You should see:
@@ -92,10 +97,11 @@ main();
 Save as `fib.rz` and run through each:
 
 ```bash
-resilient fib.rz          # tree-walker (default)
-resilient --vm fib.rz     # bytecode VM
+rz fib.rz          # tree-walker (default)
+rz --vm fib.rz     # bytecode VM
 # JIT needs a feature-flagged build:
-cargo run --release --features jit -- --jit fib.rz
+cargo install --path resilient --features jit  # one-time
+rz --jit fib.rz
 ```
 
 All three print `6765`. The walker is a few hundred ms; the
@@ -106,7 +112,7 @@ has the numbers.
 ## What you learned
 
 - `fn`, `println`, and the `main();` call-site idiom.
-- Where the binary lives after `cargo build --release`.
+- How to run a `.rz` file with `rz`.
 - That there are three backends; you can pick the one that
   fits your workload.
 

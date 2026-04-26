@@ -12,7 +12,7 @@
 #
 # Assumptions:
 # - `resilient` binary is on PATH OR pointed at via $RESILIENT_BIN.
-#   Defaults to `resilient/target/release/resilient` relative to
+#   Defaults to `resilient/target/release/rz` relative to
 #   repo root, then falls back to `resilient` on PATH.
 # - Code blocks are fenced with triple-backticks followed by the
 #   language tag `resilient` (case-sensitive). Other fences
@@ -26,10 +26,10 @@ cd "$REPO_ROOT"
 
 BIN=${RESILIENT_BIN:-}
 if [ -z "$BIN" ]; then
-    if [ -x resilient/target/release/resilient ]; then
-        BIN=resilient/target/release/resilient
-    elif [ -x resilient/target/debug/resilient ]; then
-        BIN=resilient/target/debug/resilient
+    if [ -x resilient/target/release/rz ]; then
+        BIN=resilient/target/release/rz
+    elif [ -x resilient/target/debug/rz ]; then
+        BIN=resilient/target/debug/rz
     elif command -v resilient >/dev/null 2>&1; then
         BIN=resilient
     else

@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::Command;
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 fn extract_u64_field<'a>(line: &'a str, key: &str) -> &'a str {

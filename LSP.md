@@ -11,7 +11,7 @@ dependencies, so it's gated behind a feature flag.
 ```bash
 cd resilient
 cargo build --features lsp --release
-# Binary lands at resilient/target/release/resilient
+# Binary lands at resilient/target/release/rz
 ```
 
 Running `resilient --lsp` without the feature emits a helpful error

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 /// Write `src` to a temp `.rs` file, run the resilient driver

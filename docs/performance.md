@@ -52,7 +52,7 @@ competitive with Python on the same comparison.
 cd resilient
 cargo build --release             # default features (interp + VM)
 cargo build --release --features jit
-cp target/release/resilient target/release/resilient-with-jit
+cp target/release/rz target/release/rz-with-jit
 
 # Build the native baseline
 rustc -O ../benchmarks/fib/fib_native.rs \
@@ -60,9 +60,9 @@ rustc -O ../benchmarks/fib/fib_native.rs \
 
 # Run the bench
 hyperfine --warmup 2 --runs 5 \
-  "target/release/resilient ../benchmarks/fib/fib.rs" \
-  "target/release/resilient --vm ../benchmarks/fib/fib_vm.rs" \
-  "target/release/resilient-with-jit --jit ../benchmarks/fib/fib_jit.rs" \
+  "target/release/rz ../benchmarks/fib/fib.rs" \
+  "target/release/rz --vm ../benchmarks/fib/fib_vm.rs" \
+  "target/release/rz-with-jit --jit ../benchmarks/fib/fib_jit.rs" \
   "../benchmarks/fib/fib_native"
 ```
 

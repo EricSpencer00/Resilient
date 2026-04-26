@@ -41,14 +41,14 @@ cargo install cargo-fuzz --locked
 cargo build --release --manifest-path resilient/Cargo.toml
 
 # Run the parse target for 30 seconds.
-RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/resilient \
+RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
   cargo +nightly fuzz run parse --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1
 
 # Or the lex target. Same runner invariants — fails on a
 # subprocess panic (SIGABRT) but otherwise passes.
-RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/resilient \
+RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
   cargo +nightly fuzz run lex --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1

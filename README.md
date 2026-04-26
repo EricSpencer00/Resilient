@@ -89,10 +89,57 @@ Resilient provides detailed error messages and has sophisticated error recovery 
 
 ## Getting Started
 
-### Docker (RES-203)
+The shipped CLI is **`rz`** — short for Resilient, matches the `.rz` source extension.
 
-A prebuilt image is published to GitHub Container Registry on
-every tagged release. Pull + run without installing Rust:
+### Install
+
+Pick the path that matches what you have. Each leaves `rz` on `$PATH`.
+
+#### One-liner (recommended)
+
+Downloads the latest release binary into `~/.rz/bin/rz` (no sudo needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EricSpencer00/Resilient/main/scripts/install.sh | bash
+```
+
+Then add `~/.rz/bin` to `PATH` (the script prints the exact line for your
+shell). For a system-wide install: `RZ_PREFIX=/usr/local sudo bash`.
+Pin a version with `RZ_VERSION=v0.1.0 …`.
+
+#### Pre-built binaries
+
+Grab the archive matching your platform from the
+[releases page](https://github.com/EricSpencer00/Resilient/releases),
+extract `rz`, and put it on `PATH`:
+
+```bash
+TAG=v0.1.0  # see the releases page for the latest
+TARGET=aarch64-apple-darwin  # or x86_64-apple-darwin / *-unknown-linux-gnu
+curl -fSL "https://github.com/EricSpencer00/Resilient/releases/download/${TAG}/rz-${TAG}-${TARGET}.tar.gz" \
+    | tar xz -C /usr/local/bin
+rz --version
+```
+
+#### From source via cargo install
+
+If you have Rust installed:
+
+```bash
+git clone https://github.com/EricSpencer00/Resilient.git
+cd Resilient
+cargo install --path resilient
+rz --version
+```
+
+This puts `rz` in `~/.cargo/bin/rz` (already on `PATH` if cargo is configured
+normally). Add `--features z3` for SMT-backed verification (requires
+`brew install z3` or `apt-get install libz3-dev`).
+
+#### Docker (RES-203)
+
+A prebuilt image is published to GitHub Container Registry on every
+tagged release. Pull + run without installing Rust:
 
 ```bash
 docker run --rm ghcr.io/ericspencer00/resilient:latest --help
@@ -102,31 +149,54 @@ docker run --rm -v "$PWD":/work -w /work \
     ghcr.io/ericspencer00/resilient:latest examples/hello.rz
 ```
 
-The image is multi-arch (linux/amd64 + linux/arm64), built from
-`Dockerfile` at repo root. Ships with the `--features z3` build
-so the SMT-backed verifier works out of the box. Runs as an
-unprivileged `resilient` user (UID 1001) — mount working
-directories with matching permissions if you want the binary to
-write certificates / artifacts back.
+The image is multi-arch (linux/amd64 + linux/arm64), built from `Dockerfile`
+at repo root. Ships with the `--features z3` build so the SMT-backed
+verifier works out of the box. Runs as an unprivileged `resilient` user
+(UID 1001) — mount working directories with matching permissions if you
+want the binary to write certificates / artifacts back.
+
+### Hello, Resilient
+
+```bash
+cat > hello.rz <<'EOF'
+fn main() {
+    println("Hello, Resilient!");
+    return 0;
+}
+main();
+EOF
+
+rz hello.rz
+# Hello, Resilient!
+```
+
+### Running an example
+
+The repo's `resilient/examples/` directory has dozens of working programs:
+
+```bash
+rz resilient/examples/sensor_monitor.rz
+
+# With static type checking
+rz --typecheck resilient/examples/sensor_monitor.rz
+
+# With verification audit (shows static-vs-runtime contract coverage)
+rz --audit resilient/examples/sensor_monitor.rz
+```
 
 ### Running the REPL
 
 ```bash
-cd resilient
-cargo run
+rz
 ```
 
-### Running an Example
+### Building from source without installing
+
+If you'd rather not install — typical contributor workflow:
 
 ```bash
-cd resilient
-cargo run -- examples/sensor_monitor.rz
-
-# With static type checking
-cargo run -- --typecheck examples/sensor_monitor.rz
-
-# With verification audit (shows static-vs-runtime contract coverage)
-cargo run -- --audit examples/sensor_monitor.rz
+cargo build --release --manifest-path resilient/Cargo.toml
+./resilient/target/release/rz examples/hello.rz
 ```
 
 ### SMT-backed verification (optional)
@@ -140,7 +210,7 @@ optional `z3` feature to get full SMT-backed proofs:
 ```bash
 # macOS:  brew install z3
 # Linux:  sudo apt-get install libz3-dev z3
-cargo run --features z3 -- --audit prog.rz
+rz --audit prog.rz   # requires the binary built with --features z3
 ```
 
 The audit report tags clauses proven by Z3 separately so users can
@@ -154,7 +224,7 @@ re-verify it under their own solver — without trusting the Resilient
 binary:
 
 ```bash
-cargo run --features z3 -- --emit-certificate ./certs examples/cert_demo.rz
+rz --emit-certificate ./certs examples/cert_demo.rz   # requires --features z3 build
 ```
 
 One file is written per discharged obligation:
@@ -181,13 +251,13 @@ set to the signer's key.
 
 ```bash
 # Sign during emit:
-resilient -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rz
+rz -t --emit-certificate ./certs --sign-cert ~/.resilient-priv.pem src/main.rz
 
 # Verify against the binary's embedded public key:
-resilient verify-cert ./certs
+rz verify-cert ./certs
 
 # Or against a custom public key (e.g. a rotated / test key):
-resilient verify-cert ./certs --pubkey ./trusted-pub.pem
+rz verify-cert ./certs --pubkey ./trusted-pub.pem
 ```
 
 Exit codes from `verify-cert`: `0` = valid signature, `1` =
@@ -239,13 +309,13 @@ The `verify-all` subcommand re-checks every obligation:
 
 ```bash
 # Fast cryptographic-only pass:
-resilient verify-all ./certs
+rz verify-all ./certs
 
 # With a custom public key (for rotated / test keys):
-resilient verify-all ./certs --pubkey ./trusted-pub.pem
+rz verify-all ./certs --pubkey ./trusted-pub.pem
 
 # Extra: re-run Z3 on each cert (if the `z3` binary is on PATH):
-resilient verify-all ./certs --z3
+rz verify-all ./certs --z3
 ```
 
 Output is a one-row-per-obligation table with `sha256`/`sig`/`z3`
@@ -513,7 +583,7 @@ you want to see what the scanner actually emitted, without
 editing source (RES-112). Mutually exclusive with `--lsp`.
 
 ```sh
-resilient --dump-tokens examples/hello.rz
+rz --dump-tokens examples/hello.rz
 # 2:1  Function("fn")
 # 2:4  Identifier("main")("main")
 # 2:8  LeftParen("(")
@@ -528,7 +598,7 @@ columns, and absolute jump targets (RES-173). The output reflects
 the RES-172 peephole pass, so what you see is what runs.
 
 ```sh
-resilient --dump-chunks examples/hello.rz
+rz --dump-chunks examples/hello.rz
 # === main ===
 # constants:
 #   const[0] = "Hello, Resilient world!"
@@ -544,14 +614,14 @@ disassembler module comment documents the exact column contract.
 
 ### Formatter
 
-`resilient fmt <file>` pretty-prints a Resilient source file in
+`rz fmt <file>` pretty-prints a Resilient source file in
 canonical style (4-space indent, brace-on-same-line, contracts
 indented under the function signature). By default it prints to
 stdout; pass `--in-place` to overwrite the file.
 
 ```bash
-resilient fmt examples/hello.rz              # print to stdout
-resilient fmt --in-place src/main.rz         # overwrite
+rz fmt examples/hello.rz              # print to stdout
+rz fmt --in-place src/main.rz         # overwrite
 ```
 
 The formatter refuses to touch input with parse errors (exits 1).

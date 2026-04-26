@@ -45,7 +45,7 @@ fuzz_target!(|data: &[u8]| {
     f.flush().expect("flush tempfile");
 
     let bin = std::env::var("RESILIENT_FUZZ_BIN")
-        .unwrap_or_else(|_| "resilient".to_string());
+        .unwrap_or_else(|_| "rz".to_string());
     let status = Command::new(&bin)
         .arg("--dump-tokens")
         .arg(f.path())

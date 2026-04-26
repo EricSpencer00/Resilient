@@ -68,7 +68,7 @@ rounds to centiseconds, which hides everything under 10 ms):
 
 ```bash
 cargo build --release --features jit
-./resilient/target/release/resilient \
+./resilient/target/release/rz \
     --jit benchmarks/jit/tail_rec.rs
 ```
 
@@ -146,7 +146,7 @@ isn't noise-amplified.
 
 ```bash
 cargo build --release --features jit
-./resilient/target/release/resilient \
+./resilient/target/release/rz \
     --jit benchmarks/jit/leaf_heavy.rs
 ```
 
