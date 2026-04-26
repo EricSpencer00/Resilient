@@ -28,7 +28,7 @@ permalink: /
         <span class="rl-dot rl-dot--red"></span>
         <span class="rl-dot rl-dot--yellow"></span>
         <span class="rl-dot rl-dot--green"></span>
-        <span class="rl-code-frame__label">altitude_controller.rl</span>
+        <span class="rl-code-frame__label">altitude_controller.rz</span>
       </div>
 <pre class="rl-code"><span class="rl-cm">// Fault-tolerant flight controller</span>
 <span class="rl-kw">fn</span> <span class="rl-fn">read_pressure</span>(<span class="rl-ty">int</span> sensor_id) -&gt; <span class="rl-ty">float</span>
@@ -78,7 +78,7 @@ permalink: /
 Write a function with contracts — the verifier tells you exactly what it proved at compile time and what becomes a runtime guard.
 
 <div class="rl-terminal">
-  <div class="rl-terminal__bar">$ rz --audit altitude_controller.rl</div>
+  <div class="rl-terminal__bar">$ rz --audit altitude_controller.rz</div>
   <pre><span class="rl-ok">✓</span>  <span class="rl-path">read_pressure</span>  <span class="rl-kw">requires</span>  sensor_id ∈ [0, 4)            proved
 <span class="rl-ok">✓</span>  <span class="rl-path">read_pressure</span>  <span class="rl-kw">ensures</span>   result ∈ [0.0, 120 000.0 Pa]  proved
 <span class="rl-warn">~</span>  <span class="rl-path">altitude_controller</span>  assert(alt &lt; MAX_ALTITUDE)   runtime  (MAX_ALTITUDE is symbolic)

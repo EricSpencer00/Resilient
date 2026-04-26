@@ -34,9 +34,9 @@ three different backends.
 | Cranelift JIT | `--jit` | stable subset | Requires `--features jit`. ~12x faster than the VM. |
 
 ```bash
-rz prog.rs              # interpreter
-rz --vm prog.rs         # bytecode VM
-rz --jit prog.rs        # Cranelift JIT (built with --features jit)
+rz prog.rz              # interpreter
+rz --vm prog.rz         # bytecode VM
+rz --jit prog.rz        # Cranelift JIT (built with --features jit)
 ```
 
 The JIT backend only ships AST lowerings for the stable subset
@@ -54,7 +54,7 @@ Honours the `logos-lexer` feature flag — same output either way.
 Mutually exclusive with `--lsp`.
 
 ```bash
-rz --dump-tokens examples/hello.rs
+rz --dump-tokens examples/hello.rz
 ```
 
 ### `--dump-chunks <file>`
@@ -65,7 +65,7 @@ every bytecode chunk — `main` plus each user function — with
 constants, offsets, lines, opnames, and resolved jump targets.
 
 ```bash
-rz --dump-chunks examples/hello.rs
+rz --dump-chunks examples/hello.rz
 ```
 
 Mutually exclusive with `--dump-tokens` and `--lsp`. The column
@@ -82,8 +82,8 @@ runtime** — no runtime check is emitted. Clauses that the checker
 cannot discharge fall through to their usual runtime enforcement.
 
 ```bash
-rz --typecheck prog.rs
-rz -t prog.rs
+rz --typecheck prog.rz
+rz -t prog.rz
 ```
 
 `--typecheck` is implied by `--emit-certificate`.
@@ -97,7 +97,7 @@ proven statically vs left to runtime. Useful for understanding
 what the verifier is (and isn't) doing on a given program.
 
 ```bash
-rz --audit examples/sensor_monitor.rs
+rz --audit examples/sensor_monitor.rz
 ```
 
 ### `--emit-certificate <dir>`
@@ -109,7 +109,7 @@ binary. One file per obligation, named `<fn>__<kind>__<idx>.smt2`.
 Implies `--typecheck`. Requires `--features z3`.
 
 ```bash
-rz --emit-certificate ./certs examples/cert_demo.rs   # binary built with --features z3
+rz --emit-certificate ./certs examples/cert_demo.rz   # binary built with --features z3
 ```
 
 Every run also writes a `manifest.json` index with per-obligation
@@ -285,8 +285,8 @@ passed the driver derives a seed from the monotonic clock and
 echoes `seed=<N>` to stderr so a failing run can be replayed.
 
 ```bash
-rz --seed 42 prog.rs
-rz --seed=42 prog.rs
+rz --seed 42 prog.rz
+rz --seed=42 prog.rz
 ```
 
 **Security note.** SplitMix64 is not cryptographic. Do not use
@@ -317,7 +317,7 @@ a future deliverable.
 
 ```bash
 # What exists today:
-rz --jit --jit-cache-stats prog.rs
+rz --jit --jit-cache-stats prog.rz
 ```
 
 ## Test framework — *future*

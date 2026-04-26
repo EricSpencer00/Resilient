@@ -54,9 +54,9 @@ bench() {
 }
 
 bench "fib(25) — recursive Fibonacci" \
-    --command-name "Resilient (interp)" "$RES benchmarks/fib/fib.rs" \
-    --command-name "Resilient (VM)"     "$RES --vm benchmarks/fib/fib_vm.rs" \
-    --command-name "Resilient (JIT)"    "$RES_JIT --jit benchmarks/fib/fib_jit.rs" \
+    --command-name "Resilient (interp)" "$RES benchmarks/fib/fib.rz" \
+    --command-name "Resilient (VM)"     "$RES --vm benchmarks/fib/fib_vm.rz" \
+    --command-name "Resilient (JIT)"    "$RES_JIT --jit benchmarks/fib/fib_jit.rz" \
     --command-name "Python 3"           "python3 benchmarks/fib/fib.py" \
     --command-name "Node.js"            "node benchmarks/fib/fib.js" \
     --command-name "Lua"                "lua benchmarks/fib/fib.lua" \

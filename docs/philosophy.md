@@ -94,7 +94,7 @@ to trust the Resilient binary — they re-run the proof under
 any compatible solver and confirm the answer themselves.
 
 ```bash
-cargo run --features z3 -- --emit-certificate ./certs prog.rs
+cargo run --features z3 -- --emit-certificate ./certs prog.rz
 z3 -smt2 ./certs/safe_div__post__0.smt2
 # unsat
 ```
