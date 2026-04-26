@@ -56,6 +56,12 @@ extern crate alloc;
 pub mod live_telemetry;
 pub mod sink;
 
+// RES-374: peak-allocation tracking shim. Always compiled so
+// `peak_bytes()` / `reset_peak()` are callable from portable code;
+// the actual instrumentation wrapper (`TrackingHeap`) is gated on
+// `alloc` because it implements `GlobalAlloc`.
+pub mod heap;
+
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
 
