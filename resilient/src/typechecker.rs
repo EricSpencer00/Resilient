@@ -541,6 +541,11 @@ pub struct VerificationStats {
     /// callee). `false` = pure. Populated by
     /// `infer_fn_effects` during `check_program_with_source`.
     pub fn_effects: std::collections::HashMap<String, bool>,
+    /// RES-318: number of `invariant` annotations the loop verifier
+    /// statically discharged via Hoare-rule induction. Bumped per
+    /// invariant, not per loop. Zero without `--features z3`.
+    #[allow(dead_code)]
+    pub loop_invariants_proven: usize,
 }
 
 impl VerificationStats {
@@ -780,6 +785,11 @@ pub struct TypeChecker {
     /// overrides this from `--z3-theory <bv|lia|auto>`.
     #[cfg(feature = "z3")]
     z3_theory: crate::verifier_z3::Z3Theory,
+    /// RES-318: when `true`, the loop-invariant verifier prints a
+    /// `-- invariant proven, runtime check elided at L:C` line per
+    /// successfully discharged invariant. Defaults to `false` so the
+    /// regular build is silent; the driver flips it on for `--verbose`.
+    verbose_loop_invariants: bool,
 }
 
 impl TypeChecker {
@@ -1257,6 +1267,9 @@ impl TypeChecker {
             // RES-354: auto-detect theory by default.
             #[cfg(feature = "z3")]
             z3_theory: crate::verifier_z3::Z3Theory::Auto,
+            // RES-318: per-loop-invariant verbose stderr line is OFF
+            // by default. The driver flips it on via `--verbose`.
+            verbose_loop_invariants: false,
         }
     }
 
@@ -1289,6 +1302,49 @@ impl TypeChecker {
     pub fn with_z3_theory(mut self, theory: crate::verifier_z3::Z3Theory) -> Self {
         self.z3_theory = theory;
         self
+    }
+
+    /// RES-318: enable verbose stderr output from the loop-invariant
+    /// verifier. The driver flips this on via the `--verbose` flag.
+    pub fn with_verbose_loop_invariants(mut self, on: bool) -> Self {
+        self.verbose_loop_invariants = on;
+        self
+    }
+
+    /// RES-318: read accessor for the verifier pass.
+    #[allow(dead_code)]
+    pub(crate) fn verifier_timeout_ms(&self) -> u32 {
+        self.verifier_timeout_ms
+    }
+
+    /// RES-318: read accessor for the verifier pass.
+    #[allow(dead_code)]
+    pub(crate) fn verbose_loop_invariants(&self) -> bool {
+        self.verbose_loop_invariants
+    }
+
+    /// RES-318: push a loop-invariant proof certificate so it
+    /// participates in the regular `--emit-certificate <DIR>` dump.
+    #[allow(dead_code)]
+    pub(crate) fn push_loop_invariant_certificate(&mut self, idx: usize, smt2: String) {
+        self.certificates.push(CapturedCertificate {
+            fn_name: "<loop>".to_string(),
+            kind: "loop_invariant",
+            idx,
+            smt2,
+        });
+        self.stats.loop_invariants_proven += 1;
+    }
+
+    /// RES-318: helper for the verifier's unit tests — count proven
+    /// invariants by counting `loop_invariant`-kinded certificates.
+    #[cfg(feature = "z3")]
+    #[allow(dead_code)]
+    pub(crate) fn loop_invariant_certificate_count(&self) -> usize {
+        self.certificates
+            .iter()
+            .filter(|c| c.kind == "loop_invariant")
+            .count()
     }
 
     pub fn check_program(&mut self, program: &Node) -> Result<Type, String> {
@@ -1446,6 +1502,8 @@ impl TypeChecker {
                 crate::try_catch::check(program, source_path)?;
                 crate::verifier_liveness::check(program, source_path)?;
                 crate::bounds_check::check_array_bounds(program, source_path)?;
+                crate::loop_invariants::check(program, source_path)?;
+                crate::verifier_loop_invariants::verify_and_capture(self, program);
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -1943,6 +2001,13 @@ impl TypeChecker {
                 }
 
                 Ok(Type::Void)
+            }
+
+            // RES-222: `invariant EXPR;` — the body must typecheck
+            // as bool. Position validity (must sit in a loop body)
+            // is enforced by `crate::loop_invariants::check`.
+            Node::InvariantStatement { expr, .. } => {
+                crate::loop_invariants::typecheck_invariant_statement(self, expr)
             }
 
             // RES-133a: assume has the same type rules as assert

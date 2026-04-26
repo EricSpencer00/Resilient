@@ -1,0 +1,26 @@
+// RES-318 demo: a `while` loop whose invariant is TRUE at runtime
+// but the WP-substitution verifier cannot statically discharge —
+// the body contains a `println` call, which falls outside the
+// supported assignment-only subset, so weakest-precondition
+// substitution returns None and the proof bails.
+//
+// The verifier emits no certificate; the runtime check from RES-222
+// is the sole line of defense. Because the invariant actually holds
+// for every iteration, the runtime check passes and the program
+// completes normally.
+//
+// Together with `invariant_proven_demo.rz`, this is the second of
+// the two golden tests required by the ticket: provable + fallback.
+
+fn main() {
+    let i = 0;
+    let n = 3;
+    while i < n {
+        invariant i >= 0;
+        println("step");
+        i = i + 1;
+    }
+    println("done");
+}
+
+main();

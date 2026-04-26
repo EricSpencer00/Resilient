@@ -110,6 +110,18 @@ mod try_catch;
 // and the dispatch hooks in `parse_expression` / `eval` / `check_node`.
 mod quantifiers;
 
+// RES-222: `invariant EXPR;` statement inside `while` / `for` bodies.
+// All parser, typechecker, and runtime-check logic lives in this
+// module per the feature-isolation pattern in CLAUDE.md.
+mod loop_invariants;
+
+// RES-318: Z3 inductive verification of loop invariants. Best-effort
+// pass — the runtime check from `loop_invariants` always fires;
+// the verifier only adds an SMT-LIB2 proof certificate + a verbose
+// `-- invariant proven, runtime check elided` line when both base
+// and inductive goals discharge.
+mod verifier_loop_invariants;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -1811,6 +1823,13 @@ enum Node {
         body: Box<Node>,
         span: span::Span,
     },
+    /// RES-222: `invariant EXPR;` statement, valid only inside a
+    /// `while` / `for` body. The interpreter sweeps these out at the
+    /// top of every iteration via
+    /// [`crate::loop_invariants::collect_body_invariants`]. Standalone
+    /// occurrences are rejected by the typechecker pass
+    /// [`crate::loop_invariants::check`].
+    InvariantStatement { expr: Box<Node>, span: span::Span },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -2003,6 +2022,10 @@ impl Parser {
             Token::If => Some(self.parse_if_statement()),
             Token::While => Some(self.parse_while_statement()),
             Token::For => Some(self.parse_for_in_statement()),
+            // RES-222: `invariant EXPR;` statement form. Validity
+            // (must be inside a loop body) is enforced by the
+            // typechecker pass `crate::loop_invariants::check`.
+            Token::Invariant => Some(crate::loop_invariants::parse_invariant_statement(self)),
             Token::Unknown(ch) => {
                 // RES-114: if the offending char is alphabetic (in
                 // the Unicode sense), the lexer's ASCII-only
@@ -9106,6 +9129,12 @@ impl Interpreter {
             Node::Assume {
                 condition, message, ..
             } => self.eval_assume(condition, message),
+            // RES-222: in-body `invariant EXPR;` is a no-op when the
+            // block walks past it — the iteration-top sweep in the
+            // enclosing while/for already evaluated it. Standalone
+            // occurrences are rejected by the typechecker pass, so
+            // this arm only fires inside a loop body.
+            Node::InvariantStatement { .. } => Ok(Value::Void),
             Node::Block {
                 stmts: statements, ..
             } => self.eval_block_statement(statements),
@@ -9196,15 +9225,23 @@ impl Interpreter {
                 name,
                 iterable,
                 body,
-                ..
+                invariants,
+                span,
             } => {
                 let iter_val = self.eval(iterable)?;
                 let items = match iter_val {
                     Value::Array(v) => v,
                     other => return Err(format!("`for` iterable must be an array, got {}", other)),
                 };
+                // RES-222: extract body-level invariants once.
+                let body_invs = crate::loop_invariants::collect_body_invariants(body);
                 for item in items {
                     self.env.set(name.clone(), item);
+                    // RES-222: invariant holds at the top of every
+                    // iteration with the loop variable bound.
+                    crate::loop_invariants::check_invariants_at_iteration(
+                        self, invariants, &body_invs, span,
+                    )?;
                     let result = self.eval(body)?;
                     if let Value::Return(_) = result {
                         return Ok(result);
@@ -9213,13 +9250,18 @@ impl Interpreter {
                 Ok(Value::Void)
             }
             Node::WhileStatement {
-                condition, body, ..
+                condition,
+                body,
+                invariants,
+                span,
             } => {
                 // Cap iterations as a safety net so a buggy loop can't
                 // freeze the interpreter. 1M is big enough for
                 // realistic work and small enough to catch runaways.
                 const MAX_ITERS: usize = 1_000_000;
                 let mut iters = 0usize;
+                // RES-222: extract body-level invariants once.
+                let body_invs = crate::loop_invariants::collect_body_invariants(body);
                 loop {
                     iters += 1;
                     if iters > MAX_ITERS {
@@ -9227,6 +9269,12 @@ impl Interpreter {
                             "while loop exceeded {MAX_ITERS} iterations (runaway?)"
                         ));
                     }
+                    // RES-222: invariant must hold at the top of
+                    // every iteration (entry-pre and after-body
+                    // collapse to the same check point).
+                    crate::loop_invariants::check_invariants_at_iteration(
+                        self, invariants, &body_invs, span,
+                    )?;
                     let cond_val = self.eval(condition)?;
                     if !self.is_truthy(&cond_val) {
                         break;
@@ -11895,6 +11943,7 @@ fn execute_file(
     use_jit: bool,
     verifier_timeout_ms: u32,
     warn_unverified: bool,
+    verbose_invariants: bool,
     live_log: Option<&Path>,
     #[cfg(feature = "z3")] z3_theory: verifier_z3::Z3Theory,
     no_cache: bool,
@@ -11992,7 +12041,10 @@ fn execute_file(
             // RES-217: `--no-warn-unverified` flips this off; the
             // default (on) surfaces `warning[partial-proof]`
             // diagnostics whenever Z3 returns Unknown.
-            .with_warn_unverified(warn_unverified);
+            .with_warn_unverified(warn_unverified)
+            // RES-318: `--verbose` opts into per-loop-invariant
+            // proof messages on stderr.
+            .with_verbose_loop_invariants(verbose_invariants);
         // RES-354: apply the --z3-theory flag when z3 feature is on.
         #[cfg(feature = "z3")]
         let mut tc = tc_base.with_z3_theory(z3_theory);
@@ -13206,6 +13258,8 @@ COMMON FLAGS:\n\
     -h, --help                   Show this help and exit\n\
     -t, --typecheck              Run the static type checker\n\
         --audit                  Print the verification audit trail\n\
+        --verbose                Print one stderr line per loop\n\
+                                 invariant statically proven (RES-318)\n\
         --explain-effects        Print the inferred effect (@pure / @io)\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
@@ -13304,6 +13358,10 @@ fn main() {
 
     let mut type_check = false;
     let mut audit = false;
+    // RES-318: --verbose enables one stderr line per loop invariant
+    // statically discharged by the Z3 verifier. Off by default so
+    // the regular build is silent.
+    let mut verbose_invariants = false;
     // RES-347: `--explain-effects` prints the inferred effect
     // (@pure / @io) for every user fn after typechecking. Implies
     // `--typecheck` so the fixpoint has run and `stats.fn_effects`
@@ -13367,6 +13425,13 @@ fn main() {
                 type_check = true;
             } else if arg == "--audit" {
                 audit = true;
+            } else if arg == "--verbose" {
+                // RES-318: emit one `-- invariant proven, runtime
+                // check elided at L:C` line per discharged loop
+                // invariant. Implies --typecheck so the verifier
+                // pass actually runs.
+                verbose_invariants = true;
+                type_check = true;
             } else if arg == "--deny-unproven-bounds" {
                 // RES-351: strict mode — unproven array-bounds
                 // accesses become compile errors instead of relying
@@ -13687,6 +13752,7 @@ fn main() {
                 use_jit,
                 verifier_timeout_ms,
                 warn_unverified,
+                verbose_invariants,
                 emit_live_log.as_deref(),
                 #[cfg(feature = "z3")]
                 z3_theory,
