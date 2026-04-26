@@ -154,7 +154,7 @@ live {
 }
 ```
 
-During development, pass `--panic-on-fault` to `resilient` to
+During development, pass `--panic-on-fault` to `rz` to
 disable the retry loop and surface the first fault immediately
 (exit code 1); use `--no-panic-on-fault` to restore the default
 self-healing behaviour (RES-211).
@@ -596,11 +596,18 @@ unaffected by this flag.
 
 ## Compiling and Running
 
+After installing `rz` (see [README's Getting Started](README.md#getting-started)):
+
 ```bash
-cargo run -- examples/hello.rz         # run a program
-cargo run -- --typecheck foo.rz        # with type checking
-cargo run                              # interactive REPL
-cargo test                             # run the test suite
-cargo test -- --ignored                # see which examples still
-                                       # lack .expected.txt sidecars
+rz examples/hello.rz                   # run a program
+rz --typecheck foo.rz                  # with type checking
+rz                                     # interactive REPL
+```
+
+Contributor workflow (running tests, hacking on the compiler itself):
+
+```bash
+cargo test --manifest-path resilient/Cargo.toml             # run the test suite
+cargo test --manifest-path resilient/Cargo.toml -- --ignored  # see which examples still
+                                                              # lack .expected.txt sidecars
 ```

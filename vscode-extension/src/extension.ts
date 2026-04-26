@@ -10,7 +10,7 @@ let client: LanguageClient | undefined;
 
 export function activate(context: ExtensionContext): void {
   const config = workspace.getConfiguration("resilient");
-  const serverPath = config.get<string>("serverPath", "resilient");
+  const serverPath = config.get<string>("serverPath", "rz");
   const serverArgs = config.get<string[]>("serverArgs", ["--lsp"]);
 
   const serverOptions: ServerOptions = {
@@ -59,7 +59,7 @@ export function activate(context: ExtensionContext): void {
     const filePath = editor.document.uri.fsPath;
     const bin = workspace
       .getConfiguration("resilient")
-      .get<string>("serverPath", "resilient");
+      .get<string>("serverPath", "rz");
 
     let terminal = window.terminals.find((t) => t.name === "Resilient");
     if (!terminal || terminal.exitStatus !== undefined) {

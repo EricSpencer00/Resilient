@@ -12,8 +12,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-RES=resilient/target/release/resilient
-RES_JIT=resilient/target/release/resilient-with-jit
+RES=resilient/target/release/rz
+RES_JIT=resilient/target/release/rz-with-jit
 if [[ ! -x "$RES" ]]; then
     echo "Building release binary (default features)..."
     (cd resilient && cargo build --release --quiet)
@@ -26,7 +26,7 @@ if [[ ! -x "$RES_JIT" ]]; then
     echo "Building release binary with --features jit..."
     (cd resilient \
         && cargo build --release --features jit --quiet \
-        && cp target/release/resilient target/release/resilient-with-jit)
+        && cp target/release/rz target/release/rz-with-jit)
 fi
 
 # Make sure native baselines are built and up-to-date.

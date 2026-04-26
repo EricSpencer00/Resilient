@@ -21,7 +21,7 @@ fn helper_path() -> &'static str {
 }
 
 fn resilient_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 /// Monotonically-increasing suffix so parallel test runs don't collide

@@ -2,14 +2,14 @@
 #
 # Multi-stage build:
 #   - builder:  rust:1.85-bookworm + libz3-dev + clang — compiles
-#               `resilient/target/release/resilient` with `--features z3`.
+#               `resilient/target/release/rz` with `--features z3`.
 #   - runtime:  debian:bookworm-slim + libz3-4 — carries just the
 #               compiled binary and the shared-library dep that
 #               Z3's runtime needs.
 #
-# The resulting image's ENTRYPOINT is the resilient binary, so
+# The resulting image's ENTRYPOINT is the `rz` binary, so
 # `docker run ghcr.io/ericspencer00/resilient:latest --help` (and
-# `resilient src/main.rs`) "just work".
+# `rz src/main.rs`) "just work".
 #
 # Deviation from the ticket AC: the builder base is rust:1.85, not
 # rust:1.84. Edition 2024 — used by every crate in this workspace
@@ -59,7 +59,7 @@ RUN apt-get update \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /src/resilient/target/release/resilient /usr/local/bin/resilient
+COPY --from=builder /src/resilient/target/release/rz /usr/local/bin/rz
 
 # Default to a non-root user — Docker best practice; also
 # prevents accidental writes to host-mounted volumes as root.
@@ -67,4 +67,4 @@ RUN useradd --create-home --shell /bin/bash --uid 1001 resilient
 USER resilient
 WORKDIR /home/resilient
 
-ENTRYPOINT ["/usr/local/bin/resilient"]
+ENTRYPOINT ["/usr/local/bin/rz"]

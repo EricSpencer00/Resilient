@@ -23,7 +23,7 @@ exercising every Phase 1–4 feature: structs, contracts, `Result` + `?`,
 `match`, arrays, `for..in`, string coercion, `live { invariant ... }`.
 
 ```bash
-$ cargo run -- --audit examples/sensor_monitor.rs
+$ rz --audit examples/sensor_monitor.rs
 Running type checker...
 Type check passed
 

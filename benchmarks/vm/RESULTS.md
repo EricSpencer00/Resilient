@@ -68,7 +68,7 @@ Individual samples for the counter loop:
 
 ```bash
 cargo build --release
-./resilient/target/release/resilient --vm benchmarks/vm/counter_loop.rs
+./resilient/target/release/rz --vm benchmarks/vm/counter_loop.rs
 ```
 
 Toggle the peephole by commenting out the two `peephole::optimize`

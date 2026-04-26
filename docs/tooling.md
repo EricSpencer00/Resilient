@@ -24,7 +24,7 @@ introductions, see [Getting Started](getting-started) or the
 
 ## Compiler execution modes
 
-The `resilient` binary is a driver that can run a source file under
+The `rz` binary is a driver that can run a source file under
 three different backends.
 
 | Mode | Flag | Status | Notes |
@@ -34,9 +34,9 @@ three different backends.
 | Cranelift JIT | `--jit` | stable subset | Requires `--features jit`. ~12x faster than the VM. |
 
 ```bash
-resilient prog.rs              # interpreter
-resilient --vm prog.rs         # bytecode VM
-resilient --jit prog.rs        # Cranelift JIT (built with --features jit)
+rz prog.rs              # interpreter
+rz --vm prog.rs         # bytecode VM
+rz --jit prog.rs        # Cranelift JIT (built with --features jit)
 ```
 
 The JIT backend only ships AST lowerings for the stable subset
@@ -54,7 +54,7 @@ Honours the `logos-lexer` feature flag — same output either way.
 Mutually exclusive with `--lsp`.
 
 ```bash
-resilient --dump-tokens examples/hello.rs
+rz --dump-tokens examples/hello.rs
 ```
 
 ### `--dump-chunks <file>`
@@ -65,7 +65,7 @@ every bytecode chunk — `main` plus each user function — with
 constants, offsets, lines, opnames, and resolved jump targets.
 
 ```bash
-resilient --dump-chunks examples/hello.rs
+rz --dump-chunks examples/hello.rs
 ```
 
 Mutually exclusive with `--dump-tokens` and `--lsp`. The column
@@ -82,8 +82,8 @@ runtime** — no runtime check is emitted. Clauses that the checker
 cannot discharge fall through to their usual runtime enforcement.
 
 ```bash
-resilient --typecheck prog.rs
-resilient -t prog.rs
+rz --typecheck prog.rs
+rz -t prog.rs
 ```
 
 `--typecheck` is implied by `--emit-certificate`.
@@ -97,7 +97,7 @@ proven statically vs left to runtime. Useful for understanding
 what the verifier is (and isn't) doing on a given program.
 
 ```bash
-resilient --audit examples/sensor_monitor.rs
+rz --audit examples/sensor_monitor.rs
 ```
 
 ### `--emit-certificate <dir>`
@@ -109,7 +109,7 @@ binary. One file per obligation, named `<fn>__<kind>__<idx>.smt2`.
 Implies `--typecheck`. Requires `--features z3`.
 
 ```bash
-cargo run --features z3 -- --emit-certificate ./certs examples/cert_demo.rs
+rz --emit-certificate ./certs examples/cert_demo.rs   # binary built with --features z3
 ```
 
 Every run also writes a `manifest.json` index with per-obligation
@@ -122,18 +122,18 @@ private key, writing a 64-byte signature to `<dir>/cert.sig`.
 Only meaningful when paired with `--emit-certificate`. The PEM
 envelope format is documented in `resilient/src/cert_sign.rs`.
 
-### `resilient verify-cert <dir>`
+### `rz verify-cert <dir>`
 
 Re-checks `<dir>/cert.sig` against the binary's embedded public
 key (or a `--pubkey <path>` override). Exits 0 on match, 1 on
 tamper / wrong key, 2 on usage error.
 
 ```bash
-resilient verify-cert ./certs
-resilient verify-cert ./certs --pubkey ./trusted-pub.pem
+rz verify-cert ./certs
+rz verify-cert ./certs --pubkey ./trusted-pub.pem
 ```
 
-### `resilient verify-all <dir>`
+### `rz verify-all <dir>`
 
 Walks `<dir>/manifest.json` and re-checks every obligation:
 SHA-256 of the `.smt2` file, Ed25519 signature (if present), and
@@ -142,17 +142,17 @@ optionally re-runs Z3 on each certificate when `--z3` is passed
 obligation table; exit 0 iff every checked cell passes.
 
 ```bash
-resilient verify-all ./certs
-resilient verify-all ./certs --z3
+rz verify-all ./certs
+rz verify-all ./certs --z3
 ```
 
 ## REPL
 
-Launched by running `resilient` with no file argument.
+Launched by running `rz` with no file argument.
 
 ```bash
-resilient                           # start REPL
-resilient --examples-dir ./ex       # override the `examples` command's search path
+rz                           # start REPL
+rz --examples-dir ./ex       # override the `examples` command's search path
 ```
 
 Built-in commands:
@@ -173,7 +173,7 @@ Opt-in; requires building with `--features lsp`.
 
 ```bash
 cargo build --features lsp --release
-resilient --lsp
+rz --lsp
 ```
 
 Speaks LSP over stdio. Shipped features:
@@ -190,7 +190,7 @@ See [LSP / Editor Integration](lsp) for editor config examples.
 
 ## Formatter
 
-### `resilient fmt <file> [--in-place]`
+### `rz fmt <file> [--in-place]`
 
 Canonical source-code formatter. Parses the input, walks the AST,
 and pretty-prints it in canonical style:
@@ -205,8 +205,8 @@ and pretty-prints it in canonical style:
 - `live` blocks follow the same brace style
 
 ```bash
-resilient fmt src/main.rs              # print to stdout
-resilient fmt --in-place src/main.rs   # overwrite the file
+rz fmt src/main.rs              # print to stdout
+rz fmt --in-place src/main.rs   # overwrite the file
 ```
 
 Exit codes: `0` = formatted, `1` = parse errors (formatter refuses
@@ -220,7 +220,7 @@ improvement.
 
 ## Package scaffolding
 
-### `resilient pkg init <name>`
+### `rz pkg init <name>`
 
 Creates a new Resilient project layout in the current directory:
 
@@ -233,12 +233,12 @@ Creates a new Resilient project layout in the current directory:
 ```
 
 ```bash
-resilient pkg init my-proj
+rz pkg init my-proj
 cd my-proj
-resilient src/main.rs
+rz src/main.rs
 ```
 
-`resilient pkg` is the umbrella for future package operations
+`rz pkg` is the umbrella for future package operations
 (`pkg add`, `pkg build`, etc.); only `init` exists today.
 
 ## Fuzz testing
@@ -285,8 +285,8 @@ passed the driver derives a seed from the monotonic clock and
 echoes `seed=<N>` to stderr so a failing run can be replayed.
 
 ```bash
-resilient --seed 42 prog.rs
-resilient --seed=42 prog.rs
+rz --seed 42 prog.rs
+rz --seed=42 prog.rs
 ```
 
 **Security note.** SplitMix64 is not cryptographic. Do not use
@@ -317,13 +317,13 @@ a future deliverable.
 
 ```bash
 # What exists today:
-resilient --jit --jit-cache-stats prog.rs
+rz --jit --jit-cache-stats prog.rs
 ```
 
 ## Test framework — *future*
 
 Resilient programs express tests using ordinary `assert()` and
-`assert(cond, msg)` calls — there is no `resilient test`
+`assert(cond, msg)` calls — there is no `rz test`
 subcommand yet. The assertion failure path includes the operand
 values, which makes most failure modes easy to debug without a
 dedicated framework.
@@ -343,21 +343,21 @@ cargo test              # unit + integration tests
 cargo test --features z3  # also exercises the SMT layer
 ```
 
-A first-class `resilient test` runner (test discovery, parallel
+A first-class `rz test` runner (test discovery, parallel
 execution, JUnit output) is tracked as a future deliverable.
 
 ## Lint
 
-### `resilient lint <file>`
+### `rz lint <file>`
 
 Parses the file and runs the starter linter (5 stable codes today;
 see `resilient/src/lint.rs` for the full list). Supports
 `// resilient: allow <code>` suppression comments.
 
 ```bash
-resilient lint src/main.rs
-resilient lint src/main.rs --deny L001
-resilient lint src/main.rs --allow L003
+rz lint src/main.rs
+rz lint src/main.rs --deny L001
+rz lint src/main.rs --allow L003
 ```
 
 Exit codes: `0` = no diagnostics, `1` = warnings only, `2` = any

@@ -12415,7 +12415,7 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                     }
                     println!("\nNext steps:");
                     println!("  cd {}", name);
-                    println!("  resilient src/main.rs");
+                    println!("  rz src/main.rs");
                     Some(0)
                 }
                 Err(e) => {
@@ -12427,7 +12427,7 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
         Some(other) => {
             eprintln!(
                 "Error: unknown pkg subcommand `{}`. Known: init. \
-                 Run `resilient pkg --help` for usage.",
+                 Run `rz pkg --help` for usage.",
                 other
             );
             Some(2)
@@ -12447,16 +12447,16 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
 /// subcommands so new users don't have to grep source.
 fn print_pkg_help() {
     println!(
-        "resilient pkg — package-manager subcommands\n\
+        "rz pkg — package-manager subcommands\n\
          \n\
          USAGE:\n    \
-             resilient pkg <subcommand> [options]\n\
+             rz pkg <subcommand> [options]\n\
          \n\
          SUBCOMMANDS:\n    \
              init    Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
              help    Show this message\n\
          \n\
-         Run `resilient pkg init --help` for subcommand-specific options."
+         Run `rz pkg init --help` for subcommand-specific options."
     );
 }
 
@@ -12466,16 +12466,16 @@ fn print_pkg_help() {
 /// carries the catalog matches the failure channel.
 fn print_pkg_help_to_stderr() {
     eprintln!(
-        "resilient pkg — package-manager subcommands\n\
+        "rz pkg — package-manager subcommands\n\
          \n\
          USAGE:\n    \
-             resilient pkg <subcommand> [options]\n\
+             rz pkg <subcommand> [options]\n\
          \n\
          SUBCOMMANDS:\n    \
              init    Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
              help    Show this message\n\
          \n\
-         Error: `resilient pkg` requires a subcommand."
+         Error: `rz pkg` requires a subcommand."
     );
 }
 
@@ -12483,11 +12483,11 @@ fn print_pkg_help_to_stderr() {
 /// flags so users don't have to read the top-level catalog twice.
 fn print_pkg_init_help() {
     println!(
-        "resilient pkg init — scaffold a new project\n\
+        "rz pkg init — scaffold a new project\n\
          \n\
          USAGE:\n    \
-             resilient pkg init <name>\n    \
-             resilient pkg init --name <n>\n\
+             rz pkg init <name>\n    \
+             rz pkg init --name <n>\n\
          \n\
          Creates `<name>/resilient.toml`, `<name>/src/main.rs`, and\n\
          `<name>/.gitignore`. Refuses to overwrite an existing manifest\n\
@@ -12539,7 +12539,7 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     }
 
     let Some(dir) = dir_path else {
-        eprintln!("Error: `resilient verify-cert <dir> [--pubkey <path>]` requires a directory");
+        eprintln!("Error: `rz verify-cert <dir> [--pubkey <path>]` requires a directory");
         return Some(2);
     };
 
@@ -12666,9 +12666,7 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     }
 
     let Some(dir) = dir_path else {
-        eprintln!(
-            "Error: `resilient verify-all <dir> [--pubkey <path>] [--z3]` requires a directory"
-        );
+        eprintln!("Error: `rz verify-all <dir> [--pubkey <path>] [--z3]` requires a directory");
         return Some(2);
     };
 
@@ -12926,9 +12924,7 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     }
 
     let Some(path) = file else {
-        eprintln!(
-            "Error: `resilient lint <file> [--deny LCODE]* [--allow LCODE]*` requires a file path"
-        );
+        eprintln!("Error: `rz lint <file> [--deny LCODE]* [--allow LCODE]*` requires a file path");
         return Some(2);
     };
 
@@ -13076,7 +13072,7 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 
     let Some(path) = file else {
-        eprintln!("Error: `resilient check <file> [-q]` requires a file path");
+        eprintln!("Error: `rz check <file> [-q]` requires a file path");
         return Some(2);
     };
 
@@ -13207,7 +13203,7 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
     }
 
     let Some(path) = file else {
-        eprintln!("Error: `resilient fmt <file> [--in-place]` requires a file path");
+        eprintln!("Error: `rz fmt <file> [--in-place]` requires a file path");
         return Some(2);
     };
 
@@ -13248,11 +13244,11 @@ fn dispatch_fmt_subcommand(args: &[String]) -> Option<i32> {
 /// reference lives in SYNTAX.md and the per-subcommand dispatchers.
 fn print_help() {
     println!(
-        "resilient — the Resilient language compiler & interpreter\n\
+        "rz — the Resilient language compiler & interpreter\n\
 \n\
 USAGE:\n\
-    resilient [FLAGS] <file>\n\
-    resilient <subcommand> [ARGS]\n\
+    rz [FLAGS] <file>\n\
+    rz <subcommand> [ARGS]\n\
 \n\
 COMMON FLAGS:\n\
     -h, --help                   Show this help and exit\n\
@@ -13301,7 +13297,7 @@ fn main() {
     // repo root for the policy this notice points to.
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!(
-            "resilient {}: pre-1.0 — breaking changes possible (see STABILITY.md)",
+            "rz {}: pre-1.0 — breaking changes possible (see STABILITY.md)",
             env!("CARGO_PKG_VERSION")
         );
         std::process::exit(0);

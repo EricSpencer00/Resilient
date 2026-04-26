@@ -9,6 +9,13 @@ authors = ["Eric Spencer"]
 # it doesn't try to build them as Rust examples.
 autoexamples = false
 
+# RES-219: the shipped CLI binary is `rz` (short, ergonomic, matches the
+# `.rz` source extension). The package stays `resilient` so library
+# consumers and `cargo install resilient` continue to work.
+[[bin]]
+name = "rz"
+path = "src/main.rs"
+
 [features]
 # RES-067: opt-in Z3 SMT verification. Default off so the build only
 # requires libz3 when explicitly requested:

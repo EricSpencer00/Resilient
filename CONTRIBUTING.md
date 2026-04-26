@@ -11,6 +11,7 @@ Welcome! Resilient is an open project for safety-critical embedded systems. Cont
 - [Code Style](#code-style)
 - [Pull Request Checklist](#pull-request-checklist)
 - [Golden Files and Expected Output](#golden-files-and-expected-output)
+- [Releases](#releases)
 - [Agent Contributors](#agent-contributors)
 
 ---
@@ -342,6 +343,58 @@ scripts/check-ticket-ids.sh
 - **Test protection**: Modifying existing tests requires maintainer approval (see [CLAUDE.md](./CLAUDE.md) for details)
 - **Security**: Changes to `unsafe` blocks or breaking language features require explicit review
 - **Dependencies**: Patch-level Cargo.toml updates are free; major/minor require approval
+
+---
+
+## Releases
+
+Releases are automated. The shipped artifact is the **`rz`** CLI binary,
+packaged as a per-platform `.tar.gz` and attached to a GitHub Release.
+
+### Cutting a release (maintainers only)
+
+1. Make sure `main` is green and the version in
+   [`resilient/Cargo.toml`](./resilient/Cargo.toml) reflects what
+   you're about to ship (bump it in a separate commit if needed).
+2. Push a SemVer tag to `main`:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+3. The [`release.yml`](./.github/workflows/release.yml) workflow fires:
+   - Builds `rz` for **four** platforms in parallel:
+     - `x86_64-unknown-linux-gnu` (native)
+     - `aarch64-unknown-linux-gnu` (via [`cross`](https://github.com/cross-rs/cross))
+     - `x86_64-apple-darwin`
+     - `aarch64-apple-darwin`
+   - Strips each binary, packages it as `rz-<tag>-<target>.tar.gz`,
+     and uploads it as a workflow artifact.
+   - Creates a GitHub Release with auto-generated notes (commits
+     since the previous tag) and attaches all four archives.
+
+The archive layout is flat — `rz` extracts directly into the
+caller's current directory — so [`scripts/install.sh`](./scripts/install.sh)
+can stream a tarball straight into `$PREFIX/bin`.
+
+### Dry-running without a tag
+
+`workflow_dispatch` is enabled on the release workflow:
+
+1. Open the [Actions → release](https://github.com/EricSpencer00/Resilient/actions/workflows/release.yml) page.
+2. Click **Run workflow** and pick a branch.
+3. Build artifacts upload but the `release` job skips (it's
+   guarded on `startsWith(github.ref, 'refs/tags/')`).
+
+Use this to confirm a cross-compile change works before tagging.
+
+### What's not in scope
+
+- crates.io publishing (the package is `resilient`, not `rz`; we
+  may publish later but not in the same workflow).
+- Windows binaries.
+- Code signing / notarization (macOS will Gatekeeper-warn on
+  unsigned downloads — `xattr -d com.apple.quarantine ./rz` is
+  the user-side workaround until we add signing).
 
 ---
 

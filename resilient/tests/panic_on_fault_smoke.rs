@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 /// Write a tiny program that always faults inside a `live` block

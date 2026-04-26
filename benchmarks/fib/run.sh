@@ -27,8 +27,8 @@ cd "$REPO_ROOT"
 # walker + VM rows (they don't need the JIT deps); a separate
 # `--features jit` build drives the JIT row.
 RES_DIR=resilient
-RES=$RES_DIR/target/release/resilient
-RES_JIT=$RES_DIR/target/release/resilient-with-jit
+RES=$RES_DIR/target/release/rz
+RES_JIT=$RES_DIR/target/release/rz-with-jit
 
 if [[ ! -x "$RES" ]]; then
     (cd "$RES_DIR" && cargo build --release --locked --quiet)
@@ -36,7 +36,7 @@ fi
 if [[ ! -x "$RES_JIT" ]]; then
     (cd "$RES_DIR" \
         && cargo build --release --features jit --locked --quiet \
-        && cp target/release/resilient target/release/resilient-with-jit)
+        && cp target/release/rz target/release/rz-with-jit)
 fi
 
 TMP=$(mktemp -d)

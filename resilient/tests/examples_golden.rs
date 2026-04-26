@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 fn examples_dir() -> PathBuf {

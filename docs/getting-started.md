@@ -22,13 +22,32 @@ program, and picking the right backend for your workload.
 
 ## Install
 
-Resilient is a Rust project — clone and build with cargo.
+The shipped CLI is **`rz`**. Three install paths, pick whichever
+matches your setup:
+
+**One-liner** — downloads the latest pre-built binary into `~/.rz/bin/rz`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EricSpencer00/Resilient/main/scripts/install.sh | bash
+# Then put ~/.rz/bin on $PATH (the script prints the line for your shell).
+```
+
+**From source via `cargo install`** — if you have Rust installed:
 
 ```bash
 git clone https://github.com/EricSpencer00/Resilient.git
-cd Resilient/resilient
-cargo build --release
-# Binary lands at: resilient/target/release/resilient
+cd Resilient
+cargo install --path resilient
+# `rz` lands in ~/.cargo/bin/rz
+```
+
+**From source via cargo build** — typical contributor workflow:
+
+```bash
+git clone https://github.com/EricSpencer00/Resilient.git
+cd Resilient
+cargo build --release --manifest-path resilient/Cargo.toml
+# Binary lands at: resilient/target/release/rz
 ```
 
 There are four feature configs depending on what you need:
@@ -40,7 +59,8 @@ There are four feature configs depending on what you need:
 | `--features lsp`   | Language Server Protocol            | Editor integration (red squiggles)    |
 | `--features jit`   | Cranelift JIT                       | Hot-loop / long-running workloads     |
 
-You can stack them: `cargo build --release --features "z3 lsp jit"`.
+You can stack them with `cargo install`:
+`cargo install --path resilient --features "z3 lsp jit"`.
 
 ## Hello, world
 
@@ -52,7 +72,7 @@ println("Hello, Resilient!");
 Run it:
 
 ```bash
-resilient hello.rz
+rz hello.rz
 # → Hello, Resilient!
 ```
 
@@ -84,7 +104,7 @@ main();
 Run normally (interpreter):
 
 ```bash
-resilient safe_div.rs
+rz safe_div.rs
 # 100 / 7 = 14
 ```
 
@@ -92,7 +112,7 @@ Run with the audit pass to see what the verifier proved at
 compile time vs left as runtime checks:
 
 ```bash
-resilient --audit safe_div.rs
+rz --audit safe_div.rs
 ```
 
 With `--features z3`, the `b != 0` precondition becomes a
@@ -107,18 +127,18 @@ source — pick based on workload shape:
 ```bash
 # Tree walker — fast to start, slow per-instruction.
 # Best for one-shot scripts and during dev/test.
-resilient prog.rs
+rz prog.rs
 
 # Bytecode VM — ~12× faster than the tree walker on fib(25).
 # Best for medium workloads where you want fast startup AND
 # decent throughput.
-resilient --vm prog.rs
+rz --vm prog.rs
 
 # Cranelift JIT — ~12× faster than the VM. Compile time is
 # real, so use this for hot loops and long-running programs
 # where compile cost amortizes.
-cargo build --release --features jit
-resilient --jit prog.rs
+cargo install --path resilient --features jit  # one-time
+rz --jit prog.rs
 ```
 
 See the [performance page](performance) for the actual numbers
@@ -154,7 +174,7 @@ per discharged obligation, each independently re-verifiable
 under any compatible solver.
 
 ```bash
-cargo run --features z3 -- --emit-certificate ./certs examples/cert_demo.rs
+rz --emit-certificate ./certs examples/cert_demo.rs   # binary built with --features z3
 z3 -smt2 ./certs/ident_round__decl__0.smt2
 # unsat   ← the proof: negation is unsatisfiable, so the original holds
 ```
@@ -183,7 +203,7 @@ relevant JIT phase ships.
 ## REPL
 
 ```bash
-resilient
+rz
 > let x = 5;
 > x + 10
 15
@@ -199,7 +219,7 @@ checking.
 Run the LSP server (built with `--features lsp`):
 
 ```bash
-resilient --lsp
+rz --lsp
 ```
 
 For Neovim with `nvim-lspconfig`, see

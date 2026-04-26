@@ -59,10 +59,14 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME:-manual}"
           TARGET="${{ matrix.target }}"
-          BINARY="resilient/target/${TARGET}/release/resilient"
-          ARCHIVE="resilient-${TAG}-${TARGET}.tar.gz"
+          BINARY="resilient/target/${TARGET}/release/rz"
+          ARCHIVE="rz-${TAG}-${TARGET}.tar.gz"
           strip "$BINARY" 2>/dev/null || true
-          tar czf "$ARCHIVE" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
+          # Stage the binary in a flat layout so `install.sh` can
+          # extract straight into PREFIX/bin without a wrapper dir.
+          STAGE="$(mktemp -d)"
+          cp "$BINARY" "$STAGE/rz"
+          tar czf "$ARCHIVE" -C "$STAGE" rz
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact

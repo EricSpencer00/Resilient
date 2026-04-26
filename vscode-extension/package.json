@@ -82,8 +82,8 @@
       "properties": {
         "resilient.serverPath": {
           "type": "string",
-          "default": "resilient",
-          "description": "Path to the `resilient` binary. Defaults to the one on PATH; point at a dev build (e.g. /path/to/Resilient/resilient/target/debug/resilient) when hacking on the compiler."
+          "default": "rz",
+          "description": "Path to the `rz` binary. Defaults to the one on PATH; point at a dev build (e.g. /path/to/Resilient/resilient/target/debug/rz) when hacking on the compiler."
         },
         "resilient.serverArgs": {
           "type": "array",

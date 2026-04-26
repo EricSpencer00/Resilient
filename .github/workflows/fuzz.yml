@@ -8,7 +8,7 @@
 # today).
 #
 # Matrix: `parse` target landed with RES-201; `lex` target added
-# by RES-111. Both shell out to the built `resilient` binary
+# by RES-111. Both shell out to the built `rz` binary
 # with feature-independent invocations (`-t` for parse,
 # `--dump-tokens` for lex).
 
@@ -51,12 +51,12 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
-      - name: Build resilient (release)
+      - name: Build rz (release)
         run: cargo build --release --manifest-path resilient/Cargo.toml
 
       - name: Run ${{ matrix.target }} fuzzer for ${{ github.event.inputs.duration_seconds }}s
         env:
-          RESILIENT_FUZZ_BIN: ${{ github.workspace }}/resilient/target/release/resilient
+          RESILIENT_FUZZ_BIN: ${{ github.workspace }}/resilient/target/release/rz
         working-directory: fuzz
         run: |
           # Per-input timeout: 1 second. libFuzzer records inputs

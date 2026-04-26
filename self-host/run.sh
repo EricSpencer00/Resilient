@@ -7,7 +7,7 @@
 # Exit code:
 #   0 — output matches the snapshot
 #   1 — mismatch (prints a unified diff)
-#   2 — couldn't find the resilient binary
+#   2 — couldn't find the rz binary
 #
 # The script is NOT wired into CI per the ticket's Note — it's a
 # manual sanity check until the self-hosted toolchain becomes
@@ -18,15 +18,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Find the resilient binary. Prefer a debug build (that's what
+# Find the rz binary. Prefer a debug build (that's what
 # `cargo build` produces); fall back to release.
 BIN=""
-if [[ -x resilient/target/debug/resilient ]]; then
-    BIN=resilient/target/debug/resilient
-elif [[ -x resilient/target/release/resilient ]]; then
-    BIN=resilient/target/release/resilient
+if [[ -x resilient/target/debug/rz ]]; then
+    BIN=resilient/target/debug/rz
+elif [[ -x resilient/target/release/rz ]]; then
+    BIN=resilient/target/release/rz
 else
-    echo "error: no resilient binary found; run 'cd resilient && cargo build' first." >&2
+    echo "error: no rz binary found; run 'cargo build --manifest-path resilient/Cargo.toml' first." >&2
     exit 2
 fi
 

@@ -29,12 +29,12 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-/// Path to the compiled `resilient` binary. Cargo populates
+/// Path to the compiled `rz` binary. Cargo populates
 /// `CARGO_BIN_EXE_<name>` for bench targets the same way it does for
 /// integration tests, so this works out of the box under
 /// `cargo bench --manifest-path resilient/Cargo.toml`.
 fn resilient_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 /// Write the given Resilient source to a tempfile under the OS temp

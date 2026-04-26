@@ -78,7 +78,7 @@ permalink: /
 Write a function with contracts — the verifier tells you exactly what it proved at compile time and what becomes a runtime guard.
 
 <div class="rl-terminal">
-  <div class="rl-terminal__bar">$ resilient --features z3 --audit altitude_controller.rl</div>
+  <div class="rl-terminal__bar">$ rz --audit altitude_controller.rl</div>
   <pre><span class="rl-ok">✓</span>  <span class="rl-path">read_pressure</span>  <span class="rl-kw">requires</span>  sensor_id ∈ [0, 4)            proved
 <span class="rl-ok">✓</span>  <span class="rl-path">read_pressure</span>  <span class="rl-kw">ensures</span>   result ∈ [0.0, 120 000.0 Pa]  proved
 <span class="rl-warn">~</span>  <span class="rl-path">altitude_controller</span>  assert(alt &lt; MAX_ALTITUDE)   runtime  (MAX_ALTITUDE is symbolic)
@@ -115,12 +115,12 @@ Tree-walking interpreter for fast iteration → bytecode VM (~12×) → Cranelif
 
 | Surface | Status | How to invoke |
 |---|---|---|
-| Tree-walking interpreter | ✅ stable | `cargo run -- prog.rl` |
-| Bytecode VM | ✅ stable | `--vm prog.rl` |
-| Cranelift JIT | ✅ stable subset | `--features jit --jit prog.rl` |
-| Z3 contract proofs | ✅ opt-in | `--features z3 --audit prog.rl` |
-| SMT-LIB2 certificates | ✅ opt-in | `--emit-certificate ./certs/ prog.rl` |
-| Language Server (LSP) | ✅ opt-in | `--features lsp --lsp` |
+| Tree-walking interpreter | ✅ stable | `rz prog.rz` |
+| Bytecode VM | ✅ stable | `rz --vm prog.rz` |
+| Cranelift JIT | ✅ stable subset | `rz --jit prog.rz` (build with `--features jit`) |
+| Z3 contract proofs | ✅ opt-in | `rz --audit prog.rz` (build with `--features z3`) |
+| SMT-LIB2 certificates | ✅ opt-in | `rz --emit-certificate ./certs/ prog.rz` |
+| Language Server (LSP) | ✅ opt-in | `rz --lsp` (build with `--features lsp`) |
 | `#![no_std]` runtime | ✅ stable | `resilient-runtime/` crate |
 
 ## Open source

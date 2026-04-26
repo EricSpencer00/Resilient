@@ -30,7 +30,7 @@ fn main() {
 main();
 ```
 
-Run with: `cargo run --features ffi -- examples/ffi_libm.rs`
+Run with: `rz examples/ffi_libm.rs` (binary built with `--features ffi`).
 
 ## Extern block syntax
 

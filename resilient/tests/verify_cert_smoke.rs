@@ -23,7 +23,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resilient")
+    env!("CARGO_BIN_EXE_rz")
 }
 
 fn tmp_dir(tag: &str) -> PathBuf {
