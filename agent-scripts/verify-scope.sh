@@ -153,9 +153,13 @@ for f in "${MODIFIED_FILES[@]}" "${ADDED_FILES[@]}"; do
   esac
 done
 
-# Rule 1d: bounded blast radius. Tune as the repo grows.
+# Rule 1d: bounded blast radius. Tune as the repo grows. Codebase-wide
+# mechanical refactors (e.g. renaming a public symbol or a binary) can
+# legitimately touch close to 100 files; the rule's job is to flag
+# runaway sed / accidental mass changes, not to block legitimate cross-
+# tree edits. Override per-PR with `AGENT_MAX_FILES=N`.
 TOTAL_TOUCHED=$(( ${#MODIFIED_FILES[@]} + ${#ADDED_FILES[@]} + ${#DELETED_FILES[@]} ))
-MAX_FILES="${AGENT_MAX_FILES:-60}"
+MAX_FILES="${AGENT_MAX_FILES:-100}"
 if (( TOTAL_TOUCHED > MAX_FILES )); then
   fail "touches $TOTAL_TOUCHED files (> $MAX_FILES). Oversized PR — split or ask for approval."
 fi

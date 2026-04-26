@@ -61,15 +61,38 @@ echo
 # matching it back against the same PR is always a self-match, never a
 # real conflict. SELF_BRANCH lets us filter the current PR out of the
 # overlap check below.
+#
+# `BRANCH` may be a name (`res-219-...`), a SHA (`fd45e43...`), or
+# `HEAD` depending on caller. Resolve it to the corresponding branch
+# ref so we can compare against `headRefName` in the gh JSON.
 SELF_BRANCH=""
+SELF_SHA=""
 if [ "$CHECK_MODE" = "pr-files" ]; then
   SELF_BRANCH="$BRANCH"
+  if git rev-parse --verify -q "$BRANCH^{commit}" >/dev/null 2>&1; then
+    SELF_SHA=$(git rev-parse "$BRANCH" 2>/dev/null || true)
+  fi
 fi
 
 # 1. Check GitHub open PRs
 OPEN_PR_BRANCHES=""
 if command -v gh &>/dev/null; then
-  PR_JSON=$(gh pr list --state open --json number,headRefName,files 2>/dev/null || echo "[]")
+  PR_JSON=$(gh pr list --state open --json number,headRefName,headRefOid,files 2>/dev/null || echo "[]")
+  # If SELF_BRANCH didn't resolve to anything in the gh json, try to
+  # match by SHA — when the caller passed a sha or `HEAD`, that's the
+  # only way to find the matching PR.
+  if [ -n "$SELF_SHA" ]; then
+    RESOLVED=$(echo "$PR_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+sha = sys.argv[1]
+for pr in data:
+    if pr.get('headRefOid', '').startswith(sha) or sha.startswith(pr.get('headRefOid', '')):
+        print(pr['headRefName'])
+        break
+" "$SELF_SHA" 2>/dev/null || true)
+    [ -n "$RESOLVED" ] && SELF_BRANCH="$RESOLVED"
+  fi
   # Cache the set of currently-open PR branches so the claims pass below
   # can spot stale claims (claim points at a branch with no open PR).
   OPEN_PR_BRANCHES=$(echo "$PR_JSON" | python3 -c "
