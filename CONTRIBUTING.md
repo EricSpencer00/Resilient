@@ -235,6 +235,44 @@ Before requesting review, ensure:
 
 ---
 
+## Diff-shape guardrail
+
+CI runs [`agent-scripts/verify-scope.sh`](./agent-scripts/verify-scope.sh)
+on every PR. It blocks the harm modes that human review would otherwise
+catch, while letting mechanical refactors (renames, path updates) through.
+
+**What's blocked, no exceptions:**
+
+- Deletion of any test file under `resilient/tests/`,
+  `resilient-runtime/tests/`, or `fuzz/fuzz_targets/`.
+- Any modification or deletion of an `.expected.txt` golden sidecar.
+- A test diff that **removes more `#[test]` / `#[should_panic]` /
+  `assert!` / `assert_eq!` / `assert_ne!` / `panic!` lines than it
+  adds** (i.e. tests can't get weaker without an explicit OK).
+- New `unsafe` blocks anywhere in the tree.
+- Deletion of any `.github/workflows/*` file.
+- A workflow diff that adds `if: false`, `continue-on-error: true`,
+  `--no-verify`, or `permissions: write-all`.
+- A workflow diff that drops the count of top-level `jobs.<name>:`
+  entries (i.e. jobs can't be silently removed).
+- More than 60 files changed in one PR.
+- Major / minor version bumps in `Cargo.lock`.
+
+**What's allowed:**
+
+- Mechanical edits to existing test files — renaming an env var,
+  updating a path, adapting to a public-API change. The assertion
+  count rule above is what catches the actual weakening pattern.
+- Workflow path / env / version edits when no jobs are removed and no
+  bypass patterns are introduced.
+
+If you need to legitimately weaken or remove a test (the tested
+behaviour intentionally changed), call it out in a `## Test changes`
+section in the PR description with a one-line rationale per test.
+The maintainer will admin-merge if the rationale is sound.
+
+---
+
 ## Golden Files and Expected Output
 
 When a compiler change intentionally alters output (new language features, refactored error messages), you must update the golden `.expected.txt` files.
