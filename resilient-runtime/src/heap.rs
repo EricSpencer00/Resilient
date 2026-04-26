@@ -42,7 +42,7 @@
 //! shows up as a stuck-at-zero rather than a corrupted huge
 //! number.
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -125,12 +125,12 @@ pub fn current_bytes() -> usize {
 ///   bytes briefly.
 /// - The wrapper holds the inner allocator by value; lifetime is
 ///   identical to a non-wrapped `static A` allocator.
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 pub struct TrackingHeap<A: GlobalAlloc> {
     inner: A,
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 impl<A: GlobalAlloc> TrackingHeap<A> {
     /// Wrap an inner allocator. `const` so it can be assigned to a
     /// `static` global allocator slot.
@@ -149,7 +149,7 @@ impl<A: GlobalAlloc> TrackingHeap<A> {
 // SAFETY: see the soundness note on `TrackingHeap`. We forward all
 // methods to `self.inner` and only update relaxed atomics around
 // the call.
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingHeap<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: forwarding the caller's `Layout` unchanged to the
@@ -201,10 +201,14 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingHeap<A> {
     }
 }
 
-/// Bump CURRENT and bubble PEAK if needed. Always-built so
-/// `TrackingHeap` and any future allocator-side instrumentation can
-/// share the helper.
-#[cfg(feature = "alloc")]
+/// Bump CURRENT and bubble PEAK if needed. Gated on
+/// `target_has_atomic = "ptr"` because the CAS bubble requires
+/// pointer-width atomic compare-exchange (unavailable on
+/// Cortex-M0 / thumbv6m). Targets without it skip both
+/// `TrackingHeap` and these helpers; portable readers
+/// (`peak_bytes`, `current_bytes`) still work via plain
+/// load/store and report 0.
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 fn record_alloc(size: usize) {
     let new_current = CURRENT_BYTES.fetch_add(size, Ordering::Relaxed) + size;
     // CAS-loop bubble: if PEAK < new_current, update it. We don't
@@ -226,7 +230,7 @@ fn record_alloc(size: usize) {
 
 /// Saturating-sub so a counter mismatch surfaces as a stuck-at-zero
 /// rather than a wraparound to ~usize::MAX.
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", target_has_atomic = "ptr"))]
 fn record_dealloc(size: usize) {
     // `fetch_sub` would wrap; do a CAS so we saturate at 0.
     let mut current = CURRENT_BYTES.load(Ordering::Relaxed);
@@ -244,7 +248,7 @@ fn record_dealloc(size: usize) {
     }
 }
 
-#[cfg(all(test, feature = "alloc"))]
+#[cfg(all(test, feature = "alloc", target_has_atomic = "ptr"))]
 mod tests {
     use super::*;
     use core::alloc::Layout;
