@@ -60,9 +60,9 @@ rustc -O ../benchmarks/fib/fib_native.rs \
 
 # Run the bench
 hyperfine --warmup 2 --runs 5 \
-  "target/release/rz ../benchmarks/fib/fib.rs" \
-  "target/release/rz --vm ../benchmarks/fib/fib_vm.rs" \
-  "target/release/rz-with-jit --jit ../benchmarks/fib/fib_jit.rs" \
+  "target/release/rz ../benchmarks/fib/fib.rz" \
+  "target/release/rz --vm ../benchmarks/fib/fib_vm.rz" \
+  "target/release/rz-with-jit --jit ../benchmarks/fib/fib_jit.rz" \
   "../benchmarks/fib/fib_native"
 ```
 

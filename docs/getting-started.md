@@ -79,7 +79,7 @@ rz hello.rz
 ## A real program
 
 Two functions, a contract, a `live` block, and an assert. Save
-as `safe_div.rs`:
+as `safe_div.rz`:
 
 ```rust
 fn safe_divide(int a, int b)
@@ -91,8 +91,8 @@ fn safe_divide(int a, int b)
 
 fn main() {
     live {
-        let r = safe_divide(100, 7);
-        println("100 / 7 = " + r);
+        let r = safe_divide(100, 5);
+        println("100 / 5 = " + r);
     }
 
     assert(safe_divide(50, 5) == 10, "math is broken");
@@ -101,18 +101,26 @@ fn main() {
 main();
 ```
 
+Note the divisor in the `live` block is `5`, not `7` — the `ensures
+result * b == a` contract is exact integer equality, so the example
+needs a divisor that divides evenly. (Try changing it to `7` and
+running again: the live block detects the contract violation and
+retries up to 3 times before propagating the error. That's the
+self-healing path in action — but the contract is wrong for the
+inputs, so retry can't save it.)
+
 Run normally (interpreter):
 
 ```bash
-rz safe_div.rs
-# 100 / 7 = 14
+rz safe_div.rz
+# 100 / 5 = 20
 ```
 
 Run with the audit pass to see what the verifier proved at
 compile time vs left as runtime checks:
 
 ```bash
-rz --audit safe_div.rs
+rz --audit safe_div.rz
 ```
 
 With `--features z3`, the `b != 0` precondition becomes a
@@ -127,18 +135,18 @@ source — pick based on workload shape:
 ```bash
 # Tree walker — fast to start, slow per-instruction.
 # Best for one-shot scripts and during dev/test.
-rz prog.rs
+rz prog.rz
 
 # Bytecode VM — ~12× faster than the tree walker on fib(25).
 # Best for medium workloads where you want fast startup AND
 # decent throughput.
-rz --vm prog.rs
+rz --vm prog.rz
 
 # Cranelift JIT — ~12× faster than the VM. Compile time is
 # real, so use this for hot loops and long-running programs
 # where compile cost amortizes.
 cargo install --path resilient --features jit  # one-time
-rz --jit prog.rs
+rz --jit prog.rz
 ```
 
 See the [performance page](performance) for the actual numbers
@@ -169,12 +177,12 @@ Use the contract layer (`requires` / `ensures`) for code where
 "it works on the inputs we tested" isn't good enough. Z3 backs
 the verifier (`--features z3`); proofs that succeed don't emit
 runtime checks. For compliance / certification:
-`--emit-certificate ./certs prog.rs` writes one SMT-LIB2 file
+`--emit-certificate ./certs prog.rz` writes one SMT-LIB2 file
 per discharged obligation, each independently re-verifiable
 under any compatible solver.
 
 ```bash
-rz --emit-certificate ./certs examples/cert_demo.rs   # binary built with --features z3
+rz --emit-certificate ./certs examples/cert_demo.rz   # binary built with --features z3
 z3 -smt2 ./certs/ident_round__decl__0.smt2
 # unsat   ← the proof: negation is unsatisfiable, so the original holds
 ```

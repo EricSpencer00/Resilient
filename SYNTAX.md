@@ -579,7 +579,7 @@ obligation — typical for nonlinear integer arithmetic), the
 typechecker emits a structured warning and keeps the runtime check:
 
 ```
-warning[partial-proof]: Z3 returned Unknown for assertion at foo.rs:12:18 — proof is incomplete
+warning[partial-proof]: Z3 returned Unknown for assertion at foo.rz:12:18 — proof is incomplete
 ```
 
 Compilation still succeeds — the obligation downgrades silently to a

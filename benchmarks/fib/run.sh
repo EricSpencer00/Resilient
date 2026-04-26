@@ -52,9 +52,9 @@ hyperfine \
     --warmup 3 \
     --runs 10 \
     --style none \
-    --command-name "walker" "$RES --seed $SEED benchmarks/fib/fib.rs" \
-    --command-name "vm"     "$RES --seed $SEED --vm benchmarks/fib/fib_vm.rs" \
-    --command-name "jit"    "$RES_JIT --seed $SEED --jit benchmarks/fib/fib_jit.rs" \
+    --command-name "walker" "$RES --seed $SEED benchmarks/fib/fib.rz" \
+    --command-name "vm"     "$RES --seed $SEED --vm benchmarks/fib/fib_vm.rz" \
+    --command-name "jit"    "$RES_JIT --seed $SEED --jit benchmarks/fib/fib_jit.rz" \
     > /dev/null
 
 # Hyperfine reports median in seconds; convert to milliseconds
