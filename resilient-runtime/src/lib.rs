@@ -62,6 +62,10 @@ pub mod sink;
 // `alloc` because it implements `GlobalAlloc`.
 pub mod heap;
 
+// RES-367: fixed-point arithmetic for FPU-less embedded targets.
+// Compiles under default (no-alloc) features; no heap, no libm.
+pub mod fixed;
+
 #[cfg(feature = "ffi-static")]
 pub mod ffi_static;
 
