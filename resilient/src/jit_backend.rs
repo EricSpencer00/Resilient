@@ -3418,6 +3418,98 @@ mod tests {
         }
     }
 
+    // ---------- RES-299: variable assignment + mutation ----------
+    //
+    // The ticket's smoke-test row (loop-free, three `let`s, two
+    // reassignments) plus the explicit "multiple assignments to the
+    // same variable" / "mutation inside a branch" / "counter loop"
+    // criteria. The underlying lowering was wired in RES-107 — these
+    // tests pin down the surface area called out by RES-299 so a
+    // future regression in the Variable / def_var pipeline trips a
+    // dedicated test instead of being noticed indirectly.
+
+    #[test]
+    fn jit_res299_three_lets_two_reassigns_smoke() {
+        // Ticket AC: a loop-free function with three `let`s and two
+        // reassignments returns the right value. We compute
+        //   a = 1, b = 2, c = 3
+        //   a = a + b   → a = 3
+        //   c = c + a   → c = 6
+        //   return a + b + c → 3 + 2 + 6 = 11
+        let p = parse_program(
+            "let a = 1; let b = 2; let c = 3; \
+             a = a + b; \
+             c = c + a; \
+             return a + b + c;",
+        );
+        assert_eq!(run(&p).unwrap(), 11);
+    }
+
+    #[test]
+    fn jit_res299_multiple_reassigns_to_same_variable() {
+        // Ticket AC: multiple assignments to the same variable
+        // within a function compile correctly. Each reassignment
+        // must observe the prior store, so the final read returns
+        // the value of the last assignment.
+        let p = parse_program("let x = 0; x = 1; x = 2; x = 3; x = x + 4; return x;");
+        assert_eq!(run(&p).unwrap(), 7);
+    }
+
+    #[test]
+    fn jit_res299_counter_loop_mutation() {
+        // Counter-loop shape: a single mutable accumulator
+        // updated each iteration. Resilient has no `+=`; the
+        // semantic equivalent is `i = i + N`. Sums 1..=5 = 15.
+        let p = parse_program(
+            "let i = 1; let total = 0; \
+             while (i <= 5) { total = total + i; i = i + 1; } \
+             return total;",
+        );
+        assert_eq!(run(&p).unwrap(), 15);
+    }
+
+    #[test]
+    fn jit_res299_mutation_inside_branch() {
+        // Ticket AC: mutation inside a branch. The then-arm
+        // mutates `x`; control falls through to the trailing
+        // return so we observe the post-if value. Cranelift's
+        // SSA construction inserts a phi at the merge implicitly
+        // because only one predecessor stored the new value.
+        let p = parse_program(
+            "let x = 10; \
+             if (x > 0) { x = x + 5; } \
+             return x;",
+        );
+        assert_eq!(run(&p).unwrap(), 15);
+    }
+
+    #[test]
+    fn jit_res299_mutation_in_both_arms() {
+        // Both arms reassign the same variable — Cranelift must
+        // synthesize a phi at the merge block carrying whichever
+        // store ran. then-arm wins here (cond is true).
+        let p = parse_program(
+            "let x = 0; \
+             if (1 < 2) { x = 100; } else { x = 200; } \
+             return x;",
+        );
+        assert_eq!(run(&p).unwrap(), 100);
+    }
+
+    #[test]
+    fn jit_res299_function_parameter_mutation() {
+        // Function parameters are bound as Variables in the
+        // LowerCtx (see `compile_function`), so plain `name =
+        // expr` reassignment works on them too. Doubles `n`
+        // in-place before returning.
+        let p = parse_program(
+            "fn munge(int n) { n = n + 1; n = n * 2; return n; } \
+             return munge(3);",
+        );
+        // (3 + 1) * 2 = 8.
+        assert_eq!(run(&p).unwrap(), 8);
+    }
+
     // ---------- RES-168: direct-self-recursion TCO ----------
 
     #[test]
