@@ -292,6 +292,8 @@ enum Token {
     /// parser doesn't need look-ahead to disambiguate from a bare `#`.
     /// Closing `]` is an ordinary `RightBracket`.
     HashLeftBracket,
+    /// RES-316: `...` marker at the end of an `extern fn` parameter list.
+    DotDotDot,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -424,6 +426,7 @@ impl Token {
             Token::Forall => "`forall`".to_string(),
             Token::Exists => "`exists`".to_string(),
             Token::DotDot => "`..`".to_string(),
+            Token::DotDotDot => "`...`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -767,11 +770,17 @@ impl Lexer {
             // before the tokenizer can dispatch here — digit check
             // comes first in next_token's fall-through arm.
             // RES-330: peek for `..` so quantifier ranges (`forall i in
-            // 0..n`) lex as a single `DotDot` token.
+            // 0..n`) lex as a single `DotDot` token. `...` is the longer
+            // RES-316 extern-variadic marker.
             '.' => {
                 if self.peek_char() == '.' {
                     self.read_char(); // consume second `.`
-                    Token::DotDot
+                    if self.peek_char() == '.' {
+                        self.read_char(); // consume third `.`
+                        Token::DotDotDot
+                    } else {
+                        Token::DotDot
+                    }
                 } else {
                     Token::Dot
                 }
@@ -2027,6 +2036,8 @@ pub(crate) struct ExternDecl {
     pub(crate) ensures: Vec<Node>,
     /// `@trusted` — `ensures` is assumed, not checked.
     pub(crate) trusted: bool,
+    /// True for C variadic declarations written as `extern fn f(x: T, ...)`.
+    pub(crate) is_variadic: bool,
     /// FFI v1: span of the extern keyword / decl. Consumed by later tasks.
     #[allow(dead_code)]
     pub(crate) span: span::Span,
@@ -4670,7 +4681,7 @@ impl Parser {
         self.next_token(); // skip `(`
 
         // Parameter list — extern fn uses `name: Type` (not `Type name`).
-        let parameters = self.parse_extern_fn_parameters();
+        let (parameters, is_variadic) = self.parse_extern_fn_parameters();
 
         // Return type `-> T`. Required for extern fns.
         if !matches!(self.current_token, Token::Arrow) {
@@ -4739,6 +4750,7 @@ impl Parser {
             requires,
             ensures,
             trusted,
+            is_variadic,
             span: decl_span,
         })
     }
@@ -4753,13 +4765,30 @@ impl Parser {
     /// On entry `current_token` is the first token after `(` (i.e., the `(`
     /// has already been consumed by the caller). On exit `current_token` is
     /// the token after `)`.
-    fn parse_extern_fn_parameters(&mut self) -> Vec<(String, String)> {
+    fn parse_extern_fn_parameters(&mut self) -> (Vec<(String, String)>, bool) {
         let mut parameters = Vec::new();
+        let mut is_variadic = false;
 
         // Empty param list: `()`.
         if matches!(self.current_token, Token::RightParen) {
             self.next_token(); // skip `)`
-            return parameters;
+            return (parameters, is_variadic);
+        }
+
+        if matches!(self.current_token, Token::DotDotDot) {
+            is_variadic = true;
+            self.next_token();
+            if !matches!(self.current_token, Token::RightParen) {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "`...` must be the last entry in an extern fn parameter list, got {}",
+                    tok
+                ));
+            }
+            if matches!(self.current_token, Token::RightParen) {
+                self.next_token();
+            }
+            return (parameters, is_variadic);
         }
 
         loop {
@@ -4799,6 +4828,18 @@ impl Parser {
             match &self.current_token {
                 Token::Comma => {
                     self.next_token(); // skip `,`
+                    if matches!(self.current_token, Token::DotDotDot) {
+                        is_variadic = true;
+                        self.next_token();
+                        if !matches!(self.current_token, Token::RightParen) {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "`...` must be the last entry in an extern fn parameter list, got {}",
+                                tok
+                            ));
+                        }
+                        break;
+                    }
                 }
                 Token::RightParen => break,
                 other => {
@@ -4816,7 +4857,7 @@ impl Parser {
         if matches!(self.current_token, Token::RightParen) {
             self.next_token();
         }
-        parameters
+        (parameters, is_variadic)
     }
 
     fn parse_return_statement(&mut self) -> Node {
@@ -7117,6 +7158,7 @@ enum Value {
         requires: Vec<Node>,
         ensures: Vec<Node>,
         trusted: bool,
+        is_variadic: bool,
     },
     /// RES-215: an opaque C pointer received from (or bound for) an
     /// FFI call. Resilient source cannot dereference or inspect it;
@@ -12162,6 +12204,7 @@ impl Interpreter {
                 requires,
                 ensures,
                 trusted,
+                is_variadic,
             } => {
                 // RES-FFI-V3: bind every declared parameter name to its
                 // actual argument value so `requires` / `ensures`
@@ -12196,8 +12239,11 @@ impl Interpreter {
                         ));
                     }
                 }
-                // Dispatch through the trampoline.
-                let result = crate::ffi_trampolines::call_foreign(&symbol, &args)?;
+                let result = if is_variadic {
+                    crate::ffi_trampolines::call_foreign_variadic(&symbol, &args)?
+                } else {
+                    crate::ffi_trampolines::call_foreign(&symbol, &args)?
+                };
                 // Check postconditions.
                 if !ensures.is_empty() {
                     let mut post_interp = Interpreter {
@@ -13636,6 +13682,7 @@ fn execute_file(
                                     requires: d.requires.clone(),
                                     ensures: d.ensures.clone(),
                                     trusted: d.trusted,
+                                    is_variadic: d.is_variadic,
                                 },
                             );
                         }
@@ -25155,6 +25202,7 @@ mod ffi_integration_tests {
                                     requires: d.requires.clone(),
                                     ensures: d.ensures.clone(),
                                     trusted: d.trusted,
+                                    is_variadic: d.is_variadic,
                                 },
                             );
                         }

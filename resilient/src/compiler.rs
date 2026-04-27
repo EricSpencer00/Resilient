@@ -51,6 +51,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                     .resolve_block(library, decls)
                     .map_err(|e| CompileError::FfiError(e.to_string()))?;
                 for d in decls {
+                    if d.is_variadic {
+                        return Err(CompileError::Unsupported(
+                            "variadic extern calls are supported by the tree-walker only",
+                        ));
+                    }
                     if let Some(sym) = ffi_loader.lookup(&d.resilient_name) {
                         if ffi_index.len() >= u16::MAX as usize {
                             return Err(CompileError::Unsupported(

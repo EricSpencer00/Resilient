@@ -242,12 +242,14 @@ enum Tok {
     #[token("catch")]
     Catch,
     // RES-330: quantifier keywords + range separator. Logos picks the
-    // longer-match `..` over `.` automatically so no priority hint
+    // longer-match `...` / `..` over `.` automatically so no priority hint
     // needed.
     #[token("forall")]
     Forall,
     #[token("exists")]
     Exists,
+    #[token("...")]
+    DotDotDot,
     #[token("..")]
     DotDot,
     // RES-343: `#[` opener for `#[cfg(...)]` attributes. Logos picks
@@ -599,6 +601,7 @@ fn convert(t: Tok) -> Token {
         Tok::Forall => Token::Forall,
         Tok::Exists => Token::Exists,
         Tok::DotDot => Token::DotDot,
+        Tok::DotDotDot => Token::DotDotDot,
         // RES-343: `#[` opener for cfg attributes.
         Tok::HashLBracket => Token::HashLeftBracket,
         // </EXTENSION_KEYWORDS>
