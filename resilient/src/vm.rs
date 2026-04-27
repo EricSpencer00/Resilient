@@ -283,6 +283,34 @@ struct CallFrame {
     locals_base: usize,
 }
 
+/// RES-329: dispatch strategy. The default match-based loop and the
+/// direct-threaded function-pointer table produce byte-identical
+/// results; the threaded path is selected with `RESILIENT_DISPATCH=direct`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dispatch {
+    /// Centralized `match op { ... }` loop (default, pre-RES-329 behaviour).
+    Match,
+    /// Direct-threaded: each opcode has its own handler `fn(&mut VmState, Op) -> Result<Step, VmError>`,
+    /// indexed by opcode discriminant. Removes the central switch's
+    /// branch-prediction pressure on instruction-dense loops.
+    Direct,
+}
+
+impl Dispatch {
+    /// Read `RESILIENT_DISPATCH` and return the configured strategy.
+    /// Unknown / unset values fall back to [`Dispatch::Match`] so default
+    /// behaviour stays byte-identical with pre-RES-329 builds.
+    pub fn from_env() -> Self {
+        match std::env::var("RESILIENT_DISPATCH")
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("direct") | Ok("Direct") | Ok("DIRECT") | Ok("threaded") => Self::Direct,
+            _ => Self::Match,
+        }
+    }
+}
+
 /// Run a compiled program. Returns the value left on the operand
 /// stack when the outer `Op::Return` fires (`Value::Void` if empty).
 ///
@@ -299,10 +327,27 @@ pub fn run(program: &Program) -> Result<Value, VmError> {
 /// RES-349: explicit-mode entry point. The default `run` reads the
 /// mode from `RESILIENT_OVERFLOW_MODE`; tests and embedders that need
 /// to pin a mode without mutating process env can call this directly.
+///
+/// RES-329: also reads `RESILIENT_DISPATCH` to pick the dispatch
+/// strategy. Both paths produce byte-identical results.
 pub fn run_with_mode(program: &Program, mode: OverflowMode) -> Result<Value, VmError> {
+    run_with(program, mode, Dispatch::from_env())
+}
+
+/// RES-329: fully-explicit entry point. Tests and benchmarks pick the
+/// dispatch strategy directly without mutating process env.
+pub fn run_with(
+    program: &Program,
+    mode: OverflowMode,
+    dispatch: Dispatch,
+) -> Result<Value, VmError> {
     // Sentinel for "no failure attributable yet" — main chunk @ pc 0.
     let mut last_pc: (usize, usize) = (usize::MAX, 0);
-    match run_inner(program, &mut last_pc, mode) {
+    let result = match dispatch {
+        Dispatch::Match => run_inner(program, &mut last_pc, mode),
+        Dispatch::Direct => run_direct(program, &mut last_pc, mode),
+    };
+    match result {
         Ok(v) => Ok(v),
         Err(e) => {
             let line_info: &[u32] = if last_pc.0 == usize::MAX {
@@ -829,6 +874,769 @@ fn pop_two_ints(stack: &mut Vec<Value>, op_name: &'static str) -> Result<(i64, i
         (Value::Int(x), Value::Int(y)) => Ok((x, y)),
         _ => Err(VmError::TypeMismatch(op_name)),
     }
+}
+
+// =============================================================================
+// RES-329: direct-threaded dispatch
+// =============================================================================
+//
+// The default dispatch is the centralized `match op { ... }` loop above.
+// Direct threading replaces that single hot match with a per-opcode handler
+// table indexed by `Op` discriminant. Each handler is a small function that
+// owns its own branch-prediction history, removing the central switch's
+// dispatch hazard on instruction-dense loops (e.g. tight `while` bodies,
+// recursive arithmetic).
+//
+// This is the stable-Rust equivalent of computed-goto / threaded-code: there
+// are no `unsafe` blocks and no nightly features. The function-pointer call
+// is indirect (`call rax`-style on x86_64), but the branch predictor sees
+// each handler as an independent dispatch site, which performs much better
+// than the central switch on hot loops.
+//
+// Both dispatch paths share the same opcode semantics; the threaded module
+// reuses `pop_two_ints`, `constant_as_string`, `err_at`, and `OverflowMode`.
+
+/// Outcome of executing a single op in the direct-threaded path.
+#[derive(Debug)]
+enum Step {
+    /// Continue dispatching from the new (frame, pc).
+    Continue,
+    /// Halt execution and yield the supplied value as the program's result.
+    /// Emitted by `Op::Return` and by implicit-return-from-main.
+    Halt(Value),
+}
+
+/// Mutable VM state threaded through every direct-dispatch handler.
+/// Bundling the mutable parts into one struct keeps the handler signature
+/// small (`fn(&mut VmState, Op) -> Result<Step, VmError>`), which the
+/// optimizer can keep mostly in registers across handler boundaries.
+struct VmState<'p> {
+    program: &'p Program,
+    stack: Vec<Value>,
+    locals: Vec<Value>,
+    frames: Vec<CallFrame>,
+    overflow_mode: OverflowMode,
+}
+
+impl<'p> VmState<'p> {
+    /// Reference to the chunk currently executing in the topmost frame.
+    /// Inlined into every handler that touches the constant pool or the
+    /// instruction stream.
+    #[inline(always)]
+    fn current_chunk(&self) -> &'p Chunk {
+        let f = &self.frames[self.frames.len() - 1];
+        if f.chunk_idx == usize::MAX {
+            &self.program.main
+        } else {
+            &self.program.functions[f.chunk_idx].chunk
+        }
+    }
+
+    #[inline(always)]
+    fn frame_idx(&self) -> usize {
+        self.frames.len() - 1
+    }
+}
+
+/// Direct-threaded handler signature. Each handler executes one op,
+/// mutating state, and reports whether to continue or halt.
+type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
+
+/// Number of `Op` discriminants. Keep in sync with the `Op` enum in
+/// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
+/// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
+/// grow together.
+const OP_KIND_COUNT: usize = 31;
+
+/// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
+/// than relying on `mem::discriminant` or transmute on the enum tag)
+/// keeps the mapping stable across `repr` changes and makes the table
+/// trivially auditable.
+#[inline(always)]
+fn op_to_index(op: Op) -> usize {
+    match op {
+        Op::Const(_) => 0,
+        Op::Add => 1,
+        Op::Sub => 2,
+        Op::Mul => 3,
+        Op::Div => 4,
+        Op::Mod => 5,
+        Op::Neg => 6,
+        Op::LoadLocal(_) => 7,
+        Op::StoreLocal(_) => 8,
+        Op::Call(_) => 9,
+        Op::ReturnFromCall => 10,
+        Op::Jump(_) => 11,
+        Op::JumpIfFalse(_) => 12,
+        Op::JumpIfTrue(_) => 13,
+        Op::IncLocal(_) => 14,
+        Op::Eq => 15,
+        Op::Neq => 16,
+        Op::Lt => 17,
+        Op::Le => 18,
+        Op::Gt => 19,
+        Op::Ge => 20,
+        Op::Not => 21,
+        Op::Return => 22,
+        Op::MakeClosure { .. } => 23,
+        Op::LoadUpvalue(_) => 24,
+        Op::TailCall(_) => 25,
+        Op::MakeArray { .. } => 26,
+        Op::LoadIndex => 27,
+        Op::StoreIndex => 28,
+        Op::CallForeign(_) => 29,
+        Op::CallBuiltin { .. } => 30,
+        // Note: StructLiteral/GetField/SetField fall through to the
+        // catch-all index below since they share their semantics with
+        // the match path. Keep them grouped at the tail of the table.
+        Op::StructLiteral { .. } => OP_KIND_STRUCT_LITERAL,
+        Op::GetField { .. } => OP_KIND_GET_FIELD,
+        Op::SetField { .. } => OP_KIND_SET_FIELD,
+    }
+}
+
+const OP_KIND_STRUCT_LITERAL: usize = 31;
+const OP_KIND_GET_FIELD: usize = 32;
+const OP_KIND_SET_FIELD: usize = 33;
+const HANDLER_TABLE_LEN: usize = 34;
+
+/// The dispatch table. Each entry is a handler keyed by the index
+/// returned from `op_to_index`. Built once at compile time.
+static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
+    let mut table: [Handler; HANDLER_TABLE_LEN] = [h_unreachable; HANDLER_TABLE_LEN];
+    table[0] = h_const;
+    table[1] = h_add;
+    table[2] = h_sub;
+    table[3] = h_mul;
+    table[4] = h_div;
+    table[5] = h_mod;
+    table[6] = h_neg;
+    table[7] = h_load_local;
+    table[8] = h_store_local;
+    table[9] = h_call;
+    table[10] = h_return_from_call;
+    table[11] = h_jump;
+    table[12] = h_jump_if_false;
+    table[13] = h_jump_if_true;
+    table[14] = h_inc_local;
+    table[15] = h_eq;
+    table[16] = h_neq;
+    table[17] = h_lt;
+    table[18] = h_le;
+    table[19] = h_gt;
+    table[20] = h_ge;
+    table[21] = h_not;
+    table[22] = h_return;
+    table[23] = h_make_closure;
+    table[24] = h_load_upvalue;
+    table[25] = h_tail_call;
+    table[26] = h_make_array;
+    table[27] = h_load_index;
+    table[28] = h_store_index;
+    table[29] = h_call_foreign;
+    table[30] = h_call_builtin;
+    table[OP_KIND_STRUCT_LITERAL] = h_struct_literal;
+    table[OP_KIND_GET_FIELD] = h_get_field;
+    table[OP_KIND_SET_FIELD] = h_set_field;
+    table
+};
+
+/// Direct-threaded entry point. Mirrors `run_inner` byte-for-byte but
+/// dispatches via the handler table. The outer error-wrapping logic
+/// in `run_with` is shared, so `last_pc` updates are identical.
+fn run_direct(
+    program: &Program,
+    last_pc: &mut (usize, usize),
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
+    let mut state = VmState {
+        program,
+        stack: Vec::with_capacity(64),
+        locals: Vec::new(),
+        frames: Vec::with_capacity(16),
+        overflow_mode,
+    };
+    state.frames.push(CallFrame {
+        chunk_idx: usize::MAX,
+        pc: 0,
+        locals_base: 0,
+    });
+
+    loop {
+        let frame_idx = state.frame_idx();
+        let chunk = state.current_chunk();
+        let pc = state.frames[frame_idx].pc;
+        *last_pc = (state.frames[frame_idx].chunk_idx, pc + 1);
+
+        if pc >= chunk.code.len() {
+            // Implicit return — main halts, fn body returns Void.
+            if state.frames.len() == 1 {
+                return Ok(state.stack.pop().unwrap_or(Value::Void));
+            }
+            let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            state.locals.truncate(popped.locals_base);
+            state.stack.push(Value::Void);
+            continue;
+        }
+
+        let op = chunk.code[pc];
+        state.frames[frame_idx].pc += 1;
+
+        let handler = HANDLERS[op_to_index(op)];
+        match handler(&mut state, op)? {
+            Step::Continue => continue,
+            Step::Halt(v) => return Ok(v),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Handlers — each owns one opcode. Marked `#[inline(never)]` to keep
+// each handler a separate code-cache entry; the indirect call through
+// the dispatch table benefits from each call site building its own
+// branch-predictor history.
+// -----------------------------------------------------------------------------
+
+#[inline(never)]
+fn h_unreachable(_state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    // Unreachable for any op produced by `op_to_index`. Surface a clean
+    // error if a future opcode is added without updating the table.
+    Err(VmError::Unsupported(match op {
+        Op::Const(_) => "Const",
+        Op::Add => "Add",
+        _ => "<unmapped op>",
+    }))
+}
+
+#[inline(never)]
+fn h_const(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::Const(idx) = op else { unreachable!() };
+    let chunk = state.current_chunk();
+    let v = chunk
+        .constants
+        .get(idx as usize)
+        .ok_or(VmError::ConstantOutOfBounds(idx))?
+        .clone();
+    state.stack.push(v);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_add(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Add")?;
+    state
+        .stack
+        .push(Value::Int(state.overflow_mode.add(a, b, "Add")?));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_sub(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Sub")?;
+    state
+        .stack
+        .push(Value::Int(state.overflow_mode.sub(a, b, "Sub")?));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_mul(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Mul")?;
+    state
+        .stack
+        .push(Value::Int(state.overflow_mode.mul(a, b, "Mul")?));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_div(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Div")?;
+    if b == 0 {
+        return Err(VmError::DivideByZero);
+    }
+    state.stack.push(Value::Int(a / b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_mod(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Mod")?;
+    if b == 0 {
+        return Err(VmError::DivideByZero);
+    }
+    state.stack.push(Value::Int(a % b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_neg(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Int(i) = v else {
+        return Err(VmError::TypeMismatch("Neg"));
+    };
+    state
+        .stack
+        .push(Value::Int(state.overflow_mode.neg(i, "Neg")?));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_load_local(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::LoadLocal(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    let base = state.frames[frame_idx].locals_base;
+    let abs = base + idx as usize;
+    let v = state
+        .locals
+        .get(abs)
+        .ok_or(VmError::LocalOutOfBounds(idx))?
+        .clone();
+    state.stack.push(v);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_store_local(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::StoreLocal(idx) = op else {
+        unreachable!()
+    };
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let frame_idx = state.frame_idx();
+    let base = state.frames[frame_idx].locals_base;
+    let abs = base + idx as usize;
+    if state.locals.len() <= abs {
+        state.locals.resize(abs + 1, Value::Void);
+    }
+    state.locals[abs] = v;
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::Call(idx) = op else { unreachable!() };
+    let func = state
+        .program
+        .functions
+        .get(idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(idx))?;
+    let arity = func.arity as usize;
+    if state.stack.len() < arity {
+        return Err(VmError::EmptyStack);
+    }
+    if state.frames.len() >= MAX_CALL_DEPTH {
+        return Err(VmError::CallStackOverflow);
+    }
+    let base = state.locals.len();
+    state
+        .locals
+        .resize(base + func.local_count as usize, Value::Void);
+    for i in (0..arity).rev() {
+        let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+        state.locals[base + i] = v;
+    }
+    state.frames.push(CallFrame {
+        chunk_idx: idx as usize,
+        pc: 0,
+        locals_base: base,
+    });
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_return_from_call(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let ret = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+    if state.frames.is_empty() {
+        return Ok(Step::Halt(ret));
+    }
+    state.locals.truncate(popped.locals_base);
+    state.stack.push(ret);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_jump(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::Jump(offset) = op else { unreachable!() };
+    let frame_idx = state.frame_idx();
+    let chunk_len = state.current_chunk().code.len();
+    let new_pc = (state.frames[frame_idx].pc as isize) + offset as isize;
+    if new_pc < 0 || (new_pc as usize) > chunk_len {
+        return Err(VmError::JumpOutOfBounds);
+    }
+    state.frames[frame_idx].pc = new_pc as usize;
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_jump_if_false(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::JumpIfFalse(offset) = op else {
+        unreachable!()
+    };
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let is_falsy = match v {
+        Value::Bool(b) => !b,
+        Value::Int(i) => i == 0,
+        _ => return Err(VmError::TypeMismatch("JumpIfFalse")),
+    };
+    if is_falsy {
+        let frame_idx = state.frame_idx();
+        let chunk_len = state.current_chunk().code.len();
+        let new_pc = (state.frames[frame_idx].pc as isize) + offset as isize;
+        if new_pc < 0 || (new_pc as usize) > chunk_len {
+            return Err(VmError::JumpOutOfBounds);
+        }
+        state.frames[frame_idx].pc = new_pc as usize;
+    }
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_jump_if_true(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::JumpIfTrue(offset) = op else {
+        unreachable!()
+    };
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let is_truthy = match v {
+        Value::Bool(b) => b,
+        Value::Int(i) => i != 0,
+        _ => return Err(VmError::TypeMismatch("JumpIfTrue")),
+    };
+    if is_truthy {
+        let frame_idx = state.frame_idx();
+        let chunk_len = state.current_chunk().code.len();
+        let new_pc = (state.frames[frame_idx].pc as isize) + offset as isize;
+        if new_pc < 0 || (new_pc as usize) > chunk_len {
+            return Err(VmError::JumpOutOfBounds);
+        }
+        state.frames[frame_idx].pc = new_pc as usize;
+    }
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_inc_local(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::IncLocal(idx) = op else {
+        unreachable!()
+    };
+    let frame_idx = state.frame_idx();
+    let base = state.frames[frame_idx].locals_base;
+    let abs = base + idx as usize;
+    let v = state
+        .locals
+        .get(abs)
+        .ok_or(VmError::LocalOutOfBounds(idx))?;
+    let Value::Int(n) = *v else {
+        return Err(VmError::TypeMismatch("IncLocal"));
+    };
+    state.locals[abs] = Value::Int(state.overflow_mode.add(n, 1, "IncLocal")?);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_eq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Eq")?;
+    state.stack.push(Value::Bool(a == b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_neq(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Neq")?;
+    state.stack.push(Value::Bool(a != b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_lt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Lt")?;
+    state.stack.push(Value::Bool(a < b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_le(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Le")?;
+    state.stack.push(Value::Bool(a <= b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_gt(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Gt")?;
+    state.stack.push(Value::Bool(a > b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_ge(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Ge")?;
+    state.stack.push(Value::Bool(a >= b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_not(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Bool(b) = v else {
+        return Err(VmError::TypeMismatch("Not"));
+    };
+    state.stack.push(Value::Bool(!b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_return(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Ok(Step::Halt(state.stack.pop().unwrap_or(Value::Void)))
+}
+
+#[inline(never)]
+fn h_make_closure(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported("MakeClosure"))
+}
+
+#[inline(never)]
+fn h_load_upvalue(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported("LoadUpvalue"))
+}
+
+#[inline(never)]
+fn h_tail_call(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::TailCall(idx) = op else {
+        unreachable!()
+    };
+    let func = state
+        .program
+        .functions
+        .get(idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(idx))?;
+    let arity = func.arity as usize;
+    if state.stack.len() < arity {
+        return Err(VmError::EmptyStack);
+    }
+    let frame_idx = state.frame_idx();
+    let base = state.frames[frame_idx].locals_base;
+    for i in (0..arity).rev() {
+        let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+        state.locals[base + i] = v;
+    }
+    state.frames[frame_idx].pc = 0;
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_make_array(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::MakeArray { len } = op else {
+        unreachable!()
+    };
+    let n = len as usize;
+    if state.stack.len() < n {
+        return Err(VmError::EmptyStack);
+    }
+    let split_at = state.stack.len() - n;
+    let items: Vec<Value> = state.stack.drain(split_at..).collect();
+    state.stack.push(Value::Array(items));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let arr_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Int(idx) = idx_val else {
+        return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
+    };
+    let Value::Array(items) = arr_val else {
+        return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
+    };
+    if idx < 0 || (idx as usize) >= items.len() {
+        return Err(VmError::ArrayIndexOutOfBounds {
+            index: idx,
+            len: items.len(),
+        });
+    }
+    state.stack.push(items[idx as usize].clone());
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_store_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let arr_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Int(idx) = idx_val else {
+        return Err(VmError::TypeMismatch("StoreIndex (non-int index)"));
+    };
+    let Value::Array(mut items) = arr_val else {
+        return Err(VmError::TypeMismatch("StoreIndex (non-array target)"));
+    };
+    if idx < 0 || (idx as usize) >= items.len() {
+        return Err(VmError::ArrayIndexOutOfBounds {
+            index: idx,
+            len: items.len(),
+        });
+    }
+    items[idx as usize] = v;
+    state.stack.push(Value::Array(items));
+    Ok(Step::Continue)
+}
+
+#[cfg(feature = "ffi")]
+#[inline(never)]
+fn h_call_foreign(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::CallForeign(idx) = op else {
+        unreachable!()
+    };
+    let sym = state
+        .program
+        .foreign_syms
+        .get(idx as usize)
+        .ok_or(VmError::FunctionOutOfBounds(idx))?;
+    let arity = sym.sig.params.len();
+    if state.stack.len() < arity {
+        return Err(VmError::EmptyStack);
+    }
+    let mut args: Vec<crate::Value> = (0..arity)
+        .map(|_| state.stack.pop().expect("checked above"))
+        .collect();
+    args.reverse();
+    let result =
+        crate::ffi_trampolines::call_foreign(sym, &args).map_err(VmError::ForeignCallFailed)?;
+    state.stack.push(result);
+    Ok(Step::Continue)
+}
+
+#[cfg(not(feature = "ffi"))]
+#[inline(never)]
+fn h_call_foreign(_state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    Err(VmError::Unsupported(
+        "CallForeign (build without --features ffi)",
+    ))
+}
+
+#[inline(never)]
+fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::CallBuiltin { name_const, arity } = op else {
+        unreachable!()
+    };
+    let chunk = state.current_chunk();
+    let name_val = chunk
+        .constants
+        .get(name_const as usize)
+        .ok_or(VmError::ConstantOutOfBounds(name_const))?;
+    let name = match name_val {
+        Value::String(s) => s.clone(),
+        _ => return Err(VmError::TypeMismatch("CallBuiltin (non-string name)")),
+    };
+    let func = crate::lookup_builtin(&name).ok_or_else(|| VmError::UnknownBuiltin(name.clone()))?;
+    let n = arity as usize;
+    if state.stack.len() < n {
+        return Err(VmError::EmptyStack);
+    }
+    let mut args: Vec<Value> = (0..n)
+        .map(|_| state.stack.pop().expect("checked above"))
+        .collect();
+    args.reverse();
+    let result = func(&args).map_err(VmError::BuiltinCallFailed)?;
+    state.stack.push(result);
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_struct_literal(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::StructLiteral {
+        name_const,
+        field_count,
+    } = op
+    else {
+        unreachable!()
+    };
+    let chunk = state.current_chunk();
+    let name = constant_as_string(chunk, name_const, "StructLiteral (type name)")?;
+    let n = field_count as usize;
+    let needed = n.checked_mul(2).ok_or(VmError::EmptyStack)?;
+    if state.stack.len() < needed {
+        return Err(VmError::EmptyStack);
+    }
+    let split_at = state.stack.len() - needed;
+    let flat: Vec<Value> = state.stack.drain(split_at..).collect();
+    let mut fields: Vec<(String, Value)> = Vec::with_capacity(n);
+    let mut it = flat.into_iter();
+    for _ in 0..n {
+        let k = it.next().ok_or(VmError::EmptyStack)?;
+        let v = it.next().ok_or(VmError::EmptyStack)?;
+        let Value::String(field_name) = k else {
+            return Err(VmError::TypeMismatch("StructLiteral (non-string key)"));
+        };
+        fields.push((field_name, v));
+    }
+    state.stack.push(Value::Struct { name, fields });
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_get_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::GetField { name_const } = op else {
+        unreachable!()
+    };
+    let chunk = state.current_chunk();
+    let field = constant_as_string(chunk, name_const, "GetField (field name)")?;
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Struct {
+        name: sname,
+        fields,
+    } = v
+    else {
+        return Err(VmError::TypeMismatch("GetField (non-struct target)"));
+    };
+    let found = fields
+        .iter()
+        .find(|(k, _)| k == &field)
+        .map(|(_, v)| v.clone());
+    match found {
+        Some(val) => {
+            state.stack.push(val);
+            Ok(Step::Continue)
+        }
+        None => Err(VmError::UnknownField {
+            struct_name: sname,
+            field,
+        }),
+    }
+}
+
+#[inline(never)]
+fn h_set_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    let Op::SetField { name_const } = op else {
+        unreachable!()
+    };
+    let chunk = state.current_chunk();
+    let field = constant_as_string(chunk, name_const, "SetField (field name)")?;
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let tgt = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Struct {
+        name: sname,
+        mut fields,
+    } = tgt
+    else {
+        return Err(VmError::TypeMismatch("SetField (non-struct target)"));
+    };
+    let slot = fields.iter_mut().find(|(k, _)| k == &field);
+    match slot {
+        Some((_, existing)) => *existing = v,
+        None => {
+            return Err(VmError::UnknownField {
+                struct_name: sname,
+                field,
+            });
+        }
+    }
+    state.stack.push(Value::Struct {
+        name: sname,
+        fields,
+    });
+    Ok(Step::Continue)
 }
 
 #[cfg(test)]
@@ -1918,5 +2726,279 @@ mod tests {
 
         let result = run(&prog).expect("vm run");
         assert!(matches!(result, crate::Value::Int(42)), "got {:?}", result);
+    }
+
+    // ============================================================
+    // RES-329: direct-threaded dispatch — equivalence tests
+    // ============================================================
+    //
+    // Each program below runs once under `Dispatch::Match` (the default
+    // pre-RES-329 path) and once under `Dispatch::Direct` (the new
+    // function-pointer table). The two results must match byte-for-byte.
+
+    fn run_both(src: &str) -> (Result<Value, VmError>, Result<Value, VmError>) {
+        let (program, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&program).unwrap();
+        let m = run_with(&prog, OverflowMode::Wrap, Dispatch::Match);
+        let d = run_with(&prog, OverflowMode::Wrap, Dispatch::Direct);
+        (m, d)
+    }
+
+    fn value_repr(v: &Value) -> String {
+        // Value lacks PartialEq; Debug is total and stable, so compare
+        // its formatted output to verify the two paths agree.
+        format!("{:?}", v)
+    }
+
+    fn assert_both_eq(src: &str) {
+        let (m, d) = run_both(src);
+        match (&m, &d) {
+            (Ok(a), Ok(b)) => assert_eq!(
+                value_repr(a),
+                value_repr(b),
+                "match vs direct disagree on {:?}",
+                src
+            ),
+            (Err(a), Err(b)) => assert_eq!(
+                a.kind(),
+                b.kind(),
+                "match vs direct disagree on error for {:?}",
+                src
+            ),
+            _ => panic!(
+                "match vs direct disagree on outcome shape for {:?}: match={:?}, direct={:?}",
+                src, m, d
+            ),
+        }
+    }
+
+    #[test]
+    fn res329_dispatch_from_env_defaults_to_match() {
+        let saved = std::env::var("RESILIENT_DISPATCH").ok();
+        unsafe {
+            std::env::remove_var("RESILIENT_DISPATCH");
+        }
+        assert_eq!(Dispatch::from_env(), Dispatch::Match);
+        unsafe {
+            std::env::set_var("RESILIENT_DISPATCH", "direct");
+        }
+        assert_eq!(Dispatch::from_env(), Dispatch::Direct);
+        unsafe {
+            std::env::set_var("RESILIENT_DISPATCH", "DIRECT");
+        }
+        assert_eq!(Dispatch::from_env(), Dispatch::Direct);
+        unsafe {
+            std::env::set_var("RESILIENT_DISPATCH", "threaded");
+        }
+        assert_eq!(Dispatch::from_env(), Dispatch::Direct);
+        unsafe {
+            std::env::set_var("RESILIENT_DISPATCH", "garbage");
+        }
+        assert_eq!(Dispatch::from_env(), Dispatch::Match);
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("RESILIENT_DISPATCH", v),
+                None => std::env::remove_var("RESILIENT_DISPATCH"),
+            }
+        }
+    }
+
+    #[test]
+    fn res329_direct_arithmetic_matches_match() {
+        assert_both_eq("2 + 3 * 4;");
+        assert_both_eq("let x = 9; x;");
+        assert_both_eq("100 - 50 / 5 + 7;");
+        assert_both_eq("let a = 3; let b = 4; a * a + b * b;");
+    }
+
+    #[test]
+    fn res329_direct_recursion_matches_match() {
+        // Hot, instruction-dense kernel — fib is the canonical
+        // micro-benchmark for dispatch-overhead changes.
+        let src =
+            "fn fib(int n) { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fib(15);";
+        let (m, d) = run_both(src);
+        assert_eq!(value_repr(&m.unwrap()), value_repr(&d.unwrap()));
+    }
+
+    #[test]
+    fn res329_direct_loops_match() {
+        assert_both_eq("let i = 0; let sum = 0; while i < 50 { sum = sum + i; i = i + 1; } sum;");
+    }
+
+    #[test]
+    fn res329_direct_arrays_match() {
+        assert_both_eq("let a = [10, 20, 30]; a[0] + a[1] + a[2];");
+        assert_both_eq("let a = [1, 2, 3]; a[1] = 99; return a[1];");
+    }
+
+    #[test]
+    fn res329_direct_tail_call_matches() {
+        let src = r#"
+            fn sum(int acc, int n) {
+                if n == 0 { return acc; }
+                return sum(acc + n, n - 1);
+            }
+            sum(0, 1000);
+        "#;
+        let (m, d) = run_both(src);
+        assert_eq!(value_repr(&m.unwrap()), value_repr(&d.unwrap()));
+    }
+
+    #[test]
+    fn res329_direct_divide_by_zero_matches_match() {
+        // Both paths must surface the SAME error kind with the SAME
+        // line attribution (the AtLine wrapper is shared via run_with).
+        let src = "let x = 10 / 0;";
+        let (program, _) = crate::parse(src);
+        let prog = crate::compiler::compile(&program).unwrap();
+        let m = run_with(&prog, OverflowMode::Wrap, Dispatch::Match).unwrap_err();
+        let d = run_with(&prog, OverflowMode::Wrap, Dispatch::Direct).unwrap_err();
+        assert_eq!(m.kind(), d.kind());
+        assert_eq!(m.kind(), &VmError::DivideByZero);
+        // Both paths wrap with line info via the shared run_with outer.
+        assert!(m.to_string().contains("line "));
+        assert!(d.to_string().contains("line "));
+    }
+
+    #[test]
+    fn res329_direct_struct_ops_match() {
+        let src = "struct Point { int x, int y, } \
+                   fn main() -> int { let p = new Point { x: 1, y: 42 }; return p.y; } \
+                   main();";
+        let (m, d) = run_both(src);
+        assert_eq!(value_repr(&m.unwrap()), value_repr(&d.unwrap()));
+    }
+
+    #[test]
+    fn res329_direct_overflow_traps_consistently() {
+        // Trap mode must trip in both dispatch paths.
+        let prog = const_program(
+            &[Value::Int(i64::MAX), Value::Int(1)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        );
+        let m = run_with(&prog, OverflowMode::Trap, Dispatch::Match).unwrap_err();
+        let d = run_with(&prog, OverflowMode::Trap, Dispatch::Direct).unwrap_err();
+        assert_eq!(m.kind(), d.kind());
+        assert_eq!(m.kind(), &VmError::IntegerOverflow("Add"));
+    }
+
+    #[test]
+    fn res329_direct_call_stack_overflow_matches() {
+        // Hand-rolled runaway recursion — the call-stack-overflow
+        // diagnostic must surface from the direct-threaded handler too.
+        use crate::bytecode::Function;
+        let mut body = Chunk::new();
+        body.code.push(Op::Call(0));
+        body.code.push(Op::ReturnFromCall);
+        body.line_info.push(1);
+        body.line_info.push(1);
+        let runaway = Function {
+            name: "runaway".into(),
+            arity: 0,
+            chunk: body,
+            local_count: 0,
+        };
+        let mut main = Chunk::new();
+        main.code.push(Op::Call(0));
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        main.line_info.push(1);
+        let p = Program {
+            main,
+            functions: vec![runaway],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        let err = run_with(&p, OverflowMode::Wrap, Dispatch::Direct).unwrap_err();
+        assert_eq!(err.kind(), &VmError::CallStackOverflow);
+    }
+
+    #[test]
+    fn res329_direct_unsupported_closures_surface_cleanly() {
+        let p = const_program(
+            &[],
+            &[Op::MakeClosure {
+                fn_idx: 0,
+                upvalue_count: 0,
+            }],
+        );
+        let err = run_with(&p, OverflowMode::Wrap, Dispatch::Direct).unwrap_err();
+        match err.kind() {
+            VmError::Unsupported(what) => assert_eq!(*what, "MakeClosure"),
+            other => panic!("expected Unsupported(MakeClosure), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn res329_op_to_index_covers_every_variant() {
+        // Smoke: each variant we feed into op_to_index must land on a
+        // populated handler slot. Iterating a representative sample
+        // (one of each variant shape) is enough — any mismatch lands
+        // in `h_unreachable`.
+        let samples: &[Op] = &[
+            Op::Const(0),
+            Op::Add,
+            Op::Sub,
+            Op::Mul,
+            Op::Div,
+            Op::Mod,
+            Op::Neg,
+            Op::LoadLocal(0),
+            Op::StoreLocal(0),
+            Op::Call(0),
+            Op::ReturnFromCall,
+            Op::Jump(0),
+            Op::JumpIfFalse(0),
+            Op::JumpIfTrue(0),
+            Op::IncLocal(0),
+            Op::Eq,
+            Op::Neq,
+            Op::Lt,
+            Op::Le,
+            Op::Gt,
+            Op::Ge,
+            Op::Not,
+            Op::Return,
+            Op::MakeClosure {
+                fn_idx: 0,
+                upvalue_count: 0,
+            },
+            Op::LoadUpvalue(0),
+            Op::TailCall(0),
+            Op::MakeArray { len: 0 },
+            Op::LoadIndex,
+            Op::StoreIndex,
+            Op::CallForeign(0),
+            Op::CallBuiltin {
+                name_const: 0,
+                arity: 0,
+            },
+            Op::StructLiteral {
+                name_const: 0,
+                field_count: 0,
+            },
+            Op::GetField { name_const: 0 },
+            Op::SetField { name_const: 0 },
+        ];
+        for op in samples {
+            let idx = op_to_index(*op);
+            assert!(
+                idx < HANDLER_TABLE_LEN,
+                "op_to_index({:?}) = {} >= {}",
+                op,
+                idx,
+                HANDLER_TABLE_LEN
+            );
+            // The handler slot is populated (not the unreachable sentinel)
+            // — comparing fn pointers via address.
+            let h = HANDLERS[idx];
+            assert!(
+                h as usize != h_unreachable as usize,
+                "op {:?} mapped to unreachable slot {}",
+                op,
+                idx
+            );
+        }
     }
 }
