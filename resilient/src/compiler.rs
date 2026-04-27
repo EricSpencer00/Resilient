@@ -1118,6 +1118,7 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::StructLiteral { span, .. }
         | Node::ImplBlock { span, .. }
         | Node::TypeAlias { span, .. }
+        | Node::Newtype { span, .. }
         | Node::RegionDecl { span, .. }
         | Node::Actor { span, .. }
         | Node::ActorDecl { span, .. }

@@ -144,6 +144,13 @@ fn compatible(a: &Type, b: &Type) -> bool {
     false
 }
 
+/// RES-319: public reflection of `compatible` for the sibling
+/// `crate::newtypes` module to call when validating constructor
+/// arguments. Same exact semantics as the module-private function.
+pub(crate) fn compatible_pub(a: &Type, b: &Type) -> bool {
+    compatible(a, b)
+}
+
 /// RES-160: collect the binding names a pattern introduces, in
 /// source order. Used to verify that all branches of an or-pattern
 /// bind the same names.
@@ -815,6 +822,14 @@ pub struct TypeChecker {
     /// walks the chain (with a `seen` set for cycle detection) and
     /// returns the ultimate `Type` the alias resolves to.
     type_aliases: HashMap<String, String>,
+    /// RES-319: newtype name → raw target type name. Populated by
+    /// every `Newtype` node. Distinct from `type_aliases` because
+    /// newtypes are *nominal* — `parse_type_name` deliberately does
+    /// NOT consult this map; the registered name resolves to
+    /// `Type::Struct(name)` and stays opaque. Consulted directly by
+    /// the `crate::newtypes` constructor and same-brand arithmetic
+    /// helpers.
+    newtypes: HashMap<String, String>,
     /// RES-137: per-query Z3 solver timeout in milliseconds. `0`
     /// disables the timeout (use Z3's default, which is unlimited).
     /// The driver sets this from the `--verifier-timeout-ms <N>`
@@ -1428,6 +1443,9 @@ impl TypeChecker {
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
             type_aliases: HashMap::new(),
+            // RES-319: empty newtype table — populated by the
+            // `crate::newtypes::check` pass during `check_program`.
+            newtypes: HashMap::new(),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
             // RES-217: partial-proof warnings on by default.
@@ -1445,6 +1463,29 @@ impl TypeChecker {
             // by default. The driver flips it on via `--verbose`.
             verbose_loop_invariants: false,
         }
+    }
+
+    /// RES-319: peek into the registered-newtype table. Used by
+    /// `crate::newtypes` (the only consumer outside this module) to
+    /// gate constructor-call recognition and same-brand arithmetic.
+    pub(crate) fn newtypes_get(&self, name: &str) -> Option<&String> {
+        self.newtypes.get(name)
+    }
+
+    /// RES-319: register a newtype declaration. Called from
+    /// `crate::newtypes::check`. The map's existing-key handling is
+    /// already enforced by the pass (duplicate declarations are an
+    /// error), so we don't bother returning the previous value.
+    pub(crate) fn newtypes_insert(&mut self, name: String, target: String) {
+        self.newtypes.insert(name, target);
+    }
+
+    /// RES-319: public reflection of the private `parse_type_name`.
+    /// Same semantics — alias-aware, with cycle detection — but
+    /// callable from the sibling `crate::newtypes` module without
+    /// breaking the typechecker's encapsulation more than necessary.
+    pub(crate) fn parse_type_name_pub(&self, name: &str) -> Result<Type, String> {
+        self.parse_type_name(name)
     }
 
     /// RES-137: override the per-query Z3 solver timeout in ms.
@@ -1582,6 +1623,16 @@ impl TypeChecker {
                         Node::TypeAlias { name, target, .. } => {
                             self.type_aliases.insert(name.clone(), target.clone());
                         }
+                        // RES-319: hoist newtype names so the
+                        // per-statement walk recognises constructor
+                        // calls on forward-declared newtypes — same
+                        // rationale as the alias hoist above. The
+                        // `crate::newtypes::check` pass below still
+                        // runs and surfaces self-wrap, duplicates,
+                        // and unknown bases as hard errors.
+                        Node::Newtype { name, target, .. } => {
+                            self.newtypes.insert(name.clone(), target.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -1684,6 +1735,7 @@ impl TypeChecker {
                 crate::loop_invariants::check(program, source_path)?;
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
                 crate::type_aliases::check(program, source_path)?;
+                crate::newtypes::check(self, program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -2577,6 +2629,19 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
+            // RES-319: newtype declaration is purely metadata for the
+            // type checker. Hoisting populated the `newtypes` table
+            // already; re-inserting here is harmless (the per-stmt
+            // walk visits each declaration exactly once). The
+            // `crate::newtypes::check` extension pass runs *after*
+            // this walk to surface self-wraps, duplicates, and
+            // unknown-base errors with the file:line:col prefix the
+            // type-alias module uses.
+            Node::Newtype { name, target, .. } => {
+                self.newtypes.insert(name.clone(), target.clone());
+                Ok(Type::Void)
+            }
+
             // RES-391: `region <Name>;` is compile-time metadata — Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
 
@@ -2982,6 +3047,33 @@ impl TypeChecker {
                 // operator arm.
                 let is_bool = |t: &Type| matches!(t, Type::Bool | Type::Any);
 
+                // RES-319: when at least one operand is a registered
+                // newtype, dispatch to the brand-aware helper. Same
+                // brand on both sides preserves the brand; cross-brand
+                // or newtype-vs-bare-scalar is an error. Applies to the
+                // arithmetic and bitwise families — comparisons fall
+                // through to the standard `compatible` check below
+                // (newtypes inherit equality from `Type::Struct`'s
+                // derived `PartialEq`, so `Meters == Meters` works
+                // already and `Meters == Volts` is rejected by the
+                // existing `Cannot compare` arm).
+                let newtype_arith_ops = matches!(
+                    operator.as_str(),
+                    "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>"
+                );
+                if newtype_arith_ops
+                    && let Some(verdict) =
+                        crate::newtypes::infix_result(self, operator, &left_type, &right_type)
+                {
+                    // Special case: `+` with a Newtype × String mix
+                    // would otherwise hit the string-coercion branch
+                    // below. We deliberately reject that here so
+                    // newtype values can't be silently stringified
+                    // — same-brand printing must go through
+                    // `to_string(m.0)` once tuple projection lands.
+                    return verdict;
+                }
+
                 match operator.as_str() {
                     "+" => {
                         // String-plus-primitive coercion (RES-008): if
@@ -3053,6 +3145,19 @@ impl TypeChecker {
                 arguments,
                 span: call_span,
             } => {
+                // RES-319: a bare-identifier callee whose name is a
+                // registered newtype is a constructor call. We
+                // intercept BEFORE checking the function expression
+                // because the newtype name is intentionally NOT
+                // bound in the value environment — it lives in the
+                // `newtypes` table only. Returning `Type::Struct(name)`
+                // gives the call site a nominal value.
+                if let Node::Identifier { name, .. } = function.as_ref()
+                    && crate::newtypes::is_newtype(self, name)
+                {
+                    return crate::newtypes::construct_type(self, name, arguments);
+                }
+
                 let func_type = self.check_node(function)?;
 
                 // RES-061 + RES-063: if the callee is a known top-level

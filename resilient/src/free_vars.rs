@@ -206,7 +206,10 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(m, bound, free);
             }
         }
-        Node::StructDecl { .. } | Node::TypeAlias { .. } | Node::RegionDecl { .. } => {}
+        Node::StructDecl { .. }
+        | Node::TypeAlias { .. }
+        | Node::Newtype { .. }
+        | Node::RegionDecl { .. } => {}
         // RES-386: Actor declarations are verifier-only.
         Node::Actor { .. } => {}
         // RES-390: ClusterDecl introduces no bindings.
@@ -486,6 +489,13 @@ fn collect_top_level_binder(node: &Node, bound: &mut BTreeSet<String>) {
             bound.insert(name.clone());
         }
         Node::TypeAlias { name, .. } => {
+            bound.insert(name.clone());
+        }
+        Node::Newtype { name, .. } => {
+            // RES-319: a `newtype` introduces a name that's used both
+            // as a type and as a constructor at the value level —
+            // hoist it the same way `struct` and `type` are hoisted
+            // so forward references in sibling statements resolve.
             bound.insert(name.clone());
         }
         Node::RegionDecl { name, .. } => {

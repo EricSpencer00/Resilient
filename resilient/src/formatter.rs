@@ -199,6 +199,12 @@ impl Formatter {
                 self.write(&format!("type {} = {};", name, target));
                 self.newline();
             }
+            // RES-319: opaque single-field wrapper. Same shape as
+            // `type`, different keyword.
+            Node::Newtype { name, target, .. } => {
+                self.write(&format!("newtype {} = {};", name, target));
+                self.newline();
+            }
             Node::RegionDecl { name, .. } => {
                 self.write(&format!("region {};", name));
                 self.newline();
@@ -954,6 +960,7 @@ impl Formatter {
             | Node::StructDecl { .. }
             | Node::ImplBlock { .. }
             | Node::TypeAlias { .. }
+            | Node::Newtype { .. }
             | Node::RegionDecl { .. }
             | Node::Actor { .. }
             | Node::ActorDecl { .. }

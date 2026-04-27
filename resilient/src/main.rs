@@ -133,6 +133,12 @@ mod type_aliases;
 // helper consumed by the typechecker; no parser / lexer surface.
 mod did_you_mean;
 
+// RES-319: opaque single-field type wrappers — `newtype Meters = float;`.
+// Owns the program-level validation pass and the constructor /
+// arithmetic helpers consulted from the typechecker. Token, AST,
+// keyword, and parser sit in the core files behind extension blocks.
+mod newtypes;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -257,6 +263,13 @@ enum Token {
     /// only meaningful inside a quantifier `range_expr`; the parser
     /// rejects it elsewhere.
     DotDot,
+    /// RES-319: `newtype Name = BaseType;` — opaque single-field
+    /// wrapper. Unlike `type` (RES-128) which is transparent,
+    /// `newtype` introduces a fresh nominal type that does not unify
+    /// with its base. Used for safety-critical unit systems
+    /// (Meters / Volts / Seconds) where mixing brands of the same
+    /// underlying numeric type must be a hard compile error.
+    Newtype,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -389,6 +402,7 @@ impl Token {
             Token::Forall => "`forall`".to_string(),
             Token::Exists => "`exists`".to_string(),
             Token::DotDot => "`..`".to_string(),
+            Token::Newtype => "`newtype`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -826,6 +840,7 @@ impl Lexer {
                         "catch" => Token::Catch,
                         "forall" => Token::Forall,
                         "exists" => Token::Exists,
+                        "newtype" => Token::Newtype,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -1743,6 +1758,21 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-319: top-level `newtype <Name> = <Target>;` opaque wrapper.
+    /// Unlike `TypeAlias`, a `Newtype` is *nominal*: `Meters` and
+    /// `float` are distinct types, and two newtypes that share a
+    /// base (`newtype Meters = float; newtype Volts = float;`) do
+    /// not interchange. The typechecker maintains a `newtypes` map
+    /// populated from every `Newtype` statement; constructor calls
+    /// (`Meters(3.14)`) and same-brand arithmetic
+    /// (`Meters + Meters -> Meters`) are dispatched in
+    /// `crate::newtypes`.
+    Newtype {
+        name: String,
+        target: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-391: `region <Name>;` top-level declaration. Introduces a
     /// named region label used inside reference types
     /// (`&[Name] T`, `&mut[Name] T`) for syntactic non-aliasing
@@ -2018,6 +2048,7 @@ impl Parser {
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
+            Token::Newtype => Some(self.parse_newtype_decl()),
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
             Token::Try => Some(crate::try_catch::parse(self)),
@@ -2994,6 +3025,66 @@ impl Parser {
         }
 
         Node::TypeAlias {
+            name,
+            target,
+            span: kw_span,
+        }
+    }
+
+    /// RES-319: parse `newtype <Name> = <Target>;` at top level.
+    /// Emits a `Node::Newtype`. Mirrors `parse_type_alias` exactly —
+    /// the difference between `type` and `newtype` is purely
+    /// downstream (transparent vs. nominal in the type checker).
+    /// Parser-error recovery is identical: a missing `=`, a
+    /// non-identifier on either side, or a missing `;` records a
+    /// diagnostic and emits a node so later passes see something
+    /// well-shaped.
+    fn parse_newtype_decl(&mut self) -> Node {
+        let kw_span = self.span_at_current();
+        self.next_token(); // skip `newtype`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected newtype name after 'newtype', found {}",
+                    other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after 'newtype {}', found {}",
+                name, tok
+            ));
+        } else {
+            self.next_token(); // skip '='
+        }
+
+        let target = match &self.current_token {
+            Token::Identifier(t) => t.clone(),
+            other => {
+                self.record_error(format!(
+                    "Expected target type name after 'newtype {} =', found {}",
+                    name, other
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip target
+
+        // Trailing `;` — mirror parse_type_alias.
+        if self.current_token == Token::Semicolon {
+            // leave cursor on `;`; parse_program advances past it
+        } else if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::Newtype {
             name,
             target,
             span: kw_span,
@@ -9519,6 +9610,14 @@ struct Interpreter {
     /// the runtime check entirely. Empty by default; populated by
     /// `with_proven_fns` after typecheck.
     proven_fns: Rc<HashSet<String>>,
+    /// RES-319: registered newtype names. A `CallExpression` whose
+    /// callee identifier is in this set is dispatched as identity —
+    /// `Meters(3.14)` returns the wrapped value unchanged because
+    /// newtypes are erased at runtime (the type checker has already
+    /// proved the program never confuses two newtypes). Populated by
+    /// `eval_program`'s declaration pre-pass; shared across
+    /// sub-interpreters so closures can construct newtypes too.
+    newtypes: Rc<HashSet<String>>,
 }
 
 impl Interpreter {
@@ -9533,6 +9632,7 @@ impl Interpreter {
             statics: Rc::new(RefCell::new(HashMap::new())),
             consts: Rc::new(HashMap::new()),
             proven_fns: Rc::new(HashSet::new()),
+            newtypes: Rc::new(HashSet::new()),
         }
     }
 
@@ -9845,6 +9945,24 @@ impl Interpreter {
                 arguments,
                 ..
             } => {
+                // RES-319: a bare-identifier callee that names a
+                // registered newtype is a constructor. The wrapped
+                // value is erased at runtime — we evaluate the single
+                // argument and return it unchanged. The type checker
+                // has already verified the argument's type and brand,
+                // so no further validation is needed.
+                if let Node::Identifier { name, .. } = function.as_ref()
+                    && self.newtypes.contains(name)
+                {
+                    if arguments.len() != 1 {
+                        return Err(format!(
+                            "newtype {} constructor takes exactly 1 argument, got {}",
+                            name,
+                            arguments.len()
+                        ));
+                    }
+                    return self.eval(&arguments[0]);
+                }
                 // RES-158: method call desugar.
                 //
                 // If the callee is `TARGET.NAME`, evaluate `TARGET`
@@ -10122,6 +10240,15 @@ impl Interpreter {
             // sees aliases — by the time `eval` runs, every use
             // site has already been resolved by the typechecker.
             Node::TypeAlias { .. } => Ok(Value::Void),
+            // RES-319: `newtype NAME = BASE;` is type-checker-only
+            // metadata. The wrapped value carries no extra tag at
+            // runtime — by the time `eval` runs, the type checker
+            // has already proved the program never confuses two
+            // newtypes. A constructor call `Meters(3.14)` is
+            // dispatched as an ordinary fn call to the identity
+            // built-in (see `eval_call_expression`), so the
+            // declaration node itself is a no-op.
+            Node::Newtype { .. } => Ok(Value::Void),
             // RES-391: `region <Name>;` is pure compile-time metadata
             // consumed by the borrow checker — runtime no-op.
             Node::RegionDecl { .. } => Ok(Value::Void),
@@ -10451,6 +10578,21 @@ impl Interpreter {
         // RES-361: evaluate all `const` declarations first, before any
         // function hoisting or statement execution.
         self.const_eval_program(statements)?;
+
+        // RES-319: collect every `newtype` declaration into the
+        // interpreter's name set BEFORE any other statement runs. This
+        // mirrors the typechecker's hoist pass; constructor calls
+        // (`Meters(3.14)`) inside function bodies must resolve even
+        // when the bodies precede the declarations textually.
+        let mut newtype_names: HashSet<String> = HashSet::new();
+        for statement in statements {
+            if let Node::Newtype { name, .. } = &statement.node {
+                newtype_names.insert(name.clone());
+            }
+        }
+        if !newtype_names.is_empty() {
+            self.newtypes = Rc::new(newtype_names);
+        }
 
         // RES-018 + RES-050: hoist top-level fn bindings so call sites
         // can forward-reference. ONE pass suffices now — captured envs
@@ -11206,6 +11348,7 @@ impl Interpreter {
                     statics: self.statics.clone(),
                     consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
+                    newtypes: self.newtypes.clone(),
                 };
 
                 // RES-035: check each `requires` clause BEFORE running
@@ -11291,6 +11434,7 @@ impl Interpreter {
                     statics: self.statics.clone(),
                     consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
+                    newtypes: self.newtypes.clone(),
                 };
                 for pre in &requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -11312,6 +11456,7 @@ impl Interpreter {
                         statics: self.statics.clone(),
                         consts: self.consts.clone(),
                         proven_fns: self.proven_fns.clone(),
+                        newtypes: self.newtypes.clone(),
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in &ensures {
@@ -12006,6 +12151,7 @@ pub(crate) fn collect_semantic_tokens(src: &str) -> Vec<AbsSemToken> {
             Token::Function
             | Token::Struct
             | Token::Type
+            | Token::Newtype
             | Token::New
             | Token::Let
             | Token::Static => Some(tok.clone()),
@@ -12057,6 +12203,7 @@ fn classify_lex_token(
         | Token::As
         | Token::Impl
         | Token::Type
+        | Token::Newtype
         | Token::Default
         | Token::BoolLiteral(_) => (sem_tok::KEYWORD, 0),
 
@@ -12067,7 +12214,9 @@ fn classify_lex_token(
         // Identifiers: context-dependent.
         Token::Identifier(_) => match prev_kw {
             Some(Token::Function) => (sem_tok::FUNCTION, sem_tok::MOD_DECLARATION),
-            Some(Token::Struct) | Some(Token::Type) => (sem_tok::TYPE, sem_tok::MOD_DECLARATION),
+            Some(Token::Struct) | Some(Token::Type) | Some(Token::Newtype) => {
+                (sem_tok::TYPE, sem_tok::MOD_DECLARATION)
+            }
             Some(Token::New) => (sem_tok::TYPE, 0),
             Some(Token::Let) | Some(Token::Static) => (sem_tok::VARIABLE, sem_tok::MOD_DECLARATION),
             _ => (sem_tok::VARIABLE, 0),

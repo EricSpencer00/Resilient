@@ -250,6 +250,9 @@ enum Tok {
     Exists,
     #[token("..")]
     DotDot,
+    // RES-319: opaque single-field type wrapper.
+    #[token("newtype")]
+    Newtype,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -594,6 +597,7 @@ fn convert(t: Tok) -> Token {
         Tok::Forall => Token::Forall,
         Tok::Exists => Token::Exists,
         Tok::DotDot => Token::DotDot,
+        Tok::Newtype => Token::Newtype,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

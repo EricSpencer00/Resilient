@@ -1,0 +1,47 @@
+// RES-319: newtype — opaque single-field type wrappers for unit safety.
+//
+// Compare with `type_aliases_units.rz`: that demo uses `type` (transparent
+// alias), so `Meters` and `float` interchange freely. Here we use
+// `newtype` (opaque) so the type checker enforces that `Meters` and
+// `Volts` are distinct types at every use site, even though both wrap
+// `float` underneath.
+//
+// Demonstrated forms:
+//   - top-level `newtype X = T;` declaration
+//   - construction via `Name(value)`
+//   - same-brand arithmetic preserves the brand (`Meters + Meters -> Meters`)
+//   - newtype in a function parameter list
+//
+// Cross-brand operations (`Meters + Volts`, `let m: Meters = v_volts`)
+// are compile-time errors — see the unit-tests in `src/newtypes.rs`
+// for the exact diagnostics.
+
+newtype Meters = float;
+newtype Volts = float;
+newtype Seconds = float;
+
+fn distance_after(Meters start, Meters delta) -> Meters {
+    return start + delta;
+}
+
+fn main() {
+    let m: Meters = Meters(100.0);
+    let v: Volts = Volts(3.3);
+    let t: Seconds = Seconds(5.0);
+
+    // Same-brand arithmetic: `Meters + Meters` returns Meters, and the
+    // result still satisfies the `Meters` parameter binding below.
+    let extra: Meters = Meters(50.0);
+    let total: Meters = distance_after(m, extra);
+
+    // The wrapped values print as their underlying representation;
+    // printing them confirms the runtime erasure.
+    println("total distance:");
+    println(total);
+    println("voltage:");
+    println(v);
+    println("elapsed:");
+    println(t);
+}
+
+main();

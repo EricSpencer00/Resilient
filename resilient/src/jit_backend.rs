@@ -159,6 +159,7 @@ fn count_nodes(n: &Node) -> usize {
         | Node::DurationLiteral { .. }
         | Node::Use { .. }
         | Node::TypeAlias { .. }
+        | Node::Newtype { .. }
         | Node::RegionDecl { .. }
         | Node::StructDecl { .. } => 0,
         Node::PrefixExpression { right, .. } => count_nodes(right),

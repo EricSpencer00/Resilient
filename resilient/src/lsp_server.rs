@@ -394,6 +394,7 @@ pub(crate) fn build_top_level_defs(program: &Node) -> Vec<TopLevelDef> {
             Node::Function { name, .. } => name.clone(),
             Node::StructDecl { name, .. } => name.clone(),
             Node::TypeAlias { name, .. } => name.clone(),
+            Node::Newtype { name, .. } => name.clone(),
             _ => continue,
         };
         if !seen.insert(name.clone()) {
@@ -808,6 +809,11 @@ pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candida
                 CandidateKind::TypeAlias,
                 Some("type".to_string()),
             ),
+            Node::Newtype { name, .. } => (
+                name.clone(),
+                CandidateKind::TypeAlias,
+                Some("newtype".to_string()),
+            ),
             _ => continue,
         };
         if !name.starts_with(prefix) {
@@ -866,6 +872,7 @@ pub(crate) fn document_symbols_for_program(program: &Node) -> Vec<DocumentSymbol
             Node::TypeAlias { name, .. } => {
                 make_symbol(name, SymbolKind::TYPE_PARAMETER, spanned.span)
             }
+            Node::Newtype { name, .. } => make_symbol(name, SymbolKind::CLASS, spanned.span),
             // Everything else (let / static / return / while / ...)
             // is a statement, not a declaration — skip.
             _ => continue,
