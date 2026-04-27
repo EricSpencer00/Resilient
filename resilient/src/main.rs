@@ -13,6 +13,7 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod imports;
+mod inline;
 #[cfg(feature = "jit")]
 mod jit_backend;
 #[cfg(feature = "lsp")]

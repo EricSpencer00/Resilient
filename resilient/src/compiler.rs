@@ -206,12 +206,22 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     crate::peephole::optimize(&mut main)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
 
-    Ok(Program {
+    let mut prog = Program {
         main,
         functions,
         #[cfg(feature = "ffi")]
         foreign_syms,
-    })
+    };
+    // RES-365: function inlining pass over the assembled program.
+    // Replaces `Op::Call(idx)` to small leaf functions with the
+    // callee's bytecode body, eliminating call-frame overhead. Gated
+    // behind `RESILIENT_INLINE=1` so default behavior stays
+    // bit-identical (matches the `const_fold::optimize_if_enabled`
+    // discipline — the existing test suite pins specific opcode
+    // sequences that inlining would change).
+    crate::inline::optimize_if_enabled(&mut prog)
+        .map_err(|_| CompileError::InternalError("inliner failed"))?;
+    Ok(prog)
 }
 
 /// Compile a top-level (main-chunk) statement. Bare expression
