@@ -16,6 +16,7 @@
 [**🧭 Philosophy**](https://ericspencer00.github.io/Resilient/philosophy) &nbsp;·&nbsp;
 [**⚡ Performance**](https://ericspencer00.github.io/Resilient/performance) &nbsp;·&nbsp;
 [**🧠 Memory Model**](https://ericspencer00.github.io/Resilient/memory-model) &nbsp;·&nbsp;
+[**🩺 Examples**](https://github.com/EricSpencer00/Resilient-examples) &nbsp;·&nbsp;
 [**🤝 Contributing**](CONTRIBUTING.md)
 
 </div>
@@ -192,6 +193,16 @@ rz --typecheck resilient/examples/sensor_monitor.rz
 # With verification audit (shows static-vs-runtime contract coverage)
 rz --audit resilient/examples/sensor_monitor.rz
 ```
+
+For full mission-critical project demos — pacemaker, infusion pump, ABS
+brake controller, traffic-light interlock, reactor coolant monitor, CAN
+bus parser — see the dedicated companion repo:
+
+➜ **[EricSpencer00/Resilient-examples](https://github.com/EricSpencer00/Resilient-examples)**
+
+Each project there is a small, runnable program with its own README
+explaining the safety property, the language features it exercises,
+and the limitations or follow-up tickets.
 
 ### Running the REPL
 
