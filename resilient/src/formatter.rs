@@ -934,6 +934,18 @@ impl Formatter {
                 self.write(": ");
                 self.fmt_expr(body);
             }
+            // RES-291: integer range expression `lo..hi` / `lo..=hi`.
+            Node::Range {
+                lo, hi, inclusive, ..
+            } => {
+                self.fmt_expr(lo);
+                if *inclusive {
+                    self.write("..=");
+                } else {
+                    self.write("..");
+                }
+                self.fmt_expr(hi);
+            }
             // Statement-shaped nodes that ended up in expression
             // position: degrade gracefully to their statement form.
             Node::Block { .. }

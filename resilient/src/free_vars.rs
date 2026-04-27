@@ -440,6 +440,12 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             walk(body, bound, free);
             truncate_to(bound, snapshot);
         }
+        // RES-291: integer range — both bounds are sub-expressions
+        // whose free vars must propagate.
+        Node::Range { lo, hi, .. } => {
+            walk(lo, bound, free);
+            walk(hi, bound, free);
+        }
     }
 }
 

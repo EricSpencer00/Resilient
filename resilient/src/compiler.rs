@@ -1136,6 +1136,11 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::TryCatch { span, .. }
         | Node::Quantifier { span, .. } => span.start.line as u32,
 
+        // RES-291: integer range expression. Only emitted from the
+        // tree-walker frontend today; bytecode lowering treats it as
+        // unsupported.
+        Node::Range { span, .. } => span.start.line as u32,
+
         // RES-142: duration literal carries the span of its integer
         // part; only emitted inside live-clause position so it
         // shouldn't round-trip through the compiler, but match it

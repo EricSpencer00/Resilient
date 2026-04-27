@@ -1,0 +1,13 @@
+// RES-291: half-open range `lo..hi` as the iterable of a `for-in`.
+// Iterates [0, 5) — i.e. 0, 1, 2, 3, 4 — summing to 10.
+// Tree-walker only; VM and JIT support is a follow-up ticket.
+
+fn main() {
+    let total = 0;
+    for i in 0..5 {
+        total = total + i;
+    }
+    println(total);
+}
+
+main();
