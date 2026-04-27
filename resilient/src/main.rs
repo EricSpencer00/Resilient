@@ -13216,6 +13216,20 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     let mut lints = lint::check(&program, &src);
 
     // Apply `--allow` (drop) and `--deny` (severity bump).
+    //
+    // RES-308: lint code aliases — a flag against L0001 also
+    // applies to L0011 (the rustc-style sibling that fires on
+    // the same unused-let case). Pre-expand the user-supplied
+    // sets so the existing retain/severity loops below stay a
+    // straight set-membership check.
+    for (primary, alias) in lint::ALLOW_ALIASES {
+        if allow.contains(*primary) {
+            allow.insert((*alias).to_string());
+        }
+        if deny.contains(*primary) {
+            deny.insert((*alias).to_string());
+        }
+    }
     lints.retain(|l| !allow.contains(&l.code));
     for l in lints.iter_mut() {
         if deny.contains(&l.code) {
