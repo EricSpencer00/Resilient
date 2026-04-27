@@ -417,6 +417,103 @@ pub(crate) fn find_top_level_def<'a>(
     defs.iter().find(|d| d.name == name)
 }
 
+/// RES-302: best-effort type lookup for an identifier in the
+/// program. Walks `Node::Program` looking for a top-level
+/// declaration whose name matches `target` and returns a short,
+/// human-readable type string suitable for a hover bubble.
+///
+/// Coverage today (intentionally minimal — see ticket):
+///   - `let NAME [: T] = EXPR;` → `T` if annotated, else inferred
+///     from a literal RHS (`Int` / `Float` / `String` / `Bool` /
+///     `Bytes`). Other RHS shapes return `None`.
+///   - `const NAME [: T] = EXPR;` — same rules as `let`.
+///   - `static let NAME = EXPR;` — same literal-inference rules.
+///   - `fn NAME(...)` → `"fn"`. Return-type annotations land in a
+///     follow-up; we return the bare keyword today so hovering on a
+///     fn name surfaces *something* useful.
+///   - Function parameters: walks every top-level fn body looking
+///     for a parameter with the matching name, returning its
+///     declared type (`(type, name)` tuple in the AST).
+///
+/// Anything else (struct fields, nested let bindings, type-aliased
+/// identifiers, identifiers used inside a fn body) returns `None`
+/// and the hover handler falls through to `Ok(None)`. Doc-comment
+/// surfacing is a separate follow-up — see RES-302 ticket.
+pub(crate) fn infer_identifier_type(program: &Node, target: &str) -> Option<String> {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return None,
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
+                if name == target {
+                    return Some(
+                        type_annot
+                            .clone()
+                            .unwrap_or_else(|| infer_literal_type(value).to_string()),
+                    );
+                }
+            }
+            Node::Const {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
+                if name == target {
+                    return Some(
+                        type_annot
+                            .clone()
+                            .unwrap_or_else(|| infer_literal_type(value).to_string()),
+                    );
+                }
+            }
+            Node::StaticLet { name, value, .. } => {
+                if name == target {
+                    return Some(infer_literal_type(value).to_string());
+                }
+            }
+            Node::Function {
+                name, parameters, ..
+            } => {
+                if name == target {
+                    return Some("fn".to_string());
+                }
+                for (ty, pname) in parameters {
+                    if pname == target {
+                        return Some(ty.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// RES-302: classify a literal `Node` into the same surface-type
+/// strings the literal-hover path uses (`Int`, `Float`, `String`,
+/// `Bool`, `Bytes`). Falls back to `"unknown"` for non-literal
+/// expressions — callers wrapped in `infer_identifier_type` only
+/// hit this for `let` / `const` RHS, where most early-source
+/// programs DO bind a literal directly.
+fn infer_literal_type(value: &Node) -> &'static str {
+    match value {
+        Node::IntegerLiteral { .. } => "Int",
+        Node::FloatLiteral { .. } => "Float",
+        Node::StringLiteral { .. } => "String",
+        Node::BooleanLiteral { .. } => "Bool",
+        Node::BytesLiteral { .. } => "Bytes",
+        _ => "unknown",
+    }
+}
+
 /// RES-184: walk the token stream of `src` looking for a `fn`
 /// declaration whose name is `target`. Returns the `Range` of the
 /// name identifier token in the declaration (e.g. the `foo` span
@@ -1531,24 +1628,29 @@ impl LanguageServer for Backend {
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
-    /// RES-181a: respond to `textDocument/hover` — today, only
-    /// literal positions yield a result. A literal under the
-    /// cursor returns its Resilient-surface type name (`Int`,
-    /// `Float`, `String`, `Bool`, `Bytes`); any other position
-    /// returns `Ok(None)` so the client renders nothing.
+    /// RES-181a / RES-302: respond to `textDocument/hover`.
     ///
-    /// Implementation drives the lexer directly against the
-    /// cached source text (not the AST), because the parser's
-    /// per-leaf spans record `last_token_*` AFTER the lexer
-    /// advances — unreliable for literal positions. See the
-    /// module-level comment on `hover_literal_at` for the
-    /// rationale.
+    /// Two cursor-shape cases are served today:
+    ///   1. Literal under the cursor → surface its Resilient-
+    ///      surface type name (`Int`, `Float`, `String`, `Bool`,
+    ///      `Bytes`). Implementation drives the lexer directly
+    ///      against the cached source text (not the AST), because
+    ///      the parser's per-leaf spans record `last_token_*`
+    ///      AFTER the lexer advances — unreliable for literal
+    ///      positions. See `hover_literal_at`'s module-level
+    ///      rationale.
+    ///   2. Identifier under the cursor → look up the symbol in
+    ///      the cached AST via `infer_identifier_type`. Today
+    ///      this covers top-level `let` / `const` / `static let`
+    ///      bindings, top-level `fn` names, and parameters of
+    ///      top-level fns. Anything else (nested binding,
+    ///      identifier used inside a fn body without a matching
+    ///      top-level decl) returns `Ok(None)` and the client
+    ///      renders nothing.
     ///
-    /// RES-181b will extend this to identifier positions once
-    /// RES-120 exposes a per-position inferred-type table. The
-    /// plumbing here (document lookup, capability advertisement,
-    /// Hover response shape) is the shared scaffolding that
-    /// ticket will build on.
+    /// Doc-comment surfacing is a separate follow-up to RES-302 —
+    /// the AST does not yet thread doc-comments through, so this
+    /// handler is intentionally type-only for now.
     async fn hover(&self, params: HoverParams) -> JsonResult<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
@@ -1559,15 +1661,35 @@ impl LanguageServer for Backend {
         let Some(text) = text else {
             return Ok(None);
         };
-        let Some((type_name, range)) = hover_literal_at(&text, pos) else {
+        // Literal hover takes priority — its type read is exact
+        // (the lexer told us). Identifier fallback is best-effort.
+        if let Some((type_name, range)) = hover_literal_at(&text, pos) {
+            return Ok(Some(Hover {
+                contents: HoverContents::Scalar(MarkedString::String(type_name.to_string())),
+                range: Some(range),
+            }));
+        }
+        // RES-302: identifier hover. Look up the cursor's name
+        // in the cached AST and surface the inferred type as a
+        // markdown code block (clients that don't render markdown
+        // still display the body verbatim, so the snippet stays
+        // legible).
+        let Some((name, range)) = identifier_at(&text, pos) else {
             return Ok(None);
         };
-        // `MarkedString::String` keeps the bubble universal —
-        // both markdown-rendering and plain-text clients display
-        // it identically. Type name alone is the body; no extra
-        // prose.
+        let program = match self.documents.lock() {
+            Ok(map) => map.get(&uri).cloned(),
+            Err(_) => None,
+        };
+        let Some(program) = program else {
+            return Ok(None);
+        };
+        let Some(type_str) = infer_identifier_type(&program, &name) else {
+            return Ok(None);
+        };
+        let body = format!("```rust\nlet {name}: {type_str}\n```");
         Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(type_name.to_string())),
+            contents: HoverContents::Scalar(MarkedString::String(body)),
             range: Some(range),
         }))
     }
@@ -3515,5 +3637,38 @@ fn main(int n) {\n\
         // A `{` only on line 3; scanning from line 0 returns 3.
         let src = "fn f(\n    int x,\n    int y\n) {\n    return x + y;\n}";
         assert_eq!(find_brace_line(src, 0), Some(3));
+    }
+
+    // ============================================================
+    // RES-302: identifier-hover lookup
+    // ============================================================
+    //
+    // Walk the AST and surface the inferred type for an identifier
+    // in scope. Today: top-level `let` / `const` / `static let`
+    // bindings, top-level `fn` names, and parameters of top-level
+    // fns. Anything else returns `None`.
+
+    #[test]
+    fn res302_identifier_hover_let_int_returns_int() {
+        // `let x = 42;` — hovering on `x` should report `Int`.
+        let (program, errs) = parse("let x = 42;");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert_eq!(infer_identifier_type(&program, "x"), Some("Int".into()));
+    }
+
+    #[test]
+    fn res302_identifier_hover_let_with_type_annot_uses_annotation() {
+        // `let x: int = 0;` — annotation wins over inference.
+        let (program, errs) = parse("let x: int = 0;");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert_eq!(infer_identifier_type(&program, "x"), Some("int".into()));
+    }
+
+    #[test]
+    fn res302_identifier_hover_unknown_name_returns_none() {
+        // No `q` declared — hover should miss.
+        let (program, errs) = parse("let x = 1;");
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        assert!(infer_identifier_type(&program, "q").is_none());
     }
 }
