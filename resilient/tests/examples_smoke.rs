@@ -670,16 +670,23 @@ main();
 #[test]
 #[cfg(feature = "z3")]
 fn partial_proof_warning_fires_on_z3_timeout() {
-    // RES-217: when Z3 returns Unknown (here forced by a 1ms budget
+    // RES-217: when Z3 returns Unknown (here forced by a small budget
     // on a nonlinear-int obligation), the typechecker must emit the
     // structured `warning[partial-proof]:` line pointing at the
     // specific assertion's source position. Compilation still
     // succeeds and the runtime check is retained.
+    //
+    // RES-399: bumped from 1ms → 100ms. 1ms is below Z3's internal
+    // timeout-check granularity in some configurations (issue #268),
+    // and the test occasionally hung the CI runner indefinitely. 100ms
+    // is still well below the "Z3 actually solves Mordell" wall on
+    // every platform we run, so the obligation reliably comes back
+    // Unknown — but Z3 sees the deadline now.
     let tmp = write_partial_proof_program("timeout");
     let output = Command::new(bin())
         .arg("--typecheck")
         .arg("--verifier-timeout-ms")
-        .arg("1")
+        .arg("100")
         .arg(&tmp)
         .output()
         .expect("spawn resilient --typecheck");
@@ -712,11 +719,19 @@ fn no_warn_unverified_suppresses_partial_proof_warning() {
     // warning even when Z3 times out. The per-fn `hint:` line
     // (pre-RES-217 diagnostic) is still emitted — the two are
     // intentionally independent signals.
+    //
+    // RES-399: bumped from 1ms → 100ms (issue #268). This test's
+    // sibling above passed at 1ms but THIS one hung indefinitely on
+    // both macOS local dev and Ubuntu CI — the `--no-warn-unverified`
+    // path apparently took a different code branch that didn't honor
+    // the microsecond-scale deadline. 100ms is still small enough that
+    // the Mordell obligation comes back Unknown, but Z3's solver loop
+    // sees the deadline reliably.
     let tmp = write_partial_proof_program("suppressed");
     let output = Command::new(bin())
         .arg("--typecheck")
         .arg("--verifier-timeout-ms")
-        .arg("1")
+        .arg("100")
         .arg("--no-warn-unverified")
         .arg(&tmp)
         .output()
