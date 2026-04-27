@@ -749,6 +749,11 @@ impl Formatter {
                 }
                 self.write(")");
             }
+            // RES-325: `name: value` inside a call argument list.
+            Node::NamedArg { name, value, .. } => {
+                self.write(&format!("{}: ", name));
+                self.fmt_expr(value);
+            }
             Node::TryExpression { expr, .. } => {
                 self.fmt_expr(expr);
                 self.write("?");

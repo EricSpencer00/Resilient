@@ -3274,6 +3274,13 @@ impl TypeChecker {
                     _ => Err(format!("Cannot call non-function type: {}", func_type)),
                 }
             }
+            // RES-325: a `NamedArg` can only appear inside a call's
+            // argument list — the call check above walks `arguments`
+            // directly and treats each labelled arg by inspecting the
+            // inner value. Encountering one in any other position is
+            // a parser/internal bug; surface a clean error rather
+            // than crashing the typechecker.
+            Node::NamedArg { value, .. } => self.check_node(value),
         }
     }
 

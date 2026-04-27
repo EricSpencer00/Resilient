@@ -156,6 +156,13 @@ mod ranges;
 //   * CLI arg handling for `--feature` / `--target`.
 mod cfg_attr;
 
+// RES-325: named function arguments — `foo(x: 1, y: 2)`. The parser
+// emits `Node::NamedArg` nodes inside a call's argument list; this
+// module reorders them into positional slots using the callee's
+// parameter list at dispatch time. Parser-level validation (named
+// must follow positional, no duplicates) lives next to the parser.
+mod named_args;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -1895,6 +1902,17 @@ enum Node {
         lo: Box<Node>,
         hi: Box<Node>,
         inclusive: bool,
+        span: span::Span,
+    },
+    /// RES-325: named function argument — `name: expr` at a call
+    /// site. Only valid inside `Node::CallExpression::arguments`;
+    /// the call-dispatch path (`apply_function`) reorders these
+    /// to match the callee's parameter positions before binding.
+    /// Encountered outside a call site is a parse error.
+    NamedArg {
+        name: String,
+        value: Box<Node>,
+        #[allow(dead_code)]
         span: span::Span,
     },
 }
@@ -5549,31 +5567,24 @@ impl Parser {
             value: 0,
             span: span::Span::default(),
         };
-        match self.parse_expression(0) {
-            Some(node) => args.push(node),
-            None => {
-                let tok = self.current_token.clone();
-                self.record_error(format!(
-                    "Expected expression in call arguments, found {}",
-                    tok
-                ));
-                args.push(placeholder());
-            }
+        // RES-325: track whether we've already seen a named argument
+        // and the names used so far so we can reject named-then-positional
+        // and duplicate-name cases at parse time with a clean diagnostic.
+        let mut seen_named = false;
+        let mut used_names: Vec<String> = Vec::new();
+        if let Some(node) = self.parse_one_call_argument(&mut seen_named, &mut used_names) {
+            args.push(node);
+        } else {
+            args.push(placeholder());
         }
 
         while self.peek_token == Token::Comma {
             self.next_token(); // Skip current
             self.next_token(); // Skip comma
-            match self.parse_expression(0) {
-                Some(node) => args.push(node),
-                None => {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected expression after `,` in call arguments, found {}",
-                        tok
-                    ));
-                    args.push(placeholder());
-                }
+            if let Some(node) = self.parse_one_call_argument(&mut seen_named, &mut used_names) {
+                args.push(node);
+            } else {
+                args.push(placeholder());
             }
         }
 
@@ -5585,6 +5596,69 @@ impl Parser {
         }
 
         args
+    }
+
+    /// RES-325: parse a single call argument, recognising `name: expr`
+    /// as a named-argument node. A call argument list may contain any
+    /// number of positional args followed by any number of named args;
+    /// once a named arg has appeared, every subsequent arg must also
+    /// be named. Duplicate named names within the same call are rejected.
+    fn parse_one_call_argument(
+        &mut self,
+        seen_named: &mut bool,
+        used_names: &mut Vec<String>,
+    ) -> Option<Node> {
+        // Lookahead for `IDENT :` — anything else parses as a positional
+        // expression. We must be careful not to swallow the colon used by
+        // type annotations etc., but call-argument position only allows
+        // expressions, so the only way `IDENT :` is legal here is as a
+        // named-argument label.
+        if let Token::Identifier(name) = self.current_token.clone()
+            && self.peek_token == Token::Colon
+        {
+            let label_span = self.span_at_current();
+            // Consume IDENT, then `:`, leaving current_token on the
+            // first token of the value expression.
+            self.next_token(); // now on `:`
+            self.next_token(); // now on first token of value
+            let value = match self.parse_expression(0) {
+                Some(v) => v,
+                None => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected expression for named argument `{}`, found {}",
+                        name, tok
+                    ));
+                    return None;
+                }
+            };
+            if used_names.iter().any(|n| n == &name) {
+                self.record_error(format!("Duplicate named argument `{}` in call", name));
+            }
+            used_names.push(name.clone());
+            *seen_named = true;
+            return Some(Node::NamedArg {
+                name,
+                value: Box::new(value),
+                span: label_span,
+            });
+        }
+
+        // Positional argument.
+        if *seen_named {
+            self.record_error("Positional argument cannot follow a named argument".to_string());
+        }
+        match self.parse_expression(0) {
+            Some(node) => Some(node),
+            None => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected expression in call arguments, found {}",
+                    tok
+                ));
+                None
+            }
+        }
     }
 
     /// Parse `struct NAME { TYPE FIELD, ... }`. current_token is `struct`
@@ -10635,6 +10709,29 @@ impl Interpreter {
                 let _ = self.env.reassign(&root_name, Value::Array(items));
                 Ok(Value::Void)
             }
+            // RES-325: a `NamedArg` outside an enclosing call site is
+            // an internal error — the parser only emits these inside
+            // a call's argument list. The CallExpression evaluator
+            // rewrites them away before reaching the generic eval
+            // path. Delegate to a sibling so its locals don't
+            // inflate this hot frame.
+            Node::NamedArg { .. } => self.eval_stray_named_arg(node),
+        }
+    }
+
+    /// RES-325: cold path for the (theoretically unreachable) case
+    /// where a `Node::NamedArg` reaches generic expression evaluation
+    /// outside a call site. Surface a clean diagnostic without
+    /// inflating the hot `eval` frame.
+    #[inline(never)]
+    fn eval_stray_named_arg(&self, node: &Node) -> RResult<Value> {
+        if let Node::NamedArg { name, .. } = node {
+            Err(format!(
+                "Internal: named argument `{}` evaluated outside of a call argument list",
+                name
+            ))
+        } else {
+            Err("Internal: eval_stray_named_arg called on non-NamedArg".to_string())
         }
     }
 
@@ -11949,10 +12046,17 @@ fn start_repl() -> RustylineResult<()> {
                 // Parse the input
                 let lexer = Lexer::new(input.to_string());
                 let mut parser = Parser::new(lexer);
-                let program = parser.parse_program();
+                let mut program = parser.parse_program();
 
                 // Skip evaluation if any parser errors were recorded
                 if !parser.errors.is_empty() {
+                    continue;
+                }
+                // RES-325: lower named call arguments to positional
+                // ones for known top-level fns so the interpreter's
+                // hot path stays free of named-arg awareness.
+                if let Err(e) = crate::named_args::lower_program(&mut program) {
+                    eprintln!("\x1B[31mError: {}\x1B[0m", e);
                     continue;
                 }
 
@@ -12175,8 +12279,16 @@ fn dump_tokens_to_stdout(src: &str) {
 fn parse(src: &str) -> (Node, Vec<String>) {
     let lexer = Lexer::new(src.to_string());
     let mut parser = Parser::new(lexer);
-    let program = parser.parse_program();
-    let errs: Vec<String> = parser.errors.into_iter().map(|e| e.to_string()).collect();
+    let mut program = parser.parse_program();
+    let mut errs: Vec<String> = parser.errors.into_iter().map(|e| e.to_string()).collect();
+    // RES-325: lower named call arguments to positional ones for
+    // every call whose callee is a known top-level fn or impl
+    // method. Failures here (unknown name, duplicate target, etc.)
+    // surface alongside parse errors so callers see them in one
+    // batch via the same `errs` channel.
+    if let Err(e) = crate::named_args::lower_program(&mut program) {
+        errs.push(e);
+    }
     (program, errs)
 }
 
@@ -12915,6 +13027,15 @@ fn execute_file(
     }
     if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
         return Err(format!("Import error: {}", e));
+    }
+
+    // RES-325: lower named call arguments to positional ones for
+    // every call whose callee is a now-resolvable top-level fn or
+    // impl method. Runs after `expand_uses` so calls into imported
+    // modules can also be lowered.
+    if let Err(e) = crate::named_args::lower_program(&mut program) {
+        eprintln!("\x1B[31mNamed-argument error: {}\x1B[0m", e);
+        return Err(format!("Named argument resolution failed: {}", e));
     }
 
     // RES-391: syntactic non-aliasing check over reference-type
@@ -15297,8 +15418,15 @@ mod tests {
     fn parse(input: &str) -> (Node, Vec<String>) {
         let lexer = Lexer::new(input.to_string());
         let mut parser = Parser::new(lexer);
-        let program = parser.parse_program();
-        (program, parser.errors)
+        let mut program = parser.parse_program();
+        let mut errs = parser.errors;
+        // RES-325: same post-parse named-arg lowering as the
+        // production driver (`crate::parse`), so test-mode programs
+        // see identical post-parse AST shape.
+        if let Err(e) = crate::named_args::lower_program(&mut program) {
+            errs.push(e);
+        }
+        (program, errs)
     }
 
     #[test]
@@ -23892,6 +24020,124 @@ mod tests {
         let mut interp = Interpreter::new();
         let result = interp.eval(&program).expect("should execute");
         assert!(matches!(result, Value::Int(100)));
+    }
+
+    // ----------------------------------------------------------------
+    // RES-325: named function arguments
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn named_args_all_named_in_reverse_order() {
+        // The textbook case from the ticket: a fn with three params
+        // called with named args in reverse declaration order.
+        let src = r#"
+            fn make(int x, int y, int z) {
+                return x * 100 + y * 10 + z;
+            }
+            let r = make(z: 3, y: 2, x: 1);
+        "#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("eval should succeed");
+        match interp.env.get("r").expect("r defined") {
+            Value::Int(v) => assert_eq!(v, 123),
+            other => panic!("expected Int(123), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn named_args_after_positional() {
+        // Mixed: positional fills slot 0, named fills slot 1.
+        let src = r#"
+            fn f(int x, int y) { return x * 10 + y; }
+            let r = f(1, y: 2);
+        "#;
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("eval should succeed");
+        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(12)));
+    }
+
+    #[test]
+    fn named_args_reject_positional_after_named() {
+        // `f(x: 1, 2)` is invalid — positional args may not follow a
+        // named arg.
+        let src = r#"
+            fn f(int x, int y) { return x + y; }
+            let r = f(x: 1, 2);
+        "#;
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("Positional argument cannot follow a named")),
+            "expected positional-after-named diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn named_args_reject_unknown_label() {
+        // `f(z: 1)` where `f` has no parameter `z`.
+        let src = r#"
+            fn f(int x) { return x; }
+            let r = f(z: 1);
+        "#;
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("Unknown named argument") && e.contains("z")),
+            "expected unknown-named-arg diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn named_args_reject_duplicate_label() {
+        // `f(x: 1, x: 2)` — same named label twice.
+        let src = r#"
+            fn f(int x, int y) { return x + y; }
+            let r = f(x: 1, x: 2);
+        "#;
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("Duplicate named argument") && e.contains("x")),
+            "expected duplicate-named-arg diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn named_args_reject_positional_and_named_target_same_param() {
+        // `f(1, x: 2)` — positional fills `x`, then named also targets `x`.
+        let src = r#"
+            fn f(int x, int y) { return x * 10 + y; }
+            let r = f(1, x: 99);
+        "#;
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("provided more than once")),
+            "expected duplicate-target diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn named_args_unknown_callee_offers_did_you_mean() {
+        // Levenshtein-1 typo: `timout` instead of `timeout`.
+        let src = r#"
+            fn connect(int timeout, int retries) { return timeout + retries; }
+            let r = connect(timout: 5, retries: 3);
+        "#;
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("did you mean") && e.contains("timeout")),
+            "expected did-you-mean suggestion, got: {:?}",
+            errs
+        );
     }
 }
 

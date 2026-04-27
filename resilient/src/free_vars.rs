@@ -446,6 +446,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
             walk(lo, bound, free);
             walk(hi, bound, free);
         }
+
+        // RES-325: a named argument's label is just metadata — it
+        // doesn't bind a name; only the value expression introduces
+        // free variables.
+        Node::NamedArg { value, .. } => walk(value, bound, free),
     }
 }
 
