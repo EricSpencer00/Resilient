@@ -486,6 +486,11 @@ No other `_` synonyms (`otherwise`, `else`, ...) are planned
 | `starts_with(s, prefix)` | (string, string) → bool | empty prefix always matches |
 | `ends_with(s, suffix)` | (string, string) → bool | empty suffix always matches |
 | `repeat(s, n)` | (string, int) → string | `n >= 0`; negative `n` is a hard error |
+| `parse_int(s)` | string → Result<Int, String> | base 10; whitespace stripped; `Err` on invalid input — never panics |
+| `parse_float(s)` | string → Result<Float, String> | whitespace stripped; `Err` on invalid input — never panics |
+| `char_at(s, i)` | (string, int) → Result<String, String> | single-char string at Unicode-scalar index `i`; `Err` on out-of-range or negative |
+| `pad_left(s, n, c)` | (string, int, string) → string | left-pad with single char `c` until char-length ≥ `n`; multi-char or empty `c` is a hard error |
+| `pad_right(s, n, c)` | (string, int, string) → string | right-pad; same validation as `pad_left` |
 
 ## Foreign Function Interface
 

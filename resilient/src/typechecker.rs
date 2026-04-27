@@ -995,6 +995,42 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-339: string parsing and formatting.
+        env.set(
+            "parse_int".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "parse_float".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "char_at".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "pad_left".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int, Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "pad_right".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int, Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
 
         // RES-130: explicit int ↔ float conversions. These are the
         // only supported bridge between the two numeric types —
@@ -3487,6 +3523,12 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "starts_with",
         "ends_with",
         "repeat",
+        // RES-339: string parsing and formatting.
+        "parse_int",
+        "parse_float",
+        "char_at",
+        "pad_left",
+        "pad_right",
         // Result helpers.
         "Ok",
         "Err",
