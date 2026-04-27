@@ -129,6 +129,10 @@ mod verifier_loop_invariants;
 // the module's top-of-file rationale).
 mod type_aliases;
 
+// RES-306: did-you-mean suggestions for undefined identifiers. Pure
+// helper consumed by the typechecker; no parser / lexer surface.
+mod did_you_mean;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -21202,6 +21206,50 @@ mod tests {
         assert!(
             err.contains("undefined_thing") && err.contains("at "),
             "expected `at LINE:COL` from RES-078 identifier span; got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn undefined_identifier_appends_did_you_mean_hint() {
+        // RES-306: when an in-scope name is within edit distance 2,
+        // the typechecker appends a `did you mean` hint. Here we bind
+        // a long-enough local (`length`) and reference a typo
+        // (`lentgh`) of it; the diagnostic must mention both names.
+        let src = "let length = 5; let bad = lentgh;";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("must reject undefined identifier");
+        assert!(
+            err.contains("did you mean"),
+            "expected did-you-mean hint, got: {}",
+            err
+        );
+        assert!(
+            err.contains("`length`"),
+            "expected `length` in suggestion, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn undefined_identifier_no_hint_when_no_close_match() {
+        // RES-306: when nothing in scope is within distance 2, the
+        // diagnostic stays bare. `qzwxyrst` is far from every builtin
+        // and from any user-defined name in this snippet.
+        let src = "let aaaa = 1; let bad = qzwxyrst;";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc
+            .check_program(&program)
+            .expect_err("must reject undefined identifier");
+        assert!(
+            !err.contains("did you mean"),
+            "did not expect did-you-mean hint, got: {}",
             err
         );
     }

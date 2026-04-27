@@ -488,6 +488,19 @@ impl TypeEnvironment {
     pub fn remove(&mut self, name: &str) {
         self.store.remove(name);
     }
+
+    /// RES-306: collect every name visible in this scope chain
+    /// (innermost first, walking outward). Used by the did-you-mean
+    /// helper when emitting "undefined identifier" diagnostics.
+    /// Inner shadowing is intentionally preserved — duplicate names
+    /// appear once per scope; the consumer is expected to dedup.
+    pub fn all_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.store.keys().cloned().collect();
+        if let Some(outer) = &self.outer {
+            out.extend(outer.all_names());
+        }
+        out
+    }
 }
 
 /// RES-061: signature-and-contract record stored per top-level fn so
@@ -2825,12 +2838,31 @@ impl TypeChecker {
                 match self.env.get(name) {
                     Some(typ) => Ok(typ),
                     None => {
+                        // RES-306: append a did-you-mean hint when an
+                        // in-scope name is within Levenshtein distance 2
+                        // of the typo. The helper handles the
+                        // <3-char skip and the cap-at-3 ranking.
+                        let names = self.env.all_names();
+                        let suggestions = crate::did_you_mean::suggest(
+                            name.as_str(),
+                            names.iter().map(String::as_str),
+                        );
+                        let hint = if suggestions.is_empty() {
+                            String::new()
+                        } else {
+                            let body = suggestions
+                                .iter()
+                                .map(|s| format!("`{}`", s))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!(" — did you mean {}?", body)
+                        };
                         if span.start.line == 0 {
-                            Err(format!("Undefined variable: {}", name))
+                            Err(format!("Undefined variable: {}{}", name, hint))
                         } else {
                             Err(format!(
-                                "Undefined variable '{}' at {}:{}",
-                                name, span.start.line, span.start.column
+                                "Undefined variable '{}' at {}:{}{}",
+                                name, span.start.line, span.start.column, hint
                             ))
                         }
                     }
