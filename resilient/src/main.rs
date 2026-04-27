@@ -133,6 +133,13 @@ mod type_aliases;
 // helper consumed by the typechecker; no parser / lexer surface.
 mod did_you_mean;
 
+// RES-307: parser error recovery — sync-point predicates and the
+// per-run diagnostic cap. The recovery loops live on `Parser` in
+// this file (they need `next_token` and the lexer's mutable state);
+// the helper module owns the pure classification and the constant
+// so they can be unit-tested in isolation.
+mod parser_recovery;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -1955,10 +1962,70 @@ impl Parser {
 
     /// Record an error, prefixing with the start of `current_token`
     /// so users see `line:col: Parser error: ...`.
+    ///
+    /// RES-307: caps the total number of recorded diagnostics at
+    /// [`parser_recovery::MAX_PARSE_ERRORS`]. Once the cap is hit
+    /// the parser keeps walking tokens (so it still reaches EOF and
+    /// returns a syntactically-shaped `Program`), but no further
+    /// messages are appended — this guards against pathological
+    /// input producing unbounded diagnostic memory.
     fn record_error(&mut self, msg: String) {
+        if self.errors.len() >= parser_recovery::MAX_PARSE_ERRORS {
+            return;
+        }
         let full = format!("{}:{}: {}", self.current_line, self.current_column, msg);
         eprintln!("\x1B[31mParser error: {}\x1B[0m", full);
         self.errors.push(full);
+    }
+
+    /// RES-307: recover at top-level after a parse error.
+    ///
+    /// Advances tokens until the cursor is positioned at:
+    ///   * a top-level item starter (`fn`, `let`, `struct`, …), so the
+    ///     next iteration of `parse_program` can begin a fresh
+    ///     statement cleanly; or
+    ///   * a `;` — consumed, leaving the cursor on the token after,
+    ///     letting `next_token` in `parse_program` advance into the
+    ///     next statement; or
+    ///   * EOF, terminating the loop.
+    ///
+    /// Designed to be called only after at least one diagnostic has
+    /// been recorded; otherwise it would silently swallow valid
+    /// tokens. The caller is responsible for that check.
+    fn synchronize_top_level(&mut self) {
+        while self.current_token != Token::Eof {
+            if parser_recovery::starts_top_level_item(&self.current_token) {
+                return;
+            }
+            if self.current_token == Token::Semicolon {
+                // Don't consume the `;` here — `parse_program`'s
+                // trailing `next_token` will advance past it.
+                return;
+            }
+            self.next_token();
+        }
+    }
+
+    /// RES-307: recover inside a `{ ... }` block.
+    ///
+    /// Like [`synchronize_top_level`] but additionally treats `}` as
+    /// a stop boundary (the enclosing block's closer) and
+    /// `invariant` as a valid resync point. Also stops on `;` so the
+    /// next loop iteration's `next_token` can advance into the next
+    /// statement of the block.
+    fn synchronize_in_block(&mut self) {
+        while self.current_token != Token::Eof {
+            if self.current_token == Token::RightBrace {
+                return;
+            }
+            if parser_recovery::starts_block_statement(&self.current_token) {
+                return;
+            }
+            if self.current_token == Token::Semicolon {
+                return;
+            }
+            self.next_token();
+        }
     }
 
     fn next_token(&mut self) {
@@ -1981,10 +2048,34 @@ impl Parser {
             // returned, which is close enough to the true end-of-stmt
             // for diagnostics (off by at most one whitespace token).
             let start = span::Pos::new(self.lexer.last_token_line, self.lexer.last_token_column, 0);
+            // RES-307: snapshot the error count before each statement
+            // parse. If the parse recorded a new diagnostic AND the
+            // cursor isn't already at a clean statement boundary,
+            // scan ahead to one before continuing — this is what
+            // stops a single mistake from cascading into a pile of
+            // derived errors.
+            let errs_before = self.errors.len();
             if let Some(statement) = self.parse_statement() {
                 let end =
                     span::Pos::new(self.lexer.last_token_line, self.lexer.last_token_column, 0);
                 program.push(span::Spanned::new(statement, span::Span::new(start, end)));
+            }
+            if self.errors.len() > errs_before
+                && self.current_token != Token::Eof
+                && self.current_token != Token::Semicolon
+                && !parser_recovery::starts_top_level_item(&self.current_token)
+            {
+                self.synchronize_top_level();
+            }
+            // Defensive: at the per-run cap we stop emitting new
+            // errors but the parser keeps walking tokens; drain to
+            // EOF in one shot rather than churning through every
+            // remaining token via `parse_statement`.
+            if self.errors.len() >= parser_recovery::MAX_PARSE_ERRORS {
+                while self.current_token != Token::Eof {
+                    self.next_token();
+                }
+                break;
             }
             self.next_token();
         }
@@ -3489,8 +3580,30 @@ impl Parser {
         self.next_token(); // Skip '{'
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            // RES-307: snapshot the error count before each statement
+            // parse so we can detect a fresh diagnostic and resync
+            // before the cursor wanders into derived false-positives.
+            let errs_before = self.errors.len();
             if let Some(stmt) = self.parse_statement() {
                 statements.push(stmt);
+            }
+            if self.errors.len() > errs_before
+                && self.current_token != Token::Eof
+                && self.current_token != Token::RightBrace
+                && self.current_token != Token::Semicolon
+                && !parser_recovery::starts_block_statement(&self.current_token)
+            {
+                self.synchronize_in_block();
+            }
+            if self.errors.len() >= parser_recovery::MAX_PARSE_ERRORS {
+                // Cap reached — drain to the enclosing `}` (or EOF
+                // if the block is unclosed) so the caller terminates
+                // promptly without churning through every leftover
+                // token via `parse_statement`.
+                while self.current_token != Token::Eof && self.current_token != Token::RightBrace {
+                    self.next_token();
+                }
+                break;
             }
             self.next_token();
         }
@@ -20726,6 +20839,108 @@ mod tests {
     fn parser_accepts_return_with_value() {
         let (_program, errors) = parse("fn foo() { return 42; }");
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    // ---------- RES-307: parser error recovery ----------
+
+    #[test]
+    fn parser_recovery_collects_two_distinct_errors_at_top_level() {
+        // Two separate let statements, each with a different
+        // syntactic mistake. With recovery the parser must surface
+        // both rather than aborting on the first.
+        //   * `let = 1;`            — missing identifier after `let`
+        //   * `let y x;`            — missing `=` between name and value
+        let src = "let = 1;\nlet y x;\n";
+        let (_program, errors) = parse(src);
+        assert!(
+            errors.len() >= 2,
+            "expected at least two diagnostics, got {}: {:?}",
+            errors.len(),
+            errors
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Expected identifier after 'let'")),
+            "missing first diagnostic in {:?}",
+            errors
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("Expected '='")),
+            "missing second diagnostic in {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn parser_recovery_resumes_at_next_top_level_item_after_error() {
+        // A garbled first statement followed by a perfectly valid
+        // second statement. Recovery should report the first error,
+        // then parse the `let y` cleanly so it appears in the AST.
+        let src = "let = 1;\nlet y = 7;\n";
+        let (program, errors) = parse(src);
+        assert!(!errors.is_empty(), "expected at least one diagnostic");
+        match program {
+            Node::Program(stmts) => {
+                // The valid `let y = 7;` must round-trip, even
+                // though the file also contains a broken statement.
+                let has_y = stmts
+                    .iter()
+                    .any(|s| matches!(&s.node, Node::LetStatement { name, .. } if name == "y"));
+                assert!(
+                    has_y,
+                    "expected `let y` in AST after recovery, got: {:#?}",
+                    stmts.iter().map(|s| &s.node).collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected Program, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_recovery_caps_diagnostics_on_pathological_input() {
+        // A 5_000-token stream of bare `=` signs forces the parser
+        // into the error path on every iteration. The hard cap
+        // (`MAX_PARSE_ERRORS`) must keep the diagnostic vector
+        // bounded so this completes promptly without blowing up
+        // memory.
+        let src = "= ".repeat(5_000);
+        let (_program, errors) = parse(&src);
+        assert!(
+            errors.len() <= parser_recovery::MAX_PARSE_ERRORS,
+            "diagnostic vector was not capped — got {} errors, cap is {}",
+            errors.len(),
+            parser_recovery::MAX_PARSE_ERRORS
+        );
+    }
+
+    #[test]
+    fn parser_recovery_inside_function_body_collects_multiple_errors() {
+        // Two distinct mistakes inside a single function body.
+        // Block-scope recovery must surface both — neither one
+        // should mask the other.
+        let src = "fn f() {\n  let = 1;\n  let z y;\n}\n";
+        let (_program, errors) = parse(src);
+        assert!(
+            errors.len() >= 2,
+            "expected >= 2 diagnostics inside fn body, got {}: {:?}",
+            errors.len(),
+            errors
+        );
+    }
+
+    #[test]
+    fn parser_recovery_does_not_break_clean_program() {
+        // Recovery must be a no-op on a program with no syntax
+        // errors — the AST and (empty) diagnostic vector must match
+        // pre-RES-307 behaviour byte-for-byte.
+        let src = "fn add(int a, int b) { return a + b; }\nlet x = add(1, 2);\n";
+        let (program, errors) = parse(src);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        match program {
+            Node::Program(stmts) => assert_eq!(stmts.len(), 2),
+            other => panic!("expected Program, got {:?}", other),
+        }
     }
 
     #[test]
