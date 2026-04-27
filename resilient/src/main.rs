@@ -147,6 +147,15 @@ mod parser_recovery;
 // JIT support is a follow-up.
 mod ranges;
 
+// RES-343: conditional compilation via `#[cfg(...)]` attributes. The body
+// of the parser hook (predicate parsing + active-feature evaluation) lives
+// in this module; the main module only adds:
+//   * one Token variant for `#[` (in <EXTENSION_TOKENS>)
+//   * one lexer arm to emit it
+//   * one match arm in `parse_statement` to dispatch
+//   * CLI arg handling for `--feature` / `--target`.
+mod cfg_attr;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -271,6 +280,11 @@ enum Token {
     /// only meaningful inside a quantifier `range_expr`; the parser
     /// rejects it elsewhere.
     DotDot,
+    /// RES-343: `#[` opener for a `#[cfg(...)]` attribute. Lexed as a
+    /// single token (mirroring `HashLeftBrace` for set literals) so the
+    /// parser doesn't need look-ahead to disambiguate from a bare `#`.
+    /// Closing `]` is an ordinary `RightBracket`.
+    HashLeftBracket,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -437,6 +451,7 @@ impl Token {
             Token::LeftBracket => "`[`".to_string(),
             Token::RightBracket => "`]`".to_string(),
             Token::HashLeftBrace => "`#{`".to_string(),
+            Token::HashLeftBracket => "`#[`".to_string(),
             Token::Comma => "`,`".to_string(),
             Token::Semicolon => "`;`".to_string(),
             Token::Colon => "`:`".to_string(),
@@ -722,7 +737,7 @@ impl Lexer {
             '[' => Token::LeftBracket,
             ']' => Token::RightBracket,
             // RES-149: set literal opener `#{...}`. A lone `#` (or
-            // `#` followed by anything other than `{`) still falls
+            // `#` followed by anything other than `{` / `[`) still falls
             // through to `Token::Unknown('#')` below — shebangs are
             // consumed at file head before we ever reach here.
             '#' if self.peek_char() == '{' => {
@@ -730,6 +745,15 @@ impl Lexer {
                 // `self.read_char()` at the end of `next_token`
                 // advances past it naturally.
                 Token::HashLeftBrace
+            }
+            // RES-343: cfg-attribute opener `#[...]`. Same shape as
+            // `#{` above — a single token so the parser never has to
+            // look ahead past `#` to decide.
+            '#' if self.peek_char() == '[' => {
+                self.read_char(); // consume `[`; the trailing
+                // `self.read_char()` at the end of `next_token`
+                // advances past it naturally.
+                Token::HashLeftBracket
             }
             // RES-038: `.` is now a real token (field access). Numeric
             // literals are still fine because read_number consumes `.`
@@ -2130,6 +2154,12 @@ impl Parser {
             // function declaration. Dispatched here so the
             // annotation + fn parse as a unit.
             Token::At => Some(self.parse_attributed_item()),
+            // RES-343: `#[cfg(...)]` conditional-compilation attribute.
+            // The hook in `cfg_attr` parses the predicate, evaluates it
+            // against the active config, and either returns the gated
+            // item or returns `None` — which `parse_program` already
+            // treats as "skip this iteration".
+            Token::HashLeftBracket => crate::cfg_attr::parse_cfg_attribute(self),
             Token::Function => Some(self.parse_function()),
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
@@ -14177,6 +14207,10 @@ COMMON FLAGS:\n\
         --lsp                    Run the LSP server on stdio\n\
         --no-cache               Disable the incremental compilation cache\n\
                                  for this run (RES-355)\n\
+        --feature NAME           Activate a `#[cfg(feature=\"NAME\")]` flag\n\
+                                 (repeatable; RES-343)\n\
+        --target TRIPLE          Set the active triple for `#[cfg(target=...)]`\n\
+                                 predicates (RES-343)\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
@@ -14312,6 +14346,13 @@ fn main() {
     // for this run. Both cache reads and writes are skipped so the
     // run is fully isolated from the on-disk cache state.
     let mut no_cache = false;
+    // RES-343: conditional-compilation state. `--feature NAME` is
+    // repeatable; `--target TRIPLE` sets the active target. The
+    // collected values are installed into `cfg_attr::set_active_config`
+    // before parsing begins so `#[cfg(...)]` predicates can be
+    // evaluated at parse time.
+    let mut cfg_features: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cfg_target: Option<String> = None;
     let mut filename = "";
 
     // Simple argument parsing
@@ -14518,11 +14559,48 @@ fn main() {
                 // this run. Both cache reads and writes are skipped so
                 // the compilation is isolated from any on-disk state.
                 no_cache = true;
+            } else if arg == "--feature" {
+                // RES-343: `--feature NAME` activates a cfg feature for
+                // this compilation. Repeatable: each occurrence adds
+                // one name. Consumed by `#[cfg(feature = "NAME")]`
+                // predicates at parse time.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --feature requires a name");
+                    std::process::exit(2);
+                }
+                cfg_features.insert(args[i].clone());
+            } else if let Some(val) = arg.strip_prefix("--feature=") {
+                cfg_features.insert(val.to_string());
+            } else if arg == "--target" {
+                // RES-343: `--target TRIPLE` sets the active target for
+                // `#[cfg(target = "TRIPLE")]` predicates. Pure metadata —
+                // the compiler doesn't currently cross-compile from
+                // this flag, but it lets a hosted developer simulate
+                // an embedded build's cfg-strip behaviour.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --target requires a target triple");
+                    std::process::exit(2);
+                }
+                cfg_target = Some(args[i].clone());
+            } else if let Some(val) = arg.strip_prefix("--target=") {
+                cfg_target = Some(val.to_string());
             } else {
                 filename = arg;
             }
             i += 1;
         }
+
+        // RES-343: install the cfg state before any parser runs. Every
+        // pipeline below (--dump-tokens, --dump-chunks, execute_file,
+        // etc.) reaches `parse(...)`, which calls into `cfg_attr` via
+        // the `Token::HashLeftBracket` dispatch arm. Setting the config
+        // here covers all of them in one place.
+        cfg_attr::set_active_config(cfg_attr::CfgConfig {
+            features: cfg_features,
+            target: cfg_target,
+        });
 
         // RES-112: --dump-tokens is mutually exclusive with --lsp
         // (both are terminal modes that don't want a file arg the

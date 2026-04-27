@@ -1,0 +1,31 @@
+// RES-343: conditional compilation via `#[cfg(...)]` attributes.
+//
+// This program declares two alternative implementations of `log` —
+// one gated behind `#[cfg(feature = "std")]`, the other behind
+// `#[cfg(not(feature = "std"))]`. The cfg-strip pass runs before
+// type checking, so only one of the two `log` declarations ever
+// reaches the typechecker; the other is silently dropped from the
+// AST and never compiled.
+//
+// Default invocation (`rz cfg_attr_demo.rz` — no `--feature` flags)
+// exercises the `not(feature = "std")` branch, so the bare-metal
+// body wins. Re-running with `rz --feature std cfg_attr_demo.rz`
+// would activate the hosted body instead.
+
+#[cfg(feature = "std")]
+fn log(int x) {
+    println("hosted");
+    return x;
+}
+
+#[cfg(not(feature = "std"))]
+fn log(int x) {
+    println("bare-metal");
+    return x;
+}
+
+fn main() {
+    log(1);
+}
+
+main();

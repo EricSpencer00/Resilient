@@ -250,6 +250,11 @@ enum Tok {
     Exists,
     #[token("..")]
     DotDot,
+    // RES-343: `#[` opener for `#[cfg(...)]` attributes. Logos picks
+    // the longer-match `#[` over a hypothetical bare `#`, but there is
+    // no lone-`#` token in the logos surface anyway — only `#{` exists.
+    #[token("#[")]
+    HashLBracket,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -594,6 +599,8 @@ fn convert(t: Tok) -> Token {
         Tok::Forall => Token::Forall,
         Tok::Exists => Token::Exists,
         Tok::DotDot => Token::DotDot,
+        // RES-343: `#[` opener for cfg attributes.
+        Tok::HashLBracket => Token::HashLeftBracket,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
