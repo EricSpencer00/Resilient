@@ -1,0 +1,23 @@
+---
+source: tests/lsp_snapshots.rs
+assertion_line: 290
+description: "LSP response: hover"
+expression: normalized
+---
+{
+  "id": 42,
+  "jsonrpc": "2.0",
+  "result": {
+    "contents": "Int",
+    "range": {
+      "end": {
+        "character": 10,
+        "line": 0
+      },
+      "start": {
+        "character": 8,
+        "line": 0
+      }
+    }
+  }
+}

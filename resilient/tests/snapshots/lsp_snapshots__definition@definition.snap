@@ -1,0 +1,23 @@
+---
+source: tests/lsp_snapshots.rs
+assertion_line: 290
+description: "LSP response: definition"
+expression: normalized
+---
+{
+  "id": 11,
+  "jsonrpc": "2.0",
+  "result": {
+    "range": {
+      "end": {
+        "character": 0,
+        "line": 1
+      },
+      "start": {
+        "character": 3,
+        "line": 0
+      }
+    },
+    "uri": "file:///<doc>.rs"
+  }
+}
