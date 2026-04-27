@@ -1,19 +1,28 @@
-# Resilient
+<div align="center">
 
-A programming language designed for extreme reliability in embedded and safety-critical systems.
+<img src="docs/assets/images/logo-full-transparent.png" alt="Resilient" width="520">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![GitHub Issues](https://img.shields.io/github/issues/EricSpencer00/Resilient)](https://github.com/EricSpencer00/Resilient/issues)
+### A statically-typed, compiled language built for code that *cannot fail.*
 
-**Resilient is open source under the MIT license — contributions from humans and AI agents are welcome.**
+*Self-healing live blocks. Z3-backed contracts. Signed certificates. `no_std` from the metal up.*
 
-📖 **Docs**: [ericspencer.us/Resilient](https://ericspencer.us/Resilient/)
-&nbsp;·&nbsp; [Onboarding](https://ericspencer00.github.io/Resilient/getting-started)
-&nbsp;·&nbsp; [Design Philosophy](https://ericspencer00.github.io/Resilient/philosophy)
-&nbsp;·&nbsp; [Performance](https://ericspencer00.github.io/Resilient/performance)
-&nbsp;·&nbsp; [Memory Model](https://ericspencer00.github.io/Resilient/memory-model)
-&nbsp;·&nbsp; [Contributing](CONTRIBUTING.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-664bd3.svg?style=flat-square)](LICENSE)
+[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-9b7ff0.svg?style=flat-square)](CONTRIBUTING.md)
+[![GitHub Issues](https://img.shields.io/github/issues/EricSpencer00/Resilient?style=flat-square&color=664bd3)](https://github.com/EricSpencer00/Resilient/issues)
+[![Docs](https://img.shields.io/badge/docs-ericspencer.us%2FResilient-2d1f60.svg?style=flat-square)](https://ericspencer.us/Resilient/)
+
+[**📖 Docs**](https://ericspencer.us/Resilient/) &nbsp;·&nbsp;
+[**🚀 Get Started**](https://ericspencer00.github.io/Resilient/getting-started) &nbsp;·&nbsp;
+[**🧭 Philosophy**](https://ericspencer00.github.io/Resilient/philosophy) &nbsp;·&nbsp;
+[**⚡ Performance**](https://ericspencer00.github.io/Resilient/performance) &nbsp;·&nbsp;
+[**🧠 Memory Model**](https://ericspencer00.github.io/Resilient/memory-model) &nbsp;·&nbsp;
+[**🤝 Contributing**](CONTRIBUTING.md)
+
+</div>
+
+---
+
+> **Resilient is open source under the MIT license — contributions from humans *and* AI agents are first-class.**
 
 ## Core Philosophy
 
