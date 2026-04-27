@@ -57,6 +57,17 @@ pub enum VmError {
     },
     /// FFI v2: the trampoline returned an error string.
     ForeignCallFailed(String),
+    /// RES-VM (issue #266): a `CallBuiltin` op referenced a name that
+    /// isn't present in the canonical `BUILTINS` table. Should not
+    /// happen for chunks emitted by `compiler::compile` (which only
+    /// emits `CallBuiltin` after a positive lookup); guards hand-rolled
+    /// chunks and protects against a builtin being removed from the
+    /// table without recompiling cached bytecode.
+    UnknownBuiltin(String),
+    /// RES-VM (issue #266): the builtin function returned an `Err`.
+    /// Wraps the message it produced so the user sees the same
+    /// diagnostic the tree-walker would have emitted.
+    BuiltinCallFailed(String),
     /// RES-335: `GetField`/`SetField` on a struct value whose field
     /// table has no entry matching the requested name.
     UnknownField {
@@ -97,6 +108,8 @@ impl std::fmt::Display for VmError {
             ),
             VmError::AtLine { line, kind } => write!(f, "{} (line {})", kind, line),
             VmError::ForeignCallFailed(msg) => write!(f, "ffi call failed: {}", msg),
+            VmError::UnknownBuiltin(name) => write!(f, "vm: unknown builtin: {}", name),
+            VmError::BuiltinCallFailed(msg) => write!(f, "vm: builtin call failed: {}", msg),
             VmError::UnknownField { struct_name, field } => {
                 write!(f, "vm: struct {} has no field '{}'", struct_name, field)
             }
@@ -488,6 +501,34 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                 return Err(VmError::Unsupported(
                     "CallForeign (build without --features ffi)",
                 ));
+            }
+            // RES-VM (issue #266): builtin call. Resolve the name from
+            // the constant pool, look it up in the canonical BUILTINS
+            // table, pop `arity` arguments (reversing into source
+            // order), invoke the function, and push the result. The
+            // builtin returns `RResult<Value>` (`Result<Value, String>`);
+            // we wrap the error string in `BuiltinCallFailed`.
+            Op::CallBuiltin { name_const, arity } => {
+                let name_val = chunk
+                    .constants
+                    .get(name_const as usize)
+                    .ok_or(VmError::ConstantOutOfBounds(name_const))?;
+                let name = match name_val {
+                    Value::String(s) => s.clone(),
+                    _ => return Err(VmError::TypeMismatch("CallBuiltin (non-string name)")),
+                };
+                let func = crate::lookup_builtin(&name)
+                    .ok_or_else(|| VmError::UnknownBuiltin(name.clone()))?;
+                let n = arity as usize;
+                if stack.len() < n {
+                    return Err(VmError::EmptyStack);
+                }
+                let mut args: Vec<Value> = (0..n)
+                    .map(|_| stack.pop().expect("checked above"))
+                    .collect();
+                args.reverse();
+                let result = func(&args).map_err(VmError::BuiltinCallFailed)?;
+                stack.push(result);
             }
             // ---- RES-171a: array ops ----
             Op::MakeArray { len } => {

@@ -618,6 +618,22 @@ fn compile_expr(
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
+        // RES-VM (issue #266): string + float literals. Required so
+        // calls like `println("hello")` and `sin(1.5)` reach the
+        // bytecode VM. The constant pool already accepts `Value::String`
+        // and `Value::Float` (used today by struct/field name interning
+        // and dedup); routing the literal nodes here lets builtin args
+        // round-trip without touching the runtime.
+        Node::StringLiteral { value: s, .. } => {
+            let idx = chunk.add_constant(Value::String(s.clone()))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
+        Node::FloatLiteral { value: x, .. } => {
+            let idx = chunk.add_constant(Value::Float(*x))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
         Node::Identifier { name, .. } => {
             let idx = *locals
                 .get(name)
@@ -730,16 +746,40 @@ fn compile_expr(
                 chunk.emit(Op::CallForeign(idx), line);
                 return Ok(());
             }
-            let callee_idx = *fn_index
-                .get(&callee_name)
-                .ok_or_else(|| CompileError::UnknownFunction(callee_name.clone()))?;
-            // Push args left-to-right so the VM can pop them in reverse
-            // and assign to locals 0..arity in source order.
-            for arg in arguments {
-                compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+            // User-defined function next.
+            if let Some(&callee_idx) = fn_index.get(&callee_name) {
+                // Push args left-to-right so the VM can pop them in reverse
+                // and assign to locals 0..arity in source order.
+                for arg in arguments {
+                    compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+                }
+                chunk.emit(Op::Call(callee_idx), line);
+                return Ok(());
             }
-            chunk.emit(Op::Call(callee_idx), line);
-            Ok(())
+            // RES-VM (issue #266): fall back to the canonical builtin
+            // table. The tree walker dispatches builtins through
+            // `Value::Builtin`; the bytecode VM achieves the same by
+            // emitting `Op::CallBuiltin { name_const, arity }`. Limit
+            // arity to u8 so the opcode stays Copy + 4 bytes; calls
+            // with >255 args are rejected before any code is emitted.
+            if crate::lookup_builtin(&callee_name).is_some() {
+                if arguments.len() > u8::MAX as usize {
+                    return Err(CompileError::Unsupported("builtin call with > 255 args"));
+                }
+                let name_const = chunk.add_constant(Value::String(callee_name.clone()))?;
+                for arg in arguments {
+                    compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
+                }
+                chunk.emit(
+                    Op::CallBuiltin {
+                        name_const,
+                        arity: arguments.len() as u8,
+                    },
+                    line,
+                );
+                return Ok(());
+            }
+            Err(CompileError::UnknownFunction(callee_name))
         }
         // RES-171a: `[a, b, c]` literal → emit each item's expression
         // left-to-right, then `Op::MakeArray { len }` which pops them
@@ -1253,6 +1293,59 @@ mod tests {
         let p = parse_one("nope();");
         let err = compile(&p).unwrap_err();
         assert!(matches!(err, CompileError::UnknownFunction(_)), "{:?}", err);
+    }
+
+    /// RES-VM (issue #266): `println("hi")` lowers to a `CallBuiltin`
+    /// op (not `Call`, which is for user functions). The constant pool
+    /// holds the builtin's name as a `Value::String`; arity is the
+    /// argument count.
+    #[test]
+    fn compile_println_emits_call_builtin() {
+        let p = parse_one("println(\"hi\");");
+        let prog = compile(&p).unwrap();
+        // Find the CallBuiltin op and verify its constant resolves
+        // to the builtin name.
+        let mut found = false;
+        for op in &prog.main.code {
+            if let Op::CallBuiltin { name_const, arity } = op {
+                let name = match prog.main.constants.get(*name_const as usize) {
+                    Some(Value::String(s)) => s.clone(),
+                    other => panic!("expected Value::String at name_const, got {:?}", other),
+                };
+                assert_eq!(name, "println");
+                assert_eq!(*arity, 1);
+                found = true;
+            }
+        }
+        assert!(
+            found,
+            "expected a CallBuiltin op in main.code: {:?}",
+            prog.main.code
+        );
+    }
+
+    /// RES-VM (issue #266): a user-defined function with the same
+    /// name as a builtin shadows the builtin. Compile path picks the
+    /// user fn (Call), not CallBuiltin — mirrors the tree walker's
+    /// lookup order where the user binding wins.
+    #[test]
+    fn compile_user_fn_shadows_builtin() {
+        let p = parse_one("fn println() { return 1; } println();");
+        let prog = compile(&p).unwrap();
+        assert!(
+            prog.main.code.iter().any(|op| matches!(op, Op::Call(_))),
+            "expected Call (user fn) in main.code: {:?}",
+            prog.main.code
+        );
+        assert!(
+            !prog
+                .main
+                .code
+                .iter()
+                .any(|op| matches!(op, Op::CallBuiltin { .. })),
+            "user fn must shadow builtin; got: {:?}",
+            prog.main.code
+        );
     }
 
     #[test]
