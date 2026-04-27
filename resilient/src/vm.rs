@@ -975,15 +975,16 @@ mod tests {
     }
 
     #[test]
-    fn for_in_is_still_unsupported() {
-        // RES-083 explicitly scoped `for-in` out.
-        let (program, _) = crate::parse("for x in [1,2,3] { let y = x; }");
-        let err = crate::compiler::compile(&program).unwrap_err();
-        assert!(
-            matches!(err, crate::bytecode::CompileError::Unsupported(_)),
-            "{:?}",
-            err
-        );
+    fn for_in_compiles_and_runs() {
+        // RES-334: `for x in arr { ... }` now compiles directly to
+        // bytecode (was scoped out by RES-083; the original assertion
+        // was inverted here when this ticket landed). Sums [1, 2, 3]
+        // into `total` and returns it.
+        let result = compile_run(
+            "let xs = [1, 2, 3]; let total = 0; for x in xs { total = total + x; } total;",
+        )
+        .expect("for-in must compile and run");
+        assert_int(result, 6);
     }
 
     #[test]
