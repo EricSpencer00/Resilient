@@ -141,6 +141,12 @@ mod did_you_mean;
 // so they can be unit-tested in isolation.
 mod parser_recovery;
 
+// RES-291: integer range expressions `lo..hi` and `lo..=hi`. Currently
+// only legal as the iterable of `for x in <range>` or as the RHS of a
+// `let r = <range>;` binding. The tree-walker iterates lazily; VM and
+// JIT support is a follow-up.
+mod ranges;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -1855,6 +1861,18 @@ enum Node {
     /// occurrences are rejected by the typechecker pass
     /// [`crate::loop_invariants::check`].
     InvariantStatement { expr: Box<Node>, span: span::Span },
+    /// RES-291: `lo..hi` (half-open) and `lo..=hi` (inclusive) integer
+    /// range expressions. Currently only legal as the iterable of a
+    /// `for x in <range>` statement or the RHS of a `let r = <range>;`
+    /// binding (rejected elsewhere by the typechecker). Iterated lazily
+    /// by the tree-walker — never materialized into an array. VM and
+    /// JIT support is a follow-up.
+    Range {
+        lo: Box<Node>,
+        hi: Box<Node>,
+        inclusive: bool,
+        span: span::Span,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -3736,11 +3754,25 @@ impl Parser {
             };
         }
         self.next_token(); // skip 'in'
-        let iterable = self.parse_expression(0).unwrap_or(Node::ArrayLiteral {
+        let lo_or_iter = self.parse_expression(0).unwrap_or(Node::ArrayLiteral {
             items: Vec::new(),
             span: span::Span::default(),
         });
         self.next_token(); // advance past the expression's tail (RES-014 invariant)
+
+        // RES-291: if `..` follows the parsed expression, fold it into a
+        // `Range` node. Otherwise the expression itself is the iterable
+        // (an array, identifier, etc.).
+        let iterable = if let Some(range) =
+            crate::ranges::parse_range_tail(self, lo_or_iter.clone(), stmt_span)
+        {
+            // parse_range_tail leaves us on the tail of `hi`; advance
+            // past it per RES-014.
+            self.next_token();
+            range
+        } else {
+            lo_or_iter
+        };
 
         // RES-132a: collect any `invariant EXPR` clauses that sit between
         // the iterable and `{`. Mirrors the LiveBlock invariant loop
@@ -4053,6 +4085,27 @@ impl Parser {
                     span: span::Span::default(),
                 }
             }
+        };
+
+        // RES-291: detect a trailing `..hi` / `..=hi` and fold the
+        // already-parsed `value` into a `Range`. We only act when the
+        // *peek* token is `..` because parse_expression leaves
+        // current_token on the last token of the expression — calling
+        // `next_token` here lines us up the same way the quantifier
+        // parser does it. If there is no `..`, leave `value` untouched.
+        let value = if self.peek_token == Token::DotDot {
+            self.next_token(); // step past the lo expression's tail
+            // Unreachable fallback: peek_token confirmed `..`, so
+            // parse_range_tail must succeed. Fall back to a zero
+            // literal to keep the parser typed and panic-free.
+            crate::ranges::parse_range_tail(self, value, stmt_span).unwrap_or(
+                Node::IntegerLiteral {
+                    value: 0,
+                    span: stmt_span,
+                },
+            )
+        } else {
+            value
         };
 
         if self.peek_token == Token::Semicolon {
@@ -9888,6 +9941,14 @@ impl Interpreter {
             // occurrences are rejected by the typechecker pass, so
             // this arm only fires inside a loop body.
             Node::InvariantStatement { .. } => Ok(Value::Void),
+            // RES-291: range as a value — only reachable when used as
+            // the RHS of `let r = <range>;`. Materializes into an
+            // integer array so downstream consumers (e.g. `for x in r`)
+            // can iterate. The for-in fast path bypasses materialization
+            // when the range is the immediate iterable.
+            Node::Range {
+                lo, hi, inclusive, ..
+            } => self.eval_range_value(lo, hi, *inclusive),
             Node::Block {
                 stmts: statements, ..
             } => self.eval_block_statement(statements),
@@ -9980,28 +10041,7 @@ impl Interpreter {
                 body,
                 invariants,
                 span,
-            } => {
-                let iter_val = self.eval(iterable)?;
-                let items = match iter_val {
-                    Value::Array(v) => v,
-                    other => return Err(format!("`for` iterable must be an array, got {}", other)),
-                };
-                // RES-222: extract body-level invariants once.
-                let body_invs = crate::loop_invariants::collect_body_invariants(body);
-                for item in items {
-                    self.env.set(name.clone(), item);
-                    // RES-222: invariant holds at the top of every
-                    // iteration with the loop variable bound.
-                    crate::loop_invariants::check_invariants_at_iteration(
-                        self, invariants, &body_invs, span,
-                    )?;
-                    let result = self.eval(body)?;
-                    if let Value::Return(_) = result {
-                        return Ok(result);
-                    }
-                }
-                Ok(Value::Void)
-            }
+            } => self.eval_for_in(name, iterable, body, invariants, span),
             Node::WhileStatement {
                 condition,
                 body,
@@ -10695,6 +10735,90 @@ impl Interpreter {
                 }
             )),
         }
+    }
+
+    /// RES-291: helper for `Node::ForInStatement`, factored out of
+    /// `eval` so that branch's stack frame stays small. Inlining the
+    /// range-fast-path into `eval` directly bloats the (already huge)
+    /// `eval` frame enough to overflow the test-thread stack on
+    /// recursive programs like `fib(10)`.
+    #[inline(never)]
+    fn eval_for_in(
+        &mut self,
+        name: &str,
+        iterable: &Node,
+        body: &Node,
+        invariants: &[Node],
+        span: &span::Span,
+    ) -> RResult<Value> {
+        // RES-222: extract body-level invariants once.
+        let body_invs = crate::loop_invariants::collect_body_invariants(body);
+        // RES-291: range fast-path — iterate lazily without
+        // materializing into a Vec<Value>.
+        if let Node::Range {
+            lo, hi, inclusive, ..
+        } = iterable
+        {
+            let lo_v = self.eval(lo)?;
+            let hi_v = self.eval(hi)?;
+            let lo_i = match lo_v {
+                Value::Int(n) => n,
+                other => return Err(format!("range lower bound must be Int, got {}", other)),
+            };
+            let hi_i = match hi_v {
+                Value::Int(n) => n,
+                other => return Err(format!("range upper bound must be Int, got {}", other)),
+            };
+            for i in crate::ranges::iterate_range(lo_i, hi_i, *inclusive) {
+                self.env.set(name.to_string(), Value::Int(i));
+                crate::loop_invariants::check_invariants_at_iteration(
+                    self, invariants, &body_invs, span,
+                )?;
+                let result = self.eval(body)?;
+                if let Value::Return(_) = result {
+                    return Ok(result);
+                }
+            }
+            return Ok(Value::Void);
+        }
+        let iter_val = self.eval(iterable)?;
+        let items = match iter_val {
+            Value::Array(v) => v,
+            other => return Err(format!("`for` iterable must be an array, got {}", other)),
+        };
+        for item in items {
+            self.env.set(name.to_string(), item);
+            crate::loop_invariants::check_invariants_at_iteration(
+                self, invariants, &body_invs, span,
+            )?;
+            let result = self.eval(body)?;
+            if let Value::Return(_) = result {
+                return Ok(result);
+            }
+        }
+        Ok(Value::Void)
+    }
+
+    /// RES-291: helper for `Node::Range` evaluation as a value (RHS of
+    /// `let r = <range>;`). Materializes into a `Value::Array`. Pulled
+    /// out of `eval` for the same stack-frame-size reason as
+    /// [`Self::eval_for_in`].
+    #[inline(never)]
+    fn eval_range_value(&mut self, lo: &Node, hi: &Node, inclusive: bool) -> RResult<Value> {
+        let lo_v = self.eval(lo)?;
+        let hi_v = self.eval(hi)?;
+        let lo_i = match lo_v {
+            Value::Int(n) => n,
+            other => return Err(format!("range lower bound must be Int, got {}", other)),
+        };
+        let hi_i = match hi_v {
+            Value::Int(n) => n,
+            other => return Err(format!("range upper bound must be Int, got {}", other)),
+        };
+        let items: Vec<Value> = crate::ranges::iterate_range(lo_i, hi_i, inclusive)
+            .map(Value::Int)
+            .collect();
+        Ok(Value::Array(items))
     }
 
     fn eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<Value> {

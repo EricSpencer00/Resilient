@@ -1684,6 +1684,7 @@ impl TypeChecker {
                 crate::loop_invariants::check(program, source_path)?;
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
                 crate::type_aliases::check(program, source_path)?;
+                crate::ranges::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -2159,6 +2160,23 @@ impl TypeChecker {
             // (nanosecond count) — defensive; should never fire in
             // well-formed programs.
             Node::DurationLiteral { .. } => Ok(Type::Int),
+
+            // RES-291: integer range. The bounds must be `Int`; the
+            // expression itself has type `Array` so it can flow through
+            // a `for x in <range>` (where the loop variable then gets
+            // typed `Int`) or a `let r = <range>;` binding.
+            Node::Range { lo, hi, .. } => {
+                let lo_t = self.check_node(lo)?;
+                let hi_t = self.check_node(hi)?;
+                let ok = |t: &Type| matches!(t, Type::Int | Type::Any);
+                if !ok(&lo_t) {
+                    return Err(format!("range lower bound must be Int, got {}", lo_t));
+                }
+                if !ok(&hi_t) {
+                    return Err(format!("range upper bound must be Int, got {}", hi_t));
+                }
+                Ok(Type::Array)
+            }
 
             Node::Assert {
                 condition, message, ..

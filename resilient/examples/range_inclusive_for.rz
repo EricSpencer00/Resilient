@@ -1,0 +1,12 @@
+// RES-291: inclusive range `lo..=hi` as the iterable of a `for-in`.
+// Iterates [1, 5] — i.e. 1, 2, 3, 4, 5 — summing to 15.
+
+fn main() {
+    let total = 0;
+    for i in 1..=5 {
+        total = total + i;
+    }
+    println(total);
+}
+
+main();
