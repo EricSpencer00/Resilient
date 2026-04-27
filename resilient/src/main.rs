@@ -7206,6 +7206,16 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("map_remove", builtin_map_remove),
     ("map_keys", builtin_map_keys),
     ("map_len", builtin_map_len),
+    // RES-293: HashMap stdlib builtins. Surface the same `Value::Map`
+    // backend under the user-facing `hashmap_*` names called out in
+    // the language guide. `hashmap_contains` is genuinely new — it
+    // had no `map_contains` predecessor.
+    ("hashmap_new", builtin_hashmap_new),
+    ("hashmap_insert", builtin_hashmap_insert),
+    ("hashmap_get", builtin_hashmap_get),
+    ("hashmap_remove", builtin_hashmap_remove),
+    ("hashmap_contains", builtin_hashmap_contains),
+    ("hashmap_keys", builtin_hashmap_keys),
     // RES-149: Set builtins.
     ("set_new", builtin_set_new),
     ("set_insert", builtin_set_insert),
@@ -8848,6 +8858,146 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
         [a] => Err(format!("map_len: expected a Map, got {}", a)),
         _ => Err(format!("map_len: expected 1 argument, got {}", args.len())),
+    }
+}
+
+// --- RES-293: HashMap stdlib builtins ---
+//
+// The user-visible name in language docs and the issue body is
+// `HashMap`. The runtime value is the same `Value::Map` introduced in
+// RES-148 — there is no second hashmap representation. These thin
+// shims keep the public stdlib surface aligned with the language
+// guide while reusing the existing `MapKey` policy and storage.
+//
+// `hashmap_contains` is genuinely new. Everything else delegates.
+
+/// `hashmap_new()` — produce an empty HashMap.
+fn builtin_hashmap_new(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!(
+            "hashmap_new: expected 0 arguments, got {}",
+            args.len()
+        ));
+    }
+    Ok(Value::Map(std::collections::HashMap::new()))
+}
+
+/// `hashmap_insert(m, k, v)` — return the map with `k → v` inserted /
+/// overwritten. The argument map is cloned (matches `map_insert` and
+/// the other immutable-value builtins).
+fn builtin_hashmap_insert(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k, v] => {
+            let key = MapKey::from_value(k)?;
+            let mut out = m.clone();
+            out.insert(key, v.clone());
+            Ok(Value::Map(out))
+        }
+        [a, _, _] => Err(format!(
+            "hashmap_insert: first argument must be a HashMap, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "hashmap_insert: expected 3 arguments (hashmap, key, value), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `hashmap_get(m, k) -> Result<V, Err>` — `Ok(v)` when present,
+/// `Err("not found")` when absent. Mirrors `map_get` so existing
+/// pattern-match code keeps working.
+fn builtin_hashmap_get(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k] => {
+            let key = MapKey::from_value(k)?;
+            match m.get(&key) {
+                Some(v) => Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(v.clone()),
+                }),
+                None => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String("not found".to_string())),
+                }),
+            }
+        }
+        [a, _] => Err(format!(
+            "hashmap_get: first argument must be a HashMap, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "hashmap_get: expected 2 arguments (hashmap, key), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `hashmap_remove(m, k)` — return the map with the key removed.
+/// Missing keys are silently ignored (no-op).
+fn builtin_hashmap_remove(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k] => {
+            let key = MapKey::from_value(k)?;
+            let mut out = m.clone();
+            out.remove(&key);
+            Ok(Value::Map(out))
+        }
+        [a, _] => Err(format!(
+            "hashmap_remove: first argument must be a HashMap, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "hashmap_remove: expected 2 arguments (hashmap, key), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `hashmap_contains(m, k) -> Bool` — membership test. New in
+/// RES-293; no predecessor on the `map_*` side because RES-148
+/// shipped without it.
+fn builtin_hashmap_contains(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k] => {
+            let key = MapKey::from_value(k)?;
+            Ok(Value::Bool(m.contains_key(&key)))
+        }
+        [a, _] => Err(format!(
+            "hashmap_contains: first argument must be a HashMap, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "hashmap_contains: expected 2 arguments (hashmap, key), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `hashmap_keys(m) -> Array<K>` — keys in deterministic sort order
+/// so golden tests and downstream code don't observe HashMap's random
+/// iteration. Same ordering policy as `map_keys`.
+fn builtin_hashmap_keys(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m)] => {
+            let mut keys: Vec<&MapKey> = m.keys().collect();
+            keys.sort_by(|a, b| match (a, b) {
+                (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+            });
+            let out: Vec<Value> = keys.iter().map(|k| k.to_value()).collect();
+            Ok(Value::Array(out))
+        }
+        [a] => Err(format!("hashmap_keys: expected a HashMap, got {}", a)),
+        _ => Err(format!(
+            "hashmap_keys: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -17064,6 +17214,197 @@ mod tests {
             },
             other => panic!("expected Ok(99), got {:?}", other),
         }
+    }
+
+    // --- RES-293: HashMap stdlib builtins ---
+
+    #[test]
+    fn hashmap_new_returns_empty_hashmap() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        match m {
+            Value::Map(m) => assert_eq!(m.len(), 0),
+            other => panic!("expected HashMap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_new_rejects_arguments() {
+        let err = builtin_hashmap_new(&[Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("expected 0 arguments"),
+            "expected arity error, got: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn hashmap_get_on_empty_returns_err_not_found() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let r = builtin_hashmap_get(&[m, Value::String("absent".into())]).unwrap();
+        match r {
+            Value::Result { ok: false, payload } => match *payload {
+                Value::String(s) => assert_eq!(s, "not found"),
+                other => panic!("expected `not found` payload, got {:?}", other),
+            },
+            other => panic!("expected Err(not found), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_insert_then_get_round_trip() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("k".into()), Value::Int(42)]).unwrap();
+        let r = builtin_hashmap_get(&[m, Value::String("k".into())]).unwrap();
+        match r {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::Int(42) => {}
+                other => panic!("expected Int(42), got {:?}", other),
+            },
+            other => panic!("expected Ok(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_insert_overwrites_existing_key() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(7), Value::String("first".into())]).unwrap();
+        let m =
+            builtin_hashmap_insert(&[m, Value::Int(7), Value::String("second".into())]).unwrap();
+        let r = builtin_hashmap_get(&[m, Value::Int(7)]).unwrap();
+        match r {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::String(s) => assert_eq!(s, "second"),
+                other => panic!("expected String(`second`), got {:?}", other),
+            },
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_remove_existing_key_drops_it() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_hashmap_remove(&[m, Value::String("a".into())]).unwrap();
+        let present = builtin_hashmap_contains(&[m, Value::String("a".into())]).unwrap();
+        assert!(matches!(present, Value::Bool(false)));
+    }
+
+    #[test]
+    fn hashmap_remove_missing_key_is_noop() {
+        // Removing a key that's not present is a silent no-op,
+        // matching `HashMap::remove` interpreted in the
+        // remove-for-side-effect direction.
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_hashmap_remove(&[m, Value::String("nonexistent".into())]).unwrap();
+        let present = builtin_hashmap_contains(&[m, Value::String("a".into())]).unwrap();
+        assert!(
+            matches!(present, Value::Bool(true)),
+            "remove of a missing key must not drop the existing entry",
+        );
+    }
+
+    #[test]
+    fn hashmap_contains_reports_membership() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m =
+            builtin_hashmap_insert(&[m, Value::String("present".into()), Value::Int(1)]).unwrap();
+        let yes = builtin_hashmap_contains(&[m.clone(), Value::String("present".into())]).unwrap();
+        let no = builtin_hashmap_contains(&[m, Value::String("absent".into())]).unwrap();
+        assert!(matches!(yes, Value::Bool(true)));
+        assert!(matches!(no, Value::Bool(false)));
+    }
+
+    #[test]
+    fn hashmap_keys_returns_sorted_array() {
+        // Keys must be deterministic so golden tests don't observe
+        // HashMap's random iteration order. `hashmap_keys` sorts by
+        // key kind then value, identical to `map_keys`.
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("c".into()), Value::Int(3)]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("b".into()), Value::Int(2)]).unwrap();
+        let ks = builtin_hashmap_keys(&[m]).unwrap();
+        match ks {
+            Value::Array(items) => {
+                let strs: Vec<String> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::String(s) => s,
+                        other => panic!("non-string key, got {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(
+                    strs,
+                    vec!["a".to_string(), "b".to_string(), "c".to_string()]
+                );
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_keys_on_empty_returns_empty_array() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let ks = builtin_hashmap_keys(&[m]).unwrap();
+        match ks {
+            Value::Array(items) => assert!(items.is_empty()),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_insert_rejects_non_hashable_key() {
+        // Float keys aren't allowed (no Eq/Hash) — surface the
+        // standard `MapKey::from_value` error.
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let err = builtin_hashmap_insert(&[m, Value::Float(2.5), Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("Map key must be Int, String, or Bool"),
+            "expected key-type error, got: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn hashmap_get_first_arg_must_be_hashmap() {
+        let err = builtin_hashmap_get(&[Value::Int(1), Value::String("k".into())]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a HashMap"),
+            "expected type error, got: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn hashmap_contains_first_arg_must_be_hashmap() {
+        let err =
+            builtin_hashmap_contains(&[Value::Int(1), Value::String("k".into())]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a HashMap"),
+            "expected type error, got: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn hashmap_arity_errors() {
+        // Each builtin should surface a clear arity error rather
+        // than silently accept the wrong number of arguments.
+        let too_many = builtin_hashmap_get(&[
+            Value::Map(std::collections::HashMap::new()),
+            Value::Int(1),
+            Value::Int(2),
+        ])
+        .unwrap_err();
+        assert!(too_many.contains("expected 2 arguments"));
+
+        let too_few =
+            builtin_hashmap_insert(&[Value::Map(std::collections::HashMap::new())]).unwrap_err();
+        assert!(too_few.contains("expected 3 arguments"));
+
+        let too_few_keys = builtin_hashmap_keys(&[]).unwrap_err();
+        assert!(too_few_keys.contains("expected 1 argument"));
     }
 
     #[test]
