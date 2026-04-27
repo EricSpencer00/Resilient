@@ -16,8 +16,18 @@ name: size-gate
 on:
   push:
     branches: [main]
+    # RES-398: docs/markdown-only changes can't move the .text size,
+    # so skip the cargo-bloat run when nothing relevant changed.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
