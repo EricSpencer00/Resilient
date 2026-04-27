@@ -6944,6 +6944,15 @@ impl Environment {
         }
         out
     }
+
+    /// RES-311: snapshot the names defined in this frame's local store.
+    /// Used by the REPL's tab-completer to surface in-scope identifiers
+    /// — including builtins, since `register_builtins` deposits them in
+    /// the top-level frame at construction time. Caller is responsible
+    /// for filtering / sorting.
+    fn local_names(&self) -> Vec<String> {
+        self.inner.borrow().store.keys().cloned().collect()
+    }
 }
 
 /// Walk a `FieldAssignment` target tree, collecting the chain of field
@@ -9385,6 +9394,15 @@ impl Interpreter {
     /// `(requires_clauses, ensures_clauses)`.
     fn collect_contract_fns(&self) -> HashMap<String, (Vec<Node>, Vec<Node>)> {
         self.env.collect_contract_fns()
+    }
+
+    /// RES-311: every identifier currently bound in the top-level
+    /// frame — builtins (registered at construction time), user-defined
+    /// functions, and `let` bindings from prior REPL turns. Used by the
+    /// tab-completer in `repl.rs`; never expected to allocate on a hot
+    /// path.
+    fn binding_names(&self) -> Vec<String> {
+        self.env.local_names()
     }
 
     fn eval(&mut self, node: &Node) -> RResult<Value> {

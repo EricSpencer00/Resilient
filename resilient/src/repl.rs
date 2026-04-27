@@ -2,12 +2,18 @@
 use crate::formatter::Formatter;
 use crate::typechecker;
 use crate::{Lexer, Node, Parser, Value};
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, Result as RustylineResult};
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper, Result as RustylineResult};
+use std::cell::RefCell;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 // ANSI color codes for syntax highlighting
 const RESET: &str = "\x1B[0m";
@@ -16,6 +22,160 @@ const GREEN: &str = "\x1B[32m";
 const YELLOW: &str = "\x1B[33m";
 const BLUE: &str = "\x1B[34m";
 const CYAN: &str = "\x1B[36m";
+
+/// RES-311: language keywords surfaced as tab-completion candidates.
+/// Mirrors the keyword table in `main.rs::Lexer::next_token`. Hand-curated
+/// (the lexer hard-codes its keyword arms in a non-iterable `match`); when
+/// new keywords arrive there, append them here.
+const REPL_KEYWORDS: &[&str] = &[
+    "actor",
+    "always",
+    "as",
+    "assert",
+    "assume",
+    "catch",
+    "concurrent_ensures",
+    "const",
+    "else",
+    "ensures",
+    "eventually",
+    "exists",
+    "extern",
+    "fails",
+    "false",
+    "fn",
+    "for",
+    "forall",
+    "if",
+    "impl",
+    "in",
+    "invariant",
+    "let",
+    "linear",
+    "live",
+    "match",
+    "mut",
+    "new",
+    "receive",
+    "recovers_to",
+    "region",
+    "requires",
+    "return",
+    "static",
+    "struct",
+    "true",
+    "try",
+    "type",
+    "use",
+    "while",
+];
+
+/// RES-311: hard cap on the number of suggestions returned per Tab.
+/// Matches the LSP completion limit so behaviour is consistent across
+/// editor surfaces.
+const COMPLETION_LIMIT: usize = 64;
+
+/// RES-311: split `line[..pos]` at the last non-identifier character,
+/// returning `(prefix_start_offset, prefix)`. Identifier characters are
+/// `[A-Za-z0-9_]`; anything else (whitespace, `.`, `(`, operators, …)
+/// terminates the candidate prefix.
+///
+/// Examples:
+/// - `("prin", 4)`            => `(0, "prin")`
+/// - `("let x = pri", 11)`    => `(8, "pri")`
+/// - `("foo.bar", 7)`         => `(4, "bar")`
+/// - `("", 0)`                => `(0, "")`
+pub(crate) fn extract_prefix(line: &str, pos: usize) -> (usize, &str) {
+    let upto = &line[..pos];
+    let start = upto
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    (start, &line[start..pos])
+}
+
+/// RES-311: pure-logic completer. Given the current REPL bindings and
+/// a `prefix`, returns a deterministic, deduplicated, alphabetically
+/// sorted list of identifier suggestions drawn from:
+///
+/// 1. Every binding in the interpreter's top-level frame (this covers
+///    builtins because `register_builtins` deposits them there, plus
+///    every user-defined function and `let` binding from prior turns).
+/// 2. The Resilient keyword set (see `REPL_KEYWORDS`).
+///
+/// An empty `prefix` returns an empty list — we deliberately do not
+/// dump every identifier on a bare Tab. The output is capped at
+/// `COMPLETION_LIMIT` entries to keep the rustyline list view usable.
+pub(crate) fn collect_suggestions(bindings: &[String], prefix: &str) -> Vec<String> {
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for name in bindings {
+        if name.starts_with(prefix) && seen.insert(name.as_str()) {
+            out.push(name.clone());
+        }
+    }
+    for kw in REPL_KEYWORDS {
+        if kw.starts_with(prefix) && seen.insert(*kw) {
+            out.push((*kw).to_string());
+        }
+    }
+
+    out.sort();
+    out.truncate(COMPLETION_LIMIT);
+    out
+}
+
+/// RES-311: rustyline `Helper` that drives Tab completion in the REPL.
+/// The candidate list is rebuilt on every `complete()` call from the
+/// shared `bindings` snapshot, so new `let`/`fn` definitions become
+/// completable as soon as the next prompt is drawn.
+pub(crate) struct RzCompleter {
+    /// Snapshot of every identifier currently bound in the interpreter's
+    /// top-level frame. Refreshed by the REPL after every successful
+    /// line via `RefCell::borrow_mut`.
+    bindings: Rc<RefCell<Vec<String>>>,
+}
+
+impl RzCompleter {
+    fn new(bindings: Rc<RefCell<Vec<String>>>) -> Self {
+        RzCompleter { bindings }
+    }
+}
+
+impl Completer for RzCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> RustylineResult<(usize, Vec<Pair>)> {
+        let (start, prefix) = extract_prefix(line, pos);
+        let bindings = self.bindings.borrow();
+        let suggestions = collect_suggestions(&bindings, prefix);
+        let pairs = suggestions
+            .into_iter()
+            .map(|s| Pair {
+                display: s.clone(),
+                replacement: s,
+            })
+            .collect();
+        Ok((start, pairs))
+    }
+}
+
+impl Hinter for RzCompleter {
+    type Hint = String;
+}
+impl Highlighter for RzCompleter {}
+impl Validator for RzCompleter {}
+impl Helper for RzCompleter {}
 
 pub struct EnhancedREPL {
     interpreter: crate::Interpreter,
@@ -26,6 +186,10 @@ pub struct EnhancedREPL {
     /// `examples <name>` prints one of them. When `None`, the legacy
     /// hardcoded snippets fire instead.
     examples_dir: Option<PathBuf>,
+    /// RES-311: shared snapshot of every identifier bound in the
+    /// interpreter's top-level frame. Cloned into the rustyline helper
+    /// so Tab completion sees fresh state after each REPL line.
+    completion_bindings: Rc<RefCell<Vec<String>>>,
 }
 
 impl EnhancedREPL {
@@ -46,16 +210,36 @@ impl EnhancedREPL {
             Err(_) => Path::new(".resilient_history").to_path_buf(),
         };
 
+        let interpreter = crate::Interpreter::new();
+        // RES-311: seed the completer with the freshly registered
+        // builtins so the very first Tab press already works.
+        let completion_bindings = Rc::new(RefCell::new(interpreter.binding_names()));
+
         EnhancedREPL {
-            interpreter: crate::Interpreter::new(),
+            interpreter,
             type_check_enabled: false,
             history_path,
             examples_dir,
+            completion_bindings,
         }
     }
 
+    /// RES-311: refresh the completer's binding snapshot from the live
+    /// interpreter. Called after every successful REPL turn so a
+    /// freshly defined `let foo = …` or `fn bar(…) { … }` becomes
+    /// completable on the next prompt.
+    fn refresh_completion_bindings(&self) {
+        *self.completion_bindings.borrow_mut() = self.interpreter.binding_names();
+    }
+
     pub fn run(&mut self) -> RustylineResult<()> {
-        let mut rl = DefaultEditor::new()?;
+        // RES-311: install the tab-completer. The helper holds an Rc
+        // clone of `self.completion_bindings`, so refreshing the Vec
+        // through `refresh_completion_bindings` is visible on the next
+        // Tab press.
+        let helper = RzCompleter::new(self.completion_bindings.clone());
+        let mut rl: Editor<RzCompleter, rustyline::history::DefaultHistory> = Editor::new()?;
+        rl.set_helper(Some(helper));
 
         // Load command history
         if self.history_path.exists()
@@ -98,6 +282,11 @@ impl EnhancedREPL {
 
                     // Process the input
                     self.process_input(input);
+
+                    // RES-311: refresh the completer's binding snapshot
+                    // so any new `let` / `fn` from this turn is
+                    // completable on the next prompt.
+                    self.refresh_completion_bindings();
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("CTRL-C");
@@ -655,5 +844,156 @@ mod tests {
         let ens_count = out.matches("ensures").count();
         assert_eq!(req_count, 1, "expected 1 requires row:\n{}", out);
         assert_eq!(ens_count, 1, "expected 1 ensures row:\n{}", out);
+    }
+
+    // ---------- RES-311: tab-completion tests ----------
+
+    #[test]
+    fn extract_prefix_at_end_of_line() {
+        let (start, prefix) = extract_prefix("prin", 4);
+        assert_eq!(start, 0);
+        assert_eq!(prefix, "prin");
+    }
+
+    #[test]
+    fn extract_prefix_after_keyword_and_space() {
+        let line = "let x = pri";
+        let (start, prefix) = extract_prefix(line, line.len());
+        assert_eq!(start, 8);
+        assert_eq!(prefix, "pri");
+    }
+
+    #[test]
+    fn extract_prefix_after_field_dot() {
+        // The dot terminates the prefix — this means `expr.<Tab>` will
+        // see prefix "" (we deliberately don't suggest anything for the
+        // field-completion case; it's a stretch goal in the ticket).
+        let (start, prefix) = extract_prefix("foo.bar", 7);
+        assert_eq!(start, 4);
+        assert_eq!(prefix, "bar");
+    }
+
+    #[test]
+    fn extract_prefix_empty_at_start() {
+        let (start, prefix) = extract_prefix("", 0);
+        assert_eq!(start, 0);
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn extract_prefix_empty_after_open_paren() {
+        let (start, prefix) = extract_prefix("foo(", 4);
+        assert_eq!(start, 4);
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn collect_suggestions_empty_prefix_returns_nothing() {
+        // Bare Tab should not flood the screen with every identifier.
+        let bindings = vec!["println".to_string(), "x".to_string()];
+        let out = collect_suggestions(&bindings, "");
+        assert!(
+            out.is_empty(),
+            "empty prefix must return no suggestions: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn collect_suggestions_finds_builtin_via_bindings() {
+        // `println` is registered into the top-level frame by
+        // `register_builtins`, so it shows up in the bindings list.
+        let bindings = vec![
+            "println".to_string(),
+            "print".to_string(),
+            "abs".to_string(),
+        ];
+        let out = collect_suggestions(&bindings, "pri");
+        assert!(out.contains(&"println".to_string()), "got: {:?}", out);
+        assert!(out.contains(&"print".to_string()), "got: {:?}", out);
+        assert!(!out.contains(&"abs".to_string()), "got: {:?}", out);
+    }
+
+    #[test]
+    fn collect_suggestions_includes_user_variable() {
+        let bindings = vec!["score".to_string()];
+        let out = collect_suggestions(&bindings, "sc");
+        assert_eq!(out, vec!["score".to_string()]);
+    }
+
+    #[test]
+    fn collect_suggestions_includes_keyword() {
+        // No user binding starts with "ret" — only the `return` keyword.
+        let bindings: Vec<String> = vec![];
+        let out = collect_suggestions(&bindings, "ret");
+        assert_eq!(out, vec!["return".to_string()]);
+    }
+
+    #[test]
+    fn collect_suggestions_returns_sorted_dedup() {
+        // `let` is both a hypothetical binding name and a keyword;
+        // the dedup pass must not surface it twice.
+        let bindings = vec![
+            "let".to_string(),
+            "live_total_retries".to_string(),
+            "len".to_string(),
+        ];
+        let out = collect_suggestions(&bindings, "le");
+        assert_eq!(out, vec!["len".to_string(), "let".to_string()]);
+    }
+
+    #[test]
+    fn collect_suggestions_caps_at_completion_limit() {
+        // 200 fake bindings all sharing the same prefix — the cap must
+        // kick in. We just check the length; specific entries don't
+        // matter here.
+        let bindings: Vec<String> = (0..200).map(|i| format!("aaa{:03}", i)).collect();
+        let out = collect_suggestions(&bindings, "aaa");
+        assert_eq!(out.len(), COMPLETION_LIMIT);
+    }
+
+    #[test]
+    fn binding_names_includes_builtins_and_let_bindings() {
+        // End-to-end check that the wiring between the interpreter
+        // and the completer works: a fresh REPL exposes every builtin,
+        // and after a `let` evaluation the new name shows up.
+        let mut repl = EnhancedREPL::new();
+        let initial = repl.interpreter.binding_names();
+        assert!(
+            initial.iter().any(|n| n == "println"),
+            "println must be in the fresh REPL's binding list"
+        );
+
+        eval_in_repl(&mut repl, "let custom_var = 42;");
+        let after = repl.interpreter.binding_names();
+        assert!(
+            after.iter().any(|n| n == "custom_var"),
+            "custom_var must appear after `let` evaluation: {:?}",
+            after
+        );
+    }
+
+    #[test]
+    fn refresh_completion_bindings_picks_up_new_let() {
+        let mut repl = EnhancedREPL::new();
+        // Snapshot is captured at construction; before the `let`,
+        // `freshly_named` is not present.
+        assert!(
+            !repl
+                .completion_bindings
+                .borrow()
+                .iter()
+                .any(|n| n == "freshly_named")
+        );
+
+        eval_in_repl(&mut repl, "let freshly_named = 7;");
+        repl.refresh_completion_bindings();
+
+        let snap = repl.completion_bindings.borrow();
+        assert!(
+            snap.iter().any(|n| n == "freshly_named"),
+            "completer snapshot must reflect the new binding: {:?}",
+            *snap
+        );
     }
 }
