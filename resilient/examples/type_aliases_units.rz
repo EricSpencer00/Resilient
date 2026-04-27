@@ -1,0 +1,46 @@
+// RES-296: type aliases — physical-units demo.
+//
+// Three aliases (Meters, Volts, Seconds) wrap `float`. Aliases are
+// transparent: `Meters` unifies with `float` everywhere, so domain
+// names cost nothing at runtime — they're pure documentation for the
+// reader and the type checker.
+//
+// Demonstrated forms:
+//   - top-level `type X = T;` declaration
+//   - alias in a function parameter list
+//   - alias in a function return type
+//   - alias in a struct field
+//   - alias in a `let` binding
+//
+// A real newtype (so `Meters` and `Volts` would NOT be interchangeable)
+// is a follow-up ticket; for now they share the same primitive.
+
+type Meters = float;
+type Volts = float;
+type Seconds = float;
+
+struct Sample {
+    Meters distance,
+    Volts voltage,
+    Seconds elapsed,
+}
+
+fn travel(Meters d, Seconds t) -> Meters {
+    return d;
+}
+
+fn main() {
+    let d: Meters = 100.0;
+    let v: Volts = 3.3;
+    let t: Seconds = 5.0;
+
+    let s = new Sample { distance: d, voltage: v, elapsed: t };
+
+    let covered = travel(s.distance, s.elapsed);
+
+    println("distance: " + covered);
+    println("voltage:  " + s.voltage);
+    println("elapsed:  " + s.elapsed);
+}
+
+main();

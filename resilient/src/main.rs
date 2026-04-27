@@ -122,6 +122,12 @@ mod loop_invariants;
 // and inductive goals discharge.
 mod verifier_loop_invariants;
 
+// RES-296 (RES-128 follow-up): named type synonyms — `type Meters = float;`.
+// Owns the eager cycle-detection pass; the parser, lazy expansion, and
+// AST node live in the core files for backwards compatibility (see
+// the module's top-of-file rationale).
+mod type_aliases;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
