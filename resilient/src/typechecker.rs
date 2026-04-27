@@ -842,6 +842,16 @@ impl TypeChecker {
         env.set("min".to_string(), fn_any_any_to_any());
         env.set("max".to_string(), fn_any_any_to_any());
         env.set("pow".to_string(), fn_any_any_to_any());
+        // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
+        // promoted to Float if any arg is Float. Signed as
+        // (Any, Any, Any) -> Any to match abs/min/max precedent.
+        env.set(
+            "clamp".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
 
         // RES-146: transcendentals. Float-in / Float-out per
         // RES-130 (no implicit int↔float coercion).
@@ -856,6 +866,14 @@ impl TypeChecker {
         env.set("exp".to_string(), fn_float_to_float());
         env.set(
             "log".to_string(),
+            Type::Function {
+                params: vec![Type::Float, Type::Float],
+                return_type: Box::new(Type::Float),
+            },
+        );
+        // RES-295: atan2(y, x) — Float-only per RES-130.
+        env.set(
+            "atan2".to_string(),
             Type::Function {
                 params: vec![Type::Float, Type::Float],
                 return_type: Box::new(Type::Float),
@@ -3497,6 +3515,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "abs",
         "min",
         "max",
+        // RES-295.
+        "clamp",
+        "atan2",
         "sqrt",
         "pow",
         "floor",
