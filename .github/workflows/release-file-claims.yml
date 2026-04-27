@@ -25,10 +25,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet .claude/file-claims.json; then
+          if git diff --quiet agent-scripts/file-claims.json; then
             echo "No claims to release."
           else
-            git add .claude/file-claims.json
+            git add agent-scripts/file-claims.json
             git commit -m "chore: release file claims for ${{ github.event.pull_request.head.ref }}"
             git push
           fi

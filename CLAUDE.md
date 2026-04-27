@@ -73,7 +73,13 @@ Optional features: `--features z3` (SMT verifier), `--features lsp`,
    agent-scripts/claim-files.sh res-NNN-short-title resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
    ```
 5. Open a **draft PR** early with `Closes #N` in the body — this signals the ticket is taken.
-6. When the PR is ready, mark it ready for review; the issue closes automatically on merge.
+6. Write a handoff comment with `agent-scripts/agent-handoff.sh` whenever
+   dispatch starts, guardrails fail, guardrails pass, or you stop with
+   unfinished work. Assume another model may need to resume without your
+   context.
+7. When the PR is ready, run `agent-scripts/ready-or-bail.sh --pr N`.
+   Do not call `gh pr ready` directly; the guardrail owns the draft-to-ready
+   transition. The issue closes automatically on merge.
    Claims are auto-released by CI on merge (see `.github/workflows/release-file-claims.yml`).
 
 Commit format: `RES-NNN: short description` (≤72 chars on the first line).
@@ -160,6 +166,7 @@ the 3-line extension blocks — conflicts that are always safe to resolve by kee
 - Open draft PRs and push to feature branches.
 - Resolve merge conflicts on any PR branch, including checking out branches,
   editing conflicting files, and force-pushing to unblock stalled PRs.
+- Post durable handoff comments on your PR with `agent-scripts/agent-handoff.sh`.
 
 ## Agent autonomy — STOP and ask first
 
@@ -171,6 +178,7 @@ the 3-line extension blocks — conflicts that are always safe to resolve by kee
 - Changes to `.github/workflows/` CI definitions.
 - Force-pushing or amending commits that have already been reviewed.
 - Anything that bypasses CI (`--no-verify`, skipping hooks).
+- Directly marking an agent PR ready without `agent-scripts/ready-or-bail.sh`.
 
 ---
 

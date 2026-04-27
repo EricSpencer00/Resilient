@@ -44,7 +44,9 @@ if [ "$CHECK_MODE" = "pr-files" ]; then
     echo "ERROR: --pr-files requires a branch name" >&2
     exit 1
   fi
-  mapfile -t FILES_TO_CHECK < <(git diff --name-only "origin/main...${BRANCH}" 2>/dev/null || true)
+  while IFS= read -r file; do
+    [ -n "$file" ] && FILES_TO_CHECK+=("$file")
+  done < <(git diff --name-only "origin/main...${BRANCH}" 2>/dev/null || true)
 fi
 
 if [ ${#FILES_TO_CHECK[@]} -eq 0 ]; then

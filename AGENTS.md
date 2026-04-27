@@ -39,7 +39,9 @@ Full setup, feature flags, and cross-compile instructions are in
 1. Browse [open issues](https://github.com/EricSpencer00/Resilient/issues?q=is%3Aissue+is%3Aopen).
 2. Comment to claim, then create a branch `res-NNN-short-title`.
 3. Open a draft PR early with `Closes #N` in the body.
-4. On merge, the issue closes automatically.
+4. Use `agent-scripts/ready-or-bail.sh --pr N` to leave draft state.
+   Do not call `gh pr ready` directly for agent PRs.
+5. On merge, the issue closes automatically.
 
 Commit format: `RES-NNN: short description` (≤72 chars).
 
@@ -52,6 +54,8 @@ Commit format: `RES-NNN: short description` (≤72 chars).
 - Fix clippy warnings and formatting issues anywhere in the codebase.
 - Expand documentation (README, docs/, SYNTAX.md).
 - Open and update draft PRs on feature branches.
+- Write PR handoff comments with `agent-scripts/agent-handoff.sh` so work
+  can resume after model context loss.
 
 ## What requires human approval
 
@@ -62,6 +66,8 @@ Commit format: `RES-NNN: short description` (≤72 chars).
 - Dependency version bumps beyond patch level.
 - Changes to `.github/workflows/` CI definitions.
 - Any action that bypasses CI or commit hooks.
+- Any direct draft-to-ready transition that bypasses
+  `agent-scripts/ready-or-bail.sh`.
 
 ---
 
@@ -115,6 +121,16 @@ Rules:
 `cargo build --locked` · `cargo test --locked` · `cargo clippy -- -D warnings`
 · `cargo fmt --check` · embedded cross-compile · size gate (≤ 64 KiB .text)
 · perf gate · fuzz
+
+Agent PRs must also pass the local guardrail path:
+
+```bash
+agent-scripts/ready-or-bail.sh --pr <number>
+```
+
+That script runs `verify-scope.sh`, syncs through `agents/integration`,
+posts a durable handoff comment, and marks the PR ready only after the
+local gate is green.
 
 ---
 

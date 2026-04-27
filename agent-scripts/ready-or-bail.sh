@@ -48,6 +48,11 @@ if bash "$SCRIPT_DIR/verify-scope.sh" --report "$REPORT"; then
     fi
     gh pr ready "$PR" 2>&1 | tail -2
     gh pr comment "$PR" --body "Guardrail passed ✓ — fmt, clippy, tests, diff-shape, overlap. Synced against \`agents/integration\`. Auto-merge will fire once remaining checks complete." >/dev/null
+    "$SCRIPT_DIR/agent-handoff.sh" \
+      --pr "$PR" \
+      --phase guardrail-green \
+      --status "ready for review after local guardrail and integration sync" \
+      --summary "Local guardrail passed; branch was synced against agents/integration and marked ready." >/dev/null || true
   else
     echo "(dry-run) would also run sync-integration.sh"
   fi
@@ -71,6 +76,11 @@ print("\n".join(lines))
 PYEOF
 )"
     gh pr comment "$PR" --body "$BODY" >/dev/null
+    "$SCRIPT_DIR/agent-handoff.sh" \
+      --pr "$PR" \
+      --phase guardrail-red \
+      --status "left draft after guardrail failure" \
+      --summary "$BODY" >/dev/null || true
   else
     echo "(dry-run) would comment:"
     cat "$REPORT"
