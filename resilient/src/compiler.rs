@@ -145,6 +145,13 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             // sequence.
             let own_fn_idx = functions.len() as u16;
             rewrite_tail_calls(&mut chunk, own_fn_idx);
+            // RES-298: constant-fold pure expressions over literals
+            // BEFORE the peephole pass. Folding turns sequences like
+            // `Const Const Add` into a single `Const`, which the
+            // peephole's identity-fold rules (`Const 0; Add`,
+            // `Const 1; Mul`, …) can then act on.
+            crate::const_fold::optimize_if_enabled(&mut chunk)
+                .map_err(|_| CompileError::InternalError("constant folder failed"))?;
             // RES-172: run the peephole optimizer over the
             // just-emitted chunk. Idempotent and linear-scan —
             // no effect on chunks that don't contain any of the
@@ -192,6 +199,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         )?;
     }
     main.emit(Op::Return, 0);
+    // RES-298: constant fold the main chunk before peephole runs.
+    crate::const_fold::optimize_if_enabled(&mut main)
+        .map_err(|_| CompileError::InternalError("constant folder failed"))?;
     // RES-172: peephole pass over the main chunk too.
     crate::peephole::optimize(&mut main)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
