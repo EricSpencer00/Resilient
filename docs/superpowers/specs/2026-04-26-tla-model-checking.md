@@ -366,14 +366,21 @@ the project's normal cadence, that's a 3–4 month tail after V1.0.
 
 ## Decision log
 
-(To be filled in as the spec is reviewed.)
+Maintainer review 2026-04-26 — defaults confirmed:
 
-- [ ] Path A vs B vs C — defaulted to B in this draft, awaiting maintainer
-      confirmation.
-- [ ] TLC default vs Apalache default — defaulted to TLC in this draft.
-- [ ] V2 scope = V2.0 + V2.1 + V2.2 (no fairness in v2.0) — this draft.
-- [ ] V1 design choices preservation — needs an explicit sweep across the
-      open V1 backlog (RES-208, RES-332, RES-333 actor design especially).
+- [x] **Path B** (external `.tla` files + `@refines` mappings). Reuses the
+      TLA+ ecosystem, lowest implementation cost, honest about what's
+      being verified. Path A and Path C remain candidates for V3+ on top
+      of Path B's refinement-mapping checker.
+- [x] **TLC** as the default backend. Apalache stays available behind
+      `--mc-backend apalache` (V2.4). Both consume the same `.tla` so
+      switching is a config change.
+- [x] **V2 ship scope = V2.0 + V2.1 + V2.2.** Fairness/liveness (V2.3) and
+      Apalache (V2.4) are V2.x follow-ons, not gates on the V2 ship.
+- [ ] **V1 design choices preservation** — open follow-up: explicit sweep
+      across the V1 actor backlog (RES-208, RES-332, RES-333) to confirm
+      message-ordering and atomicity granularity are pinned down before
+      V1 ships. Tracked under RES-396 follow-ons.
 
 ---
 
