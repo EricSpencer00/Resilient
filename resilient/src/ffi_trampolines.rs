@@ -515,6 +515,355 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                 Value::Void
             }
 
+            // ---- RES-FFI-V3: Arity 4 ----
+            ([FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Int) => {
+                Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64, i64) -> i64,
+                >(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3]
+                ))
+            }
+            ([FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Void) => {
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64)>(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3],
+                );
+                Value::Void
+            }
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Float,
+            ) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(f64, f64, f64, f64) -> f64,
+            >(sym.ptr)(
+                floats[0], floats[1], floats[2], floats[3]
+            )),
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64)>(sym.ptr)(
+                    floats[0], floats[1], floats[2], floats[3],
+                );
+                Value::Void
+            }
+
+            // ---- RES-FFI-V3: Arity 5 ----
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Int,
+            ) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64, i64, i64, i64, i64) -> i64,
+            >(sym.ptr)(
+                ints[0], ints[1], ints[2], ints[3], ints[4]
+            )),
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64)>(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3], ints[4],
+                );
+                Value::Void
+            }
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Float,
+            ) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(f64, f64, f64, f64, f64) -> f64,
+            >(sym.ptr)(
+                floats[0], floats[1], floats[2], floats[3], floats[4]
+            )),
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64)>(sym.ptr)(
+                    floats[0], floats[1], floats[2], floats[3], floats[4],
+                );
+                Value::Void
+            }
+
+            // ---- RES-FFI-V3: Arity 6 ----
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Int,
+            ) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64,
+            >(sym.ptr)(
+                ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]
+            )),
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64, i64)>(
+                    sym.ptr,
+                )(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]);
+                Value::Void
+            }
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Float,
+            ) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(f64, f64, f64, f64, f64, f64) -> f64,
+            >(sym.ptr)(
+                floats[0], floats[1], floats[2], floats[3], floats[4], floats[5],
+            )),
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64)>(
+                    sym.ptr,
+                )(
+                    floats[0], floats[1], floats[2], floats[3], floats[4], floats[5],
+                );
+                Value::Void
+            }
+
+            // ---- RES-FFI-V3: Arity 7 ----
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Int,
+            ) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64,
+            >(sym.ptr)(
+                ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
+            )),
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64, i64, i64)>(
+                    sym.ptr,
+                )(
+                    ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
+                );
+                Value::Void
+            }
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Float,
+            ) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(f64, f64, f64, f64, f64, f64, f64) -> f64,
+            >(sym.ptr)(
+                floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
+            )),
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64, f64)>(
+                    sym.ptr,
+                )(
+                    floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
+                );
+                Value::Void
+            }
+
+            // ---- RES-FFI-V3: Arity 8 ----
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Int,
+            ) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64,
+            >(sym.ptr)(
+                ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7],
+            )),
+            (
+                [
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                    FfiType::Int,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64),
+                >(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7],
+                );
+                Value::Void
+            }
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Float,
+            ) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn(f64, f64, f64, f64, f64, f64, f64, f64) -> f64,
+            >(sym.ptr)(
+                floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
+                floats[7],
+            )),
+            (
+                [
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                    FfiType::Float,
+                ],
+                FfiType::Void,
+            ) => {
+                std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64, f64, f64, f64, f64, f64, f64),
+                >(sym.ptr)(
+                    floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
+                    floats[7],
+                );
+                Value::Void
+            }
+
+            // ---- RES-FFI-V3: Mixed Int+Float patterns (arity 4) ----
+            // Common in physics/control: (Float, Float, Float, Int) -> Float
+            ([FfiType::Float, FfiType::Float, FfiType::Float, FfiType::Int], FfiType::Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64, f64, i64) -> f64,
+                >(sym.ptr)(
+                    floats[0], floats[1], floats[2], ints[3]
+                ))
+            }
+            ([FfiType::Int, FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, f64, f64, f64) -> f64,
+                >(sym.ptr)(
+                    ints[0], floats[1], floats[2], floats[3]
+                ))
+            }
+
             // Fallback.
             _ => {
                 return Err(format!(
@@ -796,9 +1145,11 @@ mod tests {
 
     #[test]
     fn call_foreign_missing_arm_errors_cleanly() {
-        // Arity 4 is not in the dispatch table — must error, not panic.
+        // RES-FFI-V3: arity 4 Int/Float arms now exist, so use an
+        // arity-4 Bool combination — still uncovered — to exercise
+        // the fallback error path without panicking on bounds.
         let sig = ForeignSignature {
-            params: vec![FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int],
+            params: vec![FfiType::Bool, FfiType::Bool, FfiType::Bool, FfiType::Bool],
             ret: FfiType::Int,
         };
         let sym = ForeignSymbol {
@@ -808,9 +1159,14 @@ mod tests {
         };
         let err = call_foreign(
             &sym,
-            &[Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)],
+            &[
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Bool(true),
+                Value::Bool(false),
+            ],
         )
-        .expect_err("arity 4 has no trampoline");
+        .expect_err("(Bool,Bool,Bool,Bool) -> Int has no trampoline");
         assert!(err.contains("no trampoline"), "got {}", err);
     }
 
@@ -870,6 +1226,371 @@ mod tests {
         .unwrap();
         assert!(
             matches!(out, Value::Float(f) if (f - 6.0).abs() < 1e-9),
+            "got {:?}",
+            out
+        );
+    }
+
+    // ============================================================
+    // RES-FFI-V3: arity 4–8 trampoline coverage.
+    // ============================================================
+
+    extern "C" fn sum_4_ints(a: i64, b: i64, c: i64, d: i64) -> i64 {
+        a + b + c + d
+    }
+    extern "C" fn sum_5_ints(a: i64, b: i64, c: i64, d: i64, e: i64) -> i64 {
+        a + b + c + d + e
+    }
+    extern "C" fn sum_6_ints(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64 {
+        a + b + c + d + e + f
+    }
+    extern "C" fn sum_7_ints(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64) -> i64 {
+        a + b + c + d + e + f + g
+    }
+    extern "C" fn sum_8_ints(
+        a: i64,
+        b: i64,
+        c: i64,
+        d: i64,
+        e: i64,
+        f: i64,
+        g: i64,
+        h: i64,
+    ) -> i64 {
+        a + b + c + d + e + f + g + h
+    }
+    extern "C" fn sum_4_floats(a: f64, b: f64, c: f64, d: f64) -> f64 {
+        a + b + c + d
+    }
+    extern "C" fn sum_5_floats(a: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
+        a + b + c + d + e
+    }
+    extern "C" fn sum_6_floats(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> f64 {
+        a + b + c + d + e + f
+    }
+    extern "C" fn sum_7_floats(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64) -> f64 {
+        a + b + c + d + e + f + g
+    }
+    extern "C" fn sum_8_floats(
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+        g: f64,
+        h: f64,
+    ) -> f64 {
+        a + b + c + d + e + f + g + h
+    }
+    extern "C" fn four_ints_void(_a: i64, _b: i64, _c: i64, _d: i64) {}
+
+    #[test]
+    fn arity_4_int_to_int() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_4_ints".into(),
+            ptr: sum_4_ints as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)],
+        )
+        .unwrap();
+        assert!(matches!(out, Value::Int(10)), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_4_int_to_void() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int],
+            ret: FfiType::Void,
+        };
+        let sym = ForeignSymbol {
+            name: "four_ints_void".into(),
+            ptr: four_ints_void as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)],
+        )
+        .unwrap();
+        assert!(matches!(out, Value::Void), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_4_float_to_float() {
+        let sig = ForeignSignature {
+            params: vec![
+                FfiType::Float,
+                FfiType::Float,
+                FfiType::Float,
+                FfiType::Float,
+            ],
+            ret: FfiType::Float,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_4_floats".into(),
+            ptr: sum_4_floats as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Float(1.0),
+                Value::Float(2.0),
+                Value::Float(3.0),
+                Value::Float(4.0),
+            ],
+        )
+        .unwrap();
+        assert!(
+            matches!(out, Value::Float(f) if (f - 10.0).abs() < 1e-9),
+            "got {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn arity_5_int_to_int() {
+        let sig = ForeignSignature {
+            params: vec![
+                FfiType::Int,
+                FfiType::Int,
+                FfiType::Int,
+                FfiType::Int,
+                FfiType::Int,
+            ],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_5_ints".into(),
+            ptr: sum_5_ints as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(out, Value::Int(15)), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_5_float_to_float() {
+        let sig = ForeignSignature {
+            params: vec![
+                FfiType::Float,
+                FfiType::Float,
+                FfiType::Float,
+                FfiType::Float,
+                FfiType::Float,
+            ],
+            ret: FfiType::Float,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_5_floats".into(),
+            ptr: sum_5_floats as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Float(1.0),
+                Value::Float(2.0),
+                Value::Float(3.0),
+                Value::Float(4.0),
+                Value::Float(5.0),
+            ],
+        )
+        .unwrap();
+        assert!(
+            matches!(out, Value::Float(f) if (f - 15.0).abs() < 1e-9),
+            "got {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn arity_6_int_to_int() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int; 6],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_6_ints".into(),
+            ptr: sum_6_ints as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
+                Value::Int(6),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(out, Value::Int(21)), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_6_float_to_float() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Float; 6],
+            ret: FfiType::Float,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_6_floats".into(),
+            ptr: sum_6_floats as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Float(1.0),
+                Value::Float(2.0),
+                Value::Float(3.0),
+                Value::Float(4.0),
+                Value::Float(5.0),
+                Value::Float(6.0),
+            ],
+        )
+        .unwrap();
+        assert!(
+            matches!(out, Value::Float(f) if (f - 21.0).abs() < 1e-9),
+            "got {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn arity_7_int_to_int() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int; 7],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_7_ints".into(),
+            ptr: sum_7_ints as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
+                Value::Int(6),
+                Value::Int(7),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(out, Value::Int(28)), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_7_float_to_float() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Float; 7],
+            ret: FfiType::Float,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_7_floats".into(),
+            ptr: sum_7_floats as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Float(1.0),
+                Value::Float(2.0),
+                Value::Float(3.0),
+                Value::Float(4.0),
+                Value::Float(5.0),
+                Value::Float(6.0),
+                Value::Float(7.0),
+            ],
+        )
+        .unwrap();
+        assert!(
+            matches!(out, Value::Float(f) if (f - 28.0).abs() < 1e-9),
+            "got {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn arity_8_int_to_int() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int; 8],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_8_ints".into(),
+            ptr: sum_8_ints as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
+                Value::Int(6),
+                Value::Int(7),
+                Value::Int(8),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(out, Value::Int(36)), "got {:?}", out);
+    }
+
+    #[test]
+    fn arity_8_float_to_float() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Float; 8],
+            ret: FfiType::Float,
+        };
+        let sym = ForeignSymbol {
+            name: "sum_8_floats".into(),
+            ptr: sum_8_floats as *const (),
+            sig,
+        };
+        let out = call_foreign(
+            &sym,
+            &[
+                Value::Float(1.0),
+                Value::Float(2.0),
+                Value::Float(3.0),
+                Value::Float(4.0),
+                Value::Float(5.0),
+                Value::Float(6.0),
+                Value::Float(7.0),
+                Value::Float(8.0),
+            ],
+        )
+        .unwrap();
+        assert!(
+            matches!(out, Value::Float(f) if (f - 36.0).abs() < 1e-9),
             "got {:?}",
             out
         );
