@@ -389,6 +389,8 @@ mod tests {
                 ),
                 local_count: 1,
             }],
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
         };
         let mut out = String::new();
         disassemble(&program, &mut out).unwrap();
