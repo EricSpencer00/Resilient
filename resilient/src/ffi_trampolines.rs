@@ -24,6 +24,7 @@
 //! the wrong ABI.
 use crate::ffi::{FfiError, FfiType, ForeignSymbol, struct_layout};
 use crate::{RResult, Value};
+use std::ffi::CString;
 
 #[allow(dead_code)]
 #[derive(Copy, Clone)]
@@ -77,7 +78,67 @@ pub fn call_foreign(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
         }
     }
 
-    dispatch_explicit(sym, args)
+    dispatch_explicit(sym, args, false)
+}
+
+/// RES-316: call a C variadic function.
+///
+/// This first slice supports the common `printf`-style shape
+/// `fn f(fmt: String, ...) -> Int` with up to 16 integer variadic slots.
+/// The fixed prefix is checked against the declared extern signature; the
+/// variadic tail is selected from runtime `Value` discriminators.
+#[allow(dead_code)]
+pub fn call_foreign_variadic(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
+    let fixed = sym.sig.params.len();
+    if args.len() < fixed {
+        return Err(format!(
+            "FFI: arity mismatch calling variadic `{}`: expected at least {}, got {}",
+            sym.name,
+            fixed,
+            args.len()
+        ));
+    }
+    if args.len() > 17 {
+        return Err(format!(
+            "FFI: variadic call `{}` has {} arguments; supported maximum is 17 (1 fixed + 16 variadic)",
+            sym.name,
+            args.len()
+        ));
+    }
+    if sym
+        .sig
+        .params
+        .iter()
+        .any(|t| matches!(t, FfiType::Callback | FfiType::Struct { .. }))
+        || matches!(sym.sig.ret, FfiType::Callback | FfiType::Struct { .. })
+    {
+        return Err(format!(
+            "FFI: variadic extern `{}` supports only scalar fixed params and scalar return",
+            sym.name
+        ));
+    }
+
+    for (i, (arg, want)) in args
+        .iter()
+        .take(fixed)
+        .zip(sym.sig.params.iter())
+        .enumerate()
+    {
+        if !value_matches_ffi_type(arg, want) {
+            return Err(format!(
+                "FFI: type mismatch calling variadic `{}` arg #{}: expected {:?}, got {:?}",
+                sym.name, i, want, arg
+            ));
+        }
+    }
+
+    match (&sym.sig.params[..], &sym.sig.ret) {
+        ([FfiType::Str], FfiType::Int) => dispatch_explicit(sym, args, true),
+        (params, ret) => Err(format!(
+            "FFI: unsupported variadic signature for `{}`: ({:?}) -> {:?}",
+            sym.name, params, ret
+        )),
+    }
 }
 
 #[allow(dead_code)]
@@ -248,12 +309,12 @@ fn read_field(buf: &[u8], offset: usize, fty: &FfiType) -> Result<Value, String>
 }
 
 #[allow(dead_code)]
-fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
+fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value], variadic: bool) -> RResult<Value> {
     let params: &[FfiType] = &sym.sig.params;
     let ret: &FfiType = &sym.sig.ret;
 
     // Extract scalars up front.
-    let mut ints: [i64; 8] = [0; 8];
+    let mut ints: [i64; 16] = [0; 16];
     let mut floats: [f64; 8] = [0.0; 8];
     let mut bools: [bool; 8] = [false; 8];
     let mut strs: [CStr; 8] = [CStr {
@@ -294,6 +355,40 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
         }
     }
 
+    let variadic_fmt = if variadic {
+        match &args[0] {
+            Value::String(s) => Some(CString::new(s.as_str()).map_err(|_| {
+                format!(
+                    "FFI: variadic `{}` format string contains an interior NUL byte",
+                    sym.name
+                )
+            })?),
+            other => {
+                return Err(format!(
+                    "FFI internal: expected String fixed arg for variadic `{}`, got {:?}",
+                    sym.name, other
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if variadic {
+        for (slot, arg) in args[params.len()..].iter().enumerate() {
+            match arg {
+                Value::Int(v) => ints[slot] = *v,
+                other => {
+                    return Err(format!(
+                        "FFI: unsupported variadic `{}` arg #{}: expected Int, got {:?}",
+                        sym.name,
+                        slot + params.len(),
+                        other
+                    ));
+                }
+            }
+        }
+    }
+
     // RES-317: dispatch struct-bearing signatures separately. They live
     // outside the giant scalar-arms match so we can keep the scalar table
     // unchanged and re-use the packed `u64` representation.
@@ -312,564 +407,620 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     // `live_strs` vector keeps any borrowed String bytes alive across
     // the call.
     let out = unsafe {
-        match (params, ret) {
-            // ---- Arity 0 ----
-            (&[], FfiType::Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn() -> i64,
-            >(sym.ptr)()),
-            (&[], FfiType::Float) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn() -> f64,
-            >(sym.ptr)()),
-            (&[], FfiType::Bool) => Value::Bool(std::mem::transmute::<
-                *const (),
-                extern "C" fn() -> bool,
-            >(sym.ptr)()),
-            (&[], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn()>(sym.ptr)();
-                Value::Void
+        if variadic {
+            let fmt = variadic_fmt
+                .as_ref()
+                .expect("variadic format was prepared")
+                .as_ptr();
+            macro_rules! call_variadic_ints {
+                ($($idx:expr),*) => {{
+                    let f = std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(*const core::ffi::c_char, ...) -> i32,
+                    >(sym.ptr);
+                    Value::Int(i64::from(f(fmt $(, ints[$idx])*)))
+                }};
             }
-
-            // ---- Arity 1 ----
-            ([FfiType::Int], FfiType::Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64) -> i64,
-            >(sym.ptr)(ints[0])),
-            ([FfiType::Int], FfiType::Float) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64) -> f64,
-            >(sym.ptr)(ints[0])),
-            ([FfiType::Int], FfiType::Bool) => Value::Bool(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64) -> bool,
-            >(sym.ptr)(ints[0])),
-            ([FfiType::Int], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64)>(sym.ptr)(ints[0]);
-                Value::Void
+            match args.len() - params.len() {
+                0 => call_variadic_ints!(),
+                1 => call_variadic_ints!(0),
+                2 => call_variadic_ints!(0, 1),
+                3 => call_variadic_ints!(0, 1, 2),
+                4 => call_variadic_ints!(0, 1, 2, 3),
+                5 => call_variadic_ints!(0, 1, 2, 3, 4),
+                6 => call_variadic_ints!(0, 1, 2, 3, 4, 5),
+                7 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6),
+                8 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7),
+                9 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8),
+                10 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+                11 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                12 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+                13 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+                14 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13),
+                15 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
+                16 => call_variadic_ints!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+                _ => unreachable!("variadic tail length was bounded above"),
             }
-            ([FfiType::Float], FfiType::Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64) -> i64,
-            >(sym.ptr)(floats[0])),
-            ([FfiType::Float], FfiType::Float) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64) -> f64,
-            >(sym.ptr)(floats[0])),
-            ([FfiType::Float], FfiType::Bool) => Value::Bool(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64) -> bool,
-            >(sym.ptr)(floats[0])),
-            ([FfiType::Float], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64)>(sym.ptr)(floats[0]);
-                Value::Void
-            }
-            ([FfiType::Bool], FfiType::Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(bool) -> i64,
-            >(sym.ptr)(bools[0])),
-            ([FfiType::Bool], FfiType::Bool) => Value::Bool(std::mem::transmute::<
-                *const (),
-                extern "C" fn(bool) -> bool,
-            >(sym.ptr)(bools[0])),
-            ([FfiType::Bool], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(bool)>(sym.ptr)(bools[0]);
-                Value::Void
-            }
-
-            // ---- RES-215: OpaquePtr arms (arity 0 and 1) ----
-            (&[], FfiType::OpaquePtr) => {
-                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+        } else {
+            match (params, ret) {
+                // ---- Arity 0 ----
+                (&[], FfiType::Int) => Value::Int(std::mem::transmute::<
                     *const (),
-                    extern "C" fn() -> *mut core::ffi::c_void,
-                >(sym.ptr)()))
-            }
-            ([FfiType::OpaquePtr], FfiType::OpaquePtr) => {
-                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+                    extern "C" fn() -> i64,
+                >(sym.ptr)()),
+                (&[], FfiType::Float) => Value::Float(std::mem::transmute::<
                     *const (),
-                    extern "C" fn(*mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                    extern "C" fn() -> f64,
+                >(sym.ptr)()),
+                (&[], FfiType::Bool) => Value::Bool(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn() -> bool,
+                >(sym.ptr)()),
+                (&[], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn()>(sym.ptr)();
+                    Value::Void
+                }
+
+                // ---- Arity 1 ----
+                ([FfiType::Int], FfiType::Int) => Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64) -> i64,
+                >(sym.ptr)(ints[0])),
+                ([FfiType::Int], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<*const (), extern "C" fn(i64) -> f64>(
+                        sym.ptr,
+                    )(ints[0]))
+                }
+                ([FfiType::Int], FfiType::Bool) => Value::Bool(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64) -> bool,
+                >(sym.ptr)(ints[0])),
+                ([FfiType::Int], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(i64)>(sym.ptr)(ints[0]);
+                    Value::Void
+                }
+                ([FfiType::Float], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<*const (), extern "C" fn(f64) -> i64>(
+                        sym.ptr,
+                    )(floats[0]))
+                }
+                ([FfiType::Float], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<*const (), extern "C" fn(f64) -> f64>(
+                        sym.ptr,
+                    )(floats[0]))
+                }
+                ([FfiType::Float], FfiType::Bool) => Value::Bool(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64) -> bool,
                 >(sym.ptr)(
-                    ptrs[0]
-                )))
-            }
-            ([FfiType::OpaquePtr], FfiType::Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(*mut core::ffi::c_void) -> i64,
-            >(sym.ptr)(ptrs[0])),
-            ([FfiType::OpaquePtr], FfiType::Float) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(*mut core::ffi::c_void) -> f64,
-            >(sym.ptr)(ptrs[0])),
-            ([FfiType::OpaquePtr], FfiType::Bool) => Value::Bool(std::mem::transmute::<
-                *const (),
-                extern "C" fn(*mut core::ffi::c_void) -> bool,
-            >(sym.ptr)(ptrs[0])),
-            ([FfiType::OpaquePtr], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void)>(sym.ptr)(
-                    ptrs[0],
-                );
-                Value::Void
-            }
-
-            // ---- Arity 2 (minimal — extend when examples need more) ----
-            ([FfiType::Float, FfiType::Float], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
+                    floats[0]
+                )),
+                ([FfiType::Float], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(f64)>(sym.ptr)(floats[0]);
+                    Value::Void
+                }
+                ([FfiType::Bool], FfiType::Int) => Value::Int(std::mem::transmute::<
                     *const (),
-                    extern "C" fn(f64, f64) -> f64,
-                >(sym.ptr)(floats[0], floats[1]))
-            }
-            ([FfiType::Int, FfiType::Int], FfiType::Int) => {
-                Value::Int(std::mem::transmute::<
+                    extern "C" fn(bool) -> i64,
+                >(sym.ptr)(bools[0])),
+                ([FfiType::Bool], FfiType::Bool) => Value::Bool(std::mem::transmute::<
                     *const (),
-                    extern "C" fn(i64, i64) -> i64,
-                >(sym.ptr)(ints[0], ints[1]))
-            }
-
-            // ---- Arity 2 (missing arms) ----
-            ([FfiType::Int, FfiType::Int], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64)>(sym.ptr)(
-                    ints[0], ints[1],
-                );
-                Value::Void
-            }
-            ([FfiType::Int, FfiType::Int], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(i64, i64) -> f64,
-                >(sym.ptr)(ints[0], ints[1]))
-            }
-            ([FfiType::Float, FfiType::Float], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64)>(sym.ptr)(
-                    floats[0], floats[1],
-                );
-                Value::Void
-            }
-            ([FfiType::Float, FfiType::Float], FfiType::Int) => {
-                Value::Int(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(f64, f64) -> i64,
-                >(sym.ptr)(floats[0], floats[1]))
-            }
-            ([FfiType::OpaquePtr, FfiType::Int], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64)>(
-                    sym.ptr,
-                )(ptrs[0], ints[1]);
-                Value::Void
-            }
-            ([FfiType::Int, FfiType::OpaquePtr], FfiType::OpaquePtr) => {
-                Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(i64, *mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                    extern "C" fn(bool) -> bool,
                 >(sym.ptr)(
-                    ints[0], ptrs[1]
-                )))
-            }
+                    bools[0]
+                )),
+                ([FfiType::Bool], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(bool)>(sym.ptr)(bools[0]);
+                    Value::Void
+                }
 
-            // ---- Arity 3 ----
-            ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Int) => {
-                Value::Int(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(i64, i64, i64) -> i64,
-                >(sym.ptr)(ints[0], ints[1], ints[2]))
-            }
-            ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64)>(sym.ptr)(
-                    ints[0], ints[1], ints[2],
-                );
-                Value::Void
-            }
-            ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(i64, i64, i64) -> f64,
-                >(sym.ptr)(ints[0], ints[1], ints[2]))
-            }
-            ([FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(f64, f64, f64) -> f64,
-                >(sym.ptr)(floats[0], floats[1], floats[2]))
-            }
-            ([FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64)>(sym.ptr)(
-                    floats[0], floats[1], floats[2],
-                );
-                Value::Void
-            }
-            ([FfiType::Int, FfiType::Float, FfiType::Float], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(i64, f64, f64) -> f64,
-                >(sym.ptr)(ints[0], floats[1], floats[2]))
-            }
-            ([FfiType::OpaquePtr, FfiType::Int, FfiType::Int], FfiType::Int) => {
-                Value::Int(std::mem::transmute::<
-                    *const (),
-                    extern "C" fn(*mut core::ffi::c_void, i64, i64) -> i64,
-                >(sym.ptr)(ptrs[0], ints[1], ints[2]))
-            }
-            ([FfiType::OpaquePtr, FfiType::Int, FfiType::Int], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64, i64)>(
-                    sym.ptr,
-                )(ptrs[0], ints[1], ints[2]);
-                Value::Void
-            }
+                // ---- RES-215: OpaquePtr arms (arity 0 and 1) ----
+                (&[], FfiType::OpaquePtr) => {
+                    Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn() -> *mut core::ffi::c_void,
+                    >(sym.ptr)(
+                    )))
+                }
+                ([FfiType::OpaquePtr], FfiType::OpaquePtr) => {
+                    Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(*mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                    >(sym.ptr)(
+                        ptrs[0]
+                    )))
+                }
+                ([FfiType::OpaquePtr], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(*mut core::ffi::c_void) -> i64,
+                    >(sym.ptr)(ptrs[0]))
+                }
+                ([FfiType::OpaquePtr], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(*mut core::ffi::c_void) -> f64,
+                    >(sym.ptr)(ptrs[0]))
+                }
+                ([FfiType::OpaquePtr], FfiType::Bool) => {
+                    Value::Bool(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(*mut core::ffi::c_void) -> bool,
+                    >(sym.ptr)(ptrs[0]))
+                }
+                ([FfiType::OpaquePtr], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void)>(
+                        sym.ptr,
+                    )(ptrs[0]);
+                    Value::Void
+                }
 
-            // ---- RES-FFI-V3: Arity 4 ----
-            ([FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Int) => {
-                Value::Int(std::mem::transmute::<
+                // ---- Arity 2 (minimal — extend when examples need more) ----
+                ([FfiType::Float, FfiType::Float], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(f64, f64) -> f64,
+                    >(sym.ptr)(floats[0], floats[1]))
+                }
+                ([FfiType::Int, FfiType::Int], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64) -> i64,
+                    >(sym.ptr)(ints[0], ints[1]))
+                }
+
+                // ---- Arity 2 (missing arms) ----
+                ([FfiType::Int, FfiType::Int], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(i64, i64)>(sym.ptr)(
+                        ints[0], ints[1],
+                    );
+                    Value::Void
+                }
+                ([FfiType::Int, FfiType::Int], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64) -> f64,
+                    >(sym.ptr)(ints[0], ints[1]))
+                }
+                ([FfiType::Float, FfiType::Float], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(f64, f64)>(sym.ptr)(
+                        floats[0], floats[1],
+                    );
+                    Value::Void
+                }
+                ([FfiType::Float, FfiType::Float], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(f64, f64) -> i64,
+                    >(sym.ptr)(floats[0], floats[1]))
+                }
+                ([FfiType::OpaquePtr, FfiType::Int], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64)>(
+                        sym.ptr,
+                    )(ptrs[0], ints[1]);
+                    Value::Void
+                }
+                ([FfiType::Int, FfiType::OpaquePtr], FfiType::OpaquePtr) => {
+                    Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, *mut core::ffi::c_void) -> *mut core::ffi::c_void,
+                    >(sym.ptr)(
+                        ints[0], ptrs[1]
+                    )))
+                }
+
+                // ---- Arity 3 ----
+                ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64, i64) -> i64,
+                    >(sym.ptr)(ints[0], ints[1], ints[2]))
+                }
+                ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64)>(sym.ptr)(
+                        ints[0], ints[1], ints[2],
+                    );
+                    Value::Void
+                }
+                ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64, i64) -> f64,
+                    >(sym.ptr)(ints[0], ints[1], ints[2]))
+                }
+                ([FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(f64, f64, f64) -> f64,
+                    >(sym.ptr)(
+                        floats[0], floats[1], floats[2]
+                    ))
+                }
+                ([FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64)>(sym.ptr)(
+                        floats[0], floats[1], floats[2],
+                    );
+                    Value::Void
+                }
+                ([FfiType::Int, FfiType::Float, FfiType::Float], FfiType::Float) => {
+                    Value::Float(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, f64, f64) -> f64,
+                    >(sym.ptr)(ints[0], floats[1], floats[2]))
+                }
+                ([FfiType::OpaquePtr, FfiType::Int, FfiType::Int], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(*mut core::ffi::c_void, i64, i64) -> i64,
+                    >(sym.ptr)(ptrs[0], ints[1], ints[2]))
+                }
+                ([FfiType::OpaquePtr, FfiType::Int, FfiType::Int], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64, i64)>(
+                        sym.ptr,
+                    )(ptrs[0], ints[1], ints[2]);
+                    Value::Void
+                }
+
+                // ---- RES-FFI-V3: Arity 4 ----
+                ([FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Int) => {
+                    Value::Int(std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64, i64, i64) -> i64,
+                    >(sym.ptr)(
+                        ints[0], ints[1], ints[2], ints[3]
+                    ))
+                }
+                ([FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Void) => {
+                    std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64)>(sym.ptr)(
+                        ints[0], ints[1], ints[2], ints[3],
+                    );
+                    Value::Void
+                }
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Float,
+                ) => Value::Float(std::mem::transmute::<
                     *const (),
-                    extern "C" fn(i64, i64, i64, i64) -> i64,
+                    extern "C" fn(f64, f64, f64, f64) -> f64,
                 >(sym.ptr)(
-                    ints[0], ints[1], ints[2], ints[3]
-                ))
-            }
-            ([FfiType::Int, FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Void) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64)>(sym.ptr)(
-                    ints[0], ints[1], ints[2], ints[3],
-                );
-                Value::Void
-            }
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Float,
-            ) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64, f64, f64) -> f64,
-            >(sym.ptr)(
-                floats[0], floats[1], floats[2], floats[3]
-            )),
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64)>(sym.ptr)(
-                    floats[0], floats[1], floats[2], floats[3],
-                );
-                Value::Void
-            }
+                    floats[0], floats[1], floats[2], floats[3]
+                )),
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64)>(sym.ptr)(
+                        floats[0], floats[1], floats[2], floats[3],
+                    );
+                    Value::Void
+                }
 
-            // ---- RES-FFI-V3: Arity 5 ----
-            (
-                [
+                // ---- RES-FFI-V3: Arity 5 ----
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
                     FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Int,
-            ) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64, i64, i64, i64) -> i64,
-            >(sym.ptr)(
-                ints[0], ints[1], ints[2], ints[3], ints[4]
-            )),
-            (
-                [
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64)>(sym.ptr)(
-                    ints[0], ints[1], ints[2], ints[3], ints[4],
-                );
-                Value::Void
-            }
-            (
-                [
+                ) => Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64, i64, i64) -> i64,
+                >(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3], ints[4]
+                )),
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64)>(
+                        sym.ptr,
+                    )(ints[0], ints[1], ints[2], ints[3], ints[4]);
+                    Value::Void
+                }
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
                     FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Float,
-            ) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64, f64, f64, f64) -> f64,
-            >(sym.ptr)(
-                floats[0], floats[1], floats[2], floats[3], floats[4]
-            )),
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64)>(sym.ptr)(
-                    floats[0], floats[1], floats[2], floats[3], floats[4],
-                );
-                Value::Void
-            }
+                ) => Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64, f64, f64, f64) -> f64,
+                >(sym.ptr)(
+                    floats[0], floats[1], floats[2], floats[3], floats[4]
+                )),
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64)>(
+                        sym.ptr,
+                    )(floats[0], floats[1], floats[2], floats[3], floats[4]);
+                    Value::Void
+                }
 
-            // ---- RES-FFI-V3: Arity 6 ----
-            (
-                [
+                // ---- RES-FFI-V3: Arity 6 ----
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
                     FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Int,
-            ) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64,
-            >(sym.ptr)(
-                ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]
-            )),
-            (
-                [
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64, i64)>(
-                    sym.ptr,
-                )(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]);
-                Value::Void
-            }
-            (
-                [
+                ) => Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64,
+                >(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]
+                )),
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64, i64)>(
+                        sym.ptr,
+                    )(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5]);
+                    Value::Void
+                }
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
                     FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Float,
-            ) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64, f64, f64, f64, f64) -> f64,
-            >(sym.ptr)(
-                floats[0], floats[1], floats[2], floats[3], floats[4], floats[5],
-            )),
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64)>(
-                    sym.ptr,
-                )(
+                ) => Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64, f64, f64, f64, f64) -> f64,
+                >(sym.ptr)(
                     floats[0], floats[1], floats[2], floats[3], floats[4], floats[5],
-                );
-                Value::Void
-            }
+                )),
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64)>(
+                        sym.ptr,
+                    )(
+                        floats[0], floats[1], floats[2], floats[3], floats[4], floats[5],
+                    );
+                    Value::Void
+                }
 
-            // ---- RES-FFI-V3: Arity 7 ----
-            (
-                [
+                // ---- RES-FFI-V3: Arity 7 ----
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
                     FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Int,
-            ) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64,
-            >(sym.ptr)(
-                ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
-            )),
-            (
-                [
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64, i64, i64, i64, i64)>(
-                    sym.ptr,
-                )(
-                    ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
-                );
-                Value::Void
-            }
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Float,
-            ) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64, f64, f64, f64, f64, f64) -> f64,
-            >(sym.ptr)(
-                floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
-            )),
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64, f64)>(
-                    sym.ptr,
-                )(
-                    floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
-                );
-                Value::Void
-            }
-
-            // ---- RES-FFI-V3: Arity 8 ----
-            (
-                [
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Int,
-            ) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64,
-            >(sym.ptr)(
-                ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7],
-            )),
-            (
-                [
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                    FfiType::Int,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<
+                ) => Value::Int(std::mem::transmute::<
                     *const (),
-                    extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64),
+                    extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64,
+                >(sym.ptr)(
+                    ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
+                )),
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64, i64, i64, i64, i64, i64),
+                    >(sym.ptr)(
+                        ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
+                    );
+                    Value::Void
+                }
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Float,
+                ) => Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64, f64, f64, f64, f64, f64) -> f64,
+                >(sym.ptr)(
+                    floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
+                )),
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(f64, f64, f64, f64, f64, f64, f64),
+                    >(sym.ptr)(
+                        floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
+                    );
+                    Value::Void
+                }
+
+                // ---- RES-FFI-V3: Arity 8 ----
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
+                    FfiType::Int,
+                ) => Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64,
                 >(sym.ptr)(
                     ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7],
-                );
-                Value::Void
-            }
-            (
-                [
+                )),
+                (
+                    [
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                        FfiType::Int,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64),
+                    >(sym.ptr)(
+                        ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6], ints[7],
+                    );
+                    Value::Void
+                }
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
                     FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Float,
-            ) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64, f64, f64, f64, f64, f64, f64) -> f64,
-            >(sym.ptr)(
-                floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
-                floats[7],
-            )),
-            (
-                [
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                    FfiType::Float,
-                ],
-                FfiType::Void,
-            ) => {
-                std::mem::transmute::<
+                ) => Value::Float(std::mem::transmute::<
                     *const (),
-                    extern "C" fn(f64, f64, f64, f64, f64, f64, f64, f64),
+                    extern "C" fn(f64, f64, f64, f64, f64, f64, f64, f64) -> f64,
                 >(sym.ptr)(
                     floats[0], floats[1], floats[2], floats[3], floats[4], floats[5], floats[6],
                     floats[7],
-                );
-                Value::Void
-            }
+                )),
+                (
+                    [
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                        FfiType::Float,
+                    ],
+                    FfiType::Void,
+                ) => {
+                    std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(f64, f64, f64, f64, f64, f64, f64, f64),
+                    >(sym.ptr)(
+                        floats[0], floats[1], floats[2], floats[3], floats[4], floats[5],
+                        floats[6], floats[7],
+                    );
+                    Value::Void
+                }
 
-            // ---- RES-FFI-V3: Mixed Int+Float patterns (arity 4) ----
-            // Common in physics/control: (Float, Float, Float, Int) -> Float
-            ([FfiType::Float, FfiType::Float, FfiType::Float, FfiType::Int], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
+                // ---- RES-FFI-V3: Mixed Int+Float patterns (arity 4) ----
+                // Common in physics/control: (Float, Float, Float, Int) -> Float
+                (
+                    [FfiType::Float, FfiType::Float, FfiType::Float, FfiType::Int],
+                    FfiType::Float,
+                ) => Value::Float(std::mem::transmute::<
                     *const (),
                     extern "C" fn(f64, f64, f64, i64) -> f64,
                 >(sym.ptr)(
                     floats[0], floats[1], floats[2], ints[3]
-                ))
-            }
-            ([FfiType::Int, FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Float) => {
-                Value::Float(std::mem::transmute::<
+                )),
+                (
+                    [FfiType::Int, FfiType::Float, FfiType::Float, FfiType::Float],
+                    FfiType::Float,
+                ) => Value::Float(std::mem::transmute::<
                     *const (),
                     extern "C" fn(i64, f64, f64, f64) -> f64,
                 >(sym.ptr)(
                     ints[0], floats[1], floats[2], floats[3]
-                ))
-            }
+                )),
 
-            // Fallback.
-            _ => {
-                return Err(format!(
-                    "FFI: no trampoline for signature ({:?}) -> {:?} (extend dispatch_explicit)",
-                    params, ret
-                ));
+                // Fallback.
+                _ => {
+                    return Err(format!(
+                        "FFI: no trampoline for signature ({:?}) -> {:?} (extend dispatch_explicit)",
+                        params, ret
+                    ));
+                }
             }
         }
     };
@@ -905,7 +1056,7 @@ fn dispatch_struct_signatures(
     sym: &ForeignSymbol,
     params: &[FfiType],
     ret: &FfiType,
-    ints: &[i64; 8],
+    ints: &[i64; 16],
     struct_words: &[u64; 8],
 ) -> RResult<Option<Value>> {
     // Quick reject: nothing to do unless a struct is on either side.

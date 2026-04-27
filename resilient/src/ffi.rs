@@ -513,6 +513,7 @@ mod tests {
             requires: Vec::new(),
             ensures: Vec::new(),
             trusted: false,
+            is_variadic: false,
             span: Span::default(),
         }
     }
