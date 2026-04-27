@@ -3828,7 +3828,24 @@ impl Parser {
 
         self.next_token(); // Skip '='
 
-        let value = self.parse_expression(0).unwrap();
+        // RES-393: empty RHS (e.g. `let x = ;`) used to panic via
+        // `unwrap()` on `None`. Surface a typed parse error instead
+        // and substitute a placeholder node so the parser can keep
+        // going and report further diagnostics.
+        let value = match self.parse_expression(0) {
+            Some(node) => node,
+            None => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected expression after `=` in let binding for `{}`, found {}",
+                    name, tok
+                ));
+                Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }
+            }
+        };
 
         if self.peek_token == Token::Semicolon {
             self.next_token(); // Skip to semicolon
@@ -5186,7 +5203,23 @@ impl Parser {
         let op_span = self.span_at_current();
         self.next_token();
 
-        let right = self.parse_expression(precedence).unwrap();
+        // RES-393: missing RHS on a binary operator (e.g. `1 + ;`)
+        // used to panic. Surface a clean parse error and fall
+        // through with a placeholder so the parser can recover.
+        let right = match self.parse_expression(precedence) {
+            Some(node) => node,
+            None => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected expression after `{}`, found {}",
+                    operator, tok
+                ));
+                Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                }
+            }
+        };
 
         Some(Node::InfixExpression {
             left: Box::new(left),
@@ -5218,12 +5251,39 @@ impl Parser {
         }
 
         self.next_token();
-        args.push(self.parse_expression(0).unwrap());
+        // RES-393: empty / malformed call argument used to panic.
+        // Surface a clean parse error and fall through with a
+        // placeholder so the parser can keep going.
+        let placeholder = || Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        };
+        match self.parse_expression(0) {
+            Some(node) => args.push(node),
+            None => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected expression in call arguments, found {}",
+                    tok
+                ));
+                args.push(placeholder());
+            }
+        }
 
         while self.peek_token == Token::Comma {
             self.next_token(); // Skip current
             self.next_token(); // Skip comma
-            args.push(self.parse_expression(0).unwrap());
+            match self.parse_expression(0) {
+                Some(node) => args.push(node),
+                None => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected expression after `,` in call arguments, found {}",
+                        tok
+                    ));
+                    args.push(placeholder());
+                }
+            }
         }
 
         if self.peek_token != Token::RightParen {

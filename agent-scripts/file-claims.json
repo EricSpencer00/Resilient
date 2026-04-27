@@ -1,21 +1,5 @@
 {
   "claims": {
-    "resilient/src/main.rs": {
-      "branch": "res-330-quantifiers",
-      "claimed_at": "2026-04-25T16:14:34Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-330-quantifiers",
-      "claimed_at": "2026-04-25T16:14:34Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-330-quantifiers",
-      "claimed_at": "2026-04-25T16:14:34Z"
-    },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-330-quantifiers",
-      "claimed_at": "2026-04-25T16:14:34Z"
-    },
     "resilient/Cargo.toml": {
       "branch": "res-219-rz-cli-and-release-binaries",
       "claimed_at": "2026-04-26T21:04:32Z"
@@ -39,6 +23,10 @@
     ".github/workflows/release.yml": {
       "branch": "res-219-rz-cli-and-release-binaries",
       "claimed_at": "2026-04-26T21:04:32Z"
+    },
+    "resilient/src/main.rs": {
+      "branch": "res-393-parser-panic-empty-rhs",
+      "claimed_at": "2026-04-27T00:34:11Z"
     }
   }
 }
