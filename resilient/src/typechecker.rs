@@ -1419,6 +1419,13 @@ impl TypeChecker {
         env.set("unwrap".to_string(), fn_result_to_any());
         env.set("unwrap_err".to_string(), fn_result_to_any());
 
+        // RES-328: `cell(initial)` — shared mutable container.
+        // Element type isn't tracked at the type-system layer (the
+        // generic story lands with G7); the runtime enforces that
+        // `.set` rebinds the inner value, and the inner value's
+        // dynamic type flows through `Type::Any`.
+        env.set("cell".to_string(), fn_any_to_any());
+
         TypeChecker {
             env,
             contract_table: HashMap::new(),
