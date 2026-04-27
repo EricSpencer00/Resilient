@@ -11352,7 +11352,10 @@ impl Interpreter {
 
     fn eval_minus_prefix_operator_expression(&mut self, right: Value) -> RResult<Value> {
         match right {
-            Value::Int(i) => Ok(Value::Int(-i)),
+            // RES-349: respect the configured overflow mode for unary
+            // negation as well — `-i64::MIN` is the canonical overflow
+            // case under Trap.
+            Value::Int(i) => vm::OverflowMode::from_env().neg_for_eval(i).map(Value::Int),
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => Err(format!("Unknown operator: -{}", right)),
         }
@@ -11426,10 +11429,15 @@ impl Interpreter {
         left: i64,
         right: i64,
     ) -> RResult<Value> {
+        // RES-349: route +, -, * through the configured overflow mode.
+        // Default (Wrap) preserves byte-identical behaviour with pre-349
+        // builds; `RESILIENT_OVERFLOW_MODE=saturate|trap` selects the
+        // alternative semantics for safety-critical use cases.
+        let mode = vm::OverflowMode::from_env();
         match operator {
-            "+" => Ok(Value::Int(left + right)),
-            "-" => Ok(Value::Int(left - right)),
-            "*" => Ok(Value::Int(left * right)),
+            "+" => mode.add_for_eval(left, right, "+").map(Value::Int),
+            "-" => mode.sub_for_eval(left, right, "-").map(Value::Int),
+            "*" => mode.mul_for_eval(left, right, "*").map(Value::Int),
             "/" => {
                 if right == 0 {
                     Err("Division by zero".to_string())

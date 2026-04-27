@@ -74,6 +74,10 @@ pub enum VmError {
         struct_name: String,
         field: String,
     },
+    /// RES-349: integer arithmetic overflowed under `OverflowMode::Trap`.
+    /// Carries a static label naming the offending op (`"Add"`, `"Sub"`,
+    /// `"Mul"`, `"Neg"`, `"IncLocal"`) so diagnostics are precise.
+    IntegerOverflow(&'static str),
 }
 
 impl VmError {
@@ -113,11 +117,131 @@ impl std::fmt::Display for VmError {
             VmError::UnknownField { struct_name, field } => {
                 write!(f, "vm: struct {} has no field '{}'", struct_name, field)
             }
+            VmError::IntegerOverflow(what) => {
+                write!(f, "vm: integer overflow in {}", what)
+            }
         }
     }
 }
 
 impl std::error::Error for VmError {}
+
+/// RES-349: overflow behaviour for integer arithmetic (`Add`, `Sub`,
+/// `Mul`, `Neg`, and the `IncLocal` peephole).
+///
+/// Selected by the `RESILIENT_OVERFLOW_MODE` environment variable
+/// (`wrap`, `saturate`, `trap`). The default is [`OverflowMode::Wrap`]
+/// — two's-complement wraparound — which preserves the byte-identical
+/// behaviour the VM has shipped since RES-076. Crypto/hashing code
+/// expects `Wrap`; safety-critical code typically wants `Trap`.
+///
+/// The mode is read once per `run` call, so changing the env var
+/// mid-program has no effect (programs that need per-block control
+/// can set it before invoking the VM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowMode {
+    /// Two's-complement wraparound. Default. Matches `i64::wrapping_*`.
+    Wrap,
+    /// Clamp to `i64::MIN` / `i64::MAX` on overflow.
+    Saturate,
+    /// Surface a [`VmError::IntegerOverflow`] runtime error.
+    Trap,
+}
+
+impl OverflowMode {
+    /// Read `RESILIENT_OVERFLOW_MODE` and return the configured mode.
+    /// Unknown / unset values fall back to [`OverflowMode::Wrap`] so
+    /// behaviour stays byte-identical with pre-RES-349 builds.
+    pub fn from_env() -> Self {
+        match std::env::var("RESILIENT_OVERFLOW_MODE")
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("saturate") | Ok("Saturate") | Ok("SATURATE") => Self::Saturate,
+            Ok("trap") | Ok("Trap") | Ok("TRAP") => Self::Trap,
+            _ => Self::Wrap,
+        }
+    }
+
+    fn add(self, a: i64, b: i64, label: &'static str) -> Result<i64, VmError> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_add(b)),
+            OverflowMode::Saturate => Ok(a.saturating_add(b)),
+            OverflowMode::Trap => a.checked_add(b).ok_or(VmError::IntegerOverflow(label)),
+        }
+    }
+
+    fn sub(self, a: i64, b: i64, label: &'static str) -> Result<i64, VmError> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_sub(b)),
+            OverflowMode::Saturate => Ok(a.saturating_sub(b)),
+            OverflowMode::Trap => a.checked_sub(b).ok_or(VmError::IntegerOverflow(label)),
+        }
+    }
+
+    fn mul(self, a: i64, b: i64, label: &'static str) -> Result<i64, VmError> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_mul(b)),
+            OverflowMode::Saturate => Ok(a.saturating_mul(b)),
+            OverflowMode::Trap => a.checked_mul(b).ok_or(VmError::IntegerOverflow(label)),
+        }
+    }
+
+    fn neg(self, a: i64, label: &'static str) -> Result<i64, VmError> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_neg()),
+            // i64::MIN.saturating_neg() returns i64::MAX, the documented behaviour.
+            OverflowMode::Saturate => Ok(a.saturating_neg()),
+            OverflowMode::Trap => a.checked_neg().ok_or(VmError::IntegerOverflow(label)),
+        }
+    }
+
+    /// RES-349: tree-walker variant. The interpreter in `main.rs`
+    /// reports errors as `String`, not `VmError`, so the trap path
+    /// formats a matching diagnostic.
+    pub fn add_for_eval(self, a: i64, b: i64, op: &str) -> Result<i64, String> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_add(b)),
+            OverflowMode::Saturate => Ok(a.saturating_add(b)),
+            OverflowMode::Trap => a
+                .checked_add(b)
+                .ok_or_else(|| format!("integer overflow in {} ({} {} {})", op, a, op, b)),
+        }
+    }
+
+    /// RES-349: tree-walker variant of [`OverflowMode::sub`].
+    pub fn sub_for_eval(self, a: i64, b: i64, op: &str) -> Result<i64, String> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_sub(b)),
+            OverflowMode::Saturate => Ok(a.saturating_sub(b)),
+            OverflowMode::Trap => a
+                .checked_sub(b)
+                .ok_or_else(|| format!("integer overflow in {} ({} {} {})", op, a, op, b)),
+        }
+    }
+
+    /// RES-349: tree-walker variant of [`OverflowMode::mul`].
+    pub fn mul_for_eval(self, a: i64, b: i64, op: &str) -> Result<i64, String> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_mul(b)),
+            OverflowMode::Saturate => Ok(a.saturating_mul(b)),
+            OverflowMode::Trap => a
+                .checked_mul(b)
+                .ok_or_else(|| format!("integer overflow in {} ({} {} {})", op, a, op, b)),
+        }
+    }
+
+    /// RES-349: tree-walker variant of [`OverflowMode::neg`].
+    pub fn neg_for_eval(self, a: i64) -> Result<i64, String> {
+        match self {
+            OverflowMode::Wrap => Ok(a.wrapping_neg()),
+            OverflowMode::Saturate => Ok(a.saturating_neg()),
+            OverflowMode::Trap => a
+                .checked_neg()
+                .ok_or_else(|| format!("integer overflow in unary - ({})", a)),
+        }
+    }
+}
 
 /// RES-091: wrap a runtime error with the source line of the
 /// instruction at `pc`. If `line_info` is shorter than `pc` (which
@@ -169,9 +293,16 @@ struct CallFrame {
 /// dispatch iteration — keeps every inner `?` and `return Err(...)`
 /// site untouched.
 pub fn run(program: &Program) -> Result<Value, VmError> {
+    run_with_mode(program, OverflowMode::from_env())
+}
+
+/// RES-349: explicit-mode entry point. The default `run` reads the
+/// mode from `RESILIENT_OVERFLOW_MODE`; tests and embedders that need
+/// to pin a mode without mutating process env can call this directly.
+pub fn run_with_mode(program: &Program, mode: OverflowMode) -> Result<Value, VmError> {
     // Sentinel for "no failure attributable yet" — main chunk @ pc 0.
     let mut last_pc: (usize, usize) = (usize::MAX, 0);
-    match run_inner(program, &mut last_pc) {
+    match run_inner(program, &mut last_pc, mode) {
         Ok(v) => Ok(v),
         Err(e) => {
             let line_info: &[u32] = if last_pc.0 == usize::MAX {
@@ -192,7 +323,11 @@ pub fn run(program: &Program) -> Result<Value, VmError> {
 /// wrap any returned error with source-line info. `last_pc` is
 /// updated at the top of every iteration so the outer wrapper knows
 /// which instruction was about to execute when the failure fired.
-fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, VmError> {
+fn run_inner(
+    program: &Program,
+    last_pc: &mut (usize, usize),
+    overflow_mode: OverflowMode,
+) -> Result<Value, VmError> {
     let mut stack: Vec<Value> = Vec::with_capacity(64);
     let mut locals: Vec<Value> = Vec::new();
     let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
@@ -247,15 +382,15 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
             }
             Op::Add => {
                 let (a, b) = pop_two_ints(&mut stack, "Add")?;
-                stack.push(Value::Int(a.wrapping_add(b)));
+                stack.push(Value::Int(overflow_mode.add(a, b, "Add")?));
             }
             Op::Sub => {
                 let (a, b) = pop_two_ints(&mut stack, "Sub")?;
-                stack.push(Value::Int(a.wrapping_sub(b)));
+                stack.push(Value::Int(overflow_mode.sub(a, b, "Sub")?));
             }
             Op::Mul => {
                 let (a, b) = pop_two_ints(&mut stack, "Mul")?;
-                stack.push(Value::Int(a.wrapping_mul(b)));
+                stack.push(Value::Int(overflow_mode.mul(a, b, "Mul")?));
             }
             Op::Div => {
                 let (a, b) = pop_two_ints(&mut stack, "Div")?;
@@ -276,7 +411,7 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                 let Value::Int(i) = v else {
                     return Err(VmError::TypeMismatch("Neg"));
                 };
-                stack.push(Value::Int(i.wrapping_neg()));
+                stack.push(Value::Int(overflow_mode.neg(i, "Neg")?));
             }
             Op::LoadLocal(idx) => {
                 let base = frames[frame_idx].locals_base;
@@ -429,7 +564,7 @@ fn run_inner(program: &Program, last_pc: &mut (usize, usize)) -> Result<Value, V
                 let Value::Int(n) = *v else {
                     return Err(VmError::TypeMismatch("IncLocal"));
                 };
-                locals[abs] = Value::Int(n.wrapping_add(1));
+                locals[abs] = Value::Int(overflow_mode.add(n, 1, "IncLocal")?);
             }
             Op::Eq => {
                 let (a, b) = pop_two_ints(&mut stack, "Eq")?;
@@ -1575,6 +1710,177 @@ mod tests {
             "sizeof(Op) = {} bytes; struct opcodes should not inflate this",
             std::mem::size_of::<Op>()
         );
+    }
+
+    // ---------------------------------------------------------------
+    // RES-349: overflow-mode tests. Each builds a tiny program that
+    // pushes two i64 constants and runs Op::Add / Op::Sub / Op::Mul.
+    // We use `run_with_mode` so the tests are independent of process
+    // env (the env-var path is exercised separately below).
+    // ---------------------------------------------------------------
+
+    fn add_program(a: i64, b: i64) -> Program {
+        const_program(
+            &[Value::Int(a), Value::Int(b)],
+            &[Op::Const(0), Op::Const(1), Op::Add, Op::Return],
+        )
+    }
+
+    fn sub_program(a: i64, b: i64) -> Program {
+        const_program(
+            &[Value::Int(a), Value::Int(b)],
+            &[Op::Const(0), Op::Const(1), Op::Sub, Op::Return],
+        )
+    }
+
+    fn mul_program(a: i64, b: i64) -> Program {
+        const_program(
+            &[Value::Int(a), Value::Int(b)],
+            &[Op::Const(0), Op::Const(1), Op::Mul, Op::Return],
+        )
+    }
+
+    fn neg_program(a: i64) -> Program {
+        const_program(&[Value::Int(a)], &[Op::Const(0), Op::Neg, Op::Return])
+    }
+
+    #[test]
+    fn res349_default_mode_is_wrap() {
+        // Default mode (no env var): adding 1 to i64::MAX wraps to MIN.
+        // This pins the byte-identical pre-RES-349 behaviour.
+        let prog = add_program(i64::MAX, 1);
+        assert_int(run_with_mode(&prog, OverflowMode::Wrap).unwrap(), i64::MIN);
+    }
+
+    #[test]
+    fn res349_add_wraps_under_wrap_mode() {
+        let prog = add_program(i64::MAX, 1);
+        assert_int(run_with_mode(&prog, OverflowMode::Wrap).unwrap(), i64::MIN);
+    }
+
+    #[test]
+    fn res349_add_saturates_under_saturate_mode() {
+        let prog = add_program(i64::MAX, 1);
+        assert_int(
+            run_with_mode(&prog, OverflowMode::Saturate).unwrap(),
+            i64::MAX,
+        );
+    }
+
+    #[test]
+    fn res349_add_traps_under_trap_mode() {
+        let prog = add_program(i64::MAX, 1);
+        let err = run_with_mode(&prog, OverflowMode::Trap).unwrap_err();
+        assert_eq!(err.kind(), &VmError::IntegerOverflow("Add"));
+    }
+
+    #[test]
+    fn res349_sub_wraps_under_wrap_mode() {
+        let prog = sub_program(i64::MIN, 1);
+        assert_int(run_with_mode(&prog, OverflowMode::Wrap).unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn res349_sub_saturates_under_saturate_mode() {
+        let prog = sub_program(i64::MIN, 1);
+        assert_int(
+            run_with_mode(&prog, OverflowMode::Saturate).unwrap(),
+            i64::MIN,
+        );
+    }
+
+    #[test]
+    fn res349_sub_traps_under_trap_mode() {
+        let prog = sub_program(i64::MIN, 1);
+        let err = run_with_mode(&prog, OverflowMode::Trap).unwrap_err();
+        assert_eq!(err.kind(), &VmError::IntegerOverflow("Sub"));
+    }
+
+    #[test]
+    fn res349_mul_wraps_under_wrap_mode() {
+        let prog = mul_program(i64::MAX, 2);
+        assert_int(
+            run_with_mode(&prog, OverflowMode::Wrap).unwrap(),
+            i64::MAX.wrapping_mul(2),
+        );
+    }
+
+    #[test]
+    fn res349_mul_saturates_under_saturate_mode() {
+        let prog = mul_program(i64::MAX, 2);
+        assert_int(
+            run_with_mode(&prog, OverflowMode::Saturate).unwrap(),
+            i64::MAX,
+        );
+    }
+
+    #[test]
+    fn res349_mul_traps_under_trap_mode() {
+        let prog = mul_program(i64::MAX, 2);
+        let err = run_with_mode(&prog, OverflowMode::Trap).unwrap_err();
+        assert_eq!(err.kind(), &VmError::IntegerOverflow("Mul"));
+    }
+
+    #[test]
+    fn res349_neg_traps_on_i64_min_under_trap_mode() {
+        // -i64::MIN cannot be represented as i64 — Trap surfaces, Wrap
+        // returns i64::MIN (the documented wrapping behaviour).
+        let prog = neg_program(i64::MIN);
+        let err = run_with_mode(&prog, OverflowMode::Trap).unwrap_err();
+        assert_eq!(err.kind(), &VmError::IntegerOverflow("Neg"));
+        assert_int(run_with_mode(&prog, OverflowMode::Wrap).unwrap(), i64::MIN);
+        assert_int(
+            run_with_mode(&prog, OverflowMode::Saturate).unwrap(),
+            i64::MAX,
+        );
+    }
+
+    #[test]
+    fn res349_normal_arithmetic_unchanged_under_all_modes() {
+        // Non-overflowing arithmetic must produce identical results
+        // regardless of mode — only the overflow corner cases differ.
+        for &mode in &[
+            OverflowMode::Wrap,
+            OverflowMode::Saturate,
+            OverflowMode::Trap,
+        ] {
+            assert_int(run_with_mode(&add_program(2, 3), mode).unwrap(), 5);
+            assert_int(run_with_mode(&sub_program(10, 4), mode).unwrap(), 6);
+            assert_int(run_with_mode(&mul_program(6, 7), mode).unwrap(), 42);
+        }
+    }
+
+    #[test]
+    fn res349_overflow_mode_from_env_parses_known_values() {
+        // Drive `from_env` directly without mutating process env in
+        // parallel-test-friendly ways: round-trip the parser via a
+        // serial section.
+        let saved = std::env::var("RESILIENT_OVERFLOW_MODE").ok();
+        // wrap (default)
+        unsafe {
+            std::env::remove_var("RESILIENT_OVERFLOW_MODE");
+        }
+        assert_eq!(OverflowMode::from_env(), OverflowMode::Wrap);
+        unsafe {
+            std::env::set_var("RESILIENT_OVERFLOW_MODE", "saturate");
+        }
+        assert_eq!(OverflowMode::from_env(), OverflowMode::Saturate);
+        unsafe {
+            std::env::set_var("RESILIENT_OVERFLOW_MODE", "trap");
+        }
+        assert_eq!(OverflowMode::from_env(), OverflowMode::Trap);
+        // Unknown values fall back to Wrap.
+        unsafe {
+            std::env::set_var("RESILIENT_OVERFLOW_MODE", "bogus");
+        }
+        assert_eq!(OverflowMode::from_env(), OverflowMode::Wrap);
+        // Restore.
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("RESILIENT_OVERFLOW_MODE", v),
+                None => std::env::remove_var("RESILIENT_OVERFLOW_MODE"),
+            }
+        }
     }
 
     #[cfg(feature = "ffi")]
