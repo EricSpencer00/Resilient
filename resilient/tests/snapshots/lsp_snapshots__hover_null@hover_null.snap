@@ -1,0 +1,11 @@
+---
+source: tests/lsp_snapshots.rs
+assertion_line: 290
+description: "LSP response: hover_null"
+expression: normalized
+---
+{
+  "id": 7,
+  "jsonrpc": "2.0",
+  "result": null
+}

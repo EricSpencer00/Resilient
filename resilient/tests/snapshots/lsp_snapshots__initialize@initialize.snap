@@ -1,0 +1,51 @@
+---
+source: tests/lsp_snapshots.rs
+assertion_line: 290
+description: "LSP response: initialize"
+expression: normalized
+---
+{
+  "id": 1,
+  "jsonrpc": "2.0",
+  "result": {
+    "capabilities": {
+      "codeActionProvider": true,
+      "completionProvider": {
+        "resolveProvider": false
+      },
+      "definitionProvider": true,
+      "documentSymbolProvider": true,
+      "hoverProvider": true,
+      "inlayHintProvider": {
+        "resolveProvider": false
+      },
+      "referencesProvider": true,
+      "renameProvider": {
+        "prepareProvider": true
+      },
+      "semanticTokensProvider": {
+        "full": true,
+        "legend": {
+          "tokenModifiers": [
+            "declaration",
+            "readonly"
+          ],
+          "tokenTypes": [
+            "keyword",
+            "function",
+            "variable",
+            "parameter",
+            "type",
+            "string",
+            "number",
+            "comment",
+            "operator"
+          ]
+        },
+        "range": false
+      },
+      "textDocumentSync": 1,
+      "workspaceSymbolProvider": true
+    }
+  }
+}

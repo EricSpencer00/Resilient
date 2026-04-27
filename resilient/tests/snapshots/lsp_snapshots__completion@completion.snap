@@ -1,0 +1,18 @@
+---
+source: tests/lsp_snapshots.rs
+assertion_line: 290
+description: "LSP response: completion"
+expression: normalized
+---
+{
+  "id": 21,
+  "jsonrpc": "2.0",
+  "result": [
+    {
+      "detail": "fn (0 params)",
+      "insertText": "my_helper",
+      "kind": 3,
+      "label": "my_helper"
+    }
+  ]
+}
