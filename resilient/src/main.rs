@@ -7143,6 +7143,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("starts_with", builtin_starts_with),
     ("ends_with", builtin_ends_with),
     ("repeat", builtin_repeat),
+    // RES-339: string parsing and formatting.
+    ("parse_int", builtin_parse_int),
+    ("parse_float", builtin_parse_float),
+    ("char_at", builtin_char_at),
+    ("pad_left", builtin_pad_left),
+    ("pad_right", builtin_pad_right),
     ("Ok", builtin_ok),
     ("Err", builtin_err),
     ("is_ok", builtin_is_ok),
@@ -7992,6 +7998,192 @@ fn builtin_repeat(args: &[Value]) -> RResult<Value> {
             a, b
         )),
         _ => Err(format!("repeat: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-339: `parse_int(s)` — parse a base-10 signed integer from `s`,
+/// returning a `Result<Int, String>`. Leading/trailing ASCII whitespace
+/// is ignored (matches the conventional `s.trim().parse()` shape). On
+/// any parse failure (empty, non-numeric, overflow) returns
+/// `Err(message)` rather than panicking — this is the contract that
+/// makes the builtin safe for untrusted input on embedded targets.
+fn builtin_parse_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => match s.trim().parse::<i64>() {
+            Ok(n) => Ok(Value::Result {
+                ok: true,
+                payload: Box::new(Value::Int(n)),
+            }),
+            Err(e) => Ok(Value::Result {
+                ok: false,
+                payload: Box::new(Value::String(format!(
+                    "parse_int: invalid integer {:?}: {}",
+                    s, e
+                ))),
+            }),
+        },
+        [other] => Err(format!("parse_int: expected string, got {}", other)),
+        _ => Err(format!(
+            "parse_int: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-339: `parse_float(s)` — parse a 64-bit float from `s`, returning
+/// a `Result<Float, String>`. Leading/trailing ASCII whitespace is
+/// ignored. NaN and infinity strings (`"NaN"`, `"inf"`, `"-inf"`) parse
+/// successfully — this matches Rust's `f64::from_str` semantics. Any
+/// other failure returns `Err(message)`; never panics.
+fn builtin_parse_float(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => match s.trim().parse::<f64>() {
+            Ok(f) => Ok(Value::Result {
+                ok: true,
+                payload: Box::new(Value::Float(f)),
+            }),
+            Err(e) => Ok(Value::Result {
+                ok: false,
+                payload: Box::new(Value::String(format!(
+                    "parse_float: invalid float {:?}: {}",
+                    s, e
+                ))),
+            }),
+        },
+        [other] => Err(format!("parse_float: expected string, got {}", other)),
+        _ => Err(format!(
+            "parse_float: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-339: `char_at(s, i)` — return the `i`-th Unicode scalar of `s`
+/// as a single-character string. Indexing is by character (matching
+/// `len(s)`'s `chars().count()` semantics), not by byte. Out-of-range
+/// or negative `i` returns `Err`. This is the safe complement to
+/// byte-level access via `byte_at`.
+fn builtin_char_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(i)] => {
+            if *i < 0 {
+                return Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String(format!("char_at: index {} is negative", i))),
+                });
+            }
+            let idx = *i as usize;
+            match s.chars().nth(idx) {
+                Some(c) => Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(Value::String(c.to_string())),
+                }),
+                None => {
+                    let len = s.chars().count();
+                    Ok(Value::Result {
+                        ok: false,
+                        payload: Box::new(Value::String(format!(
+                            "char_at: index {} out of bounds for string of length {}",
+                            i, len
+                        ))),
+                    })
+                }
+            }
+        }
+        [a, b] => Err(format!(
+            "char_at: expected (string, int), got ({:?}, {:?})",
+            a, b
+        )),
+        _ => Err(format!("char_at: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-339: `pad_left(s, n, c)` — left-pad `s` with the single
+/// character `c` until its character length is at least `n`. If `s` is
+/// already long enough, it is returned unchanged. `c` must be a
+/// single Unicode scalar; passing a multi-char string is a hard error
+/// (silently truncating would mask the bug). Negative `n` is a hard
+/// error.
+fn builtin_pad_left(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n), Value::String(c)] => {
+            if *n < 0 {
+                return Err(format!("pad_left: width must be >= 0, got {}", n));
+            }
+            let mut chars = c.chars();
+            let pad_char = match (chars.next(), chars.next()) {
+                (Some(ch), None) => ch,
+                _ => {
+                    return Err(format!(
+                        "pad_left: pad must be exactly one character, got {:?}",
+                        c
+                    ));
+                }
+            };
+            let target = *n as usize;
+            let cur_len = s.chars().count();
+            if cur_len >= target {
+                return Ok(Value::String(s.clone()));
+            }
+            let needed = target - cur_len;
+            let mut out = String::with_capacity(needed * pad_char.len_utf8() + s.len());
+            for _ in 0..needed {
+                out.push(pad_char);
+            }
+            out.push_str(s);
+            Ok(Value::String(out))
+        }
+        [a, b, c] => Err(format!(
+            "pad_left: expected (string, int, string), got ({:?}, {:?}, {:?})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "pad_left: expected 3 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-339: `pad_right(s, n, c)` — right-pad `s` with the single
+/// character `c` until its character length is at least `n`. Same
+/// validation rules as `pad_left`.
+fn builtin_pad_right(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n), Value::String(c)] => {
+            if *n < 0 {
+                return Err(format!("pad_right: width must be >= 0, got {}", n));
+            }
+            let mut chars = c.chars();
+            let pad_char = match (chars.next(), chars.next()) {
+                (Some(ch), None) => ch,
+                _ => {
+                    return Err(format!(
+                        "pad_right: pad must be exactly one character, got {:?}",
+                        c
+                    ));
+                }
+            };
+            let target = *n as usize;
+            let cur_len = s.chars().count();
+            if cur_len >= target {
+                return Ok(Value::String(s.clone()));
+            }
+            let needed = target - cur_len;
+            let mut out = String::with_capacity(needed * pad_char.len_utf8() + s.len());
+            out.push_str(s);
+            for _ in 0..needed {
+                out.push(pad_char);
+            }
+            Ok(Value::String(out))
+        }
+        [a, b, c] => Err(format!(
+            "pad_right: expected (string, int, string), got ({:?}, {:?}, {:?})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "pad_right: expected 3 arguments, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -18308,6 +18500,353 @@ mod tests {
             interp.env.get("trimmed").unwrap(),
             Value::String(s) if s.is_empty()
         ));
+    }
+
+    // ---------- RES-339 string parsing and formatting builtins ----------
+
+    #[test]
+    fn parse_int_happy_path_and_whitespace() {
+        let v = builtin_parse_int(&[Value::String("42".into())]).unwrap();
+        match v {
+            Value::Result {
+                ok: true, payload, ..
+            } => assert!(matches!(*payload, Value::Int(42))),
+            other => panic!("expected Ok(Int), got {:?}", other),
+        }
+
+        // Leading/trailing whitespace stripped.
+        let v = builtin_parse_int(&[Value::String("  -7  ".into())]).unwrap();
+        match v {
+            Value::Result {
+                ok: true, payload, ..
+            } => assert!(matches!(*payload, Value::Int(-7))),
+            other => panic!("expected Ok(Int(-7)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_int_invalid_returns_err_no_panic() {
+        let cases = ["", "abc", "1.5", "9999999999999999999999"];
+        for src in cases {
+            let v = builtin_parse_int(&[Value::String(src.into())]).unwrap();
+            match v {
+                Value::Result { ok: false, .. } => {}
+                other => panic!("expected Err for {:?}, got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_int_rejects_non_string_arg() {
+        let err = builtin_parse_int(&[Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("parse_int: expected string"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_float_happy_path_and_specials() {
+        let v = builtin_parse_float(&[Value::String("2.5".into())]).unwrap();
+        match v {
+            Value::Result {
+                ok: true, payload, ..
+            } => match *payload {
+                Value::Float(f) => assert!((f - 2.5).abs() < 1e-12),
+                other => panic!("expected Float, got {:?}", other),
+            },
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        // Whitespace + negative.
+        let v = builtin_parse_float(&[Value::String(" -1.5 ".into())]).unwrap();
+        match v {
+            Value::Result {
+                ok: true, payload, ..
+            } => match *payload {
+                Value::Float(f) => assert!((f + 1.5).abs() < 1e-12),
+                other => panic!("expected Float, got {:?}", other),
+            },
+            other => panic!("expected Ok, got {:?}", other),
+        }
+
+        // Integer literal accepted by f64::from_str.
+        let v = builtin_parse_float(&[Value::String("7".into())]).unwrap();
+        match v {
+            Value::Result { ok: true, .. } => {}
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_float_invalid_returns_err_no_panic() {
+        for src in ["", "abc", "1.2.3", "--5"] {
+            let v = builtin_parse_float(&[Value::String(src.into())]).unwrap();
+            match v {
+                Value::Result { ok: false, .. } => {}
+                other => panic!("expected Err for {:?}, got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_float_rejects_non_string_arg() {
+        let err = builtin_parse_float(&[Value::Float(1.0)]).unwrap_err();
+        assert!(
+            err.contains("parse_float: expected string"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn char_at_happy_path_unicode() {
+        let v = builtin_char_at(&[Value::String("hello".into()), Value::Int(0)]).unwrap();
+        match v {
+            Value::Result {
+                ok: true, payload, ..
+            } => assert!(matches!(*payload, Value::String(ref s) if s == "h")),
+            other => panic!("expected Ok(\"h\"), got {:?}", other),
+        }
+
+        // Multi-byte Unicode scalar — index 1 is the second char.
+        let v = builtin_char_at(&[Value::String("héllo".into()), Value::Int(1)]).unwrap();
+        match v {
+            Value::Result {
+                ok: true, payload, ..
+            } => assert!(matches!(*payload, Value::String(ref s) if s == "é")),
+            other => panic!("expected Ok(\"é\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn char_at_out_of_bounds_returns_err() {
+        let v = builtin_char_at(&[Value::String("hi".into()), Value::Int(5)]).unwrap();
+        match v {
+            Value::Result {
+                ok: false, payload, ..
+            } => assert!(matches!(*payload, Value::String(ref s) if s.contains("out of bounds"))),
+            other => panic!("expected Err, got {:?}", other),
+        }
+
+        // Empty string + any index.
+        let v = builtin_char_at(&[Value::String("".into()), Value::Int(0)]).unwrap();
+        assert!(matches!(v, Value::Result { ok: false, .. }));
+    }
+
+    #[test]
+    fn char_at_negative_index_returns_err() {
+        let v = builtin_char_at(&[Value::String("hi".into()), Value::Int(-1)]).unwrap();
+        match v {
+            Value::Result {
+                ok: false, payload, ..
+            } => assert!(matches!(*payload, Value::String(ref s) if s.contains("negative"))),
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn char_at_rejects_non_int_index() {
+        let err = builtin_char_at(&[Value::String("hi".into()), Value::Float(0.0)]).unwrap_err();
+        assert!(
+            err.contains("char_at: expected (string, int)"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pad_left_happy_path_and_no_op() {
+        let v = builtin_pad_left(&[
+            Value::String("7".into()),
+            Value::Int(3),
+            Value::String("0".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::String(ref s) if s == "007"));
+
+        // Already long enough → unchanged.
+        let v = builtin_pad_left(&[
+            Value::String("hello".into()),
+            Value::Int(3),
+            Value::String(" ".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::String(ref s) if s == "hello"));
+
+        // n == 0 → unchanged.
+        let v = builtin_pad_left(&[
+            Value::String("x".into()),
+            Value::Int(0),
+            Value::String(" ".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::String(ref s) if s == "x"));
+    }
+
+    #[test]
+    fn pad_left_unicode_pad_char() {
+        let v = builtin_pad_left(&[
+            Value::String("ab".into()),
+            Value::Int(4),
+            Value::String("é".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::String(ref s) if s == "ééab"));
+    }
+
+    #[test]
+    fn pad_left_multi_char_pad_errors() {
+        let err = builtin_pad_left(&[
+            Value::String("x".into()),
+            Value::Int(5),
+            Value::String("ab".into()),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("pad_left: pad must be exactly one character"),
+            "err was: {}",
+            err
+        );
+
+        // Empty pad also rejected.
+        let err = builtin_pad_left(&[
+            Value::String("x".into()),
+            Value::Int(5),
+            Value::String("".into()),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("pad_left: pad must be exactly one character"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pad_left_negative_width_errors() {
+        let err = builtin_pad_left(&[
+            Value::String("x".into()),
+            Value::Int(-1),
+            Value::String("0".into()),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("pad_left: width must be >= 0"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pad_right_happy_path_and_no_op() {
+        let v = builtin_pad_right(&[
+            Value::String("7".into()),
+            Value::Int(3),
+            Value::String(".".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::String(ref s) if s == "7.."));
+
+        // Already long enough → unchanged.
+        let v = builtin_pad_right(&[
+            Value::String("hello".into()),
+            Value::Int(3),
+            Value::String(" ".into()),
+        ])
+        .unwrap();
+        assert!(matches!(v, Value::String(ref s) if s == "hello"));
+    }
+
+    #[test]
+    fn pad_right_multi_char_pad_errors() {
+        let err = builtin_pad_right(&[
+            Value::String("x".into()),
+            Value::Int(5),
+            Value::String("ab".into()),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("pad_right: pad must be exactly one character"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pad_right_negative_width_errors() {
+        let err = builtin_pad_right(&[
+            Value::String("x".into()),
+            Value::Int(-1),
+            Value::String("0".into()),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("pad_right: width must be >= 0"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn res339_string_builtins_end_to_end() {
+        // Exercises parse → typecheck → eval for each new builtin.
+        let (p, _e) = parse(
+            r#"
+                let ok_n  = parse_int("123");
+                let bad_n = parse_int("nope");
+                let ok_f  = parse_float("2.5");
+                let bad_f = parse_float("xx");
+                let c     = char_at("hi", 1);
+                let bad_c = char_at("hi", 9);
+                let pl    = pad_left("7", 3, "0");
+                let pr    = pad_right("7", 3, ".");
+                let sw    = starts_with("foo/bar", "foo/");
+                let ew    = ends_with("file.txt", ".txt");
+            "#,
+        );
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+
+        // parse_int success / failure round-trip via is_ok.
+        let ok_n = interp.env.get("ok_n").unwrap().clone();
+        let r = builtin_is_ok(&[ok_n]).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+        let bad_n = interp.env.get("bad_n").unwrap().clone();
+        let r = builtin_is_err(&[bad_n]).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+
+        // parse_float success / failure.
+        let ok_f = interp.env.get("ok_f").unwrap().clone();
+        let r = builtin_is_ok(&[ok_f]).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+        let bad_f = interp.env.get("bad_f").unwrap().clone();
+        let r = builtin_is_err(&[bad_f]).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+
+        // char_at success → unwrap to "i"; oob → Err.
+        let c = interp.env.get("c").unwrap().clone();
+        let inner = builtin_unwrap(&[c]).unwrap();
+        assert!(matches!(inner, Value::String(ref s) if s == "i"));
+        let bad_c = interp.env.get("bad_c").unwrap().clone();
+        let r = builtin_is_err(&[bad_c]).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+
+        // pad_left / pad_right.
+        assert!(matches!(
+            interp.env.get("pl").unwrap(),
+            Value::String(s) if s == "007"
+        ));
+        assert!(matches!(
+            interp.env.get("pr").unwrap(),
+            Value::String(s) if s == "7.."
+        ));
+
+        // starts_with / ends_with — re-verifying their integration
+        // alongside the new RES-339 builtins.
+        assert!(matches!(interp.env.get("sw").unwrap(), Value::Bool(true)));
+        assert!(matches!(interp.env.get("ew").unwrap(), Value::Bool(true)));
     }
 
     // ---------- Match exhaustiveness (RES-054) ----------
