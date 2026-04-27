@@ -1,0 +1,18 @@
+// RES-334: `for x in arr { ... }` lowers directly to bytecode
+// instead of being desugared back to the tree-walker. Sums the
+// half-open range [0, 5) into `total`, prints 10. Identical
+// output under the tree-walker (default) and the bytecode VM
+// (`rz --vm`); the golden harness exercises the tree-walker
+// path, and the `--vm` path is pinned by `bytecode_vm_runs_for_in_loop`
+// in `tests/examples_smoke.rs`.
+
+fn main() {
+    let xs = [0, 1, 2, 3, 4];
+    let total = 0;
+    for x in xs {
+        total = total + x;
+    }
+    println(total);
+}
+
+main();

@@ -481,13 +481,20 @@ fn bytecode_vm_runs_recursive_fib() {
 fn bytecode_vm_rejects_unsupported_construct_cleanly() {
     // RES-076: anything outside the supported subset returns
     // `CompileError::Unsupported(...)` and the driver wraps it as
-    // `VM compile error: ...` and exits non-zero. `for .. in` is
-    // still out of scope after RES-083 — use it as the canary.
+    // `VM compile error: ...` and exits non-zero. RES-334: for-in
+    // is now compiled directly to bytecode; `match` takes over as
+    // the unsupported-construct canary until that ships too.
     use std::io::Write;
     let tmp = std::env::temp_dir().join(format!("res_076_unsupp_{}.rs", std::process::id()));
     {
         let mut f = std::fs::File::create(&tmp).expect("create tmp");
-        writeln!(f, "for x in [1, 2, 3] {{ let y = x; }}").unwrap();
+        writeln!(f, "fn classify(int x) -> int {{").unwrap();
+        writeln!(f, "    return match x {{").unwrap();
+        writeln!(f, "        1 => 100,").unwrap();
+        writeln!(f, "        _ => 0,").unwrap();
+        writeln!(f, "    }};").unwrap();
+        writeln!(f, "}}").unwrap();
+        writeln!(f, "classify(1);").unwrap();
     }
     let output = Command::new(bin())
         .arg("--vm")
@@ -1019,6 +1026,84 @@ fn bytecode_vm_runs_clamp_and_atan2() {
     assert!(
         stdout.contains("10") && stdout.contains("0"),
         "expected 10 and 0 in stdout; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn bytecode_vm_runs_for_in_loop() {
+    // RES-334: `for x in arr { ... }` compiles directly to bytecode
+    // (no longer desugared back to the tree-walker). Sum [1..6) and
+    // expect 15. Pins the back-edge + exit-jump pattern that
+    // `compile_for_in` emits.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_vm_res334_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "let xs = [1, 2, 3, 4, 5];").unwrap();
+        writeln!(f, "let total = 0;").unwrap();
+        writeln!(f, "for x in xs {{ total = total + x; }}").unwrap();
+        writeln!(f, "println(total);").unwrap();
+        writeln!(f, "return 0;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm for-in path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("unsupported construct"),
+        "regression: for-in routed to Unsupported under --vm; stderr=\n{stderr}"
+    );
+    assert!(
+        stdout.contains("15"),
+        "expected 15 (sum 1..=5) in stdout; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn bytecode_vm_for_in_inside_fn_body_returns_correct_value() {
+    // RES-334: a `return` inside a for-in body inside a fn must
+    // emit `ReturnFromCall` (returns to the caller), not `Return`
+    // (halts the VM). Find the first even number; without
+    // ReturnFromCall the VM would stop after the loop's iteration
+    // instead of returning to `main`.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_vm_res334_fn_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "fn first_even(int dummy) -> int {{").unwrap();
+        writeln!(f, "    let xs = [1, 3, 4, 7];").unwrap();
+        writeln!(f, "    for x in xs {{").unwrap();
+        writeln!(f, "        if x % 2 == 0 {{ return x; }}").unwrap();
+        writeln!(f, "    }}").unwrap();
+        writeln!(f, "    return -1;").unwrap();
+        writeln!(f, "}}").unwrap();
+        writeln!(f, "println(first_even(0));").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm for-in-in-fn path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("4"),
+        "expected first even number 4 in stdout; got:\n{stdout}"
     );
     let _ = std::fs::remove_file(&tmp);
 }

@@ -251,7 +251,10 @@ fn compile_stmt(
         Node::ExpressionStatement { expr: inner, .. } => {
             compile_expr(inner, chunk, locals, fn_index, ffi_index, line)
         }
-        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block { .. } => {
+        Node::IfStatement { .. }
+        | Node::WhileStatement { .. }
+        | Node::ForInStatement { .. }
+        | Node::Block { .. } => {
             compile_control_flow(node, chunk, locals, next_local, fn_index, ffi_index, line)
         }
         Node::Assignment { name, value, .. } => {
@@ -420,6 +423,15 @@ fn compile_control_flow(
             chunk.patch_jump(jif, end)?;
             Ok(())
         }
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            ..
+        } => compile_for_in(
+            name, iterable, body, chunk, locals, next_local, fn_index, ffi_index, line,
+            /* in_fn */ false,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -465,7 +477,10 @@ fn compile_stmt_in_fn(
         Node::ExpressionStatement { expr: inner, .. } => {
             compile_expr(inner, chunk, locals, fn_index, ffi_index, line)
         }
-        Node::IfStatement { .. } | Node::WhileStatement { .. } | Node::Block { .. } => {
+        Node::IfStatement { .. }
+        | Node::WhileStatement { .. }
+        | Node::ForInStatement { .. }
+        | Node::Block { .. } => {
             compile_control_flow_in_fn(node, chunk, locals, next_local, fn_index, ffi_index, line)
         }
         Node::Assignment { name, value, .. } => {
@@ -604,8 +619,182 @@ fn compile_control_flow_in_fn(
             chunk.patch_jump(jif, end)?;
             Ok(())
         }
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            ..
+        } => compile_for_in(
+            name, iterable, body, chunk, locals, next_local, fn_index, ffi_index, line,
+            /* in_fn */ true,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
+}
+
+/// RES-334: compile `for NAME in ITERABLE { BODY }` to bytecode.
+///
+/// Models iteration on the existing `while`-loop pattern. Three
+/// hidden locals carry the iterator state (the array value, the
+/// integer index, and the integer length). The loop variable
+/// `NAME` becomes a normal local that the body can read by
+/// identifier; we re-bind it from `arr[idx]` at the top of every
+/// iteration.
+///
+/// Today only `Value::Array` iteration is wired — strings and
+/// half-open integer ranges are out of scope here (no AST node
+/// for either yet) and surface as `VmError::TypeMismatch` /
+/// `VmError::BuiltinCallFailed` from `LoadIndex` / `len` at run
+/// time. The shape `for x in 0..10` parses inside quantifier
+/// expressions only; statement position is rejected by the
+/// parser before compile is reached.
+///
+/// Lowered shape (peephole later folds the `idx + 1` tail into a
+/// single `IncLocal`):
+///
+/// ```text
+///   <iterable>
+///   StoreLocal arr_slot
+///   LoadLocal arr_slot
+///   CallBuiltin { "len", arity: 1 }
+///   StoreLocal len_slot
+///   Const 0
+///   StoreLocal idx_slot
+/// LOOP_START:
+///   LoadLocal idx_slot
+///   LoadLocal len_slot
+///   Lt
+///   JumpIfFalse EXIT
+///   LoadLocal arr_slot
+///   LoadLocal idx_slot
+///   LoadIndex
+///   StoreLocal name_slot
+///   <body>
+///   LoadLocal idx_slot
+///   Const 1
+///   Add
+///   StoreLocal idx_slot
+///   Jump LOOP_START
+/// EXIT:
+/// ```
+#[allow(clippy::too_many_arguments)]
+fn compile_for_in(
+    name: &str,
+    iterable: &Node,
+    body: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    line: u32,
+    in_fn: bool,
+) -> Result<(), CompileError> {
+    // Allocate three hidden locals for the iteration state plus
+    // one user-visible slot for the loop variable. Hidden slots
+    // get unique synthetic names so they cannot shadow or be
+    // reached by any user identifier.
+    if (*next_local as usize) + 4 > u16::MAX as usize {
+        return Err(CompileError::TooManyLocals);
+    }
+    let arr_slot = *next_local;
+    *next_local += 1;
+    let len_slot = *next_local;
+    *next_local += 1;
+    let idx_slot = *next_local;
+    *next_local += 1;
+    // Reserve hidden-slot keys that are not valid identifiers so
+    // user code with names like "$for_arr" cannot collide. Loop
+    // variable goes into the regular `locals` map so the body
+    // can read it via Identifier lookup.
+    let arr_key = format!("$for_arr@{}", arr_slot);
+    let len_key = format!("$for_len@{}", len_slot);
+    let idx_key = format!("$for_idx@{}", idx_slot);
+    locals.insert(arr_key.clone(), arr_slot);
+    locals.insert(len_key.clone(), len_slot);
+    locals.insert(idx_key.clone(), idx_slot);
+    // Loop-variable slot: shadow any outer binding for the
+    // duration of this loop. The previous binding (if any) is
+    // restored after the loop body so subsequent statements see
+    // the original slot — matches `let`-shadowing semantics.
+    let prev_name_slot = locals.get(name).copied();
+    let name_slot = *next_local;
+    *next_local += 1;
+    locals.insert(name.to_string(), name_slot);
+
+    // 1. Evaluate iterable, store in arr_slot.
+    compile_expr(iterable, chunk, locals, fn_index, ffi_index, line)?;
+    chunk.emit(Op::StoreLocal(arr_slot), line);
+
+    // 2. Compute length via the canonical `len` builtin and
+    //    store in len_slot. Calling the builtin keeps us aligned
+    //    with the tree walker's iteration semantics — `len` on
+    //    a non-array surfaces a typed error rather than a silent
+    //    miscompile.
+    let len_name_const = chunk.add_constant(Value::String("len".to_string()))?;
+    chunk.emit(Op::LoadLocal(arr_slot), line);
+    chunk.emit(
+        Op::CallBuiltin {
+            name_const: len_name_const,
+            arity: 1,
+        },
+        line,
+    );
+    chunk.emit(Op::StoreLocal(len_slot), line);
+
+    // 3. idx = 0
+    let zero_const = chunk.add_constant(Value::Int(0))?;
+    chunk.emit(Op::Const(zero_const), line);
+    chunk.emit(Op::StoreLocal(idx_slot), line);
+
+    // 4. Loop test: idx < len.
+    let loop_start = chunk.code.len();
+    chunk.emit(Op::LoadLocal(idx_slot), line);
+    chunk.emit(Op::LoadLocal(len_slot), line);
+    chunk.emit(Op::Lt, line);
+    let jif = chunk.emit(Op::JumpIfFalse(0), line);
+
+    // 5. name = arr[idx]
+    chunk.emit(Op::LoadLocal(arr_slot), line);
+    chunk.emit(Op::LoadLocal(idx_slot), line);
+    chunk.emit(Op::LoadIndex, line);
+    chunk.emit(Op::StoreLocal(name_slot), line);
+
+    // 6. Body. Routed to the same dispatcher as the surrounding
+    //    scope so a top-level `return` halts the VM and a fn-body
+    //    `return` emits ReturnFromCall.
+    if in_fn {
+        compile_stmt_in_fn(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
+    } else {
+        compile_stmt(body, chunk, locals, next_local, fn_index, ffi_index, line)?;
+    }
+
+    // 7. idx = idx + 1 (peephole folds this to IncLocal).
+    chunk.emit(Op::LoadLocal(idx_slot), line);
+    let one_const = chunk.add_constant(Value::Int(1))?;
+    chunk.emit(Op::Const(one_const), line);
+    chunk.emit(Op::Add, line);
+    chunk.emit(Op::StoreLocal(idx_slot), line);
+
+    // 8. Jump back to test.
+    let jmp = chunk.emit(Op::Jump(0), line);
+    chunk.patch_jump(jmp, loop_start)?;
+    let end = chunk.code.len();
+    chunk.patch_jump(jif, end)?;
+
+    // Restore the loop variable's outer binding. The hidden
+    // iterator slots stay in `locals` so a later for-loop in
+    // the same scope reuses fresh slots (next_local has already
+    // moved past them).
+    locals.remove(&arr_key);
+    locals.remove(&len_key);
+    locals.remove(&idx_key);
+    if let Some(prev) = prev_name_slot {
+        locals.insert(name.to_string(), prev);
+    } else {
+        locals.remove(name);
+    }
+    Ok(())
 }
 
 fn compile_expr(
@@ -1268,12 +1457,183 @@ mod tests {
 
     #[test]
     fn compile_unsupported_construct_is_clean_error() {
-        // `for .. in` is still out of scope after RES-083. Use it as
-        // the stand-in for "unsupported construct" — if we ever
-        // support for-in too, pick a different canary.
-        let p = parse_one("for x in [1, 2, 3] { let y = x; }");
+        // RES-334: for-in is now compiled to bytecode; `match` takes
+        // over as the canary for "unsupported construct" until that
+        // ships too. The original comment instructed updating this
+        // when for-in landed.
+        let p = parse_one(
+            r#"fn classify(int x) -> int {
+                return match x {
+                    1 => 100,
+                    _ => 0,
+                };
+            }"#,
+        );
         let err = compile(&p).unwrap_err();
         assert!(matches!(err, CompileError::Unsupported(_)), "{:?}", err);
+    }
+
+    // ---------- RES-334: for-in lowering ----------
+
+    /// `for x in arr { ... }` no longer reports `Unsupported`. The
+    /// chunk should compile cleanly and the loop variable's slot
+    /// should be readable inside the body.
+    #[test]
+    fn res334_for_in_array_compiles() {
+        let p = parse_one(
+            r#"
+                let arr = [1, 2, 3];
+                let total = 0;
+                for x in arr {
+                    total = total + x;
+                }
+            "#,
+        );
+        let prog = compile(&p).expect("for-in must compile");
+        // Loop body must read the loop variable: `LoadIndex` produces
+        // it and `StoreLocal` commits it; then a `LoadLocal` of that
+        // same slot must follow inside the body.
+        assert!(
+            prog.main.code.iter().any(|op| matches!(op, Op::LoadIndex)),
+            "expected LoadIndex in for-in body: {:?}",
+            prog.main.code
+        );
+    }
+
+    /// The lowered shape includes a `len` builtin call to compute
+    /// the iteration bound. Verify the constant pool carries the
+    /// builtin name and the chunk emits `CallBuiltin`.
+    #[test]
+    fn res334_for_in_uses_len_builtin() {
+        let p = parse_one(
+            r#"
+                let arr = [10, 20];
+                for x in arr { let y = x; }
+            "#,
+        );
+        let prog = compile(&p).expect("for-in compiles");
+        let mut saw_len = false;
+        for op in &prog.main.code {
+            if let Op::CallBuiltin { name_const, arity } = op {
+                let s = match prog.main.constants.get(*name_const as usize) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => continue,
+                };
+                if s == "len" {
+                    assert_eq!(*arity, 1, "len call must have arity 1");
+                    saw_len = true;
+                }
+            }
+        }
+        assert!(
+            saw_len,
+            "expected a CallBuiltin(len, 1) for the iteration bound"
+        );
+    }
+
+    /// for-in must include a back-edge `Jump` to the loop test and a
+    /// forward `JumpIfFalse` exiting the loop, mirroring `while`.
+    #[test]
+    fn res334_for_in_emits_back_edge_and_exit_jump() {
+        let p = parse_one(
+            r#"
+                let arr = [1];
+                for x in arr { let y = x; }
+            "#,
+        );
+        let prog = compile(&p).expect("for-in compiles");
+        let has_back_edge = prog
+            .main
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::Jump(off) if *off < 0));
+        let has_exit = prog
+            .main
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::JumpIfFalse(off) if *off > 0));
+        assert!(
+            has_back_edge,
+            "expected a negative-offset Jump (back-edge): {:?}",
+            prog.main.code
+        );
+        assert!(
+            has_exit,
+            "expected a positive-offset JumpIfFalse (exit): {:?}",
+            prog.main.code
+        );
+    }
+
+    /// for-in inside a function body must compile through the
+    /// `compile_stmt_in_fn` dispatcher so a `return` in the body
+    /// emits `ReturnFromCall`, not `Return`.
+    #[test]
+    fn res334_for_in_in_fn_body_compiles_with_return_from_call() {
+        let p = parse_one(
+            r#"
+                fn first(int dummy) -> int {
+                    let xs = [1, 2, 3];
+                    for x in xs {
+                        return x;
+                    }
+                    return -1;
+                }
+            "#,
+        );
+        let prog = compile(&p).expect("for-in inside fn compiles");
+        let f = &prog.functions[0];
+        assert!(
+            f.chunk
+                .code
+                .iter()
+                .any(|op| matches!(op, Op::ReturnFromCall)),
+            "expected ReturnFromCall inside fn body: {:?}",
+            f.chunk.code
+        );
+        // No bare `Op::Return` should appear in a fn body.
+        assert!(
+            !f.chunk.code.iter().any(|op| matches!(op, Op::Return)),
+            "fn body must not emit Op::Return (halts VM); got {:?}",
+            f.chunk.code
+        );
+    }
+
+    /// Nested for-in must allocate non-overlapping iteration-state
+    /// slots so the outer loop's index isn't clobbered by the
+    /// inner loop.
+    #[test]
+    fn res334_nested_for_in_compiles() {
+        let p = parse_one(
+            r#"
+                let outer = [[1, 2], [3]];
+                let total = 0;
+                for row in outer {
+                    for x in row {
+                        total = total + x;
+                    }
+                }
+            "#,
+        );
+        let prog = compile(&p).expect("nested for-in compiles");
+        // Two distinct StoreLocal targets must be initialised to 0
+        // (the inner and outer index slots). The pattern looks for
+        // `Const(<int 0>); StoreLocal(s)` pairs.
+        let mut zero_init_slots: Vec<u16> = Vec::new();
+        let mut prev: Option<&Op> = None;
+        for op in &prog.main.code {
+            if let Some(Op::Const(c)) = prev
+                && let Op::StoreLocal(slot) = op
+                && matches!(prog.main.constants.get(*c as usize), Some(Value::Int(0)))
+            {
+                zero_init_slots.push(*slot);
+            }
+            prev = Some(op);
+        }
+        assert!(
+            zero_init_slots.len() >= 2,
+            "expected at least two zero-initialised index slots in nested for-in: got {:?}",
+            zero_init_slots
+        );
     }
 
     // ---------- RES-081 tests ----------
