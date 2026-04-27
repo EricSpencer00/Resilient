@@ -7,13 +7,25 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+# RES-310: opt-in JIT fuzz target. Mirrors the compiler's
+# `--features jit` gate — the `jit` harness shells out to a
+# `rz` binary that must itself be built with `--features jit`,
+# so making the harness opt-in keeps the default fuzz build
+# from advertising a target that only works against a JIT-
+# enabled compiler. Enable with:
+#
+#   cargo +nightly fuzz run jit --features jit
+default = []
+jit = []
+
 [dependencies]
 # RES-201: `libfuzzer-sys` wraps libFuzzer so we can write the
 # target as a plain Rust `fuzz_target!` macro. Tracks the cargo-
 # fuzz recommended pin.
 libfuzzer-sys = "0.4"
 
-# Both targets shell out to the built `resilient` binary (since
+# All targets shell out to the built `resilient` binary (since
 # `resilient` is binary-only; there's no lib surface to link
 # against). `tempfile` gives us the scratch .rs files.
 tempfile = "3"
@@ -31,3 +43,14 @@ path = "fuzz_targets/lex.rs"
 test = false
 doc = false
 bench = false
+
+# RES-310: JIT fuzz target. Gated on the fuzz crate's `jit`
+# feature so it only builds when the user explicitly opts in,
+# matching the `--features jit` gate on the compiler crate.
+[[bin]]
+name = "jit"
+path = "fuzz_targets/jit.rs"
+test = false
+doc = false
+bench = false
+required-features = ["jit"]
