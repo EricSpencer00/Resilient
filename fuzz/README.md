@@ -6,10 +6,11 @@ libFuzzer.
 
 ## Targets
 
-| Target  | Ticket   | What it fuzzes                                                                        |
-| ------- | -------- | ------------------------------------------------------------------------------------- |
-| `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `resilient -t`. Fails on panic.             |
-| `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `resilient --dump-tokens`. Fails on panic.   |
+| Target  | Ticket   | What it fuzzes                                                                              |
+| ------- | -------- | ------------------------------------------------------------------------------------------- |
+| `parse` | RES-201  | The parser: random bytes → UTF-8 filter → `resilient -t`. Fails on panic.                   |
+| `lex`   | RES-111  | The lexer: random bytes → UTF-8 filter → `resilient --dump-tokens`. Fails on panic.         |
+| `jit`   | RES-310  | The Cranelift JIT lowering path: random bytes → UTF-8 filter → `rz --jit`. Fails on panic.  |
 
 Additional targets slot in by adding a file under
 `fuzz_targets/` and a `[[bin]]` entry in `fuzz/Cargo.toml`; the
@@ -50,6 +51,18 @@ RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
 # subprocess panic (SIGABRT) but otherwise passes.
 RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
   cargo +nightly fuzz run lex --manifest-path fuzz/Cargo.toml -- \
+    -max_total_time=30 \
+    -timeout=1
+
+# RES-310: JIT target. Requires the `rz` binary to be built
+# with `--features jit`, AND the fuzz crate's own `jit` feature
+# (gates the `[[bin]]` entry). Without `--features jit` on the
+# compiler, `--jit` exits with a clean error and the fuzzer
+# produces no JIT coverage.
+cargo build --release --features jit --manifest-path resilient/Cargo.toml
+RESILIENT_FUZZ_BIN=$PWD/resilient/target/release/rz \
+  cargo +nightly fuzz run jit --features jit \
+    --manifest-path fuzz/Cargo.toml -- \
     -max_total_time=30 \
     -timeout=1
 ```
