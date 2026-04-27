@@ -7105,6 +7105,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("abs", builtin_abs),
     ("min", builtin_min),
     ("max", builtin_max),
+    // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
+    ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
     ("to_float", builtin_to_float),
     ("to_int", builtin_to_int),
@@ -7131,6 +7133,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("sin", builtin_sin),
     ("cos", builtin_cos),
     ("tan", builtin_tan),
+    // RES-295: atan2(y, x) — angle of vector (x, y) in radians.
+    ("atan2", builtin_atan2),
     ("ln", builtin_ln),
     ("log", builtin_log),
     ("exp", builtin_exp),
@@ -7434,6 +7438,25 @@ fn builtin_tan(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("tan: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-295: `atan2(y: Float, x: Float) -> Float` — angle of the
+/// 2-D vector `(x, y)`, in radians, in the range (-π, π]. Argument
+/// order matches C / IEEE — `atan2(y, x)`, **y first** — because
+/// every other language and standard library does. Float-only per
+/// RES-130; widen Ints with `to_float`. `atan2(0, 0) = 0` per IEEE.
+fn builtin_atan2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(y), Value::Float(x)] => Ok(Value::Float(y.atan2(*x))),
+        [a, b] => Err(format!(
+            "atan2: expected (Float, Float), got ({:?}, {:?}) — argument order is (y, x); widen Ints via `to_float`",
+            a, b
+        )),
+        _ => Err(format!(
+            "atan2: expected 2 arguments (y, x), got {}",
+            args.len()
+        )),
     }
 }
 
@@ -8450,6 +8473,45 @@ fn builtin_max(args: &[Value]) -> RResult<Value> {
             a, b
         )),
         _ => Err(format!("max: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-295: `clamp(x, lo, hi)` — restrict `x` to the closed interval
+/// `[lo, hi]`. Type-preserving when all three args share Int or Float;
+/// any Float promotes the result to Float (matches min/max coercion
+/// rules). Returns an error if `lo > hi` — an empty interval is a
+/// caller bug, not a value to silently paper over.
+fn builtin_clamp(args: &[Value]) -> RResult<Value> {
+    let to_f = |v: &Value| -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    };
+    match args {
+        [Value::Int(x), Value::Int(lo), Value::Int(hi)] => {
+            if lo > hi {
+                return Err(format!("clamp: lo ({}) must be <= hi ({})", lo, hi));
+            }
+            Ok(Value::Int((*x).clamp(*lo, *hi)))
+        }
+        [x, lo, hi] => {
+            let (Some(xf), Some(lof), Some(hif)) = (to_f(x), to_f(lo), to_f(hi)) else {
+                return Err(format!(
+                    "clamp: expected numeric args, got {:?}, {:?}, {:?}",
+                    x, lo, hi
+                ));
+            };
+            if lof > hif {
+                return Err(format!("clamp: lo ({}) must be <= hi ({})", lof, hif));
+            }
+            Ok(Value::Float(xf.clamp(lof, hif)))
+        }
+        _ => Err(format!(
+            "clamp: expected 3 arguments (x, lo, hi), got {}",
+            args.len()
+        )),
     }
 }
 
@@ -19938,6 +20000,140 @@ mod tests {
         assert!(e_abs.contains("expected 1"), "{}", e_abs);
         let e_min = builtin_min(&[Value::Int(1)]).unwrap_err();
         assert!(e_min.contains("expected 2"), "{}", e_min);
+    }
+
+    // ---------- RES-295: clamp + atan2 ----------
+
+    #[test]
+    fn clamp_int_in_range_returns_x() {
+        match builtin_clamp(&[Value::Int(5), Value::Int(0), Value::Int(10)]).unwrap() {
+            Value::Int(5) => {}
+            other => panic!("clamp(5, 0, 10): expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_below_lo_clamps_to_lo() {
+        match builtin_clamp(&[Value::Int(-5), Value::Int(0), Value::Int(10)]).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("clamp(-5, 0, 10): expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_int_above_hi_clamps_to_hi() {
+        match builtin_clamp(&[Value::Int(50), Value::Int(0), Value::Int(10)]).unwrap() {
+            Value::Int(10) => {}
+            other => panic!("clamp(50, 0, 10): expected Int(10), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_float_promotes_when_any_arg_float() {
+        match builtin_clamp(&[Value::Int(5), Value::Float(0.0), Value::Int(10)]).unwrap() {
+            Value::Float(v) => assert!((v - 5.0).abs() < 1e-9, "got {}", v),
+            other => panic!("clamp mixed: expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_float_all_floats() {
+        match builtin_clamp(&[Value::Float(1.5), Value::Float(2.0), Value::Float(3.0)]).unwrap() {
+            Value::Float(v) => assert!((v - 2.0).abs() < 1e-9, "got {}", v),
+            other => panic!("clamp(1.5, 2.0, 3.0): expected Float(2.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clamp_rejects_lo_greater_than_hi() {
+        let err = builtin_clamp(&[Value::Int(5), Value::Int(10), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("lo") && err.contains("hi"), "err was: {}", err);
+        let err =
+            builtin_clamp(&[Value::Float(5.0), Value::Float(10.0), Value::Float(0.0)]).unwrap_err();
+        assert!(err.contains("lo") && err.contains("hi"), "err was: {}", err);
+    }
+
+    #[test]
+    fn clamp_rejects_non_numeric() {
+        let err =
+            builtin_clamp(&[Value::String("x".into()), Value::Int(0), Value::Int(10)]).unwrap_err();
+        assert!(err.contains("numeric"), "err was: {}", err);
+    }
+
+    #[test]
+    fn clamp_arity_check() {
+        let err = builtin_clamp(&[Value::Int(1), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected 3"), "err was: {}", err);
+    }
+
+    #[test]
+    fn atan2_quadrants() {
+        let pi = std::f64::consts::PI;
+        // atan2(0, 1) = 0
+        match builtin_atan2(&[Value::Float(0.0), Value::Float(1.0)]).unwrap() {
+            Value::Float(v) => assert!(v.abs() < 1e-9, "atan2(0, 1) = {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        // atan2(1, 0) = π/2
+        match builtin_atan2(&[Value::Float(1.0), Value::Float(0.0)]).unwrap() {
+            Value::Float(v) => assert!((v - pi / 2.0).abs() < 1e-9, "atan2(1, 0) = {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        // atan2(0, -1) = π
+        match builtin_atan2(&[Value::Float(0.0), Value::Float(-1.0)]).unwrap() {
+            Value::Float(v) => assert!((v - pi).abs() < 1e-9, "atan2(0, -1) = {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        // atan2(-1, 0) = -π/2
+        match builtin_atan2(&[Value::Float(-1.0), Value::Float(0.0)]).unwrap() {
+            Value::Float(v) => assert!((v + pi / 2.0).abs() < 1e-9, "atan2(-1, 0) = {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn atan2_origin_returns_zero() {
+        // IEEE: atan2(0, 0) = 0 (not an error).
+        match builtin_atan2(&[Value::Float(0.0), Value::Float(0.0)]).unwrap() {
+            Value::Float(v) => assert_eq!(v, 0.0),
+            other => panic!("expected Float(0.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn atan2_rejects_int_per_res130() {
+        let err = builtin_atan2(&[Value::Int(1), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("Float"), "err was: {}", err);
+        assert!(
+            err.contains("to_float"),
+            "diagnostic must hint to_float: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn atan2_arity_check() {
+        let err = builtin_atan2(&[Value::Float(1.0)]).unwrap_err();
+        assert!(err.contains("expected 2"), "err was: {}", err);
+    }
+
+    #[test]
+    fn clamp_atan2_callable_from_source() {
+        // Tree-walker integration: both new builtins resolve through
+        // the BUILTINS table when called from Resilient source.
+        let src = r#"
+            let a = clamp(15, 0, 10);
+            let b = clamp(2.5, 1.0, 5.0);
+            let c = atan2(1.0, 0.0);
+        "#;
+        let (p, _e) = parse(src);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        let get = |n: &str| interp.env.get(n).unwrap();
+        assert!(matches!(get("a"), Value::Int(10)));
+        assert!(matches!(get("b"), Value::Float(v) if (v - 2.5).abs() < 1e-9));
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        assert!(matches!(get("c"), Value::Float(v) if (v - pi_2).abs() < 1e-9));
     }
 
     #[test]

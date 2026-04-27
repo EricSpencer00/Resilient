@@ -980,3 +980,45 @@ fn bytecode_vm_runs_multiple_builtins() {
     );
     let _ = std::fs::remove_file(&tmp);
 }
+
+#[test]
+fn bytecode_vm_runs_clamp_and_atan2() {
+    // RES-295: the new math builtins (clamp, atan2) must dispatch
+    // through `Op::CallBuiltin` exactly like every other entry in
+    // `BUILTINS`. Acceptance criterion: "they also work under --vm
+    // (the new CallBuiltin path makes this automatic IF you register
+    // them in the canonical BUILTINS table)" — this test pins down
+    // that registration so a future revert of the registration line
+    // produces a red CI signal, not a silent VM-only regression.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_vm_res295_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "println(clamp(15, 0, 10));").unwrap();
+        writeln!(f, "println(clamp(-3, 0, 10));").unwrap();
+        writeln!(f, "println(atan2(0.0, 1.0));").unwrap();
+        writeln!(f, "return 0;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm clamp/atan2 path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown function"),
+        "regression: clamp/atan2 lookup failed under --vm; stderr=\n{stderr}"
+    );
+    // clamp(15, 0, 10) = 10; clamp(-3, 0, 10) = 0; atan2(0, 1) = 0.
+    assert!(
+        stdout.contains("10") && stdout.contains("0"),
+        "expected 10 and 0 in stdout; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}

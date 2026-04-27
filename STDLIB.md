@@ -27,12 +27,14 @@ This document is a human-facing summary grouped by category.
 | `abs(x)` | number → number | int or float |
 | `min(a, b)` | (number, number) → number | int↔float coercion |
 | `max(a, b)` | (number, number) → number | int↔float coercion |
-| `sqrt(x)` | number → float | |
+| `clamp(x, lo, hi)` | (number, number, number) → number | restrict to `[lo, hi]`; type-preserving for Int triples, promoted to Float otherwise; runtime error if `lo > hi` |
+| `sqrt(x)` | number → float | NaN on negative input |
 | `pow(a, b)` | (number, number) → float | `a^b` |
 | `floor(x)` | number → float | toward -∞ |
 | `ceil(x)` | number → float | toward +∞ |
 | `sin(x)` `cos(x)` `tan(x)` | float → float | std-only |
-| `ln(x)` `log(x)` `exp(x)` | float → float | std-only |
+| `atan2(y, x)` | (float, float) → float | std-only; returns angle of `(x, y)` in `(-π, π]` (note `y` first, matching IEEE / C) |
+| `ln(x)` `log(x)` `exp(x)` | float → float | std-only; `ln`/`log` runtime error on non-positive args |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
 | `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |
