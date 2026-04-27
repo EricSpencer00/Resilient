@@ -10142,6 +10142,8 @@ fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
 }
 
 // Interpreter for executing Resilient programs
+const MAX_INTERPRETER_CALL_DEPTH: usize = 32;
+
 struct Interpreter {
     env: Environment,
     /// RES-013: static-let bindings. Shared across every sub-interpreter
@@ -10160,6 +10162,9 @@ struct Interpreter {
     /// the runtime check entirely. Empty by default; populated by
     /// `with_proven_fns` after typecheck.
     proven_fns: Rc<HashSet<String>>,
+    /// RES-267: user-function call depth. The tree-walker is recursive
+    /// over function calls; guard it before the host stack overflows.
+    call_depth: usize,
 }
 
 impl Interpreter {
@@ -10174,6 +10179,7 @@ impl Interpreter {
             statics: Rc::new(RefCell::new(HashMap::new())),
             consts: Rc::new(HashMap::new()),
             proven_fns: Rc::new(HashSet::new()),
+            call_depth: 0,
         }
     }
 
@@ -11963,6 +11969,12 @@ impl Interpreter {
                 recovers_to,
                 name,
             } => {
+                if self.call_depth >= MAX_INTERPRETER_CALL_DEPTH {
+                    return Err(format!(
+                        "maximum interpreter call depth exceeded at fn {} (limit {})",
+                        name, MAX_INTERPRETER_CALL_DEPTH
+                    ));
+                }
                 // RES-050: env.clone() is now an Rc bump, not a deep
                 // copy. The self-bind hack from c58c4b1 is gone — the
                 // captured env IS the same RefCell that gets the
@@ -11981,6 +11993,7 @@ impl Interpreter {
                     statics: self.statics.clone(),
                     consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
+                    call_depth: self.call_depth + 1,
                 };
 
                 // RES-035: check each `requires` clause BEFORE running
@@ -12074,6 +12087,7 @@ impl Interpreter {
                     statics: self.statics.clone(),
                     consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
+                    call_depth: self.call_depth,
                 };
                 for pre in &requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -12097,6 +12111,7 @@ impl Interpreter {
                         statics: self.statics.clone(),
                         consts: self.consts.clone(),
                         proven_fns: self.proven_fns.clone(),
+                        call_depth: self.call_depth,
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in &ensures {
@@ -21465,6 +21480,31 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         assert!(matches!(interp.env.get("r").unwrap(), Value::Int(55)));
+    }
+
+    #[test]
+    fn deep_linear_recursion_returns_runtime_error_before_host_overflow() {
+        let handle = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let src = r#"
+                    fn count(int n) {
+                        if n <= 0 { return 0; }
+                        return 1 + count(n - 1);
+                    }
+                    let r = count(1000);
+                "#;
+                let (p, errors) = parse(src);
+                assert!(errors.is_empty(), "{:?}", errors);
+                let mut interp = Interpreter::new();
+                interp.eval(&p).unwrap_err()
+            })
+            .expect("spawn worker thread");
+        let err = handle.join().expect("recursion must not crash the host");
+        assert!(
+            err.contains("maximum interpreter call depth exceeded"),
+            "got: {err}"
+        );
     }
 
     #[test]
