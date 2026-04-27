@@ -7131,6 +7131,12 @@ enum Value {
     /// feature gates.
     #[allow(dead_code)]
     OpaquePtr(crate::ffi::OpaquePtrHandle),
+    /// RES-328: shared mutable cell handle. `cell(v)` creates an id
+    /// into the thread-local cell store; `.get()` reads, `.set(v)`
+    /// writes. Cloning the value copies only this small handle, so
+    /// ordinary tree-walker values stay cheap while closures can still
+    /// share state explicitly.
+    Cell(i64),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -7220,6 +7226,10 @@ impl std::fmt::Debug for Value {
             // RES-215: opaque-pointer handle — print the address, not
             // the pointee. Resilient never dereferences it.
             Value::OpaquePtr(h) => write!(f, "OpaquePtr({:p})", h.0),
+            Value::Cell(id) => match cell_get(*id) {
+                Ok(inner) => write!(f, "Cell({:?})", inner),
+                Err(_) => write!(f, "Cell(<missing>)"),
+            },
         }
     }
 }
@@ -7343,6 +7353,10 @@ impl std::fmt::Display for Value {
             // RES-215: opaque-pointer handle Display — show the
             // address in the conventional `<opaque-ptr 0x…>` form.
             Value::OpaquePtr(h) => write!(f, "<opaque-ptr {:p}>", h.0),
+            Value::Cell(id) => match cell_get(*id) {
+                Ok(inner) => write!(f, "cell({})", inner),
+                Err(_) => write!(f, "cell(<missing>)"),
+            },
         }
     }
 }
@@ -7766,6 +7780,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // Construction is a top-level function; methods are dispatched via
     // the special StringBuilder method handler in `CallExpression` eval.
     ("StringBuilder_new", builtin_string_builder_new),
+    // RES-328: shared mutable cell — explicit shared-state escape hatch
+    // for closures that need to coordinate. Methods (.get / .set) are
+    // dispatched via the special cell handler in `CallExpression` eval.
+    ("cell", builtin_cell_new),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -10078,6 +10096,57 @@ fn builtin_string_builder_new(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// RES-328: `cell(initial) -> Cell` — wrap a value in a shared mutable
+/// container. Two closures that capture the same cell id observe each
+/// other's writes through the thread-local cell store.
+fn builtin_cell_new(args: &[Value]) -> RResult<Value> {
+    match args {
+        [v] => cell_alloc(v.clone()),
+        _ => Err(format!(
+            "cell: expected 1 argument (initial value), got {}",
+            args.len()
+        )),
+    }
+}
+
+thread_local! {
+    static NEXT_SHARED_CELL_ID: Cell<i64> = const { Cell::new(0) };
+    static SHARED_CELLS: RefCell<HashMap<i64, Value>> = RefCell::new(HashMap::new());
+}
+
+fn cell_alloc(initial: Value) -> RResult<Value> {
+    let id = NEXT_SHARED_CELL_ID.with(|next| {
+        let id = next.get();
+        next.set(id.saturating_add(1));
+        id
+    });
+    SHARED_CELLS.with(|cells| {
+        cells.borrow_mut().insert(id, initial);
+    });
+    Ok(Value::Cell(id))
+}
+
+fn cell_get(id: i64) -> RResult<Value> {
+    SHARED_CELLS.with(|cells| {
+        cells
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| format!("Cell {id} no longer exists"))
+    })
+}
+
+fn cell_set(id: i64, value: Value) -> RResult<Value> {
+    SHARED_CELLS.with(|cells| {
+        let mut cells = cells.borrow_mut();
+        let slot = cells
+            .get_mut(&id)
+            .ok_or_else(|| format!("Cell {id} no longer exists"))?;
+        *slot = value;
+        Ok(Value::Void)
+    })
+}
+
 /// Helper: read `_buf`, `_cap`, `_overflow` out of a StringBuilder struct.
 ///
 /// Returns an error if any field is missing or has the wrong type —
@@ -10512,6 +10581,31 @@ impl Interpreter {
                                 }
                             },
                             other => Err(format!("Option has no method `{}`", other)),
+                        };
+                    }
+                    // RES-328: Cell method dispatch — `.get()` returns
+                    // the inner value; `.set(v)` replaces it. The cell
+                    // id indexes the shared thread-local store.
+                    if let Value::Cell(id) = target_val {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        return match field.as_str() {
+                            "get" => {
+                                if !extra_args.is_empty() {
+                                    return Err(format!(
+                                        "Cell.get: expected 0 arguments, got {}",
+                                        extra_args.len()
+                                    ));
+                                }
+                                cell_get(id)
+                            }
+                            "set" => match extra_args.as_slice() {
+                                [v] => cell_set(id, v.clone()),
+                                other => Err(format!(
+                                    "Cell.set: expected 1 argument, got {}",
+                                    other.len()
+                                )),
+                            },
+                            other => Err(format!("Cell has no method `{}`", other)),
                         };
                     }
                     // RES-353: StringBuilder method dispatch — intercept before
@@ -19559,6 +19653,122 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.eval(&p).unwrap();
         assert!(matches!(interp.env.get("r").unwrap(), Value::Int(15)));
+    }
+
+    // ---------- RES-328: shared mutable cell ----------
+
+    #[test]
+    fn cell_get_returns_initial_value() {
+        let src = r#"
+            let c = cell(7);
+            let v = c.get();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("v").unwrap(), Value::Int(7)));
+    }
+
+    #[test]
+    fn cell_set_then_get_observes_write() {
+        let src = r#"
+            let c = cell(0);
+            c.set(42);
+            let v = c.get();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("v").unwrap(), Value::Int(42)));
+    }
+
+    #[test]
+    fn closure_increments_shared_cell_counter() {
+        // Counter pattern: a single closure captures `count` and
+        // mutates it across calls. The cell is the shared state —
+        // every call sees the previous call's write.
+        let src = r#"
+            let count = cell(0);
+            let inc = fn() {
+                count.set(count.get() + 1);
+                return count.get();
+            };
+            let a = inc();
+            let b = inc();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("a").unwrap(), Value::Int(1)));
+        assert!(matches!(interp.env.get("b").unwrap(), Value::Int(2)));
+    }
+
+    #[test]
+    fn two_closures_share_state_through_a_cell() {
+        // The acceptance criterion: two closures capturing the same
+        // cell observe each other's writes. `inc` mutates the shared
+        // counter; `get` reads it.
+        let src = r#"
+            let count = cell(0);
+            let inc = fn() { count.set(count.get() + 1); };
+            let get = fn() { return count.get(); };
+            inc();
+            inc();
+            let n = get();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("n").unwrap(), Value::Int(2)));
+    }
+
+    #[test]
+    fn distinct_cells_are_independent() {
+        // Each `cell(...)` call creates a fresh `Rc<RefCell<_>>`.
+        // Mutating one must not bleed into the other.
+        let src = r#"
+            let a = cell(0);
+            let b = cell(0);
+            a.set(10);
+            let av = a.get();
+            let bv = b.get();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("av").unwrap(), Value::Int(10)));
+        assert!(matches!(interp.env.get("bv").unwrap(), Value::Int(0)));
+    }
+
+    #[test]
+    fn cell_unknown_method_errors_clearly() {
+        let src = r#"
+            let c = cell(0);
+            let dummy = c.poke();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("Cell has no method"), "got: {}", err);
+    }
+
+    #[test]
+    fn cell_set_arity_mismatch_errors() {
+        let src = r#"
+            let c = cell(0);
+            c.set();
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&p).unwrap_err();
+        assert!(err.contains("Cell.set"), "got: {}", err);
     }
 
     #[test]
