@@ -3,8 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    # RES-398: docs-only changes don't affect Rust build/test/clippy
+    # output, so skip the heavy matrix when only docs/markdown change.
+    # Anything that touches code (.rs, Cargo.{toml,lock}, src/, tests/,
+    # benches/) still runs the full matrix because those paths are not
+    # in the ignore list.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
 
 # One job per push/PR is enough — cancel in-flight runs on rebase.
 concurrency:
