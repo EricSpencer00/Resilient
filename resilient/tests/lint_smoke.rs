@@ -171,6 +171,108 @@ fn lint_prints_location_in_rust_like_format() {
     let _ = std::fs::remove_file(&src);
 }
 
+// ---------- RES-308: L0011 unused variable warning ----------
+
+#[test]
+fn lint_l0011_fires_on_unused_let_with_rustc_message() {
+    // RES-308 acceptance: an unused `let` binding emits L0011
+    // with the rustc-style phrasing.
+    let src = tmp_file(
+        "l0011_warn",
+        "fn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("warning[L0011]"),
+        "expected warning[L0011] in stdout, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("variable `unused` is assigned but never used"),
+        "expected rustc-style message in stdout, got: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 for warning, got {:?}",
+        out.status
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0011_silent_for_underscore_prefix() {
+    // `_temp` is exempt — file is clean, exit 0.
+    let src = tmp_file(
+        "l0011_underscore",
+        "fn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    assert!(
+        out.status.success(),
+        "expected 0 for `_`-prefixed binding, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0011_silent_when_let_is_used() {
+    // Used `let` is clean.
+    let src = tmp_file(
+        "l0011_used",
+        "fn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    assert!(
+        out.status.success(),
+        "expected 0 for used binding, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0011_deny_escalates_to_error_exit_two() {
+    // RES-308 acceptance: `--deny L0011` escalates to error.
+    let src = tmp_file(
+        "l0011_deny",
+        "fn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .args(["--deny", "L0011"])
+        .output()
+        .expect("spawn lint");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "expected 2 (error), got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("error[L0011]"),
+        "expected error[L0011] under --deny, got: {stdout}"
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
 #[test]
 fn lint_handles_multiple_codes_per_invocation() {
     // A program triggering L0001 + L0003 + L0005. --deny L0003

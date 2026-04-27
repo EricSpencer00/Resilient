@@ -69,6 +69,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0008", // duplicate identical struct literal match arm
     "L0009", // integer division by zero (literal / SMT-proven-possible)
     "L0010", // function has no requires/ensures contract
+    "L0011", // RES-308: unused variable warning (let binding never read)
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -86,13 +87,37 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0008_duplicate_struct_match_arm(program, &mut out);
     run_l0009_division_by_zero(program, &mut out);
     run_l0010_no_contract(program, &mut out);
+    run_l0011_unused_variable(program, &mut out);
 
     // Filter via allow-comments.
+    //
+    // RES-308: L0011 is the rustc-style sibling of L0001's
+    // unused-let case (both fire on the same `let unused = ...`
+    // pattern, but with different phrasings). Authors who write
+    // `// resilient: allow L0001` above a let are saying "I know
+    // this is unused" — the same intent should silence L0011.
+    // Treat the L0001 allow as implying the L0011 allow for the
+    // same line, so dual emission stays user-suppressible with
+    // a single comment.
     let allows = collect_allow_comments(source);
-    out.retain(|l| !allows.contains(&(l.line, l.code.clone())));
+    out.retain(|l| {
+        if allows.contains(&(l.line, l.code.clone())) {
+            return false;
+        }
+        if l.code == "L0011" && allows.contains(&(l.line, "L0001".to_string())) {
+            return false;
+        }
+        true
+    });
     out.sort_by(|a, b| a.line.cmp(&b.line).then(a.column.cmp(&b.column)));
     out
 }
+
+/// RES-308: lint codes that are aliases of one another for
+/// `--allow` / `--deny` purposes. `(primary, alias)` means a
+/// flag targeting `primary` also affects `alias`. Today only
+/// L0001 ↔ L0011 (unused-let warning re-phrased rustc-style).
+pub const ALLOW_ALIASES: &[(&str, &str)] = &[("L0001", "L0011")];
 
 /// RES-198: render a lint as a `<path>:<line>:<col>: <severity>[<code>]: <msg>`
 /// single-line diagnostic. Matches the RES-080 prefix convention
@@ -1508,6 +1533,155 @@ fn run_l0010_no_contract(program: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0011: unused variable warning (RES-308)
+// ============================================================
+//
+// Issue #100 / RES-308 specifies a dedicated lint for `let`
+// bindings whose name is never subsequently read. The earlier
+// L0001 lint also flags this case (it covers all "unused local
+// binding" forms — `let`, `for`-loop vars, struct-destructure,
+// match-arm bindings) but the ticket specifically asks for a
+// distinct code with the rustc-style message
+// `variable \`x\` is assigned but never used`.
+//
+// `KNOWN_CODES` already reserves `L0002` for "unreachable arm
+// after `_`" with a substantial test suite; per the
+// repo-wide test-protection rule we cannot retire that code
+// without breaking unrelated tests, so the new lint is
+// allocated the next free slot, `L0011`.
+//
+// Behaviour:
+//   - Walks every `let` / `static let` / struct-destructure
+//     binding inside fn bodies (incl. impl methods).
+//   - A binding is "used" if its name appears in any
+//     identifier-read position elsewhere in the same fn body.
+//   - Names starting with `_` are exempt.
+//   - Reports at the binding's source span — the same site the
+//     ticket asks about (`file:line:col`).
+//
+// `for x in arr` loop variables are intentionally skipped here
+// because L0001 already covers them and the ticket's wording
+// ("`let x = expr;`") doesn't mention them. Match-arm pattern
+// bindings are also out of scope (L0001 covers those).
+
+fn run_l0011_unused_variable(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::Function { body, .. } => {
+                l0011_check_body(body, out);
+            }
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function { body, .. } = method {
+                        l0011_check_body(body, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn l0011_check_body(body: &Node, out: &mut Vec<Lint>) {
+    let mut lets: Vec<(String, Span)> = Vec::new();
+    l0011_collect_let_bindings(body, &mut lets);
+    if lets.is_empty() {
+        return;
+    }
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_identifier_reads_in(body, &mut used);
+    for (name, span) in &lets {
+        if name.starts_with('_') {
+            continue;
+        }
+        if !used.contains(name) {
+            out.push(Lint {
+                code: "L0011".into(),
+                severity: Severity::Warning,
+                message: format!("variable `{}` is assigned but never used", name),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+}
+
+/// L0011-specific binding collector. Mirrors `collect_lets_in` but
+/// scoped to the let-style forms named by the ticket: plain `let`,
+/// `static let`, and struct-destructure. `for`-loop induction
+/// variables are deliberately skipped — L0001 already flags those.
+fn l0011_collect_let_bindings(node: &Node, out: &mut Vec<(String, Span)>) {
+    match node {
+        Node::LetStatement {
+            name, value, span, ..
+        } => {
+            out.push((name.clone(), *span));
+            l0011_collect_let_bindings(value, out);
+        }
+        Node::StaticLet {
+            name, value, span, ..
+        } => {
+            out.push((name.clone(), *span));
+            l0011_collect_let_bindings(value, out);
+        }
+        Node::LetDestructureStruct {
+            fields,
+            value,
+            span,
+            ..
+        } => {
+            for (_field_name, local_name) in fields {
+                out.push((local_name.clone(), *span));
+            }
+            l0011_collect_let_bindings(value, out);
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                l0011_collect_let_bindings(s, out);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            l0011_collect_let_bindings(condition, out);
+            l0011_collect_let_bindings(consequence, out);
+            if let Some(a) = alternative {
+                l0011_collect_let_bindings(a, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            l0011_collect_let_bindings(condition, out);
+            l0011_collect_let_bindings(body, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            l0011_collect_let_bindings(iterable, out);
+            l0011_collect_let_bindings(body, out);
+        }
+        Node::LiveBlock { body, .. } => l0011_collect_let_bindings(body, out),
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            l0011_collect_let_bindings(scrutinee, out);
+            for (_, guard, arm_body) in arms {
+                if let Some(g) = guard {
+                    l0011_collect_let_bindings(g, out);
+                }
+                l0011_collect_let_bindings(arm_body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -2242,6 +2416,132 @@ mod tests {
         assert!(
             KNOWN_CODES.contains(&"L0010"),
             "L0010 must appear in KNOWN_CODES"
+        );
+    }
+
+    // ---------- RES-308 / L0011: unused variable warning ----------
+
+    #[test]
+    fn l0011_fires_on_unused_let() {
+        // `unused` is bound and never read — must produce L0011.
+        let src = "fn f(int a) {\n    let unused = 42;\n    return a;\n}\n";
+        assert!(
+            codes(src).contains(&"L0011".to_string()),
+            "L0011 must fire on a `let` binding whose name is never read"
+        );
+    }
+
+    #[test]
+    fn l0011_silent_when_let_is_used() {
+        // Used `let` — no L0011.
+        let src = "fn f(int a) {\n    let used = a + 1;\n    return used;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0011".to_string()),
+            "L0011 must not fire when the let binding is read"
+        );
+    }
+
+    #[test]
+    fn l0011_silent_for_underscore_prefix() {
+        // Underscore-prefixed names are exempt by convention.
+        let src = "fn f(int a) {\n    let _temp = 42;\n    return a;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0011".to_string()),
+            "L0011 must not fire for `_`-prefixed bindings"
+        );
+    }
+
+    #[test]
+    fn l0011_message_matches_ticket_format() {
+        // RES-308 specifies the exact rustc-style phrasing.
+        let src = "fn f(int a) {\n    let zzz = 42;\n    return a;\n}\n";
+        let lints = lint(src);
+        let l0011 = lints
+            .iter()
+            .find(|l| l.code == "L0011")
+            .expect("expected L0011 to fire");
+        assert_eq!(
+            l0011.message, "variable `zzz` is assigned but never used",
+            "L0011 message must match the RES-308 acceptance criteria"
+        );
+        assert_eq!(l0011.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn l0011_reports_at_let_span() {
+        // `let unused = 42;` is on line 2, indent 4 — column 5.
+        let src = "fn f(int a) {\n    let unused = 42;\n    return a;\n}\n";
+        let lints = lint(src);
+        let l0011 = lints
+            .iter()
+            .find(|l| l.code == "L0011")
+            .expect("expected L0011 to fire");
+        assert_eq!(l0011.line, 2, "L0011 must report at the let line");
+    }
+
+    #[test]
+    fn l0011_suppressed_by_allow_comment() {
+        let src = "fn f(int a) {\n    // resilient: allow L0011\n    let unused = 42;\n    return a;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0011".to_string()),
+            "L0011 must be suppressible with `// resilient: allow L0011`"
+        );
+    }
+
+    #[test]
+    fn l0011_in_known_codes() {
+        // The CLI validates --deny / --allow against KNOWN_CODES;
+        // missing L0011 here would silently reject `--deny L0011`.
+        assert!(
+            KNOWN_CODES.contains(&"L0011"),
+            "L0011 must appear in KNOWN_CODES so --deny/--allow accept it"
+        );
+    }
+
+    #[test]
+    fn l0011_deny_escalates_to_error() {
+        // Mirrors the L0001 escalation path — `--deny L0011` should
+        // bump severity to Error. This unit test simulates the flag
+        // by mutating severity directly; the `lint_smoke.rs`
+        // integration test exercises the CLI plumbing end-to-end.
+        let src = "fn f(int a) {\n    let unused = 42;\n    return a;\n}\n";
+        let mut lints = lint(src);
+        for l in lints.iter_mut() {
+            if l.code == "L0011" {
+                l.severity = Severity::Error;
+            }
+        }
+        let l0011 = lints
+            .iter()
+            .find(|l| l.code == "L0011")
+            .expect("expected L0011 to fire");
+        assert_eq!(
+            l0011.severity,
+            Severity::Error,
+            "L0011 must escalate to Error under --deny L0011"
+        );
+    }
+
+    #[test]
+    fn l0011_fires_inside_impl_method() {
+        // Same as RES-239 coverage for L0001 — impl-block methods
+        // must be walked.
+        let src = "struct S {}\nimpl S {\n    fn m(self) {\n        let unused = 42;\n        return;\n    }\n}\n";
+        assert!(
+            codes(src).contains(&"L0011".to_string()),
+            "L0011 must fire for unused let inside an impl method"
+        );
+    }
+
+    #[test]
+    fn l0011_silent_when_used_inside_live_block() {
+        // The ticket explicitly notes that vars used only inside a
+        // `live` block retry path are NOT exempt — but a var that
+        // IS read inside a `live` body must NOT fire L0011.
+        let src = "fn f() {\n    let x = 1;\n    live { return x; }\n}\n";
+        assert!(
+            !codes(src).contains(&"L0011".to_string()),
+            "L0011 must treat reads inside a `live` body as uses"
         );
     }
 }
