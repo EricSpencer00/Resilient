@@ -13,8 +13,9 @@
 #![allow(dead_code)]
 
 use crate::ExternDecl;
+use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FfiType {
     Int,
     Float,
@@ -34,9 +35,28 @@ pub enum FfiType {
     /// `FfiError::CallbackNotYetSupported`. Full trampoline support is
     /// planned for Phase 2 (bytecode VM).
     Callback,
+    /// RES-317: a Resilient struct marked `@repr(C)`. Bridged across
+    /// the FFI boundary by packing/unpacking each field through a
+    /// stack-allocated buffer that matches the C struct's layout.
+    /// `name` is the struct's declared name (used for diagnostics and
+    /// to look up layouts at marshalling time); `fields` is the
+    /// resolved per-field FFI type in declaration order.
+    ///
+    /// Phase 1 supports structs whose total layout fits in 8 bytes
+    /// (one System V integer-class register) — typical sensor /
+    /// timestamp pairs of two i32s, an i64 + bool tail, etc. Larger
+    /// structs return `FfiError::StructTooLarge`; that subset is
+    /// scoped to a follow-up.
+    Struct {
+        name: String,
+        fields: Vec<(String, FfiType)>,
+    },
 }
 
 impl FfiType {
+    /// Resolve a Resilient surface type name to an FFI type **without**
+    /// any struct registry — i.e. only the built-in scalar types.
+    /// Returns `None` for an unknown name (including struct names).
     pub fn from_resilient(name: &str) -> Option<Self> {
         match name {
             "Int" => Some(FfiType::Int),
@@ -48,6 +68,99 @@ impl FfiType {
             "Callback" => Some(FfiType::Callback),
             _ => None,
         }
+    }
+
+    /// RES-317: resolve a Resilient surface type name to an FFI type,
+    /// consulting `structs` for any name that isn't a built-in scalar.
+    /// Returns `None` if the name is neither a built-in nor a known
+    /// `@repr(C)` struct.
+    pub fn from_resilient_with_structs(
+        name: &str,
+        structs: &HashMap<String, Vec<(String, FfiType)>>,
+    ) -> Option<Self> {
+        if let Some(t) = Self::from_resilient(name) {
+            return Some(t);
+        }
+        structs.get(name).map(|fields| FfiType::Struct {
+            name: name.to_string(),
+            fields: fields.clone(),
+        })
+    }
+
+    /// Total byte size for marshalling. For aggregates (`Struct`) this is
+    /// the natural-alignment-padded total; for scalars it's the C ABI
+    /// width on 64-bit SystemV / Windows x64 / AArch64 (every Resilient
+    /// FFI target).
+    pub fn size_bytes(&self) -> usize {
+        match self {
+            FfiType::Int => 8,
+            FfiType::Float => 8,
+            FfiType::Bool => 1,
+            // Scalars below are not used inside structs in Phase 1; sizes
+            // are listed for completeness so the function never panics.
+            FfiType::Str => core::mem::size_of::<usize>() * 2,
+            FfiType::Void => 0,
+            FfiType::OpaquePtr => core::mem::size_of::<usize>(),
+            FfiType::Callback => core::mem::size_of::<usize>(),
+            FfiType::Struct { fields, .. } => struct_layout(fields).total,
+        }
+    }
+
+    /// Natural alignment in bytes. See `size_bytes` for context.
+    pub fn align_bytes(&self) -> usize {
+        match self {
+            FfiType::Int | FfiType::Float => 8,
+            FfiType::Bool => 1,
+            FfiType::Str => core::mem::align_of::<usize>(),
+            FfiType::Void => 1,
+            FfiType::OpaquePtr | FfiType::Callback => core::mem::align_of::<usize>(),
+            FfiType::Struct { fields, .. } => struct_layout(fields).align,
+        }
+    }
+}
+
+/// RES-317: per-field offsets and the struct's total size + alignment.
+/// `repr(C)`-style layout: fields placed in declaration order; each
+/// field's offset is rounded up to its alignment; the struct's total
+/// is rounded up to its largest field's alignment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructLayout {
+    /// Per-field byte offsets in declaration order. Same length as the
+    /// matching `Struct.fields`.
+    pub offsets: Vec<usize>,
+    /// Total size of the struct in bytes, rounded to `align`.
+    pub total: usize,
+    /// Struct alignment (max of every field's alignment, with 1 floor).
+    pub align: usize,
+}
+
+/// RES-317: compute the C-ABI layout for a flat field list. Pure
+/// function — used both at marshalling time and by tests.
+pub fn struct_layout(fields: &[(String, FfiType)]) -> StructLayout {
+    let mut offsets = Vec::with_capacity(fields.len());
+    let mut offset: usize = 0;
+    let mut max_align: usize = 1;
+    for (_, ty) in fields {
+        let align = ty.align_bytes().max(1);
+        let size = ty.size_bytes();
+        let misalign = offset % align;
+        if misalign != 0 {
+            offset += align - misalign;
+        }
+        offsets.push(offset);
+        offset += size;
+        if align > max_align {
+            max_align = align;
+        }
+    }
+    let tail_misalign = offset % max_align;
+    if tail_misalign != 0 {
+        offset += max_align - tail_misalign;
+    }
+    StructLayout {
+        offsets,
+        total: offset,
+        align: max_align,
     }
 }
 
@@ -82,14 +195,30 @@ pub struct ForeignSignature {
 }
 
 impl ForeignSignature {
+    /// Resolve an `ExternDecl` to a signature using only the built-in
+    /// FFI scalar types. Struct parameters / returns are rejected here
+    /// — callers that need struct bridging should use
+    /// `from_decl_with_structs` instead.
     pub fn from_decl(decl: &ExternDecl) -> Result<Self, FfiError> {
+        Self::from_decl_with_structs(decl, &HashMap::new())
+    }
+
+    /// RES-317: resolve an `ExternDecl` to a signature, consulting the
+    /// supplied `structs` registry for any non-scalar type names. The
+    /// registry is keyed by struct name and holds the resolved field
+    /// list (in declaration order).
+    pub fn from_decl_with_structs(
+        decl: &ExternDecl,
+        structs: &HashMap<String, Vec<(String, FfiType)>>,
+    ) -> Result<Self, FfiError> {
         let mut params = Vec::with_capacity(decl.parameters.len());
         for (ty, _) in &decl.parameters {
             params.push(
-                FfiType::from_resilient(ty).ok_or_else(|| FfiError::UnsupportedType(ty.clone()))?,
+                FfiType::from_resilient_with_structs(ty, structs)
+                    .ok_or_else(|| FfiError::UnsupportedType(ty.clone()))?,
             );
         }
-        let ret = FfiType::from_resilient(&decl.return_type)
+        let ret = FfiType::from_resilient_with_structs(&decl.return_type, structs)
             .ok_or_else(|| FfiError::UnsupportedType(decl.return_type.clone()))?;
         if params.len() > 8 {
             return Err(FfiError::ArityTooLarge {
@@ -131,6 +260,21 @@ pub enum FfiError {
     CallbackNotYetSupported {
         name: String,
     },
+    /// RES-317: an `extern fn` referenced a struct type that was not
+    /// declared with `@repr(C)`. The Resilient layout makes no ABI
+    /// guarantees, so refusing the call is the only sound option.
+    StructNotReprC {
+        name: String,
+    },
+    /// RES-317: an `extern fn` referenced a struct whose total layout
+    /// exceeds the size that the Phase 1 trampoline can pass / return
+    /// by value. Larger structs require an out-pointer convention or
+    /// libffi; tracked as a follow-up.
+    StructTooLarge {
+        name: String,
+        size: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for FfiError {
@@ -170,6 +314,20 @@ impl std::fmt::Display for FfiError {
                     f,
                     "FFI: extern fn `{}` uses a Callback parameter; callbacks require the trampoline feature (planned for Phase 2)",
                     name
+                )
+            }
+            FfiError::StructNotReprC { name } => {
+                write!(
+                    f,
+                    "FFI: struct `{}` is referenced from an `extern fn` but not declared `@repr(C)`; the layout has no ABI guarantee",
+                    name
+                )
+            }
+            FfiError::StructTooLarge { name, size, max } => {
+                write!(
+                    f,
+                    "FFI: struct `{}` is {} bytes; Phase 1 supports structs up to {} bytes by value (pass/return larger structs via out-pointer is a follow-up)",
+                    name, size, max
                 )
             }
         }
@@ -214,11 +372,14 @@ pub use disabled::ForeignLoader;
 #[cfg(feature = "ffi")]
 mod dynamic {
     use super::*;
-    use std::collections::HashMap;
 
     pub struct ForeignLoader {
         libs: HashMap<String, libloading::Library>,
         syms: HashMap<String, std::sync::Arc<ForeignSymbol>>,
+        /// RES-317: registry of `@repr(C)` structs known at resolve time.
+        /// Populated once before `resolve_block` runs so extern signatures
+        /// that reference struct names can resolve them.
+        structs: HashMap<String, Vec<(String, FfiType)>>,
     }
 
     impl ForeignLoader {
@@ -226,7 +387,16 @@ mod dynamic {
             Self {
                 libs: HashMap::new(),
                 syms: HashMap::new(),
+                structs: HashMap::new(),
             }
+        }
+
+        /// RES-317: register a `@repr(C)` struct so subsequent
+        /// `resolve_block` calls can reference it from extern signatures.
+        /// Idempotent — re-registering the same name overwrites the
+        /// previous entry.
+        pub fn register_repr_c_struct(&mut self, name: String, fields: Vec<(String, FfiType)>) {
+            self.structs.insert(name, fields);
         }
 
         pub fn resolve_block(
@@ -256,7 +426,7 @@ mod dynamic {
                 }
             };
             for d in decls {
-                let sig = ForeignSignature::from_decl(d)?;
+                let sig = ForeignSignature::from_decl_with_structs(d, &self.structs)?;
                 // SAFETY: We look up the symbol by its C name as a byte string.
                 // The returned Symbol borrows from `lib`; we immediately copy
                 // the raw pointer out so the Symbol borrow is released before
@@ -300,6 +470,10 @@ mod disabled {
         pub fn new() -> Self {
             Self
         }
+
+        /// RES-317: matches the dynamic-loader API so callers compile
+        /// against either backend. Disabled-loader keeps no state.
+        pub fn register_repr_c_struct(&mut self, _name: String, _fields: Vec<(String, FfiType)>) {}
 
         pub fn resolve_block(
             &mut self,
@@ -436,6 +610,120 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("register_handler"), "msg = {}", msg);
         assert!(msg.contains("Phase 2"), "msg = {}", msg);
+    }
+
+    // ============================================================
+    // RES-317: layout & registry tests for `@repr(C)` struct bridging.
+    // ============================================================
+
+    #[test]
+    fn struct_layout_packs_int_field_at_offset_zero() {
+        // OneInt { Int v } → 8 bytes, align 8, single field at offset 0.
+        let fields = vec![("v".to_string(), FfiType::Int)];
+        let layout = struct_layout(&fields);
+        assert_eq!(layout.total, 8);
+        assert_eq!(layout.align, 8);
+        assert_eq!(layout.offsets, vec![0]);
+    }
+
+    #[test]
+    fn struct_layout_inserts_padding_for_natural_alignment() {
+        // { Bool b, Int v } → b at 0 (1B), then 7B pad, then v at 8.
+        // Total 16, align 8.
+        let fields = vec![
+            ("b".to_string(), FfiType::Bool),
+            ("v".to_string(), FfiType::Int),
+        ];
+        let layout = struct_layout(&fields);
+        assert_eq!(layout.offsets, vec![0, 8]);
+        assert_eq!(layout.total, 16);
+        assert_eq!(layout.align, 8);
+    }
+
+    #[test]
+    fn struct_layout_empty_struct_is_size_zero_align_one() {
+        let layout = struct_layout(&[]);
+        assert_eq!(layout.total, 0);
+        assert_eq!(layout.align, 1);
+        assert_eq!(layout.offsets, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn struct_layout_three_bools_packed_then_padded_to_align() {
+        // Three bools = 3B, align 1; total stays 3 because max align = 1.
+        let fields = vec![
+            ("a".to_string(), FfiType::Bool),
+            ("b".to_string(), FfiType::Bool),
+            ("c".to_string(), FfiType::Bool),
+        ];
+        let layout = struct_layout(&fields);
+        assert_eq!(layout.offsets, vec![0, 1, 2]);
+        assert_eq!(layout.total, 3);
+        assert_eq!(layout.align, 1);
+    }
+
+    #[test]
+    fn signature_resolves_struct_via_registry() {
+        let mut structs: HashMap<String, Vec<(String, FfiType)>> = HashMap::new();
+        structs.insert("Reading".to_string(), vec![("v".to_string(), FfiType::Int)]);
+        let d = decl("read_one", "read_one", vec![], "Reading");
+        let sig = ForeignSignature::from_decl_with_structs(&d, &structs).expect("must resolve");
+        match &sig.ret {
+            FfiType::Struct { name, fields } => {
+                assert_eq!(name, "Reading");
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].0, "v");
+                assert_eq!(fields[0].1, FfiType::Int);
+            }
+            other => panic!("expected Struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn signature_rejects_unknown_struct_when_not_registered() {
+        let d = decl("read_one", "read_one", vec![], "MissingStruct");
+        let err = ForeignSignature::from_decl(&d).expect_err("unregistered struct name must error");
+        assert!(
+            matches!(err, FfiError::UnsupportedType(ref s) if s == "MissingStruct"),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn signature_resolves_struct_argument_via_registry() {
+        let mut structs: HashMap<String, Vec<(String, FfiType)>> = HashMap::new();
+        structs.insert(
+            "Reading".to_string(),
+            vec![
+                ("temp".to_string(), FfiType::Int),
+                ("ok".to_string(), FfiType::Bool),
+            ],
+        );
+        let d = decl("read_temp", "read_temp", vec![("Reading", "r")], "Int");
+        let sig = ForeignSignature::from_decl_with_structs(&d, &structs).expect("must resolve");
+        assert_eq!(sig.params.len(), 1);
+        match &sig.params[0] {
+            FfiType::Struct { name, fields } => {
+                assert_eq!(name, "Reading");
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("expected Struct param, got {:?}", other),
+        }
+        assert_eq!(sig.ret, FfiType::Int);
+    }
+
+    #[test]
+    fn struct_too_large_error_message_mentions_size_and_max() {
+        let err = FfiError::StructTooLarge {
+            name: "Big".to_string(),
+            size: 24,
+            max: 8,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Big"), "msg = {}", msg);
+        assert!(msg.contains("24"), "msg = {}", msg);
+        assert!(msg.contains("8"), "msg = {}", msg);
     }
 }
 

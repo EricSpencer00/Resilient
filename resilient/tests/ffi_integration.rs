@@ -137,3 +137,72 @@ main(0);"#,
         "expected FFI/symbol error, got stdout={stdout} stderr={stderr}"
     );
 }
+
+// ============================================================
+// RES-317: C struct bridging — small structs by value.
+// ============================================================
+
+#[test]
+fn struct_bridging_int_to_struct_factory() {
+    // Resilient declares `OneInt` as `@repr(C)` and calls a C factory
+    // that returns a struct by value. The trampoline marshals the i64
+    // returned in the INTEGER-class register back into a Resilient
+    // `Value::Struct` and reads `.v` to print.
+    let src = format!(
+        r#"@repr(C) struct OneInt {{ Int v }}
+extern "{lib}" {{ fn rt_make_one_int(v: Int) -> OneInt; }};
+fn main(int _d) {{
+    let s = rt_make_one_int(42);
+    println(s.v);
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "42"),
+        "expected `42`, got stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn struct_bridging_struct_round_trip() {
+    let src = format!(
+        r#"@repr(C) struct OneInt {{ Int v }}
+extern "{lib}" {{ fn rt_double_one_int(s: OneInt) -> OneInt; }};
+fn main(int _d) {{
+    let inp = new OneInt {{ v: 21 }};
+    let out = rt_double_one_int(inp);
+    println(out.v);
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "42"),
+        "expected `42`, got stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn struct_bridging_struct_to_int_readback() {
+    let src = format!(
+        r#"@repr(C) struct OneInt {{ Int v }}
+extern "{lib}" {{ fn rt_one_int_value(s: OneInt) -> Int; }};
+fn main(int _d) {{
+    let inp = new OneInt {{ v: 99 }};
+    println(rt_one_int_value(inp));
+}}
+main(0);"#,
+        lib = helper_path()
+    );
+    let (stdout, stderr, code) = run_resilient_src(&src);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.lines().any(|l| l.trim() == "99"),
+        "expected `99`, got stdout={stdout} stderr={stderr}"
+    );
+}

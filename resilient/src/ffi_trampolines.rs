@@ -12,7 +12,17 @@
 //! Unsupported signatures return a clean error referencing the
 //! `(params, ret)` tuple that was missing, so extending the table
 //! is mechanical when new call shapes appear.
-use crate::ffi::{FfiError, FfiType, ForeignSymbol};
+//!
+//! RES-317: in addition to scalars, the trampoline now bridges
+//! `@repr(C)` structs that fit in a single 8-byte register (one
+//! SystemV INTEGER class). The marshaller packs the Resilient struct's
+//! field values into a stack-allocated `u64` buffer matching the C
+//! struct's layout, hands it to the C function as a by-value
+//! integer, and on return unpacks the returned u64 back into a
+//! `Value::Struct`. Anything larger than 8 bytes returns a clean
+//! `FfiError::StructTooLarge` rather than calling the function with
+//! the wrong ABI.
+use crate::ffi::{FfiError, FfiType, ForeignSymbol, struct_layout};
 use crate::{RResult, Value};
 
 #[allow(dead_code)]
@@ -22,6 +32,13 @@ struct CStr {
     ptr: *const u8,
     len: usize,
 }
+
+/// RES-317: maximum size in bytes for a struct passed/returned by
+/// value through the Phase 1 trampoline. Matches the SystemV
+/// INTEGER class single-register limit on x86_64 / AArch64. Larger
+/// structs need an out-pointer convention or libffi — tracked as
+/// a follow-up.
+const STRUCT_BY_VALUE_MAX: usize = 8;
 
 /// Entry point. Returns a clean `Err` on any mismatch; never panics.
 #[allow(dead_code)]
@@ -38,7 +55,13 @@ pub fn call_foreign(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     // RES-216: reject Callback arguments with a clean, discoverable error.
     // Phase 1 recognises the type in extern signatures but cannot yet
     // construct a stable C function pointer from a Resilient closure.
-    if sym.sig.params.contains(&FfiType::Callback) || sym.sig.ret == FfiType::Callback {
+    if sym
+        .sig
+        .params
+        .iter()
+        .any(|t| matches!(t, FfiType::Callback))
+        || matches!(sym.sig.ret, FfiType::Callback)
+    {
         return Err(FfiError::CallbackNotYetSupported {
             name: sym.name.clone(),
         }
@@ -46,8 +69,7 @@ pub fn call_foreign(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     }
 
     for (i, (arg, want)) in args.iter().zip(sym.sig.params.iter()).enumerate() {
-        let actual = ffi_type_of_value(arg);
-        if actual != Some(*want) {
+        if !value_matches_ffi_type(arg, want) {
             return Err(format!(
                 "FFI: type mismatch calling `{}` arg #{}: expected {:?}, got {:?}",
                 sym.name, i, want, arg
@@ -59,22 +81,176 @@ pub fn call_foreign(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
 }
 
 #[allow(dead_code)]
-fn ffi_type_of_value(v: &Value) -> Option<FfiType> {
-    match v {
-        Value::Int(_) => Some(FfiType::Int),
-        Value::Float(_) => Some(FfiType::Float),
-        Value::Bool(_) => Some(FfiType::Bool),
-        Value::String(_) => Some(FfiType::Str),
-        Value::OpaquePtr(_) => Some(FfiType::OpaquePtr),
-        _ => None,
+fn value_matches_ffi_type(v: &Value, want: &FfiType) -> bool {
+    match (v, want) {
+        (Value::Int(_), FfiType::Int) => true,
+        (Value::Float(_), FfiType::Float) => true,
+        (Value::Bool(_), FfiType::Bool) => true,
+        (Value::String(_), FfiType::Str) => true,
+        (Value::OpaquePtr(_), FfiType::OpaquePtr) => true,
+        // RES-317: `Value::Struct` matches `FfiType::Struct` only when
+        // the declared name and field count line up. Per-field type
+        // checking happens in the marshaller so a mismatch yields a
+        // pinpoint diagnostic.
+        (
+            Value::Struct {
+                name: vname,
+                fields: vfields,
+            },
+            FfiType::Struct {
+                name: tname,
+                fields: tfields,
+            },
+        ) => vname == tname && vfields.len() == tfields.len(),
+        _ => false,
+    }
+}
+
+/// RES-317: pack a `Value::Struct` into a `[u8; 8]` buffer that
+/// matches the C struct layout for `ty`. `ty` must be `FfiType::Struct`
+/// and total size must be ≤ 8. Returns the buffer interpreted as a
+/// little-endian `u64` so it can be passed as an INTEGER-class
+/// argument on x86_64 / AArch64.
+fn pack_struct_to_u64(value: &Value, ty: &FfiType) -> Result<u64, String> {
+    let (sname, sfields) = match ty {
+        FfiType::Struct { name, fields } => (name, fields),
+        _ => {
+            return Err("FFI internal: pack_struct_to_u64 called with non-struct type".to_string());
+        }
+    };
+    let layout = struct_layout(sfields);
+    if layout.total > STRUCT_BY_VALUE_MAX {
+        return Err(FfiError::StructTooLarge {
+            name: sname.clone(),
+            size: layout.total,
+            max: STRUCT_BY_VALUE_MAX,
+        }
+        .to_string());
+    }
+    let (vname, vfields) = match value {
+        Value::Struct { name, fields } => (name, fields),
+        other => {
+            return Err(format!("FFI: expected struct `{}`, got {:?}", sname, other));
+        }
+    };
+    if vname != sname {
+        return Err(format!(
+            "FFI: expected struct `{}`, got struct `{}`",
+            sname, vname
+        ));
+    }
+
+    let mut buf: [u8; STRUCT_BY_VALUE_MAX] = [0; STRUCT_BY_VALUE_MAX];
+    for (i, (fname, fty)) in sfields.iter().enumerate() {
+        let v = vfields
+            .iter()
+            .find_map(|(n, val)| if n == fname { Some(val) } else { None })
+            .ok_or_else(|| {
+                format!(
+                    "FFI: struct `{}` is missing field `{}` required by extern signature",
+                    sname, fname
+                )
+            })?;
+        let off = layout.offsets[i];
+        write_field(&mut buf, off, v, fty)
+            .map_err(|e| format!("FFI: struct `{}`.`{}`: {}", sname, fname, e))?;
+    }
+    Ok(u64::from_le_bytes(buf))
+}
+
+/// RES-317: unpack a `u64` returned by C as an INTEGER-class struct
+/// back into a Resilient `Value::Struct`. `ty` must be
+/// `FfiType::Struct` with total size ≤ 8.
+fn unpack_struct_from_u64(raw: u64, ty: &FfiType) -> Result<Value, String> {
+    let (sname, sfields) = match ty {
+        FfiType::Struct { name, fields } => (name, fields),
+        _ => {
+            return Err(
+                "FFI internal: unpack_struct_from_u64 called with non-struct type".to_string(),
+            );
+        }
+    };
+    let layout = struct_layout(sfields);
+    if layout.total > STRUCT_BY_VALUE_MAX {
+        return Err(FfiError::StructTooLarge {
+            name: sname.clone(),
+            size: layout.total,
+            max: STRUCT_BY_VALUE_MAX,
+        }
+        .to_string());
+    }
+    let buf: [u8; STRUCT_BY_VALUE_MAX] = raw.to_le_bytes();
+    let mut fields: Vec<(String, Value)> = Vec::with_capacity(sfields.len());
+    for (i, (fname, fty)) in sfields.iter().enumerate() {
+        let off = layout.offsets[i];
+        let v = read_field(&buf, off, fty)
+            .map_err(|e| format!("FFI: struct `{}`.`{}`: {}", sname, fname, e))?;
+        fields.push((fname.clone(), v));
+    }
+    Ok(Value::Struct {
+        name: sname.clone(),
+        fields,
+    })
+}
+
+/// Write one field's bytes into `buf` at `offset`. Bool/Int/Float are
+/// the only field types Phase 1 supports inside structs; nested
+/// structs / strings / pointers are out of scope and return an error.
+fn write_field(buf: &mut [u8], offset: usize, v: &Value, fty: &FfiType) -> Result<(), String> {
+    match (fty, v) {
+        (FfiType::Int, Value::Int(i)) => {
+            // Resilient `Int` is i64 internally; C `int64_t` matches.
+            let bytes = i.to_le_bytes();
+            buf[offset..offset + 8].copy_from_slice(&bytes);
+            Ok(())
+        }
+        (FfiType::Float, Value::Float(f)) => {
+            let bytes = f.to_le_bytes();
+            buf[offset..offset + 8].copy_from_slice(&bytes);
+            Ok(())
+        }
+        (FfiType::Bool, Value::Bool(b)) => {
+            buf[offset] = u8::from(*b);
+            Ok(())
+        }
+        // Phase 1: only scalar fields are supported. Strings, opaque
+        // pointers, callbacks and nested structs need a layout policy
+        // we haven't shipped yet.
+        (FfiType::Int, _) | (FfiType::Float, _) | (FfiType::Bool, _) => Err(format!(
+            "type mismatch: declared as {:?}, value is {:?}",
+            fty, v
+        )),
+        (other, _) => Err(format!(
+            "field type {:?} is not supported inside `@repr(C)` structs in Phase 1",
+            other
+        )),
+    }
+}
+
+fn read_field(buf: &[u8], offset: usize, fty: &FfiType) -> Result<Value, String> {
+    match fty {
+        FfiType::Int => {
+            let mut bs = [0u8; 8];
+            bs.copy_from_slice(&buf[offset..offset + 8]);
+            Ok(Value::Int(i64::from_le_bytes(bs)))
+        }
+        FfiType::Float => {
+            let mut bs = [0u8; 8];
+            bs.copy_from_slice(&buf[offset..offset + 8]);
+            Ok(Value::Float(f64::from_le_bytes(bs)))
+        }
+        FfiType::Bool => Ok(Value::Bool(buf[offset] != 0)),
+        other => Err(format!(
+            "field type {:?} is not supported inside `@repr(C)` structs in Phase 1",
+            other
+        )),
     }
 }
 
 #[allow(dead_code)]
 fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
-    use FfiType::*;
     let params: &[FfiType] = &sym.sig.params;
-    let ret = sym.sig.ret;
+    let ret: &FfiType = &sym.sig.ret;
 
     // Extract scalars up front.
     let mut ints: [i64; 8] = [0; 8];
@@ -87,14 +263,17 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     // RES-215: opaque pointers are pass-through — no allocation, no
     // marshalling. We just ferry the address across the ABI.
     let mut ptrs: [*mut core::ffi::c_void; 8] = [core::ptr::null_mut(); 8];
+    // RES-317: packed integer-class struct values, indexed by arg
+    // position. `0` is a meaningless default for non-struct slots.
+    let mut struct_words: [u64; 8] = [0; 8];
     // Keep string byte borrows live for the call.
     let mut live_strs: Vec<&[u8]> = Vec::with_capacity(args.len());
     for (i, (arg, want)) in args.iter().zip(params.iter()).enumerate() {
         match (arg, want) {
-            (Value::Int(v), Int) => ints[i] = *v,
-            (Value::Float(v), Float) => floats[i] = *v,
-            (Value::Bool(v), Bool) => bools[i] = *v,
-            (Value::String(s), Str) => {
+            (Value::Int(v), FfiType::Int) => ints[i] = *v,
+            (Value::Float(v), FfiType::Float) => floats[i] = *v,
+            (Value::Bool(v), FfiType::Bool) => bools[i] = *v,
+            (Value::String(s), FfiType::Str) => {
                 let bytes = s.as_bytes();
                 live_strs.push(bytes);
                 strs[i] = CStr {
@@ -102,7 +281,10 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                     len: bytes.len(),
                 };
             }
-            (Value::OpaquePtr(h), OpaquePtr) => ptrs[i] = h.0,
+            (Value::OpaquePtr(h), FfiType::OpaquePtr) => ptrs[i] = h.0,
+            (Value::Struct { .. }, FfiType::Struct { .. }) => {
+                struct_words[i] = pack_struct_to_u64(arg, want)?;
+            }
             _ => {
                 return Err(format!(
                     "FFI internal: arg #{} type {:?} / ffi {:?} mismatch",
@@ -110,6 +292,17 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                 ));
             }
         }
+    }
+
+    // RES-317: dispatch struct-bearing signatures separately. They live
+    // outside the giant scalar-arms match so we can keep the scalar table
+    // unchanged and re-use the packed `u64` representation.
+    if let Some(out) = dispatch_struct_signatures(sym, params, ret, &ints, &struct_words)? {
+        drop(live_strs);
+        let _ = strs;
+        let _ = ptrs;
+        let _ = struct_words;
+        return Ok(out);
     }
 
     // SAFETY: the ForeignSymbol pointer was produced by `libloading`
@@ -121,73 +314,77 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     let out = unsafe {
         match (params, ret) {
             // ---- Arity 0 ----
-            (&[], Int) => Value::Int(std::mem::transmute::<*const (), extern "C" fn() -> i64>(
-                sym.ptr,
-            )()),
-            (&[], Float) => Value::Float(std::mem::transmute::<*const (), extern "C" fn() -> f64>(
-                sym.ptr,
-            )()),
-            (&[], Bool) => Value::Bool(std::mem::transmute::<*const (), extern "C" fn() -> bool>(
-                sym.ptr,
-            )()),
-            (&[], Void) => {
+            (&[], FfiType::Int) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn() -> i64,
+            >(sym.ptr)()),
+            (&[], FfiType::Float) => Value::Float(std::mem::transmute::<
+                *const (),
+                extern "C" fn() -> f64,
+            >(sym.ptr)()),
+            (&[], FfiType::Bool) => Value::Bool(std::mem::transmute::<
+                *const (),
+                extern "C" fn() -> bool,
+            >(sym.ptr)()),
+            (&[], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn()>(sym.ptr)();
                 Value::Void
             }
 
             // ---- Arity 1 ----
-            (&[Int], Int) => Value::Int(
-                std::mem::transmute::<*const (), extern "C" fn(i64) -> i64>(sym.ptr)(ints[0]),
-            ),
-            (&[Int], Float) => Value::Float(std::mem::transmute::<
+            ([FfiType::Int], FfiType::Int) => Value::Int(std::mem::transmute::<
+                *const (),
+                extern "C" fn(i64) -> i64,
+            >(sym.ptr)(ints[0])),
+            ([FfiType::Int], FfiType::Float) => Value::Float(std::mem::transmute::<
                 *const (),
                 extern "C" fn(i64) -> f64,
             >(sym.ptr)(ints[0])),
-            (&[Int], Bool) => Value::Bool(std::mem::transmute::<
+            ([FfiType::Int], FfiType::Bool) => Value::Bool(std::mem::transmute::<
                 *const (),
                 extern "C" fn(i64) -> bool,
             >(sym.ptr)(ints[0])),
-            (&[Int], Void) => {
+            ([FfiType::Int], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(i64)>(sym.ptr)(ints[0]);
                 Value::Void
             }
-            (&[Float], Int) => Value::Int(std::mem::transmute::<
+            ([FfiType::Float], FfiType::Int) => Value::Int(std::mem::transmute::<
                 *const (),
                 extern "C" fn(f64) -> i64,
             >(sym.ptr)(floats[0])),
-            (&[Float], Float) => Value::Float(std::mem::transmute::<
+            ([FfiType::Float], FfiType::Float) => Value::Float(std::mem::transmute::<
                 *const (),
                 extern "C" fn(f64) -> f64,
             >(sym.ptr)(floats[0])),
-            (&[Float], Bool) => Value::Bool(std::mem::transmute::<
+            ([FfiType::Float], FfiType::Bool) => Value::Bool(std::mem::transmute::<
                 *const (),
                 extern "C" fn(f64) -> bool,
             >(sym.ptr)(floats[0])),
-            (&[Float], Void) => {
+            ([FfiType::Float], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(f64)>(sym.ptr)(floats[0]);
                 Value::Void
             }
-            (&[Bool], Int) => Value::Int(std::mem::transmute::<
+            ([FfiType::Bool], FfiType::Int) => Value::Int(std::mem::transmute::<
                 *const (),
                 extern "C" fn(bool) -> i64,
             >(sym.ptr)(bools[0])),
-            (&[Bool], Bool) => Value::Bool(std::mem::transmute::<
+            ([FfiType::Bool], FfiType::Bool) => Value::Bool(std::mem::transmute::<
                 *const (),
                 extern "C" fn(bool) -> bool,
             >(sym.ptr)(bools[0])),
-            (&[Bool], Void) => {
+            ([FfiType::Bool], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(bool)>(sym.ptr)(bools[0]);
                 Value::Void
             }
 
             // ---- RES-215: OpaquePtr arms (arity 0 and 1) ----
-            (&[], OpaquePtr) => {
+            (&[], FfiType::OpaquePtr) => {
                 Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
                     *const (),
                     extern "C" fn() -> *mut core::ffi::c_void,
                 >(sym.ptr)()))
             }
-            (&[OpaquePtr], OpaquePtr) => {
+            ([FfiType::OpaquePtr], FfiType::OpaquePtr) => {
                 Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
                     *const (),
                     extern "C" fn(*mut core::ffi::c_void) -> *mut core::ffi::c_void,
@@ -195,19 +392,19 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
                     ptrs[0]
                 )))
             }
-            (&[OpaquePtr], Int) => Value::Int(std::mem::transmute::<
+            ([FfiType::OpaquePtr], FfiType::Int) => Value::Int(std::mem::transmute::<
                 *const (),
                 extern "C" fn(*mut core::ffi::c_void) -> i64,
             >(sym.ptr)(ptrs[0])),
-            (&[OpaquePtr], Float) => Value::Float(std::mem::transmute::<
+            ([FfiType::OpaquePtr], FfiType::Float) => Value::Float(std::mem::transmute::<
                 *const (),
                 extern "C" fn(*mut core::ffi::c_void) -> f64,
             >(sym.ptr)(ptrs[0])),
-            (&[OpaquePtr], Bool) => Value::Bool(std::mem::transmute::<
+            ([FfiType::OpaquePtr], FfiType::Bool) => Value::Bool(std::mem::transmute::<
                 *const (),
                 extern "C" fn(*mut core::ffi::c_void) -> bool,
             >(sym.ptr)(ptrs[0])),
-            (&[OpaquePtr], Void) => {
+            ([FfiType::OpaquePtr], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void)>(sym.ptr)(
                     ptrs[0],
                 );
@@ -215,43 +412,51 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
             }
 
             // ---- Arity 2 (minimal — extend when examples need more) ----
-            (&[Float, Float], Float) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64) -> f64,
-            >(sym.ptr)(floats[0], floats[1])),
-            (&[Int, Int], Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64) -> i64,
-            >(sym.ptr)(ints[0], ints[1])),
+            ([FfiType::Float, FfiType::Float], FfiType::Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64) -> f64,
+                >(sym.ptr)(floats[0], floats[1]))
+            }
+            ([FfiType::Int, FfiType::Int], FfiType::Int) => {
+                Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64) -> i64,
+                >(sym.ptr)(ints[0], ints[1]))
+            }
 
             // ---- Arity 2 (missing arms) ----
-            (&[Int, Int], Void) => {
+            ([FfiType::Int, FfiType::Int], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(i64, i64)>(sym.ptr)(
                     ints[0], ints[1],
                 );
                 Value::Void
             }
-            (&[Int, Int], Float) => Value::Float(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64) -> f64,
-            >(sym.ptr)(ints[0], ints[1])),
-            (&[Float, Float], Void) => {
+            ([FfiType::Int, FfiType::Int], FfiType::Float) => {
+                Value::Float(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64) -> f64,
+                >(sym.ptr)(ints[0], ints[1]))
+            }
+            ([FfiType::Float, FfiType::Float], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(f64, f64)>(sym.ptr)(
                     floats[0], floats[1],
                 );
                 Value::Void
             }
-            (&[Float, Float], Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(f64, f64) -> i64,
-            >(sym.ptr)(floats[0], floats[1])),
-            (&[OpaquePtr, Int], Void) => {
+            ([FfiType::Float, FfiType::Float], FfiType::Int) => {
+                Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(f64, f64) -> i64,
+                >(sym.ptr)(floats[0], floats[1]))
+            }
+            ([FfiType::OpaquePtr, FfiType::Int], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64)>(
                     sym.ptr,
                 )(ptrs[0], ints[1]);
                 Value::Void
             }
-            (&[Int, OpaquePtr], OpaquePtr) => {
+            ([FfiType::Int, FfiType::OpaquePtr], FfiType::OpaquePtr) => {
                 Value::OpaquePtr(crate::ffi::OpaquePtrHandle(std::mem::transmute::<
                     *const (),
                     extern "C" fn(i64, *mut core::ffi::c_void) -> *mut core::ffi::c_void,
@@ -261,47 +466,49 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
             }
 
             // ---- Arity 3 ----
-            (&[Int, Int, Int], Int) => Value::Int(std::mem::transmute::<
-                *const (),
-                extern "C" fn(i64, i64, i64) -> i64,
-            >(sym.ptr)(ints[0], ints[1], ints[2])),
-            (&[Int, Int, Int], Void) => {
+            ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Int) => {
+                Value::Int(std::mem::transmute::<
+                    *const (),
+                    extern "C" fn(i64, i64, i64) -> i64,
+                >(sym.ptr)(ints[0], ints[1], ints[2]))
+            }
+            ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(i64, i64, i64)>(sym.ptr)(
                     ints[0], ints[1], ints[2],
                 );
                 Value::Void
             }
-            (&[Int, Int, Int], Float) => {
+            ([FfiType::Int, FfiType::Int, FfiType::Int], FfiType::Float) => {
                 Value::Float(std::mem::transmute::<
                     *const (),
                     extern "C" fn(i64, i64, i64) -> f64,
                 >(sym.ptr)(ints[0], ints[1], ints[2]))
             }
-            (&[Float, Float, Float], Float) => {
+            ([FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Float) => {
                 Value::Float(std::mem::transmute::<
                     *const (),
                     extern "C" fn(f64, f64, f64) -> f64,
                 >(sym.ptr)(floats[0], floats[1], floats[2]))
             }
-            (&[Float, Float, Float], Void) => {
+            ([FfiType::Float, FfiType::Float, FfiType::Float], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64)>(sym.ptr)(
                     floats[0], floats[1], floats[2],
                 );
                 Value::Void
             }
-            (&[Int, Float, Float], Float) => {
+            ([FfiType::Int, FfiType::Float, FfiType::Float], FfiType::Float) => {
                 Value::Float(std::mem::transmute::<
                     *const (),
                     extern "C" fn(i64, f64, f64) -> f64,
                 >(sym.ptr)(ints[0], floats[1], floats[2]))
             }
-            (&[OpaquePtr, Int, Int], Int) => {
+            ([FfiType::OpaquePtr, FfiType::Int, FfiType::Int], FfiType::Int) => {
                 Value::Int(std::mem::transmute::<
                     *const (),
                     extern "C" fn(*mut core::ffi::c_void, i64, i64) -> i64,
                 >(sym.ptr)(ptrs[0], ints[1], ints[2]))
             }
-            (&[OpaquePtr, Int, Int], Void) => {
+            ([FfiType::OpaquePtr, FfiType::Int, FfiType::Int], FfiType::Void) => {
                 std::mem::transmute::<*const (), extern "C" fn(*mut core::ffi::c_void, i64, i64)>(
                     sym.ptr,
                 )(ptrs[0], ints[1], ints[2]);
@@ -324,8 +531,109 @@ fn dispatch_explicit(sym: &ForeignSymbol, args: &[Value]) -> RResult<Value> {
     drop(live_strs);
     let _ = strs;
     let _ = ptrs;
+    let _ = struct_words;
 
     Ok(out)
+}
+
+/// RES-317: dispatch the small struct signatures we support in
+/// Phase 1. Returns `Ok(Some(value))` on a hit, `Ok(None)` if the
+/// signature contains no struct (caller falls back to the scalar
+/// table), or `Err(...)` on a struct-related error (size, layout, etc.).
+///
+/// SAFETY: every transmute uses an `extern "C" fn` whose argument /
+/// return types match the layout the C compiler would produce for
+/// the corresponding `@repr(C)` struct. Per the SystemV / Windows-x64
+/// / AArch64 calling conventions, a struct of total size ≤ 8 bytes
+/// containing only INTEGER-class fields is passed in a single
+/// general-purpose register — i.e. the same register that would
+/// carry a `u64` argument. That equivalence is the load-bearing
+/// invariant; we explicitly cap struct size at `STRUCT_BY_VALUE_MAX`
+/// to enforce it. Float-only / mixed-class structs will hit the
+/// `StructTooLarge`-style fallback in a future ticket once we
+/// support multi-class lowering.
+fn dispatch_struct_signatures(
+    sym: &ForeignSymbol,
+    params: &[FfiType],
+    ret: &FfiType,
+    ints: &[i64; 8],
+    struct_words: &[u64; 8],
+) -> RResult<Option<Value>> {
+    // Quick reject: nothing to do unless a struct is on either side.
+    let any_struct = matches!(ret, FfiType::Struct { .. })
+        || params.iter().any(|p| matches!(p, FfiType::Struct { .. }));
+    if !any_struct {
+        return Ok(None);
+    }
+
+    match (params, ret) {
+        // (Struct) -> Struct
+        ([FfiType::Struct { .. }], FfiType::Struct { .. }) => {
+            // Pre-compute size so we surface a clean StructTooLarge before transmute.
+            check_struct_size(&params[0])?;
+            check_struct_size(ret)?;
+            // SAFETY: see fn doc — size-capped Struct ≡ u64 in INTEGER class.
+            let raw = unsafe {
+                std::mem::transmute::<*const (), extern "C" fn(u64) -> u64>(sym.ptr)(
+                    struct_words[0],
+                )
+            };
+            Ok(Some(unpack_struct_from_u64(raw, ret)?))
+        }
+        // () -> Struct
+        (&[], FfiType::Struct { .. }) => {
+            check_struct_size(ret)?;
+            let raw =
+                unsafe { std::mem::transmute::<*const (), extern "C" fn() -> u64>(sym.ptr)() };
+            Ok(Some(unpack_struct_from_u64(raw, ret)?))
+        }
+        // (Struct) -> Void
+        ([FfiType::Struct { .. }], FfiType::Void) => {
+            check_struct_size(&params[0])?;
+            unsafe {
+                std::mem::transmute::<*const (), extern "C" fn(u64)>(sym.ptr)(struct_words[0]);
+            }
+            Ok(Some(Value::Void))
+        }
+        // (Struct) -> Int — common readback shape (e.g. `compute_total(reading)`).
+        ([FfiType::Struct { .. }], FfiType::Int) => {
+            check_struct_size(&params[0])?;
+            let v = unsafe {
+                std::mem::transmute::<*const (), extern "C" fn(u64) -> i64>(sym.ptr)(
+                    struct_words[0],
+                )
+            };
+            Ok(Some(Value::Int(v)))
+        }
+        // (Int) -> Struct — common factory shape.
+        ([FfiType::Int], FfiType::Struct { .. }) => {
+            check_struct_size(ret)?;
+            let raw = unsafe {
+                std::mem::transmute::<*const (), extern "C" fn(i64) -> u64>(sym.ptr)(ints[0])
+            };
+            Ok(Some(unpack_struct_from_u64(raw, ret)?))
+        }
+        // Anything else with structs: unsupported in Phase 1.
+        _ => Err(format!(
+            "FFI: no struct trampoline for signature ({:?}) -> {:?} (extend dispatch_struct_signatures)",
+            params, ret
+        )),
+    }
+}
+
+fn check_struct_size(ty: &FfiType) -> Result<(), String> {
+    if let FfiType::Struct { name, fields } = ty {
+        let layout = struct_layout(fields);
+        if layout.total > STRUCT_BY_VALUE_MAX {
+            return Err(FfiError::StructTooLarge {
+                name: name.clone(),
+                size: layout.total,
+                max: STRUCT_BY_VALUE_MAX,
+            }
+            .to_string());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -565,5 +873,182 @@ mod tests {
             "got {:?}",
             out
         );
+    }
+
+    // ============================================================
+    // RES-317: struct bridging — small structs ≤ 8 bytes by value.
+    // ============================================================
+
+    extern "C" fn make_unit_int(v: i64) -> u64 {
+        // Build a one-field struct equivalent: low 8 bytes = v.
+        v as u64
+    }
+
+    extern "C" fn double_unit_int(packed: u64) -> u64 {
+        let v = packed as i64;
+        (v * 2) as u64
+    }
+
+    extern "C" fn read_unit_int(packed: u64) -> i64 {
+        packed as i64
+    }
+
+    fn one_int_struct_ty() -> FfiType {
+        FfiType::Struct {
+            name: "OneInt".to_string(),
+            fields: vec![("v".to_string(), FfiType::Int)],
+        }
+    }
+
+    #[test]
+    fn struct_pack_unpack_round_trip() {
+        // Layout sanity: (Int) → 8 bytes, align 8, offset 0.
+        let ty = one_int_struct_ty();
+        let layout = struct_layout(match &ty {
+            FfiType::Struct { fields, .. } => fields,
+            _ => unreachable!(),
+        });
+        assert_eq!(layout.total, 8);
+        assert_eq!(layout.align, 8);
+        assert_eq!(layout.offsets, vec![0]);
+
+        let v = Value::Struct {
+            name: "OneInt".to_string(),
+            fields: vec![("v".to_string(), Value::Int(42))],
+        };
+        let packed = pack_struct_to_u64(&v, &ty).unwrap();
+        assert_eq!(packed, 42_u64);
+        let back = unpack_struct_from_u64(packed, &ty).unwrap();
+        match back {
+            Value::Struct { name, fields } => {
+                assert_eq!(name, "OneInt");
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].0, "v");
+                assert!(matches!(fields[0].1, Value::Int(42)));
+            }
+            other => panic!("expected Value::Struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_foreign_int_to_struct_factory() {
+        let sig = ForeignSignature {
+            params: vec![FfiType::Int],
+            ret: one_int_struct_ty(),
+        };
+        let sym = ForeignSymbol {
+            name: "make_unit_int".to_string(),
+            ptr: make_unit_int as *const (),
+            sig,
+        };
+        let out = call_foreign(&sym, &[Value::Int(7)]).unwrap();
+        match out {
+            Value::Struct { name, fields } => {
+                assert_eq!(name, "OneInt");
+                assert!(matches!(fields[0].1, Value::Int(7)));
+            }
+            other => panic!("expected struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_foreign_struct_to_struct_round_trip() {
+        let sig = ForeignSignature {
+            params: vec![one_int_struct_ty()],
+            ret: one_int_struct_ty(),
+        };
+        let sym = ForeignSymbol {
+            name: "double_unit_int".to_string(),
+            ptr: double_unit_int as *const (),
+            sig,
+        };
+        let arg = Value::Struct {
+            name: "OneInt".to_string(),
+            fields: vec![("v".to_string(), Value::Int(21))],
+        };
+        let out = call_foreign(&sym, &[arg]).unwrap();
+        match out {
+            Value::Struct { fields, .. } => {
+                assert!(matches!(fields[0].1, Value::Int(42)));
+            }
+            other => panic!("expected struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_foreign_struct_to_int_readback() {
+        let sig = ForeignSignature {
+            params: vec![one_int_struct_ty()],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "read_unit_int".to_string(),
+            ptr: read_unit_int as *const (),
+            sig,
+        };
+        let arg = Value::Struct {
+            name: "OneInt".to_string(),
+            fields: vec![("v".to_string(), Value::Int(99))],
+        };
+        let out = call_foreign(&sym, &[arg]).unwrap();
+        assert!(matches!(out, Value::Int(99)));
+    }
+
+    #[test]
+    fn struct_too_large_errors_cleanly() {
+        // Three Int fields = 24 bytes — well over the 8-byte limit.
+        let big = FfiType::Struct {
+            name: "Big".to_string(),
+            fields: vec![
+                ("a".to_string(), FfiType::Int),
+                ("b".to_string(), FfiType::Int),
+                ("c".to_string(), FfiType::Int),
+            ],
+        };
+        let sig = ForeignSignature {
+            params: vec![big.clone()],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "bogus_big".to_string(),
+            ptr: read_unit_int as *const (), // pointer is unused — must short-circuit.
+            sig,
+        };
+        let arg = Value::Struct {
+            name: "Big".to_string(),
+            fields: vec![
+                ("a".to_string(), Value::Int(1)),
+                ("b".to_string(), Value::Int(2)),
+                ("c".to_string(), Value::Int(3)),
+            ],
+        };
+        let err = call_foreign(&sym, &[arg]).expect_err("must reject too-large struct");
+        assert!(
+            err.contains("too large")
+                || err.to_lowercase().contains("too large")
+                || err.contains("Phase 1"),
+            "got {}",
+            err
+        );
+    }
+
+    #[test]
+    fn struct_field_mismatch_errors_cleanly() {
+        // Pass a struct named "Wrong" where the signature expects "OneInt".
+        let sig = ForeignSignature {
+            params: vec![one_int_struct_ty()],
+            ret: FfiType::Int,
+        };
+        let sym = ForeignSymbol {
+            name: "read_unit_int".to_string(),
+            ptr: read_unit_int as *const (),
+            sig,
+        };
+        let arg = Value::Struct {
+            name: "Wrong".to_string(),
+            fields: vec![("v".to_string(), Value::Int(1))],
+        };
+        let err = call_foreign(&sym, &[arg]).expect_err("must reject mismatched name");
+        assert!(err.contains("type mismatch"), "got {}", err);
     }
 }

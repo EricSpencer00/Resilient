@@ -1636,6 +1636,12 @@ enum Node {
     StructDecl {
         name: String,
         fields: Vec<(String, String)>, // (type, field_name)
+        /// RES-317: `@repr(C)` annotation marks the struct as having
+        /// a C-compatible memory layout. Required for any struct that
+        /// crosses the FFI boundary (passed to / returned from an
+        /// `extern fn`). The default is Resilient-native layout, which
+        /// makes no ABI guarantees.
+        repr_c: bool,
         /// RES-088: span of the `struct` keyword. Consumed in follow-ups.
         span: span::Span,
     },
@@ -2330,13 +2336,23 @@ impl Parser {
         };
         self.next_token(); // skip attribute name
 
+        // RES-317: `@repr(C)` annotates a `struct` declaration as
+        // having a C-compatible memory layout. Required for any
+        // struct that crosses the FFI boundary.
+        if attr_name == "repr" {
+            return self.parse_repr_attribute();
+        }
+
         let (pure_flag, effects) = match attr_name.as_str() {
             // `@pure` lights up both the legacy RES-191 strict
             // purity checker (via `pure: bool`) and the RES-389
             // effect-annotation checker (via `EffectSet::pure()`).
             "pure" => (true, EffectSet::pure()),
             other => {
-                self.record_error(format!("Unknown attribute `@{}`. Known: @pure", other));
+                self.record_error(format!(
+                    "Unknown attribute `@{}`. Known: @pure, @repr(C)",
+                    other
+                ));
                 // Fall through — treat as if no attribute was
                 // present; the fn still parses with the default
                 // `io` effect set and the purity flag off.
@@ -2361,6 +2377,73 @@ impl Parser {
         }
 
         self.parse_function_with_pure_and_effects(pure_flag, effects)
+    }
+
+    /// RES-317: parse `@repr(C)` immediately followed by a `struct`
+    /// declaration. On entry `current_token` is the token *after* the
+    /// `repr` identifier — i.e. it should be `(`. Anything else is a
+    /// parse error and we fall through to recovery.
+    fn parse_repr_attribute(&mut self) -> Node {
+        if !matches!(self.current_token, Token::LeftParen) {
+            let tok = self.current_token.clone();
+            self.record_error(format!("expected `(` after `@repr`, found {}", tok));
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+        self.next_token(); // skip `(`
+
+        let kind = match &self.current_token {
+            Token::Identifier(s) => s.clone(),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "expected repr kind (e.g. `C`) after `@repr(`, found {}",
+                    tok
+                ));
+                return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                    value: 0,
+                    span: span::Span::default(),
+                });
+            }
+        };
+        self.next_token(); // skip kind
+
+        if !matches!(self.current_token, Token::RightParen) {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "expected `)` after `@repr({})`, found {}",
+                kind, tok
+            ));
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+        self.next_token(); // skip `)`
+
+        let repr_c = match kind.as_str() {
+            "C" => true,
+            other => {
+                self.record_error(format!("unknown @repr kind `{}`. Known: C", other));
+                false
+            }
+        };
+
+        if self.current_token != Token::Struct {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "@repr(C) may only annotate a `struct` declaration, found {}",
+                tok
+            ));
+            return self.parse_statement().unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+        }
+
+        self.parse_struct_decl_with_attrs(repr_c)
     }
 
     /// RES-191 / RES-389: shared parser for `fn ...` with an
@@ -5424,6 +5507,13 @@ impl Parser {
     /// Parse `struct NAME { TYPE FIELD, ... }`. current_token is `struct`
     /// on entry; on exit current_token is `}`.
     fn parse_struct_decl(&mut self) -> Node {
+        self.parse_struct_decl_with_attrs(false)
+    }
+
+    /// RES-317: parse `struct NAME { ... }` with attribute flags supplied
+    /// by an attribute parser. `current_token` is `struct` on entry; on
+    /// exit it sits on the closing `}` of the struct body.
+    fn parse_struct_decl_with_attrs(&mut self, repr_c: bool) -> Node {
         self.next_token(); // skip 'struct'
         let name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
@@ -5440,6 +5530,7 @@ impl Parser {
             return Node::StructDecl {
                 name,
                 fields: Vec::new(),
+                repr_c,
                 span: self.span_at_current(),
             };
         }
@@ -5481,6 +5572,7 @@ impl Parser {
         Node::StructDecl {
             name,
             fields,
+            repr_c,
             span: self.span_at_current(),
         }
     }
@@ -9374,6 +9466,50 @@ fn install_live_run_telemetry(
     LiveRunTelemetryGuard
 }
 
+/// RES-317: walk a program and register every `@repr(C)` struct with
+/// the FFI loader. Subsequent `resolve_block` calls can then resolve
+/// extern signatures that mention struct types. Structs without
+/// `@repr(C)` are intentionally skipped — Resilient's default layout
+/// makes no ABI guarantees, so referencing one from an extern fn
+/// surfaces as `FfiError::UnsupportedType` (until / unless we add a
+/// dedicated `StructNotReprC` diagnostic at the typecheck layer).
+#[cfg(feature = "ffi")]
+fn register_repr_c_structs(program: &Node, loader: &mut crate::ffi::ForeignLoader) {
+    let stmts = match program {
+        Node::Program(s) => s,
+        _ => return,
+    };
+    for stmt in stmts {
+        if let Node::StructDecl {
+            name,
+            fields,
+            repr_c: true,
+            ..
+        } = &stmt.node
+        {
+            // Only register structs whose every field maps to a built-in
+            // FFI scalar — anything else can't be marshalled by the
+            // Phase 1 trampoline. Skip silently and let the extern's
+            // `from_decl_with_structs` surface the unsupported-type
+            // error with a clean message.
+            let mut resolved: Vec<(String, crate::ffi::FfiType)> = Vec::with_capacity(fields.len());
+            let mut ok = true;
+            for (ty, fname) in fields {
+                match crate::ffi::FfiType::from_resilient(ty) {
+                    Some(t) => resolved.push((fname.clone(), t)),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                loader.register_repr_c_struct(name.clone(), resolved);
+            }
+        }
+    }
+}
+
 fn live_retry_block_label(span: span::Span) -> String {
     LIVE_SOURCE_BASENAME.with(|b| {
         let base = b.borrow();
@@ -12799,6 +12935,9 @@ fn execute_file(
     #[cfg(feature = "ffi")]
     let _ffi_loader = {
         let mut loader = crate::ffi::ForeignLoader::new();
+        // RES-317: register every `@repr(C)` struct so extern signatures
+        // referencing struct types resolve to `FfiType::Struct`.
+        register_repr_c_structs(&program, &mut loader);
         if let Node::Program(stmts) = &program {
             for stmt in stmts {
                 if let Node::Extern { library, decls, .. } = &stmt.node {
@@ -19755,6 +19894,77 @@ mod tests {
         }
     }
 
+    // RES-317: `@repr(C)` annotation on struct decls.
+    #[test]
+    fn struct_decl_with_repr_c_attribute_parses_and_runs() {
+        let src = r#"
+            @repr(C) struct Reading {
+                Int v,
+            }
+            let r = new Reading { v: 7 };
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        // Verify the AST carries the flag.
+        if let Node::Program(stmts) = &p {
+            let found = stmts.iter().any(|s| match &s.node {
+                Node::StructDecl { name, repr_c, .. } => name == "Reading" && *repr_c,
+                _ => false,
+            });
+            assert!(found, "expected `@repr(C) struct Reading` to set repr_c");
+        } else {
+            panic!("expected Program node");
+        }
+        // And the interpreter still runs through it normally.
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("r").unwrap() {
+            Value::Struct { name, fields } => {
+                assert_eq!(name, "Reading");
+                assert_eq!(fields.len(), 1);
+                assert!(matches!(fields[0].1, Value::Int(7)));
+            }
+            other => panic!("expected Struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn struct_decl_without_repr_c_defaults_to_false() {
+        let src = r#"
+            struct Plain {
+                Int v,
+            }
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        if let Node::Program(stmts) = &p {
+            let plain = stmts.iter().find_map(|s| match &s.node {
+                Node::StructDecl { name, repr_c, .. } if name == "Plain" => Some(*repr_c),
+                _ => None,
+            });
+            assert_eq!(plain, Some(false));
+        } else {
+            panic!("expected Program node");
+        }
+    }
+
+    #[test]
+    fn repr_attribute_with_unknown_kind_emits_diagnostic() {
+        let src = r#"
+            @repr(rust) struct Plain {
+                Int v,
+            }
+        "#;
+        let (_p, errors) = parse(src);
+        // The parser keeps walking — `repr_c` defaults to false — but
+        // an error is recorded.
+        assert!(
+            errors.iter().any(|e| e.contains("unknown @repr kind")),
+            "expected unknown-kind diagnostic, got {:?}",
+            errors
+        );
+    }
+
     // ---------- Live-block invariants (RES-036) ----------
 
     #[test]
@@ -23490,6 +23700,8 @@ mod ffi_integration_tests {
 
         // Resolve extern blocks — same logic as execute_file but inline.
         let mut loader = crate::ffi::ForeignLoader::new();
+        // RES-317: register every `@repr(C)` struct first.
+        register_repr_c_structs(&program, &mut loader);
         if let Node::Program(stmts) = &program {
             for stmt in stmts {
                 if let Node::Extern { library, decls, .. } = &stmt.node {
