@@ -6947,11 +6947,16 @@ enum Value {
     /// driver run, so the ptr stays valid. Contract vecs (`requires` /
     /// `ensures`) are checked by `apply_function`; `trusted` turns
     /// the ensures into an assumption rather than a runtime check.
+    /// RES-FFI-V3: `param_names` carries the declared parameter
+    /// identifiers so contract clauses can be evaluated against the
+    /// caller's actual argument values (the parameter symbols are
+    /// otherwise unbound in the surrounding env).
     #[cfg(feature = "ffi")]
     #[allow(dead_code)]
     Foreign {
         name: &'static str,
         symbol: std::sync::Arc<crate::ffi::ForeignSymbol>,
+        param_names: Vec<String>,
         requires: Vec<Node>,
         ensures: Vec<Node>,
         trusted: bool,
@@ -11783,16 +11788,24 @@ impl Interpreter {
             Value::Builtin { func, .. } => func(&args),
             #[cfg(feature = "ffi")]
             Value::Foreign {
-                name: _,
+                name,
                 symbol,
+                param_names,
                 requires,
                 ensures,
                 trusted,
             } => {
-                // Bind params positionally as `_0`, `_1`, ... for contract eval.
+                // RES-FFI-V3: bind every declared parameter name to its
+                // actual argument value so `requires` / `ensures`
+                // expressions can reference parameters by name (e.g.
+                // `requires x >= 0.0`). Positional `_0` / `_1` aliases
+                // remain so older bindings keep working.
                 let contract_env = Environment::new_enclosed(self.env.clone());
                 for (i, v) in args.iter().enumerate() {
                     contract_env.set(format!("_{}", i), v.clone());
+                    if let Some(pname) = param_names.get(i) {
+                        contract_env.set(pname.clone(), v.clone());
+                    }
                 }
                 // Check preconditions.
                 let mut contract_interp = Interpreter {
@@ -11807,9 +11820,11 @@ impl Interpreter {
                         _ => false,
                     };
                     if !ok {
-                        return Err(
-                            "contract violation: `requires` failed entering foreign fn".to_string()
-                        );
+                        return Err(format!(
+                            "Contract violation in extern fn {}: requires {} failed",
+                            name,
+                            format_contract_expr(pre)
+                        ));
                     }
                 }
                 // Dispatch through the trampoline.
@@ -11829,8 +11844,12 @@ impl Interpreter {
                             _ => false,
                         };
                         if !ok && !trusted {
-                            return Err("contract violation: `ensures` failed leaving foreign fn"
-                                .to_string());
+                            return Err(format!(
+                                "Contract violation in extern fn {}: ensures {} failed (result = {})",
+                                name,
+                                format_contract_expr(post),
+                                result
+                            ));
                         }
                     }
                 }
@@ -13234,11 +13253,16 @@ fn execute_file(
                             // extern decls in the program and is reclaimed when the process exits.
                             let name: &'static str =
                                 Box::leak(d.resilient_name.clone().into_boxed_str());
+                            // RES-FFI-V3: ExternDecl stores params as
+                            // (type, name); contract eval needs the names.
+                            let param_names: Vec<String> =
+                                d.parameters.iter().map(|(_, n)| n.clone()).collect();
                             interpreter.env.set(
                                 d.resilient_name.clone(),
                                 Value::Foreign {
                                     name,
                                     symbol: sym,
+                                    param_names,
                                     requires: d.requires.clone(),
                                     ensures: d.ensures.clone(),
                                     trusted: d.trusted,
@@ -24171,11 +24195,16 @@ mod ffi_integration_tests {
                             // extern decls in the program and is reclaimed when the process exits.
                             let name: &'static str =
                                 Box::leak(d.resilient_name.clone().into_boxed_str());
+                            // RES-FFI-V3: ExternDecl stores params as
+                            // (type, name); contract eval needs the names.
+                            let param_names: Vec<String> =
+                                d.parameters.iter().map(|(_, n)| n.clone()).collect();
                             interpreter.env.set(
                                 d.resilient_name.clone(),
                                 Value::Foreign {
                                     name,
                                     symbol: sym,
+                                    param_names,
                                     requires: d.requires.clone(),
                                     ensures: d.ensures.clone(),
                                     trusted: d.trusted,
@@ -24287,5 +24316,132 @@ mod ffi_integration_tests {
         let mut tc = typechecker::TypeChecker::new();
         let result = tc.check_program(&program);
         assert!(result.is_ok(), "typecheck/verifier failed: {:?}", result);
+    }
+
+    /// RES-FFI-V3: `requires` clauses on extern fn must evaluate against
+    /// the actual argument values, with parameter names bound in scope.
+    /// A satisfied precondition lets the call go through.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_requires_named_param_passes_when_satisfied() {
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_sqrt(x: Float) -> Float = \"sqrt\" requires x >= 0.0; }; fn main(int _d) { return my_sqrt(16.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_sqrt(x: Float) -> Float = \"sqrt\" requires x >= 0.0; }; fn main(int _d) { return my_sqrt(16.0); } main(0);";
+        let result = run_with_ffi(src).expect("sqrt(16.0) with x>=0 must succeed");
+        match result {
+            Value::Float(v) => assert!((v - 4.0_f64).abs() < 1e-10, "sqrt(16) == 4, got {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    /// RES-FFI-V3: a violated `requires` on an extern fn must trap with
+    /// a clear contract-violation runtime error referencing the clause.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_requires_named_param_traps_when_violated() {
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_sqrt(x: Float) -> Float = \"sqrt\" requires x >= 0.0; }; fn main(int _d) { return my_sqrt(-1.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_sqrt(x: Float) -> Float = \"sqrt\" requires x >= 0.0; }; fn main(int _d) { return my_sqrt(-1.0); } main(0);";
+        let err = run_with_ffi(src).expect_err("requires x >= 0.0 must trap on -1.0");
+        assert!(
+            err.contains("Contract violation") && err.contains("requires"),
+            "expected contract-violation requires error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("my_sqrt"),
+            "error should name the extern fn, got: {}",
+            err
+        );
+    }
+
+    /// RES-FFI-V3: multiple `requires` clauses chained on a single extern
+    /// fn must all bind their named parameters and evaluate together.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_requires_multiple_clauses_all_checked() {
+        // pow(x, y) with x >= 0 and y >= 0 — both pass for (2.0, 3.0).
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_pow(x: Float, y: Float) -> Float = \"pow\" requires x >= 0.0 requires y >= 0.0; }; fn main(int _d) { return my_pow(2.0, 3.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_pow(x: Float, y: Float) -> Float = \"pow\" requires x >= 0.0 requires y >= 0.0; }; fn main(int _d) { return my_pow(2.0, 3.0); } main(0);";
+        let result = run_with_ffi(src).expect("pow(2, 3) under (x>=0 && y>=0) must succeed");
+        match result {
+            Value::Float(v) => assert!((v - 8.0_f64).abs() < 1e-10, "pow(2,3) == 8, got {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    /// RES-FFI-V3: an `ensures` clause on an extern fn references the
+    /// special `result` identifier and traps if the postcondition fails.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_ensures_traps_when_postcondition_violated() {
+        // cos(3.14) ≈ -0.9999; ensures result >= 0.0 must fail.
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_cos(x: Float) -> Float = \"cos\" ensures result >= 0.0; }; fn main(int _d) { return my_cos(3.14); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_cos(x: Float) -> Float = \"cos\" ensures result >= 0.0; }; fn main(int _d) { return my_cos(3.14); } main(0);";
+        let err = run_with_ffi(src)
+            .expect_err("ensures result >= 0.0 must trap when cos(3.14) is negative");
+        assert!(
+            err.contains("Contract violation") && err.contains("ensures"),
+            "expected contract-violation ensures error, got: {}",
+            err
+        );
+    }
+
+    /// RES-FFI-V3: an `ensures` clause that holds simply lets the call
+    /// return the produced value.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_ensures_passes_when_postcondition_holds() {
+        // cos(0.0) == 1.0; ensures result >= 0.0 holds.
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_cos(x: Float) -> Float = \"cos\" ensures result >= 0.0; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_cos(x: Float) -> Float = \"cos\" ensures result >= 0.0; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        let result = run_with_ffi(src).expect("cos(0.0) under ensures result >= 0.0 must succeed");
+        match result {
+            Value::Float(v) => assert!((v - 1.0_f64).abs() < 1e-10, "cos(0) == 1, got {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    /// RES-FFI-V3: `@trusted` extern fns assume their `ensures` rather
+    /// than checking it at runtime. A clearly-false `ensures` should
+    /// therefore NOT trap.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_trusted_ensures_is_not_runtime_checked() {
+        // cos(0.0) == 1.0; ensures result < 0.0 is FALSE, but @trusted
+        // means runtime treats it as an axiom and skips the check.
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { @trusted fn my_cos(x: Float) -> Float = \"cos\" ensures result < 0.0; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { @trusted fn my_cos(x: Float) -> Float = \"cos\" ensures result < 0.0; }; fn main(int _d) { return my_cos(0.0); } main(0);";
+        let result = run_with_ffi(src).expect("@trusted ensures is not runtime-checked");
+        match result {
+            Value::Float(v) => assert!((v - 1.0_f64).abs() < 1e-10, "cos(0) == 1, got {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    /// RES-FFI-V3: legacy positional `_0` / `_1` bindings keep working
+    /// alongside the new named bindings — older code stays valid.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn extern_requires_positional_underscore_still_works() {
+        #[cfg(target_os = "macos")]
+        let src = "extern \"libSystem.dylib\" { fn my_sqrt(x: Float) -> Float = \"sqrt\" requires _0 >= 0.0; }; fn main(int _d) { return my_sqrt(9.0); } main(0);";
+        #[cfg(target_os = "linux")]
+        let src = "extern \"libm.so.6\" { fn my_sqrt(x: Float) -> Float = \"sqrt\" requires _0 >= 0.0; }; fn main(int _d) { return my_sqrt(9.0); } main(0);";
+        let result = run_with_ffi(src).expect("legacy _0 binding must still work");
+        match result {
+            Value::Float(v) => assert!((v - 3.0_f64).abs() < 1e-10, "sqrt(9) == 3, got {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
     }
 }
