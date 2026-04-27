@@ -11,8 +11,9 @@ file-claims + extension-point system introduced in PR #230.
 | `claim-files.sh` | Register files owned by a branch |
 | `release-claims.sh` | Release claims (called by CI on PR merge) |
 | `pick-ticket.sh` | Select the next `agent-ready` ticket not already in an open PR |
-| `dispatch-agent.sh` | Create worktree + branch + draft PR for a ticket |
-| `agent-status.sh` | One-screen view of worktrees, open PRs, claims, and the next ticket |
+| `dispatch-agent.sh` | Create worktree + branch + draft PR for a ticket, then record inferred file claims |
+| `agent-handoff.sh` | Post resumable PR handoff comments when model context is lost |
+| `agent-status.sh` | One-screen or JSON view of worktrees, open PRs, claims, and the next ticket |
 | **`verify-scope.sh`** | Guardrail: diff-shape + fmt + clippy + test + overlap, writes JSON report |
 | **`ready-or-bail.sh`** | Runs `verify-scope.sh`; marks PR ready on green, posts failure comment on red |
 | **`orchestrator.sh`** | The grand loop: pick → dispatch → sub-agent → ready-or-bail |
@@ -24,9 +25,12 @@ catch regressions the agent can't see itself. We enforce at four layers:
 
 1. **Pre-dispatch** (`check-overlaps.sh` + `pick-ticket.sh`) — refuse to
    start work that would collide with another open PR or an active claim.
+   `dispatch-agent.sh` extracts expected files from the issue form and
+   commits those claims before opening the draft PR.
 2. **In-agent** — `CLAUDE.md` in the repo root tells the sub-agent the
    rules (no test edits, no new `unsafe`, no CI edits, bounded blast
-   radius). Self-enforcement; cheap and fast.
+   radius). `agent-handoff.sh` writes durable PR comments so another
+   agent can resume after context loss. Self-enforcement; cheap and fast.
 3. **Pre-ready** (`verify-scope.sh` via `ready-or-bail.sh`) — the
    gatekeeper. Only this script marks a draft PR ready. If it fails, the
    PR stays draft with a structured failure comment.
@@ -52,6 +56,9 @@ agent-scripts/orchestrator.sh --loop
 
 # Plan without mutating anything.
 agent-scripts/orchestrator.sh --dry-run
+
+# Feed a visual board or monitor.
+agent-scripts/agent-status.sh --json
 ```
 
 Under the hood each iteration does:
@@ -103,6 +110,13 @@ own pipeline) with `--skip tests --skip clippy --skip fmt`.
 - Does **not** run the agent itself. The caller (a human, another
   script, or a spawned Claude agent) does the actual work inside the
   worktree.
+
+## Formal model
+
+`docs/agent-orchestration.tla` models the hardened orchestration state
+machine. The key safety invariants are: live PRs never share claimed files,
+ready PRs have passed guardrails, merged PRs passed guardrails + integration
+sync + CI, and merged/abandoned PRs release claims.
 
 ## Why not GitHub Projects?
 

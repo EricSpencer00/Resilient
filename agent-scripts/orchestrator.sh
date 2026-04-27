@@ -64,6 +64,13 @@ run_one() {
   local pr
   pr="$(printf '%s' "$dispatch_out" | awk -F'/pull/' '/Draft PR/ {print $2; exit}')"
   log "worktree=$worktree pr=$pr"
+  "$SCRIPT_DIR/agent-handoff.sh" \
+    --pr "$pr" \
+    --issue "$issue" \
+    --phase executor-starting \
+    --status "sub-agent prompt prepared" \
+    --worktree "$worktree" \
+    --summary "The orchestrator is launching the executor. Resume from the issue body, branch diff, latest commits, CI status, and this handoff thread." >/dev/null || true
 
   local body_file="/tmp/issue-${issue}.md"
   gh issue view "$issue" --json title,body -q '.title + "\n\n" + .body' > "$body_file"
@@ -102,6 +109,14 @@ EOF
 
   # Best-effort: if the agent forgot, run the guardrail ourselves.
   (cd "$worktree" && bash "$SCRIPT_DIR/ready-or-bail.sh" --pr "$pr") || true
+
+  "$SCRIPT_DIR/agent-handoff.sh" \
+    --pr "$pr" \
+    --issue "$issue" \
+    --phase executor-finished \
+    --status "orchestrator iteration complete" \
+    --worktree "$worktree" \
+    --summary "Executor process returned. Inspect the branch diff, latest PR comments, and guardrail report to resume." >/dev/null || true
 
   log "finished #${issue}"
 }
