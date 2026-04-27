@@ -10,6 +10,7 @@ use std::rc::Rc;
 // Import modules
 mod bytecode;
 mod compiler;
+mod const_fold;
 mod disasm;
 mod imports;
 #[cfg(feature = "jit")]
