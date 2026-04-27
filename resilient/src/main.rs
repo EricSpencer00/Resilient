@@ -1229,6 +1229,49 @@ impl BackoffConfig {
     }
 }
 
+/// RES-359: schedule shape for a `live` block's backoff.
+///
+/// - `Exponential` — `min(max_ms, base_ms * factor^retries)` (the
+///   RES-139 historical default; preserves `factor` as a free
+///   parameter).
+/// - `Linear` — `min(max_ms, step_ms * (retries + 1))`; delay grows
+///   additively by `step_ms` each retry, e.g. step=20 → 20, 40,
+///   60, 80, … capped at `max_ms`. Modeled separately from
+///   `BackoffConfig` to keep the historical 3-field public struct
+///   layout untouched (existing test literals still compile).
+///
+/// The kind is stored on `Node::LiveBlock`, alongside `BackoffConfig`,
+/// rather than inside it — so a `live backoff(...)` clause without
+/// `kind=...` retains the exponential schedule it has always had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackoffKind {
+    /// Capped exponential growth (`factor^retries`). Historical
+    /// default for `live backoff(...)`.
+    #[default]
+    Exponential,
+    /// Linear additive growth — every retry adds `base_ms` to the
+    /// previous delay (`base_ms`, `2*base_ms`, …), capped at `max_ms`.
+    Linear,
+}
+
+/// RES-359: compute the per-retry sleep for a given backoff config
+/// and schedule kind.
+///
+/// `retries=0` is the first retry (after the first failure); the
+/// linear schedule yields `base_ms` on retry 0, `2*base_ms` on retry
+/// 1, etc. `saturating_*` arithmetic guards against `u64` overflow
+/// on aggressive parameters.
+fn live_backoff_delay_ms(cfg: &BackoffConfig, kind: BackoffKind, retries: u32) -> u64 {
+    match kind {
+        BackoffKind::Exponential => cfg.delay_ms(retries),
+        BackoffKind::Linear => {
+            let steps = (retries as u64).saturating_add(1);
+            let want = cfg.base_ms.saturating_mul(steps);
+            want.min(cfg.max_ms)
+        }
+    }
+}
+
 /// RES-389: declared effect set for a function.
 ///
 /// The MVP carries two bits — `pure` and `io` — sufficient to
@@ -1399,6 +1442,11 @@ enum Node {
         /// prefix. `None` → zero-sleep retries (the original
         /// behaviour; existing `live { ... }` stays unchanged).
         backoff: Option<BackoffConfig>,
+        /// RES-359: schedule shape for `backoff` (exponential vs
+        /// linear). Only meaningful when `backoff` is `Some`; defaults
+        /// to `Exponential` so plain `live backoff(...)` keeps its
+        /// historical curve.
+        backoff_kind: BackoffKind,
         /// RES-142: optional wall-clock budget via the
         /// `live within <duration> { ... }` clause. `Some(dl)` carries
         /// a `Node::DurationLiteral` with the parsed nanoseconds;
@@ -1406,6 +1454,12 @@ enum Node {
         /// semantics). Backoff and timeout coexist: backoff sleeps
         /// count against the budget.
         timeout: Option<Box<Node>>,
+        /// RES-359: optional retry budget set via the
+        /// `live retries(N) { ... }` clause. `None` → ticket default
+        /// (`DEFAULT_LIVE_MAX_RETRIES`, 3). `Some(0)` means "one
+        /// attempt only, no retries" — the body runs once and any
+        /// error surfaces immediately.
+        max_retries: Option<u32>,
         /// RES-088: span of the `live` keyword. Consumed in follow-ups.
         #[allow(dead_code)]
         span: span::Span,
@@ -4804,13 +4858,15 @@ impl Parser {
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
 
-        // RES-139 + RES-142: optional `backoff(...)` and `within
-        // <duration>` clauses. Both are context-sensitive identifiers
-        // (no reserved words burned); either order is accepted, but
-        // neither may appear twice. Loop until we hit `invariant` or
-        // `{`.
+        // RES-139 + RES-142 + RES-359: optional `backoff(...)`,
+        // `within <duration>`, and `retries(N)` clauses. All are
+        // context-sensitive identifiers (no reserved words burned);
+        // any order is accepted, but no clause may appear twice. Loop
+        // until we hit `invariant` or `{`.
         let mut backoff: Option<BackoffConfig> = None;
+        let mut backoff_kind: BackoffKind = BackoffKind::Exponential;
         let mut timeout: Option<Box<Node>> = None;
+        let mut max_retries: Option<u32> = None;
         loop {
             match &self.current_token {
                 Token::Identifier(n) if n == "backoff" => {
@@ -4819,9 +4875,10 @@ impl Parser {
                             "duplicate `backoff(...)` clause in live block".to_string(),
                         );
                     }
-                    let cfg = self.parse_backoff_kwargs();
+                    let (cfg, kind) = self.parse_backoff_kwargs();
                     if backoff.is_none() {
                         backoff = Some(cfg);
+                        backoff_kind = kind;
                     }
                 }
                 Token::Identifier(n) if n == "within" => {
@@ -4833,6 +4890,17 @@ impl Parser {
                     let dl = self.parse_within_clause();
                     if timeout.is_none() {
                         timeout = dl.map(Box::new);
+                    }
+                }
+                Token::Identifier(n) if n == "retries" => {
+                    if max_retries.is_some() {
+                        self.record_error(
+                            "duplicate `retries(N)` clause in live block".to_string(),
+                        );
+                    }
+                    let n_opt = self.parse_retries_clause();
+                    if max_retries.is_none() {
+                        max_retries = n_opt;
                     }
                 }
                 _ => break,
@@ -4862,7 +4930,9 @@ impl Parser {
                 }),
                 invariants,
                 backoff,
+                backoff_kind,
                 timeout,
+                max_retries,
                 span: self.span_at_current(),
             };
         }
@@ -4873,9 +4943,61 @@ impl Parser {
             body: Box::new(body),
             invariants,
             backoff,
+            backoff_kind,
             timeout,
+            max_retries,
             span: self.span_at_current(),
         }
+    }
+
+    /// RES-359: parse `retries(N)` where `N` is a non-negative integer
+    /// literal. On entry, `current_token` is the `retries` identifier;
+    /// on exit, `current_token` sits on whatever follows `)`. Returns
+    /// `None` and records a diagnostic on parse failure.
+    ///
+    /// The parsed value is held to a small upper bound (1024) to keep
+    /// adversarial source from producing test-runs that effectively
+    /// hang on a permanently-failing live body.
+    fn parse_retries_clause(&mut self) -> Option<u32> {
+        self.next_token(); // skip `retries`
+        if self.current_token != Token::LeftParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '(' after 'retries', found {}", tok));
+            return None;
+        }
+        self.next_token(); // skip '('
+
+        let value = match &self.current_token {
+            Token::IntLiteral(n) if *n >= 0 => *n as u64,
+            other => {
+                self.record_error(format!(
+                    "Expected non-negative integer literal in `retries(...)`, found {}",
+                    other
+                ));
+                return None;
+            }
+        };
+        self.next_token(); // skip int literal
+
+        if self.current_token != Token::RightParen {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected ')' after `retries({})`, found {}",
+                value, tok
+            ));
+            return None;
+        }
+        self.next_token(); // skip ')'
+
+        const RETRIES_HARD_CAP: u64 = 1024;
+        if value > RETRIES_HARD_CAP {
+            self.record_error(format!(
+                "`retries({})` exceeds hard cap of {} — large budgets risk hanging on permanent faults",
+                value, RETRIES_HARD_CAP
+            ));
+            return Some(RETRIES_HARD_CAP as u32);
+        }
+        Some(value as u32)
     }
 
     /// RES-142: parse `within <integer><unit>` into a
@@ -4939,22 +5061,25 @@ impl Parser {
         })
     }
 
-    /// RES-139: parse `backoff(base_ms=N, factor=K, max_ms=M)` —
-    /// each kwarg optional with ticket defaults (1 / 2 / 100). On
-    /// entry, `current_token` is the `backoff` identifier. On exit,
+    /// RES-139 + RES-359: parse `backoff(base_ms=N, factor=K,
+    /// max_ms=M, kind=linear|exponential)` — each kwarg optional with
+    /// ticket defaults (1 / 2 / 100, exponential). On entry,
+    /// `current_token` is the `backoff` identifier. On exit,
     /// `current_token` sits on whatever follows the closing `)`.
     ///
-    /// Parse errors (missing `(`, non-int literal, `factor > 10`,
-    /// unknown kwarg) `record_error` with a clean diagnostic; we
-    /// then keep going with a best-effort default so the caller
-    /// can still parse the `{ ... }` body without cascading.
-    fn parse_backoff_kwargs(&mut self) -> BackoffConfig {
+    /// Parse errors (missing `(`, non-int literal where one is
+    /// required, `factor > 10`, unknown kwarg, unknown `kind`)
+    /// `record_error` with a clean diagnostic; we then keep going
+    /// with a best-effort default so the caller can still parse the
+    /// `{ ... }` body without cascading.
+    fn parse_backoff_kwargs(&mut self) -> (BackoffConfig, BackoffKind) {
         let mut cfg = BackoffConfig::default_ticket();
+        let mut kind = BackoffKind::Exponential;
         self.next_token(); // skip `backoff`
         if self.current_token != Token::LeftParen {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '(' after 'backoff', found {}", tok));
-            return cfg;
+            return (cfg, kind);
         }
         self.next_token(); // skip '('
 
@@ -4978,7 +5103,7 @@ impl Parser {
                 Token::Identifier(n) => n.clone(),
                 other => {
                     self.record_error(format!(
-                        "Expected backoff kwarg name (`base_ms`, `factor`, `max_ms`), found {}",
+                        "Expected backoff kwarg name (`base_ms`, `factor`, `max_ms`, `kind`), found {}",
                         other
                     ));
                     break;
@@ -4996,7 +5121,39 @@ impl Parser {
             }
             self.next_token(); // skip '='
 
-            // kwarg value — integer literal only.
+            // RES-359: `kind` takes the keyword `linear` or the
+            // identifier `exponential`; the integer kwargs continue
+            // to take an int literal. `linear` was reserved as a
+            // keyword by RES-385 (linear types), so it tokenizes as
+            // `Token::Linear` rather than an `Identifier` — handle
+            // both arms explicitly.
+            if name == "kind" {
+                let kind_str: String = match &self.current_token {
+                    Token::Linear => "linear".to_string(),
+                    Token::Identifier(n) => n.clone(),
+                    other => {
+                        self.record_error(format!(
+                            "Expected `linear` or `exponential` for backoff.`kind`, found {}",
+                            other
+                        ));
+                        break;
+                    }
+                };
+                self.next_token(); // skip kind value token
+                match kind_str.as_str() {
+                    "exponential" => kind = BackoffKind::Exponential,
+                    "linear" => kind = BackoffKind::Linear,
+                    other => {
+                        self.record_error(format!(
+                            "unknown backoff kind `{}` — expected `linear` or `exponential`",
+                            other
+                        ));
+                    }
+                }
+                continue;
+            }
+
+            // Integer-valued kwargs.
             let value = match &self.current_token {
                 Token::IntLiteral(n) if *n >= 0 => *n as u64,
                 other => {
@@ -5024,7 +5181,7 @@ impl Parser {
                 "max_ms" => cfg.max_ms = value,
                 other => {
                     self.record_error(format!(
-                        "unknown backoff kwarg `{}` — expected one of `base_ms`, `factor`, `max_ms`",
+                        "unknown backoff kwarg `{}` — expected one of `base_ms`, `factor`, `max_ms`, `kind`",
                         other
                     ));
                 }
@@ -5034,7 +5191,7 @@ impl Parser {
         if self.current_token == Token::RightParen {
             self.next_token(); // skip ')'
         }
-        cfg
+        (cfg, kind)
     }
 
     fn parse_assert(&mut self) -> Node {
@@ -9582,6 +9739,78 @@ thread_local! {
     static LIVE_RETRY_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
+// --- RES-359: live-block retry budget + sleep hook ---
+//
+// `DEFAULT_LIVE_MAX_RETRIES` is the historical retry cap used by
+// every `live { ... }` block that doesn't carry an explicit
+// `retries(N)` clause. Lifted from the `const MAX_RETRIES = 3` that
+// previously lived inside `eval_live_block` so the parser, the
+// runtime, and tests agree on a single source of truth. Changing
+// this constant shifts the legacy default for ALL existing source —
+// don't touch it without flagging a behaviour change.
+pub const DEFAULT_LIVE_MAX_RETRIES: u32 = 3;
+
+// `LIVE_SLEEP_HOOK` lets tests substitute a deterministic
+// stand-in for `std::thread::sleep` so backoff-schedule tests can
+// assert the *requested* delay sequence without the wall-clock
+// flake of real sleeps. `None` means use the production hook
+// (`std::thread::sleep`); `Some(callback)` is consumed by every
+// live-block retry sleep on the current thread until cleared.
+//
+// Test discipline: the override is per-thread, so parallel tests
+// never see one another's hook. Use the `LiveSleepHookGuard` RAII
+// wrapper to install + auto-clear on Drop — manual `set` /
+// `clear` invites cross-test bleed when `unwrap` panics on a
+// failure path.
+type LiveSleepHook = Box<dyn Fn(u64)>;
+
+thread_local! {
+    static LIVE_SLEEP_HOOK: RefCell<Option<LiveSleepHook>> = const { RefCell::new(None) };
+}
+
+/// RES-359: top-level entry point for live-block retry sleeps.
+/// Routes through the `LIVE_SLEEP_HOOK` thread-local override (if
+/// any) so test code can replace real wall-clock sleeps with a
+/// deterministic call-recorder.
+fn live_sleep_ms(ms: u64) {
+    let hooked = LIVE_SLEEP_HOOK.with(|h| {
+        if let Some(cb) = h.borrow().as_ref() {
+            cb(ms);
+            true
+        } else {
+            false
+        }
+    });
+    if !hooked {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
+/// RES-359: RAII guard for installing a test sleep hook. Drop
+/// restores the previous (typically `None`) hook so a test failure
+/// doesn't leak the override into the next test on the thread.
+#[cfg(test)]
+struct LiveSleepHookGuard;
+
+#[cfg(test)]
+impl LiveSleepHookGuard {
+    fn install<F: Fn(u64) + 'static>(cb: F) -> Self {
+        LIVE_SLEEP_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(cb));
+        });
+        LiveSleepHookGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for LiveSleepHookGuard {
+    fn drop(&mut self) {
+        LIVE_SLEEP_HOOK.with(|h| {
+            *h.borrow_mut() = None;
+        });
+    }
+}
+
 // --- RES-211: --panic-on-fault dev-mode flag ---
 //
 // When set, the live-block retry loop is disabled: the first
@@ -10016,7 +10245,9 @@ impl Interpreter {
                 body,
                 invariants,
                 backoff,
+                backoff_kind,
                 timeout,
+                max_retries,
                 span,
             } => {
                 // RES-142: unpack the `within <duration>` clause
@@ -10026,7 +10257,15 @@ impl Interpreter {
                     Node::DurationLiteral { nanos, .. } => Some(*nanos),
                     _ => None,
                 });
-                self.eval_live_block(body, invariants, backoff.as_ref(), timeout_ns, *span)
+                self.eval_live_block(
+                    body,
+                    invariants,
+                    backoff.as_ref(),
+                    *backoff_kind,
+                    timeout_ns,
+                    *max_retries,
+                    *span,
+                )
             }
             // RES-142: duration literals are only legal inside a
             // `live ... within <duration> { ... }` clause — the
@@ -11208,16 +11447,25 @@ impl Interpreter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn eval_live_block(
         &mut self,
         body: &Node,
         invariants: &[Node],
         backoff: Option<&BackoffConfig>,
+        backoff_kind: BackoffKind,
         timeout_ns: Option<u64>,
+        max_retries_override: Option<u32>,
         block_span: span::Span,
     ) -> RResult<Value> {
-        const MAX_RETRIES: usize = 3;
-        let mut retry_count = 0;
+        // RES-359: retry budget is now configurable via the
+        // `live retries(N) { ... }` clause. `None` → ticket default
+        // (`DEFAULT_LIVE_MAX_RETRIES`). The total number of body
+        // attempts is `max_retries + 1` (the initial attempt plus up
+        // to N retries on failure); `retries(0)` therefore means
+        // exactly one attempt.
+        let max_retries: usize = max_retries_override.unwrap_or(DEFAULT_LIVE_MAX_RETRIES) as usize;
+        let mut retry_count: usize = 0;
 
         // Create a snapshot of the environment
         // RES-050: now that env clone is shallow (Rc bump), we must
@@ -11291,13 +11539,13 @@ impl Interpreter {
                     // (that's the `exhaustions` counter's job).
                     // Relaxed is fine; counters are diagnostic-
                     // quality, not a synchronization primitive.
-                    if retry_count < MAX_RETRIES {
+                    if retry_count < max_retries {
                         LIVE_TOTAL_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
 
                     eprintln!(
                         "\x1B[33m[LIVE BLOCK] Error detected (attempt {}/{}): {}\x1B[0m",
-                        retry_count, MAX_RETRIES, error
+                        retry_count, max_retries, error
                     );
 
                     // RES-142: budget check. If the wall-clock
@@ -11317,7 +11565,7 @@ impl Interpreter {
                         _ => false,
                     };
 
-                    if retry_count >= MAX_RETRIES || timed_out {
+                    if retry_count >= max_retries || timed_out {
                         let reason = if timed_out {
                             "timed out"
                         } else {
@@ -11350,9 +11598,20 @@ impl Interpreter {
                                 retry_count, depth, error
                             ));
                         }
+                        // RES-359: surface the configured budget
+                        // (which equals the historical 3 when no
+                        // `retries(N)` clause is present, preserving
+                        // the legacy error shape exactly). The
+                        // "after N attempts" count reports the
+                        // configured limit, not the local counter,
+                        // so the diagnostic line reads naturally
+                        // even when N=0 ("Live block failed after 0
+                        // attempts" — matching the documented
+                        // budget rather than the implementation
+                        // detail of one body invocation).
                         return Err(format!(
                             "Live block failed after {} attempts (retry depth: {}): {}",
-                            MAX_RETRIES, depth, error
+                            max_retries, depth, error
                         ));
                     }
 
@@ -11364,19 +11623,21 @@ impl Interpreter {
                     eprintln!(
                         "\x1B[36m[LIVE BLOCK] Retrying execution (attempt {}/{})\x1B[0m",
                         retry_count + 1,
-                        MAX_RETRIES
+                        max_retries
                     );
 
-                    // RES-139: exponential backoff between retries.
+                    // RES-139 + RES-359: backoff between retries.
                     // `retries` here is `retry_count - 1` so the
                     // first retry (after the first failure) sleeps
-                    // `base_ms`, the second `base_ms * factor`,
-                    // etc., capped at `max_ms`. `None` preserves
-                    // the zero-sleep behaviour for plain `live { }`.
+                    // the schedule's value at index 0. `None`
+                    // preserves the zero-sleep behaviour for plain
+                    // `live { }`. The schedule shape is exponential
+                    // by default and linear when the parser saw
+                    // `kind=linear`.
                     if let Some(cfg) = backoff {
-                        let ms = cfg.delay_ms((retry_count - 1) as u32);
+                        let ms = live_backoff_delay_ms(cfg, backoff_kind, (retry_count - 1) as u32);
                         if ms > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                            live_sleep_ms(ms);
                         }
                     }
 
@@ -22868,6 +23129,442 @@ mod tests {
             err.contains("duration literals are only valid inside `live within"),
             "expected duration-literal-guard diagnostic, got: {}",
             err
+        );
+    }
+
+    // --- RES-359: live block retry budget + linear backoff ---
+
+    /// Helper: walk `program` and return the first LiveBlock's
+    /// `(max_retries, backoff_kind)` pair. Mirrors
+    /// `find_first_live_backoff` for the RES-359 fields.
+    fn find_first_live_retry_config(program: &Node) -> Option<(Option<u32>, BackoffKind)> {
+        fn walk(n: &Node) -> Option<(Option<u32>, BackoffKind)> {
+            match n {
+                Node::LiveBlock {
+                    max_retries,
+                    backoff_kind,
+                    ..
+                } => Some((*max_retries, *backoff_kind)),
+                Node::Program(stmts) => stmts.iter().find_map(|s| walk(&s.node)),
+                Node::Function { body, .. } => walk(body),
+                Node::Block { stmts, .. } => stmts.iter().find_map(walk),
+                Node::IfStatement {
+                    consequence,
+                    alternative,
+                    ..
+                } => walk(consequence).or_else(|| alternative.as_ref().and_then(|a| walk(a))),
+                _ => None,
+            }
+        }
+        walk(program)
+    }
+
+    #[test]
+    fn parse_live_retries_clause_populates_max_retries() {
+        let src = "fn main(int _d) { live retries(7) { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let (max_retries, _kind) =
+            find_first_live_retry_config(&program).expect("live block present");
+        assert_eq!(max_retries, Some(7));
+    }
+
+    #[test]
+    fn parse_live_without_retries_clause_keeps_none() {
+        // Plain `live` carries `max_retries = None`, which the
+        // runtime maps to the historical default (3).
+        let src = "fn main(int _d) { live { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let (max_retries, kind) =
+            find_first_live_retry_config(&program).expect("live block present");
+        assert!(
+            max_retries.is_none(),
+            "expected None, got {:?}",
+            max_retries
+        );
+        assert_eq!(kind, BackoffKind::Exponential);
+    }
+
+    #[test]
+    fn parse_live_retries_zero_is_valid() {
+        // `retries(0)` is a legal request for "one attempt only,
+        // no retries" — the body runs once and any error surfaces
+        // immediately.
+        let src = "fn main(int _d) { live retries(0) { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let (max_retries, _) = find_first_live_retry_config(&program).expect("live block present");
+        assert_eq!(max_retries, Some(0));
+    }
+
+    #[test]
+    fn parse_live_retries_negative_errors() {
+        let src = "fn main(int _d) { live retries(-1) { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("non-negative integer literal in `retries(...)`")),
+            "expected non-negative diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_retries_above_hard_cap_errors() {
+        let src = "fn main(int _d) { live retries(2000) { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("exceeds hard cap")),
+            "expected hard-cap diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_duplicate_retries_errors() {
+        let src = "fn main(int _d) { live retries(3) retries(5) { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("duplicate `retries(N)`")),
+            "expected duplicate-retries diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn parse_live_retries_combines_with_backoff_and_within() {
+        // All three optional clauses present together. Order chosen
+        // to mix retries between backoff and within so the loop's
+        // any-order parsing is exercised.
+        let src = "\
+            fn main(int _d) {\n\
+                live backoff(base_ms=2) retries(5) within 50ms { let x = 1; }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let (max_retries, _) = find_first_live_retry_config(&program).expect("live block present");
+        assert_eq!(max_retries, Some(5));
+        assert_eq!(find_first_live_timeout_ns(&program), Some(50_000_000));
+        assert_eq!(
+            find_first_live_backoff(&program).map(|c| c.base_ms),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn parse_live_backoff_kind_linear_populates_kind() {
+        let src =
+            "fn main(int _d) { live backoff(base_ms=10, kind=linear) { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let (_, kind) = find_first_live_retry_config(&program).expect("live block present");
+        assert_eq!(kind, BackoffKind::Linear);
+        // base_ms still reaches the BackoffConfig.
+        assert_eq!(
+            find_first_live_backoff(&program).map(|c| c.base_ms),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn parse_live_backoff_kind_exponential_is_default() {
+        // Explicit `kind=exponential` matches the no-kwarg default.
+        let src = "fn main(int _d) { live backoff(kind=exponential) { let x = 1; } } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let (_, kind) = find_first_live_retry_config(&program).expect("live block present");
+        assert_eq!(kind, BackoffKind::Exponential);
+    }
+
+    #[test]
+    fn parse_live_backoff_kind_unknown_errors() {
+        let src = "fn main(int _d) { live backoff(kind=quadratic) { let x = 1; } } main(0);";
+        let (_program, errs) = parse(src);
+        assert!(
+            errs.iter().any(|e| e.contains("unknown backoff kind")),
+            "expected unknown-kind diagnostic, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn live_backoff_delay_ms_linear_schedule() {
+        let cfg = BackoffConfig {
+            base_ms: 20,
+            factor: 99, // ignored under Linear
+            max_ms: 100,
+        };
+        // step=20: 20, 40, 60, 80, 100 (cap), 100 (cap), …
+        assert_eq!(live_backoff_delay_ms(&cfg, BackoffKind::Linear, 0), 20);
+        assert_eq!(live_backoff_delay_ms(&cfg, BackoffKind::Linear, 1), 40);
+        assert_eq!(live_backoff_delay_ms(&cfg, BackoffKind::Linear, 3), 80);
+        assert_eq!(live_backoff_delay_ms(&cfg, BackoffKind::Linear, 4), 100);
+        assert_eq!(live_backoff_delay_ms(&cfg, BackoffKind::Linear, 99), 100);
+    }
+
+    #[test]
+    fn live_backoff_delay_ms_exponential_matches_legacy() {
+        // Wrapper must agree with `BackoffConfig::delay_ms` byte-for-
+        // byte so the no-`kind` default preserves RES-139 semantics.
+        let cfg = BackoffConfig {
+            base_ms: 1,
+            factor: 2,
+            max_ms: 100,
+        };
+        for retries in [0u32, 1, 2, 5, 7, 30] {
+            assert_eq!(
+                live_backoff_delay_ms(&cfg, BackoffKind::Exponential, retries),
+                cfg.delay_ms(retries),
+                "retries={}",
+                retries
+            );
+        }
+    }
+
+    #[test]
+    fn live_backoff_delay_ms_linear_saturates_without_overflow() {
+        // step * (retries + 1) on aggressive parameters cannot
+        // overflow `u64` — the cap holds.
+        let cfg = BackoffConfig {
+            base_ms: u64::MAX / 2,
+            factor: 1,
+            max_ms: 50,
+        };
+        assert_eq!(live_backoff_delay_ms(&cfg, BackoffKind::Linear, 1_000), 50);
+    }
+
+    #[test]
+    fn live_retries_zero_runs_body_once_then_surfaces() {
+        // `retries(0)` → one attempt; the first failure exhausts.
+        let src = "\
+            static let calls = 0;\n\
+            fn always_fail() {\n\
+                calls = calls + 1;\n\
+                assert(false, \"forced\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live retries(0) {\n\
+                    let r = always_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("retries(0) must surface the first failure");
+        assert!(
+            err.contains("Live block failed after 0 attempts"),
+            "expected `after 0 attempts` shape, got: {}",
+            err
+        );
+        match interp
+            .statics
+            .borrow()
+            .get("calls")
+            .expect("static counter")
+        {
+            Value::Int(n) => {
+                assert_eq!(*n, 1, "body must run exactly once on retries(0), got {}", n)
+            }
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_retries_explicit_budget_runs_body_n_plus_one_times() {
+        // `retries(5)` on a permanent failure → body runs 5 times
+        // total (initial attempt + 4 retries) before exhaustion.
+        // With the old hard-coded MAX_RETRIES=3 this test would
+        // observe only 3 calls, so it doubles as a regression check
+        // against accidentally re-introducing the constant.
+        let src = "\
+            static let calls = 0;\n\
+            fn always_fail() {\n\
+                calls = calls + 1;\n\
+                assert(false, \"forced\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live retries(5) {\n\
+                    let r = always_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("retries(5) on permanent failure must exhaust");
+        assert!(
+            err.contains("Live block failed after 5 attempts"),
+            "expected `after 5 attempts` shape, got: {}",
+            err
+        );
+        match interp
+            .statics
+            .borrow()
+            .get("calls")
+            .expect("static counter")
+        {
+            Value::Int(n) => assert_eq!(*n, 5, "body must run 5 times under retries(5), got {}", n),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_retries_default_unchanged_at_three() {
+        // No `retries(N)` clause → the historical 3-attempt budget
+        // applies. Defends the "default behaviour stays identical"
+        // contract from the ticket.
+        let src = "\
+            static let calls = 0;\n\
+            fn always_fail() {\n\
+                calls = calls + 1;\n\
+                assert(false, \"forced\");\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live { let r = always_fail(); }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp
+            .eval(&program)
+            .expect_err("default budget must exhaust on permanent failure");
+        assert!(
+            err.contains("Live block failed after 3 attempts"),
+            "default budget must remain 3 attempts, got: {}",
+            err
+        );
+        assert_eq!(DEFAULT_LIVE_MAX_RETRIES, 3);
+        match interp
+            .statics
+            .borrow()
+            .get("calls")
+            .expect("static counter")
+        {
+            Value::Int(n) => assert_eq!(*n, 3, "body must run 3 times by default, got {}", n),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_retries_recovers_within_budget() {
+        // Budget=5, fails twice then succeeds. Block returns
+        // normally without surfacing the early-attempt errors.
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced\");\n\
+                }\n\
+                return 42;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live retries(5) { let r = maybe_fail(); }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp
+            .eval(&program)
+            .expect("body should succeed within budget");
+    }
+
+    #[test]
+    fn live_sleep_hook_records_linear_schedule() {
+        // Substitute the sleep hook to capture requested delays
+        // without wall-clock side effects. Linear schedule with
+        // step=20, max=100, two retries → recorded sleeps =
+        // [20, 40].
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let recorded: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = recorded.clone();
+        let _hook = LiveSleepHookGuard::install(move |ms| sink.borrow_mut().push(ms));
+
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced\");\n\
+                }\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live backoff(base_ms=20, kind=linear, max_ms=100) {\n\
+                    let r = maybe_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("body should recover");
+        let recorded = recorded.borrow().clone();
+        assert_eq!(
+            recorded,
+            vec![20, 40],
+            "expected linear 20,40, got {:?}",
+            recorded
+        );
+    }
+
+    #[test]
+    fn live_sleep_hook_records_exponential_schedule() {
+        // Same harness, exponential schedule. base=10, factor=2,
+        // max=80. Two retries → [10, 20].
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let recorded: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = recorded.clone();
+        let _hook = LiveSleepHookGuard::install(move |ms| sink.borrow_mut().push(ms));
+
+        let src = "\
+            static let fails_left = 2;\n\
+            fn maybe_fail() {\n\
+                if fails_left > 0 {\n\
+                    fails_left = fails_left - 1;\n\
+                    assert(false, \"forced\");\n\
+                }\n\
+                return 0;\n\
+            }\n\
+            fn main(int _d) {\n\
+                live backoff(base_ms=10, factor=2, max_ms=80) {\n\
+                    let r = maybe_fail();\n\
+                }\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        interp.eval(&program).expect("body should recover");
+        let recorded = recorded.borrow().clone();
+        assert_eq!(
+            recorded,
+            vec![10, 20],
+            "expected exponential 10,20, got {:?}",
+            recorded
         );
     }
 
