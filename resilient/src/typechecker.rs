@@ -1223,6 +1223,52 @@ impl TypeChecker {
             },
         );
 
+        // RES-293: HashMap stdlib builtins. Same permissive-Any
+        // shape as the Map builtins above — once G7 inference lands
+        // these tighten to `HashMap<K, V>`.
+        env.set(
+            "hashmap_new".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "hashmap_insert".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "hashmap_get".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "hashmap_remove".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "hashmap_contains".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "hashmap_keys".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
+
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
         env.set(
@@ -3565,6 +3611,14 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "map_remove",
         "map_keys",
         "map_len",
+        // RES-293: HashMap stdlib builtins (purely functional —
+        // each returns a new map / scalar; no IO).
+        "hashmap_new",
+        "hashmap_insert",
+        "hashmap_get",
+        "hashmap_remove",
+        "hashmap_contains",
+        "hashmap_keys",
         "set_new",
         "set_insert",
         "set_remove",

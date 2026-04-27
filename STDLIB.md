@@ -120,10 +120,26 @@ match r {
 |---|---|---|
 | `map_new()` | () → map | empty map |
 | `map_insert(m, k, v)` | (map, K, V) → map | new map with insertion |
-| `map_get(m, k)` | (map, K) → Option<V> | `None` if absent |
+| `map_get(m, k)` | (map, K) → Result<V, String> | `Err("not found")` if absent |
 | `map_remove(m, k)` | (map, K) → map | new map with key removed |
-| `map_keys(m)` | map → array | all keys |
+| `map_keys(m)` | map → array | all keys, sorted for determinism |
 | `map_len(m)` | map → int | entry count |
+
+### HashMap (RES-293)
+
+`hashmap_*` are the user-facing names for the same backing storage as
+the `map_*` builtins above. They share the same key restriction
+(`Int`, `String`, or `Bool` — anything else is a runtime error) and
+the same immutable-value semantics (each mutation returns a new map).
+
+| Name | Signature | Notes |
+|---|---|---|
+| `hashmap_new()` | () → hashmap | empty HashMap |
+| `hashmap_insert(m, k, v)` | (hashmap, K, V) → hashmap | new map with insertion / overwrite |
+| `hashmap_get(m, k)` | (hashmap, K) → Result<V, String> | `Ok(v)` or `Err("not found")` |
+| `hashmap_remove(m, k)` | (hashmap, K) → hashmap | no-op when key missing |
+| `hashmap_contains(m, k)` | (hashmap, K) → bool | membership test |
+| `hashmap_keys(m)` | hashmap → array | keys, sorted for determinism |
 
 ### Sets
 
