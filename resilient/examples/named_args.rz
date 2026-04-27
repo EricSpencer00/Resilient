@@ -1,0 +1,30 @@
+// RES-325 demo: named function arguments.
+//
+// A fn with three parameters, called with named args in reverse
+// declaration order — the post-parse `named_args::lower_program`
+// pass reorders the arg list to match the parameter slots before
+// the interpreter ever sees it, so call dispatch is identical to
+// `make(1, 2, 3)`.
+//
+// Mixing one positional arg with named args also works, as long
+// as every named arg comes after the last positional one.
+
+fn make(int x, int y, int z) -> int {
+    return x * 100 + y * 10 + z;
+}
+
+fn main() {
+    // Reverse-order named args.
+    let r1 = make(z: 3, y: 2, x: 1);
+    println(r1);
+
+    // One positional + named.
+    let r2 = make(1, z: 3, y: 2);
+    println(r2);
+
+    // All positional, unchanged shape.
+    let r3 = make(1, 2, 3);
+    println(r3);
+}
+
+main();

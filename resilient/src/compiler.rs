@@ -1150,6 +1150,9 @@ fn node_line(n: &Node) -> Option<u32> {
         // Program is wrapped in Spanned<Node> at the call site, not
         // inside the Node enum itself.
         Node::Program(_) => 0,
+
+        // RES-325: NamedArg carries the span of its `name:` label.
+        Node::NamedArg { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }
