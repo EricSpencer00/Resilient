@@ -903,3 +903,80 @@ fn shift_bounds_example_runs_and_shifts_correctly() {
     // `shift_and_xor(16)` = (16 >> 4) ^ 0 = 1 ^ 0 = 1.
     assert!(stdout.contains("1"), "expected 1 in stdout; got:\n{stdout}");
 }
+
+#[test]
+fn bytecode_vm_runs_println_builtin() {
+    // RES-VM (issue #266): the bytecode VM previously rejected any
+    // call to a builtin (`println`, `len`, `to_upper`, ...) with
+    // `bytecode compile: unknown function: println`. Wire-up: the
+    // compiler emits `Op::CallBuiltin { name_const, arity }` for any
+    // call site whose callee isn't a user-defined fn or a foreign
+    // symbol, and the VM dispatches it through the same `BUILTINS`
+    // table the tree walker uses.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_vm_println_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "fn main() {{ println(\"hello-from-vm\"); return 0; }}").unwrap();
+        writeln!(f, "main();").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm println path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown function"),
+        "regression: builtin lookup failed under --vm; stderr=\n{stderr}"
+    );
+    assert!(
+        stdout.contains("hello-from-vm"),
+        "expected `hello-from-vm` in stdout; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn bytecode_vm_runs_multiple_builtins() {
+    // RES-VM (issue #266): exercise three commonly-used builtins
+    // through the VM in a single program. `len` returns an i64 that
+    // round-trips back to the println dispatch; `to_upper` returns a
+    // String the VM must keep on the operand stack until the next
+    // `println` consumes it. Catches regressions where the dispatch
+    // arm forgets to push the result, or where the constant-pool
+    // name interning collides across distinct call sites.
+    use std::io::Write;
+    let tmp = std::env::temp_dir().join(format!("res_vm_builtins_{}.rs", std::process::id()));
+    {
+        let mut f = std::fs::File::create(&tmp).expect("create tmp");
+        writeln!(f, "println(\"hi\");").unwrap();
+        writeln!(f, "println(to_upper(\"resilient\"));").unwrap();
+        writeln!(f, "let s = \"hello\";").unwrap();
+        writeln!(f, "println(len(s));").unwrap();
+        writeln!(f, "return 0;").unwrap();
+    }
+    let output = Command::new(bin())
+        .arg("--vm")
+        .arg(&tmp)
+        .output()
+        .expect("spawn resilient");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "vm multi-builtin path must exit 0; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("hi") && stdout.contains("RESILIENT") && stdout.contains("5"),
+        "expected hi / RESILIENT / 5 from println+to_upper+len; got:\n{stdout}"
+    );
+    let _ = std::fs::remove_file(&tmp);
+}

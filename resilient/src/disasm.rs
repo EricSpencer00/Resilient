@@ -184,6 +184,15 @@ fn write_op(
         Op::StoreIndex => write!(out, "StoreIndex")?,
         // FFI v2.
         Op::CallForeign(idx) => write!(out, "CallForeign {idx:<6}")?,
+        // RES-VM (issue #266): builtin call. Annotate with the resolved
+        // name so a glance at the disassembly tells the reader which
+        // builtin this op invokes.
+        Op::CallBuiltin { name_const, arity } => {
+            write!(out, "CallBuiltin {} {}", name_const, arity)?;
+            if let Some(v) = chunk.constants.get(name_const as usize) {
+                write!(out, "  ; -> {}", v)?;
+            }
+        }
         // RES-335: struct-op disasm. The name is a constant-pool index
         // into a `Value::String`; resolve and annotate it.
         Op::StructLiteral {

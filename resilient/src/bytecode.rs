@@ -141,6 +141,19 @@ pub enum Op {
     /// `#[cfg(feature = "ffi")]` at dispatch time but the variant exists
     /// unconditionally so the compiler/disassembler don't need feature flags.
     CallForeign(u16),
+    /// RES-VM (issue #266): call a registered builtin function (`println`,
+    /// `len`, `to_upper`, etc.). `name_const` indexes into the chunk's
+    /// constant pool where the builtin's name lives as a `Value::String`,
+    /// and `arity` is the argument count compiled at the call site. The
+    /// VM pops `arity` values (rightmost first), looks the builtin up by
+    /// name, invokes it, and pushes the returned value. Mirrors the
+    /// tree-walker's `Value::Builtin` dispatch in `apply_function`.
+    ///
+    /// Storing the name (rather than a function pointer index) keeps the
+    /// `Op` enum `Copy` and avoids embedding a separate per-program
+    /// builtin table — the canonical `BUILTINS` slice in `main.rs` is
+    /// the single source of truth and is consulted at dispatch time.
+    CallBuiltin { name_const: u16, arity: u8 },
     /// RES-335: build a `Value::Struct` from `field_count` `(name, value)`
     /// pairs on the operand stack. Stack layout on entry (top → bottom):
     /// `[v_N, k_N, ..., v_1, k_1, struct_type_name, ...]` — each `k_i`

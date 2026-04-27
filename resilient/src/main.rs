@@ -7079,6 +7079,16 @@ pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
     BUILTINS.iter().map(|(name, _func)| *name)
 }
 
+/// RES-VM (issue #266): look up a builtin by name. Returns `Some(func)`
+/// when the name appears in the canonical `BUILTINS` table, `None`
+/// otherwise. Used by the bytecode compiler to decide whether a
+/// not-a-user-function call site should lower to `Op::CallBuiltin`,
+/// and by the VM to dispatch that opcode through the same function
+/// pointer the tree-walker invokes.
+pub(crate) fn lookup_builtin(name: &str) -> Option<BuiltinFn> {
+    BUILTINS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
+}
+
 /// Canonical list of every native function visible in a fresh
 /// Resilient program.
 const BUILTINS: &[(&str, BuiltinFn)] = &[
