@@ -160,7 +160,9 @@ fn count_nodes(n: &Node) -> usize {
         | Node::Use { .. }
         | Node::TypeAlias { .. }
         | Node::RegionDecl { .. }
-        | Node::StructDecl { .. } => 0,
+        | Node::StructDecl { .. }
+        | Node::NewtypeDecl { .. } => 0,
+        Node::NewtypeConstruct { value, .. } => count_nodes(value),
         Node::PrefixExpression { right, .. } => count_nodes(right),
         Node::InfixExpression { left, right, .. } => count_nodes(left) + count_nodes(right),
         Node::CallExpression {

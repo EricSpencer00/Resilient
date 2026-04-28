@@ -1696,6 +1696,7 @@ impl TypeChecker {
                 crate::modules::check(program, source_path)?;
                 crate::default_params::check(program, source_path)?;
                 crate::generics::check(program, source_path)?;
+                crate::newtypes::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -2608,6 +2609,17 @@ impl TypeChecker {
 
             // RES-391: `region <Name>;` is compile-time metadata — Void.
             Node::RegionDecl { .. } => Ok(Type::Void),
+
+            // RES-319: newtype declaration is compile-time metadata — Void.
+            Node::NewtypeDecl { .. } => Ok(Type::Void),
+            // RES-319: newtype constructor — check the inner value and return
+            // `Type::Struct` named after the newtype (nominal distinction).
+            Node::NewtypeConstruct {
+                type_name, value, ..
+            } => {
+                self.check_node(value)?;
+                Ok(Type::Struct(type_name.clone()))
+            }
 
             // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`.
             // Extend the in-scope `fails` set with every caught

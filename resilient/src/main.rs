@@ -188,6 +188,12 @@ mod watch_mode;
 // Node::Function::type_params field) lives in main.rs; this module owns the
 // typechecker validation pass (duplicate type-param detection).
 mod generics;
+// RES-319: newtype declarations — `newtype Meters = Float;`. All
+// logic lives here: post-parse lowering (rewrites CallExpression to
+// NewtypeConstruct) and the typechecker validation pass. The hot
+// eval path is not touched — only two thin eval arms are added in
+// main.rs for NewtypeDecl (register) and NewtypeConstruct (wrap).
+mod newtypes;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -322,6 +328,8 @@ enum Token {
     DotDotDot,
     /// RES-324: `mod` keyword for inline namespace blocks.
     Mod,
+    /// RES-319: `newtype Name = BaseType;` — nominal type wrapper.
+    Newtype,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -456,6 +464,7 @@ impl Token {
             Token::DotDot => "`..`".to_string(),
             Token::DotDotDot => "`...`".to_string(),
             Token::Mod => "`mod`".to_string(),
+            Token::Newtype => "`newtype`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -910,6 +919,7 @@ impl Lexer {
                         "forall" => Token::Forall,
                         "exists" => Token::Exists,
                         "mod" => Token::Mod,
+                        "newtype" => Token::Newtype,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2032,6 +2042,26 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-319: `newtype Name = BaseType;` — top-level nominal type
+    /// declaration. Creates a type distinct from its base; the
+    /// constructor `Name(expr)` is lowered to `NewtypeConstruct` by
+    /// `newtypes::lower_program` before eval runs.
+    NewtypeDecl {
+        name: String,
+        base_type: String,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-319: `Name(expr)` — construct a newtype value. Produced by
+    /// `newtypes::lower_program` rewriting a `CallExpression` whose
+    /// callee is a known newtype name. Only this node reaches `eval`;
+    /// no `CallExpression` for a newtype is ever evaluated.
+    NewtypeConstruct {
+        type_name: String,
+        value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -2301,6 +2331,7 @@ impl Parser {
             Token::Struct => Some(self.parse_struct_decl()),
             Token::Impl => Some(self.parse_impl_block()),
             Token::Type => Some(self.parse_type_alias()),
+            Token::Newtype => Some(self.parse_newtype_decl()),
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
             Token::Try => Some(crate::try_catch::parse(self)),
@@ -3381,6 +3412,62 @@ impl Parser {
         Node::TypeAlias {
             name,
             target,
+            span: kw_span,
+        }
+    }
+
+    /// RES-319: parse `newtype Name = BaseType;` — a top-level nominal
+    /// type declaration. Error recovery mirrors `parse_type_alias`.
+    fn parse_newtype_decl(&mut self) -> Node {
+        let kw_span = self.span_at_current();
+        self.next_token(); // skip `newtype`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Expected newtype name after 'newtype', found {}",
+                    tok
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after 'newtype {}', found {}",
+                name, tok
+            ));
+        } else {
+            self.next_token(); // skip '='
+        }
+
+        let base_type = match &self.current_token {
+            Token::Identifier(t) => t.clone(),
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Expected base type name after 'newtype {} =', found {}",
+                    name, tok
+                ));
+                String::new()
+            }
+        };
+        self.next_token(); // skip base type
+
+        // Trailing `;` — mirrors `parse_type_alias` convention.
+        if self.current_token == Token::Semicolon {
+            // leave cursor on `;`; parse_program advances past it
+        } else if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+
+        Node::NewtypeDecl {
+            name,
+            base_type,
             span: kw_span,
         }
     }
@@ -11074,6 +11161,25 @@ impl Interpreter {
             // RES-391: `region <Name>;` is pure compile-time metadata
             // consumed by the borrow checker — runtime no-op.
             Node::RegionDecl { .. } => Ok(Value::Void),
+            // RES-319: newtype declaration — pure compile-time metadata.
+            // `newtypes::lower_program` has already rewritten every
+            // `Name(expr)` call into a `NewtypeConstruct` node, so
+            // nothing runtime-visible needs to happen here.
+            Node::NewtypeDecl { .. } => Ok(Value::Void),
+            // RES-319: newtype constructor — wraps the inner value in a
+            // `Value::Struct` tagged with the newtype name. The single
+            // field `__value` holds the base value. No arithmetic
+            // interception happens here; the struct wrapper is enough
+            // to keep different newtypes distinct at runtime.
+            Node::NewtypeConstruct {
+                type_name, value, ..
+            } => {
+                let inner = self.eval(value)?;
+                Ok(Value::Struct {
+                    name: type_name.clone(),
+                    fields: vec![("__value".to_string(), inner)],
+                })
+            }
             // RES-386/RES-388/RES-390: actor/cluster declarations are
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
@@ -12669,6 +12775,8 @@ fn start_repl() -> RustylineResult<()> {
                 }
                 // RES-326: fill in omitted trailing args with defaults.
                 crate::default_params::lower_program(&mut program);
+                // RES-319: rewrite newtype constructor calls before eval.
+                crate::newtypes::lower_program(&mut program);
 
                 // Run type checker if enabled
                 if type_check_enabled {
@@ -12903,6 +13011,8 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     // default expressions. Runs after named-arg lowering so positional
     // reordering has already happened before we count arguments.
     crate::default_params::lower_program(&mut program);
+    // RES-319: rewrite newtype constructor calls before eval.
+    crate::newtypes::lower_program(&mut program);
     (program, errs)
 }
 
@@ -13655,6 +13765,8 @@ fn execute_file(
     // defaults. Runs after named-arg lowering (positional ordering
     // must be stable before we count provided args).
     crate::default_params::lower_program(&mut program);
+    // RES-319: rewrite newtype constructor calls before eval.
+    crate::newtypes::lower_program(&mut program);
 
     // RES-391: syntactic non-aliasing check over reference-type
     // parameters. Runs unconditionally — a borrow-check violation is
@@ -16106,6 +16218,8 @@ mod tests {
         }
         // RES-326: same default-param lowering as the production driver.
         crate::default_params::lower_program(&mut program);
+        // RES-319: rewrite newtype constructor calls before eval.
+        crate::newtypes::lower_program(&mut program);
         (program, errs)
     }
 
