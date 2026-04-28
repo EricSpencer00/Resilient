@@ -183,6 +183,11 @@ mod default_params;
 // debounce. All watch logic lives in this module; main.rs only adds the
 // `mod` declaration and the dispatch call just before `execute_file`.
 mod watch_mode;
+// RES-289 (RES-81): generic type parameters — `fn identity<T>(x: T) -> T`.
+// Parse-time support (Token::Less/Greater reuse, parse_optional_type_params,
+// Node::Function::type_params field) lives in main.rs; this module owns the
+// typechecker validation pass (duplicate type-param detection).
+mod generics;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -2665,10 +2670,12 @@ impl Parser {
         let fn_span = self.span_at_current();
         self.next_token(); // Skip 'fn'
 
-        // RES-124 (RES-124a): optional `<T, U, ...>` generic
-        // parameter list between `fn` and the name. Empty when
-        // the fn is monomorphic (classic `fn name(...)`).
-        let type_params = self.parse_optional_type_params();
+        // RES-289 (RES-81): accept type params either before the name
+        // (`fn<T> name(...)` — legacy form kept for backward compat)
+        // or after the name (`fn name<T>(...)` — canonical new form).
+        // Both forms set the same `type_params` field; they cannot be
+        // combined in a single declaration.
+        let pre_name_type_params = self.parse_optional_type_params();
 
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
@@ -2681,6 +2688,19 @@ impl Parser {
         };
 
         self.next_token(); // Skip name
+
+        // Post-name form: `fn name<T, U>(...)`.  Only applied when the
+        // pre-name form produced no params so the two forms don't stack.
+        let post_name_type_params = if pre_name_type_params.is_empty() {
+            self.parse_optional_type_params()
+        } else {
+            Vec::new()
+        };
+        let type_params = if pre_name_type_params.is_empty() {
+            post_name_type_params
+        } else {
+            pre_name_type_params
+        };
 
         // Check if we have a left parenthesis as expected
         if self.current_token != Token::LeftParen {
