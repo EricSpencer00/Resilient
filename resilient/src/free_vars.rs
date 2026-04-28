@@ -214,7 +214,14 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(m, bound, free);
             }
         }
-        Node::StructDecl { .. } | Node::TypeAlias { .. } | Node::RegionDecl { .. } => {}
+        Node::StructDecl { .. }
+        | Node::TypeAlias { .. }
+        | Node::RegionDecl { .. }
+        // RES-319: newtype declarations introduce no bindings (the
+        // constructor call is lowered to NewtypeConstruct before this
+        // pass runs, so no free-variable tracking is needed).
+        | Node::NewtypeDecl { .. } => {}
+        Node::NewtypeConstruct { value, .. } => walk(value, bound, free),
         // RES-386: Actor declarations are verifier-only.
         Node::Actor { .. } => {}
         // RES-390: ClusterDecl introduces no bindings.

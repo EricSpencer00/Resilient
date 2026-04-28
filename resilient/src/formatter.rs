@@ -203,6 +203,13 @@ impl Formatter {
                 self.write(&format!("region {};", name));
                 self.newline();
             }
+            // RES-319: re-emit a newtype declaration.
+            Node::NewtypeDecl {
+                name, base_type, ..
+            } => {
+                self.write(&format!("newtype {} = {};", name, base_type));
+                self.newline();
+            }
             // RES-386: re-emit a commutativity-style actor block.
             Node::Actor {
                 name,
@@ -766,6 +773,15 @@ impl Formatter {
                 self.write(&format!("{}: ", name));
                 self.fmt_expr(value);
             }
+            // RES-319: newtype constructor — re-emit as `Name(value)`.
+            Node::NewtypeConstruct {
+                type_name, value, ..
+            } => {
+                self.write(type_name);
+                self.write("(");
+                self.fmt_expr(value);
+                self.write(")");
+            }
             Node::TryExpression { expr, .. } => {
                 self.fmt_expr(expr);
                 self.write("?");
@@ -1003,6 +1019,7 @@ impl Formatter {
             | Node::ImplBlock { .. }
             | Node::TypeAlias { .. }
             | Node::RegionDecl { .. }
+            | Node::NewtypeDecl { .. }
             | Node::Actor { .. }
             | Node::ActorDecl { .. }
             | Node::ClusterDecl { .. }

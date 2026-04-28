@@ -1,0 +1,24 @@
+// RES-319: newtype declarations — physical-units demo.
+//
+// Two newtypes (Meters, Seconds) wrap `Float`. Unlike type aliases,
+// newtypes are NOMINAL: `Meters` and `Seconds` are distinct types even
+// though both wrap `Float`. The constructor `Meters(5.0)` wraps a Float
+// value into a tagged Meters value.
+//
+// Demonstrated forms:
+//   - top-level `newtype X = BaseType;` declaration
+//   - constructor `Name(expr)` usage
+//   - println output format
+//   - two separate newtypes with the same base type
+
+newtype Meters = Float;
+newtype Seconds = Float;
+
+fn main() {
+    let d = Meters(100.0);
+    let t = Seconds(10.0);
+    println(d);
+    println(t);
+}
+
+main();

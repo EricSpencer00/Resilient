@@ -260,6 +260,9 @@ enum Tok {
     // RES-324: `mod` keyword for namespace blocks.
     #[token("mod")]
     Mod,
+    // RES-319: `newtype Name = BaseType;` nominal type wrapper keyword.
+    #[token("newtype")]
+    Newtype,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -609,6 +612,8 @@ fn convert(t: Tok) -> Token {
         Tok::HashLBracket => Token::HashLeftBracket,
         // RES-324: `mod` keyword for namespace blocks.
         Tok::Mod => Token::Mod,
+        // RES-319: newtype keyword.
+        Tok::Newtype => Token::Newtype,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

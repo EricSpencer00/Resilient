@@ -192,6 +192,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
                 | Node::Extern { .. }
                 | Node::RegionDecl { .. }
                 | Node::StructDecl { .. }
+                // RES-319: newtype declarations are compile-time metadata;
+                // constructor calls are already lowered to NewtypeConstruct.
+                | Node::NewtypeDecl { .. }
         ) {
             continue;
         }
@@ -1168,6 +1171,10 @@ fn node_line(n: &Node) -> Option<u32> {
 
         // RES-324: module declaration; span at the `mod` keyword.
         Node::ModuleDecl { span, .. } => span.start.line as u32,
+
+        // RES-319: newtype nodes carry a span.
+        Node::NewtypeDecl { span, .. } => span.start.line as u32,
+        Node::NewtypeConstruct { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }
