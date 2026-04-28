@@ -1719,7 +1719,8 @@ fn l0011_collect_let_bindings(node: &Node, out: &mut Vec<(String, Span)>) {
 /// `collect_allow_comments`.
 fn collect_source_comments(source: &str) -> std::collections::HashSet<u32> {
     let mut out = std::collections::HashSet::new();
-    for (line_no, raw) in (1u32..).zip(source.lines()) {
+    for (i, raw) in source.lines().enumerate() {
+        let line_no = (i as u32) + 1;
         let trimmed = raw.trim_start();
         if let Some(rest) = trimmed.strip_prefix("// source:")
             && !rest.trim().is_empty()
@@ -1731,53 +1732,12 @@ fn collect_source_comments(source: &str) -> std::collections::HashSet<u32> {
 }
 
 fn run_l0012_spec_provenance(program: &Node, source: &str, out: &mut Vec<Lint>) {
-    // Quick pre-scan: if the program has no specs or assumes, skip L0012 entirely.
-    // This avoids the line-splitting in collect_source_comments() for programs
-    // without specs, significantly improving JIT performance (RES-398 perf fix).
-    if !has_any_specs(program) {
-        return;
-    }
     let sources = collect_source_comments(source);
     let Node::Program(stmts) = program else {
         return;
     };
     for spanned in stmts {
         l0012_walk(&spanned.node, &sources, out);
-    }
-}
-
-fn has_any_specs(node: &Node) -> bool {
-    match node {
-        Node::Function {
-            requires,
-            ensures,
-            recovers_to,
-            fails,
-            body,
-            ..
-        } => {
-            let has_spec = !requires.is_empty()
-                || !ensures.is_empty()
-                || recovers_to.is_some()
-                || !fails.is_empty();
-            if has_spec {
-                return true;
-            }
-            has_any_specs(body)
-        }
-        Node::Assume { .. } => true,
-        Node::Block { stmts, .. } => stmts.iter().any(has_any_specs),
-        Node::IfStatement {
-            consequence,
-            alternative,
-            ..
-        } => has_any_specs(consequence) || alternative.as_ref().is_some_and(|a| has_any_specs(a)),
-        Node::WhileStatement { body, .. }
-        | Node::ForInStatement { body, .. }
-        | Node::LiveBlock { body, .. } => has_any_specs(body),
-        Node::ImplBlock { methods, .. } => methods.iter().any(has_any_specs),
-        Node::Program(stmts) => stmts.iter().any(|s| has_any_specs(&s.node)),
-        _ => false,
     }
 }
 
