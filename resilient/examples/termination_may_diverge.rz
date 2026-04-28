@@ -1,0 +1,19 @@
+// RES-398: termination checking — `// @may_diverge` is the explicit
+// escape hatch for fns that intentionally do not terminate (event
+// loops, daemon main loops, etc.). Required under
+// `--strict-termination` for any directly-recursive fn that can't
+// declare a decreasing metric.
+
+// source: bounded test driver — recurses once then halts
+// @may_diverge
+fn ping(int n) {
+    if n <= 0 { return; }
+    println("ping " + n);
+    ping(n - 1);
+}
+
+fn main() {
+    ping(2);
+}
+
+main();

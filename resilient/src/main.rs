@@ -194,6 +194,11 @@ mod generics;
 // eval path is not touched — only two thin eval arms are added in
 // main.rs for NewtypeDecl (register) and NewtypeConstruct (wrap).
 mod newtypes;
+// RES-398: termination checking — recursive fns require an explicit
+// `// @decreases <metric>` or `// @may_diverge` annotation. Off by
+// default; enabled via `--strict-termination`. Closes a class of
+// expressible-but-invalid state called out in the Reddit critique.
+mod termination;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -13786,6 +13791,16 @@ fn execute_file(
         ));
     }
 
+    // RES-398: termination check. Runs unconditionally — a no-op when
+    // `--strict-termination` is off. Lives outside the typechecker pass
+    // because the typechecker has known limitations on recursive fns
+    // (forward-reference of the fn's own name in its body), and we want
+    // termination diagnostics regardless of `--typecheck`.
+    if let Err(e) = termination::check(&program, filename) {
+        eprintln!("\x1B[31m{}\x1B[0m", e);
+        return Err(format!("Termination check failed: {}", e));
+    }
+
     // RES-386: race-freedom / commutativity obligation per actor.
     // Runs before typecheck so an invalid actor is a verifier-level
     // diagnostic rather than a type error. No-op in non-z3 builds.
@@ -15239,6 +15254,14 @@ fn main() {
                 // the pass actually runs before the program executes.
                 bounds_check::set_deny_unproven_bounds(true);
                 type_check = true;
+            } else if arg == "--strict-termination" {
+                // RES-398: strict mode — directly-recursive fns must
+                // declare `// @decreases <metric>` or `// @may_diverge`
+                // on the line above. Runs as a standalone parser-time
+                // pass invoked from `run_subcommand` (independent of
+                // `--typecheck`, which has known limitations on
+                // recursive fns).
+                termination::set_strict_termination(true);
             } else if arg == "--explain-effects" {
                 // RES-347: dump one line per user fn with its
                 // inferred effect. Implies --typecheck.

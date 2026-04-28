@@ -1,0 +1,20 @@
+// RES-398: termination checking — example of a recursive fn WITHOUT
+// any termination annotation. Under `--strict-termination`, this is
+// rejected at typecheck time:
+//
+//   error: function `loops` is recursive but has no termination annotation;
+//          expected `// @decreases <metric>` or `// @may_diverge` on the line above
+//
+// Without the flag, the program runs (subject to the runtime depth
+// cap from RES-267).
+
+fn loops(int n) {
+    if n <= 0 { return; }
+    loops(n - 1);
+}
+
+fn main() {
+    loops(3);
+}
+
+main();

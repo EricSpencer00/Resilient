@@ -1,0 +1,20 @@
+// RES-398: termination checking — `// @decreases <metric>` annotation
+// declares that the metric strictly decreases on each recursive call.
+// Required (under `--strict-termination`) for any directly-recursive fn.
+//
+// Today the check is syntactic — the metric is parsed but not yet proven
+// to decrease. A follow-up Z3 ticket will discharge the proof.
+
+// source: classic factorial (n! = n * (n-1)!)
+// @decreases n
+fn fact(int n) requires n >= 0 {
+    if n <= 1 { return 1; }
+    return n * fact(n - 1);
+}
+
+fn main() {
+    let f5 = fact(5);
+    println("fact(5) = " + f5);
+}
+
+main();
