@@ -163,6 +163,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             // shipped idioms.
             crate::peephole::optimize(&mut chunk)
                 .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+            // RES-297: dead code elimination — remove unreachable ops
+            // after returns and fold constant-condition branches.
+            crate::dce::eliminate(&mut chunk);
             functions.push(Function {
                 name: name.clone(),
                 arity,
@@ -210,6 +213,8 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // RES-172: peephole pass over the main chunk too.
     crate::peephole::optimize(&mut main)
         .map_err(|_| CompileError::InternalError("peephole optimizer failed"))?;
+    // RES-297: dead code elimination over main chunk.
+    crate::dce::eliminate(&mut main);
 
     let mut prog = Program {
         main,
