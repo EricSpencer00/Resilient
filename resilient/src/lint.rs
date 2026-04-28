@@ -1719,15 +1719,13 @@ fn l0011_collect_let_bindings(node: &Node, out: &mut Vec<(String, Span)>) {
 /// `collect_allow_comments`.
 fn collect_source_comments(source: &str) -> std::collections::HashSet<u32> {
     let mut out = std::collections::HashSet::new();
-    let mut line_no = 1u32;
-    for raw in source.lines() {
+    for (line_no, raw) in (1u32..).zip(source.lines()) {
         let trimmed = raw.trim_start();
         if let Some(rest) = trimmed.strip_prefix("// source:")
             && !rest.trim().is_empty()
         {
             out.insert(line_no + 1);
         }
-        line_no += 1;
     }
     out
 }
