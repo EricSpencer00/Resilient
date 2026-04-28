@@ -127,6 +127,28 @@ With `--features z3`, the `b != 0` precondition becomes a
 discharged proof obligation rather than a runtime check on
 every call.
 
+## Mission-critical example projects
+
+Reading the syntax page is one thing — seeing the language
+used end-to-end on the kind of system it was designed for is
+another. The companion repo
+[**EricSpencer00/Resilient-examples**](https://github.com/EricSpencer00/Resilient-examples)
+contains six full mission-critical demos:
+
+| # | Project | Headline features |
+|---|---|---|
+| 01 | pacemaker | `live invariant`, `recovers_to`, contract-checked decision logic |
+| 02 | infusion-pump | actor `always:`, cumulative-dose ceiling, `parse_int` Result chain |
+| 03 | abs-brake-controller | `forall i in lo..hi`, saturating `clamp`, per-wheel `ensures` |
+| 04 | traffic-light-interlock | `cluster_invariant` proves never-both-green |
+| 05 | reactor-coolant-monitor | actor envelope `[0, 250] kPa`, `live` over a sensor stream |
+| 06 | can-bus-parser | `bytes` literals, `Result` chain, `match` arm guards |
+
+Each project has its own README documenting the safety property
+under proof, the language features it exercises, and any
+compiler limitations. Run `./run_all.sh` from that repo to diff
+every program against its golden output.
+
 ## Pick a backend
 
 Resilient ships three execution backends. All accept the same
