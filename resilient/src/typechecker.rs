@@ -4072,10 +4072,11 @@ fn check_program_effects(
             name,
             body,
             effects,
+            parameters,
             ..
         } = &stmt.node
             && effects.pure
-            && let Err(reason) = check_body_effects(body, &fn_effects)
+            && let Err(reason) = check_body_effects(body, &fn_effects, parameters)
         {
             let (line, col) = (stmt.span.start.line, stmt.span.start.column);
             return Err(if line == 0 {
@@ -4091,23 +4092,27 @@ fn check_program_effects(
     Ok(())
 }
 
-/// RES-389: recursive walk of a `pure` fn body. Returns
-/// `Err(<reason>)` at the first call to a non-`pure` callee, with
-/// the diagnostic text the caller will prefix with the fn span.
+/// RES-389/RES-385c: recursive walk of a `pure` fn body. Returns
+/// `Err(<reason>)` at the first call to a non-`pure` callee, or if a
+/// linear parameter is consumed (RES-385c), with the diagnostic text
+/// the caller will prefix with the fn span.
 fn check_body_effects(
     node: &Node,
     fn_effects: &std::collections::HashMap<String, EffectSet>,
+    linear_params: &[(String, String)],
 ) -> Result<(), String> {
     match node {
         Node::Block { stmts, .. } => {
             for s in stmts {
-                check_body_effects(s, fn_effects)?;
+                check_body_effects(s, fn_effects, linear_params)?;
             }
         }
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
-            check_body_effects(value, fn_effects)?;
+            check_body_effects(value, fn_effects, linear_params)?;
         }
-        Node::ReturnStatement { value: Some(v), .. } => check_body_effects(v, fn_effects)?,
+        Node::ReturnStatement { value: Some(v), .. } => {
+            check_body_effects(v, fn_effects, linear_params)?
+        }
         Node::ReturnStatement { value: None, .. } => {}
         Node::IfStatement {
             condition,
@@ -4115,38 +4120,54 @@ fn check_body_effects(
             alternative,
             ..
         } => {
-            check_body_effects(condition, fn_effects)?;
-            check_body_effects(consequence, fn_effects)?;
+            check_body_effects(condition, fn_effects, linear_params)?;
+            check_body_effects(consequence, fn_effects, linear_params)?;
             if let Some(a) = alternative {
-                check_body_effects(a, fn_effects)?;
+                check_body_effects(a, fn_effects, linear_params)?;
             }
         }
         Node::WhileStatement {
             condition, body, ..
         } => {
-            check_body_effects(condition, fn_effects)?;
-            check_body_effects(body, fn_effects)?;
+            check_body_effects(condition, fn_effects, linear_params)?;
+            check_body_effects(body, fn_effects, linear_params)?;
         }
         Node::ForInStatement { iterable, body, .. } => {
-            check_body_effects(iterable, fn_effects)?;
-            check_body_effects(body, fn_effects)?;
+            check_body_effects(iterable, fn_effects, linear_params)?;
+            check_body_effects(body, fn_effects, linear_params)?;
         }
         Node::Assert { condition, .. } | Node::Assume { condition, .. } => {
-            check_body_effects(condition, fn_effects)?;
+            check_body_effects(condition, fn_effects, linear_params)?;
         }
-        Node::LiveBlock { body, .. } => check_body_effects(body, fn_effects)?,
+        Node::LiveBlock { body, .. } => check_body_effects(body, fn_effects, linear_params)?,
         Node::InfixExpression { left, right, .. } => {
-            check_body_effects(left, fn_effects)?;
-            check_body_effects(right, fn_effects)?;
+            check_body_effects(left, fn_effects, linear_params)?;
+            check_body_effects(right, fn_effects, linear_params)?;
         }
-        Node::PrefixExpression { right, .. } => check_body_effects(right, fn_effects)?,
+        Node::PrefixExpression { right, .. } => {
+            check_body_effects(right, fn_effects, linear_params)?
+        }
         Node::CallExpression {
             function,
             arguments,
             ..
         } => {
             for a in arguments {
-                check_body_effects(a, fn_effects)?;
+                check_body_effects(a, fn_effects, linear_params)?;
+                // RES-385c: detect if a linear parameter is being
+                // consumed (passed to a function). Consuming a linear
+                // parameter is observable IO — an operation on a
+                // resource — so a pure fn cannot do it.
+                if let Node::Identifier { name: arg_name, .. } = a {
+                    for (param_ty, param_name) in linear_params {
+                        if arg_name == param_name && crate::linear::is_linear(param_ty) {
+                            return Err(format!(
+                                "cannot consume linear parameter `{}` in pure context",
+                                param_name
+                            ));
+                        }
+                    }
+                }
             }
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
                 // User fn with a recorded effect set — `pure`
@@ -4182,20 +4203,20 @@ fn check_body_effects(
             }
             // Method / computed callee — can't resolve statically;
             // same conservative rejection as the purity pass.
-            check_body_effects(function, fn_effects)?;
+            check_body_effects(function, fn_effects, linear_params)?;
             return Err(
                 "cannot call indirect/method callee from pure context (effect unknown)".to_string(),
             );
         }
-        Node::FieldAccess { target, .. } => check_body_effects(target, fn_effects)?,
+        Node::FieldAccess { target, .. } => check_body_effects(target, fn_effects, linear_params)?,
         Node::FieldAssignment { target, value, .. } => {
-            check_body_effects(target, fn_effects)?;
-            check_body_effects(value, fn_effects)?;
+            check_body_effects(target, fn_effects, linear_params)?;
+            check_body_effects(value, fn_effects, linear_params)?;
         }
-        Node::Assignment { value, .. } => check_body_effects(value, fn_effects)?,
+        Node::Assignment { value, .. } => check_body_effects(value, fn_effects, linear_params)?,
         Node::IndexExpression { target, index, .. } => {
-            check_body_effects(target, fn_effects)?;
-            check_body_effects(index, fn_effects)?;
+            check_body_effects(target, fn_effects, linear_params)?;
+            check_body_effects(index, fn_effects, linear_params)?;
         }
         Node::IndexAssignment {
             target,
@@ -4203,42 +4224,44 @@ fn check_body_effects(
             value,
             ..
         } => {
-            check_body_effects(target, fn_effects)?;
-            check_body_effects(index, fn_effects)?;
-            check_body_effects(value, fn_effects)?;
+            check_body_effects(target, fn_effects, linear_params)?;
+            check_body_effects(index, fn_effects, linear_params)?;
+            check_body_effects(value, fn_effects, linear_params)?;
         }
         Node::ArrayLiteral { items, .. } => {
             for i in items {
-                check_body_effects(i, fn_effects)?;
+                check_body_effects(i, fn_effects, linear_params)?;
             }
         }
         Node::StructLiteral { fields, .. } => {
             for (_, v) in fields {
-                check_body_effects(v, fn_effects)?;
+                check_body_effects(v, fn_effects, linear_params)?;
             }
         }
         Node::Match {
             scrutinee, arms, ..
         } => {
-            check_body_effects(scrutinee, fn_effects)?;
+            check_body_effects(scrutinee, fn_effects, linear_params)?;
             for (_pat, guard, arm_body) in arms {
                 if let Some(g) = guard {
-                    check_body_effects(g, fn_effects)?;
+                    check_body_effects(g, fn_effects, linear_params)?;
                 }
-                check_body_effects(arm_body, fn_effects)?;
+                check_body_effects(arm_body, fn_effects, linear_params)?;
             }
         }
-        Node::ExpressionStatement { expr, .. } => check_body_effects(expr, fn_effects)?,
-        Node::TryExpression { expr, .. } => check_body_effects(expr, fn_effects)?,
+        Node::ExpressionStatement { expr, .. } => {
+            check_body_effects(expr, fn_effects, linear_params)?
+        }
+        Node::TryExpression { expr, .. } => check_body_effects(expr, fn_effects, linear_params)?,
         Node::OptionalChain { object, access, .. } => {
-            check_body_effects(object, fn_effects)?;
+            check_body_effects(object, fn_effects, linear_params)?;
             if let crate::ChainAccess::Method(_, args) = access {
                 for a in args {
-                    check_body_effects(a, fn_effects)?;
+                    check_body_effects(a, fn_effects, linear_params)?;
                 }
             }
         }
-        Node::Function { body, .. } => check_body_effects(body, fn_effects)?,
+        Node::Function { body, .. } => check_body_effects(body, fn_effects, linear_params)?,
         // Literals, identifier reads, durations — nothing to do.
         _ => {}
     }
@@ -4338,6 +4361,35 @@ mod effect_tests {
         let err = check_program_effects(&s, "<t>").unwrap_err();
         assert!(err.contains("<t>:"), "missing source path: {err}");
         assert!(err.contains(":2:"), "missing line number: {err}");
+    }
+
+    // RES-385c: linear parameter effect-system interaction tests.
+
+    #[test]
+    fn pure_with_linear_parameter_rejected_on_consumption() {
+        let src = "fn consume(linear int x) { return 0; }\n\
+                   pure fn bad(linear int x) { return consume(x); }\n";
+        let s = stmts(src);
+        let err = check_program_effects(&s, "<t>").expect_err("pure+linear consumed should fail");
+        assert!(
+            err.contains("cannot consume linear parameter `x` in pure context"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pure_with_linear_parameter_accepted_on_no_consumption() {
+        let src = "pure fn ok(linear int x) { return 0; }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("pure+linear not consumed should pass");
+    }
+
+    #[test]
+    fn io_with_linear_parameter_accepted_on_consumption() {
+        let src = "fn consume(linear int x) { return 0; }\n\
+                   io fn ok(linear int x) { return consume(x); }\n";
+        let s = stmts(src);
+        check_program_effects(&s, "<t>").expect("io+linear consumed should pass");
     }
 }
 

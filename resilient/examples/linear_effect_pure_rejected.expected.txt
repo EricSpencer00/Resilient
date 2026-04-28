@@ -1,0 +1,6 @@
+Type error: resilient/examples/linear_effect_pure_rejected.rz:19:6: pure fn `bad_pure_with_linear`: cannot consume linear parameter `fh` in pure context
+resilient/examples/linear_effect_pure_rejected.rz:19:6: pure fn `bad_pure_with_linear`: cannot consume linear parameter `fh` in pure context
+Type error: pure fn `bad_pure_with_linear`: cannot consume linear parameter `fh` in pure context
+   pure fn bad_pure_with_linear(linear FileHandle fh) {
+        ^
+Error: Type check failed: resilient/examples/linear_effect_pure_rejected.rz:19:6: pure fn `bad_pure_with_linear`: cannot consume linear parameter `fh` in pure context

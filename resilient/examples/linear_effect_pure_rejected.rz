@@ -1,0 +1,22 @@
+// RES-385c: pure fn with linear parameter — rejected.
+//
+// A `pure` function cannot consume a linear parameter, because
+// consuming a linear resource is an observable side effect
+// (an operation on that resource). This example shows the violation:
+// the pure fn tries to call close(), which would consume the
+// linear FileHandle. The type checker rejects this at compile time.
+//
+// To fix: either (1) remove the `pure` annotation, or
+// (2) don't consume the linear parameter.
+
+struct FileHandle { int fd }
+
+fn close(linear FileHandle fh) {
+    println("closing fd=" + fh.fd);
+    return 0;
+}
+
+pure fn bad_pure_with_linear(linear FileHandle fh) {
+    close(fh);
+    return 0;
+}
