@@ -4159,13 +4159,13 @@ fn check_body_effects(
                 // parameter is observable IO — an operation on a
                 // resource — so a pure fn cannot do it.
                 if let Node::Identifier { name: arg_name, .. } = a {
-                    for (param_ty, param_name) in linear_params {
-                        if arg_name == param_name && crate::linear::is_linear(param_ty) {
-                            return Err(format!(
-                                "cannot consume linear parameter `{}` in pure context",
-                                param_name
-                            ));
-                        }
+                    if linear_params.iter().any(|(param_ty, param_name)| {
+                        arg_name == param_name && crate::linear::is_linear(param_ty)
+                    }) {
+                        return Err(format!(
+                            "cannot consume linear parameter `{}` in pure context",
+                            arg_name
+                        ));
                     }
                 }
             }
