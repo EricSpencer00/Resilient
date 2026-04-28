@@ -398,11 +398,11 @@ fn lsp_workspace_symbol_searches_multiple_files() {
     let root = std::env::temp_dir().join(format!("res_186_smoke_{}_{}", std::process::id(), n));
     std::fs::create_dir_all(&root).expect("mkdir scratch");
     std::fs::write(
-        root.join("mod_a.rs"),
+        root.join("mod_a.rz"),
         "fn a_fn() { return 0; }\nstruct A_Struct { int x }\n",
     )
     .unwrap();
-    std::fs::write(root.join("mod_b.rs"), "fn b_fn() { return 0; }\n").unwrap();
+    std::fs::write(root.join("mod_b.rz"), "fn b_fn() { return 0; }\n").unwrap();
     // URI of the scratch dir as a file:// URL.
     let root_uri = format!("file://{}", root.to_string_lossy().replace("\\", "/"));
 
@@ -457,12 +457,12 @@ fn lsp_workspace_symbol_searches_multiple_files() {
     }
     // And each file's URI should appear.
     assert!(
-        response.contains("mod_a.rs"),
-        "expected mod_a.rs in response:\n{response}"
+        response.contains("mod_a.rz"),
+        "expected mod_a.rz in response:\n{response}"
     );
     assert!(
-        response.contains("mod_b.rs"),
-        "expected mod_b.rs in response:\n{response}"
+        response.contains("mod_b.rz"),
+        "expected mod_b.rz in response:\n{response}"
     );
 
     // Now a filtered query — "struct" should match only A_Struct.
