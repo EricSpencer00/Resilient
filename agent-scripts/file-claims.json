@@ -1,3 +1,8 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/linear.rs": {
+      "branch": "res-385a-linear-conditional-z3",
+      "claimed_at": "2026-04-28T23:55:16Z"
+    }
+  }
 }
