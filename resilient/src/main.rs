@@ -175,6 +175,10 @@ mod string_interp;
 // logic (eval and static check) lives in this module; the only core-
 // file changes are Token::Mod, Node::ModuleDecl, and the dispatch lines.
 mod modules;
+// RES-326: default parameter values — `fn foo(x: Int, y: Int = 0)`.
+// A post-parse lowering pass fills in omitted trailing arguments with
+// their declared default expressions before the interpreter runs.
+mod default_params;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -1184,6 +1188,10 @@ impl Lexer {
 }
 
 /// RES-039: patterns for `match` arms.
+// The Literal variant carries a Node (intentionally large — it holds
+// arbitrary constant expressions from the source). The size difference
+// relative to leaf variants like Wildcard is by design.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 enum Pattern {
     /// Matches a literal int, float, string, or bool.
@@ -1398,6 +1406,11 @@ enum Node {
     Function {
         name: String,
         parameters: Vec<(String, String)>, // (type, name)
+        /// RES-326: parallel default-value expressions for each parameter.
+        /// `defaults[i] == None` means parameter `i` has no default.
+        /// Length always matches `parameters.len()`.
+        #[allow(dead_code)]
+        defaults: Vec<Option<Box<Node>>>,
         body: Box<Node>,
         /// RES-035: pre-condition clauses, checked on entry. Each is a
         /// boolean expression over the parameters.
@@ -2683,6 +2696,7 @@ impl Parser {
                 return Node::Function {
                     name,
                     parameters: Vec::new(),
+                    defaults: Vec::new(),
                     body: Box::new(Node::Block {
                         stmts: Vec::new(),
                         span: span::Span::default(),
@@ -2703,6 +2717,7 @@ impl Parser {
             return Node::Function {
                 name,
                 parameters: Vec::new(),
+                defaults: Vec::new(),
                 body: Box::new(body),
                 requires: Vec::new(),
                 ensures: Vec::new(),
@@ -2718,7 +2733,7 @@ impl Parser {
 
         self.next_token(); // Skip '('
 
-        let parameters = self.parse_function_parameters();
+        let (parameters, defaults) = self.parse_function_parameters();
 
         // RES-052: optional `-> TYPE` return type, BEFORE contracts.
         let return_type = self.parse_optional_return_type();
@@ -2756,6 +2771,7 @@ impl Parser {
                 return Node::Function {
                     name,
                     parameters,
+                    defaults,
                     body: Box::new(Node::Block {
                         stmts: Vec::new(),
                         span: span::Span::default(),
@@ -2778,6 +2794,7 @@ impl Parser {
         Node::Function {
             name,
             parameters,
+            defaults,
             body: Box::new(body),
             requires,
             ensures,
@@ -3107,7 +3124,8 @@ impl Parser {
                         self.next_token();
                         Vec::new()
                     } else {
-                        self.parse_function_parameters()
+                        let (p, _) = self.parse_function_parameters();
+                        p
                     };
                     let (requires, ensures, _) = self.parse_function_contracts();
                     if self.current_token != Token::LeftBrace {
@@ -3222,12 +3240,14 @@ impl Parser {
         }
 
         let mut parameters: Vec<(String, String)> = Vec::new();
+        let mut defaults: Vec<Option<Box<Node>>> = Vec::new();
         // Special-case the `self` first parameter: accept it bare
         // (no explicit type) and synthesize `(StructName, "self")`.
         if let Token::Identifier(name) = &self.current_token
             && name == "self"
         {
             parameters.push((struct_name.to_string(), "self".to_string()));
+            defaults.push(None); // `self` never has a default
             self.next_token(); // skip 'self'
             if self.current_token == Token::Comma {
                 self.next_token(); // skip ','
@@ -3236,8 +3256,9 @@ impl Parser {
 
         // Parse any remaining TYPE NAME params until the `)`.
         if self.current_token != Token::RightParen {
-            let rest = self.parse_function_parameters();
-            parameters.extend(rest);
+            let (rest_params, rest_defaults) = self.parse_function_parameters();
+            parameters.extend(rest_params);
+            defaults.extend(rest_defaults);
         } else {
             self.next_token(); // skip ')'
         }
@@ -3264,6 +3285,7 @@ impl Parser {
         Node::Function {
             name: mangled,
             parameters,
+            defaults,
             body: Box::new(body),
             requires,
             ensures,
@@ -3773,12 +3795,16 @@ impl Parser {
         out
     }
 
-    fn parse_function_parameters(&mut self) -> Vec<(String, String)> {
+    #[allow(clippy::type_complexity)]
+    fn parse_function_parameters(
+        &mut self,
+    ) -> (Vec<(String, String)>, Vec<Option<Box<Node>>>) {
         let mut parameters = Vec::new();
+        let mut defaults: Vec<Option<Box<Node>>> = Vec::new();
 
         if self.current_token == Token::RightParen {
             self.next_token(); // Skip ')'
-            return parameters;
+            return (parameters, defaults);
         }
 
         while self.current_token != Token::RightParen {
@@ -3800,8 +3826,25 @@ impl Parser {
             };
 
             parameters.push((param_type, param_name));
-
             self.next_token(); // Skip name
+
+            // RES-326: optional `= EXPR` default value for this parameter.
+            if self.current_token == Token::Assign {
+                self.next_token(); // Skip '='
+                let default_expr = self.parse_expression(0);
+                defaults.push(default_expr.map(Box::new));
+                // Consume the token that terminates the expression only when
+                // parse_expression leaves the cursor one token _before_ the
+                // delimiter. The existing call convention advances past the
+                // expression but not the following comma/paren.
+                if self.current_token == Token::Comma || self.current_token == Token::RightParen {
+                    // cursor is already on the delimiter — do nothing extra
+                } else {
+                    self.next_token();
+                }
+            } else {
+                defaults.push(None);
+            }
 
             if self.current_token == Token::Comma {
                 self.next_token(); // Skip ','
@@ -3817,7 +3860,7 @@ impl Parser {
         }
 
         self.next_token(); // Skip ')'
-        parameters
+        (parameters, defaults)
     }
 
     fn parse_block_statement(&mut self) -> Node {
@@ -6492,7 +6535,9 @@ impl Parser {
             };
         }
         self.next_token(); // skip '('
-        let parameters = self.parse_function_parameters();
+        // Defaults from anonymous fn literals are discarded — MVP only
+        // supports defaults on named top-level fns (Node::Function).
+        let (parameters, _defaults) = self.parse_function_parameters();
         let return_type = self.parse_optional_return_type();
         let (requires, ensures, recovers_to) = self.parse_function_contracts();
         if self.current_token != Token::LeftBrace {
@@ -12600,6 +12645,8 @@ fn start_repl() -> RustylineResult<()> {
                     eprintln!("\x1B[31mError: {}\x1B[0m", e);
                     continue;
                 }
+                // RES-326: fill in omitted trailing args with defaults.
+                crate::default_params::lower_program(&mut program);
 
                 // Run type checker if enabled
                 if type_check_enabled {
@@ -12830,6 +12877,10 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     if let Err(e) = crate::named_args::lower_program(&mut program) {
         errs.push(e);
     }
+    // RES-326: fill in omitted trailing arguments with their declared
+    // default expressions. Runs after named-arg lowering so positional
+    // reordering has already happened before we count arguments.
+    crate::default_params::lower_program(&mut program);
     (program, errs)
 }
 
@@ -13578,6 +13629,10 @@ fn execute_file(
         eprintln!("\x1B[31mNamed-argument error: {}\x1B[0m", e);
         return Err(format!("Named argument resolution failed: {}", e));
     }
+    // RES-326: fill in omitted trailing arguments with declared
+    // defaults. Runs after named-arg lowering (positional ordering
+    // must be stable before we count provided args).
+    crate::default_params::lower_program(&mut program);
 
     // RES-391: syntactic non-aliasing check over reference-type
     // parameters. Runs unconditionally — a borrow-check violation is
@@ -15973,6 +16028,8 @@ mod tests {
         if let Err(e) = crate::named_args::lower_program(&mut program) {
             errs.push(e);
         }
+        // RES-326: same default-param lowering as the production driver.
+        crate::default_params::lower_program(&mut program);
         (program, errs)
     }
 

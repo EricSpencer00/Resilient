@@ -1,0 +1,23 @@
+// RES-326 demo: default parameter values.
+//
+// A parameter with a default can be omitted at the call site. The
+// post-parse `default_params::lower_program` pass fills in the missing
+// trailing argument before the interpreter ever sees the call — so the
+// hot dispatch path is identical to a fully-explicit positional call.
+
+fn greet(String name, String greeting = "Hello") {
+    println(greeting + ", " + name + "!");
+}
+
+fn add(Int x, Int y = 10, Int z = 0) -> Int {
+    return x + y + z;
+}
+
+fn main() {
+    greet("World");
+    greet("Alice", greeting: "Hi");
+    println(add(5));
+    println(add(5, 20));
+    println(add(1, 2, 3));
+}
+main();

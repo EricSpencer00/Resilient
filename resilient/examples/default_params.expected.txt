@@ -1,0 +1,6 @@
+Hello, World!
+Hi, Alice!
+15
+25
+6
+Program executed successfully
