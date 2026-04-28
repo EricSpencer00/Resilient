@@ -43,11 +43,10 @@ fn remove_after_return(chunk: &mut Chunk) {
     let mut truncate_at: Option<usize> = None;
     for (i, op) in chunk.code.iter().enumerate() {
         match op {
-            Op::Return | Op::ReturnFromCall => {
-                if truncate_at.is_none() {
-                    truncate_at = Some(i + 1);
-                }
+            Op::Return | Op::ReturnFromCall if truncate_at.is_none() => {
+                truncate_at = Some(i + 1);
             }
+            Op::Return | Op::ReturnFromCall => {}
             Op::Jump(_) | Op::JumpIfFalse(_) | Op::JumpIfTrue(_) => {
                 // A jump after the first return could be a forward target;
                 // give up and preserve everything.
