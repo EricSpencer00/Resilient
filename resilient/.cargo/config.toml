@@ -9,3 +9,8 @@ BINDGEN_EXTRA_CLANG_ARGS = "-I/opt/homebrew/include -I/usr/local/include -I/usr/
 # Where the linker should find libz3.dylib (Apple Silicon Homebrew).
 # LIBRARY_PATH is a colon-separated list, picked up by clang.
 LIBRARY_PATH = "/opt/homebrew/lib:/usr/local/lib:/usr/lib"
+# RES-319: bump default thread stack from 2 MiB → 8 MiB so the tree-walker's
+# recursive eval (compiler match arms × Node enum size in debug builds) has
+# headroom on Linux test runners. macOS already defaults to 8 MiB; this lines
+# Linux up. The runtime itself ships unchanged.
+RUST_MIN_STACK = "8388608"
