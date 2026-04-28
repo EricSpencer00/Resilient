@@ -1,0 +1,29 @@
+// RES-385a: Linear types with conditional consumption via Z3 proof.
+//
+// Without Z3, the conservative snapshot/restore model allows:
+// - Each branch starts with a fresh state
+// - Consumption in one branch doesn't propagate
+// - After the if-else, bindings are back to pre-if state
+//
+// With Z3 enabled, we merge states intelligently:
+// - If BOTH branches consume a linear, mark it as consumed
+// - If NEITHER consumes it, keep it alive
+// - If only ONE consumes it, use conservative snapshot (no merge)
+//
+// This example: both branches consume fh, so with Z3 merging it's
+// marked consumed and the function validates (fh is linear param,
+// used exactly once).
+
+fn consume(linear FileHandle fh) -> int {
+  return 0;
+}
+
+fn example(linear FileHandle fh, int should_close) -> int {
+  if should_close == 1 {
+    consume(fh);
+  } else {
+    consume(fh);
+  }
+  // fh is consumed exactly once across all paths.
+  return 42;
+}
