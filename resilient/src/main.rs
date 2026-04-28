@@ -100,6 +100,10 @@ mod linear;
 // at every index site, with an optional strict `--deny-unproven-bounds`
 // mode for safety-critical embedded builds.
 mod bounds_check;
+// RES-297: dead code elimination pass over compiled bytecode chunks.
+// Removes unreachable ops after unconditional returns and folds
+// constant-condition branches.
+mod dce;
 
 // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
 // failure handlers. Holds parser + typechecker logic for the feature;
