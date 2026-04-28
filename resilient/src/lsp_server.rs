@@ -26,13 +26,13 @@ use tower_lsp::lsp_types::{
     DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
     InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
-    InlayHintServerCapabilities, Location, MarkedString, MessageType, OneOf, Position,
-    PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
+    InlayHintServerCapabilities, Location, MarkedString, MessageType, NumberOrString, OneOf,
+    Position, PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SymbolInformation,
+    SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -588,6 +588,60 @@ pub(crate) fn find_brace_line(src: &str, start_line: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// RES-190: heuristically detect parser diagnostics that are
+/// "missing semicolon" errors. Matches by message substring or by
+/// `code == "E0002"` once the parser starts populating the LSP
+/// diagnostic's `code` field. Conservative: a borderline match is
+/// fine — the worst case is offering an `Insert ;` action that the
+/// user dismisses.
+pub(crate) fn is_missing_semicolon_diagnostic(diag: &Diagnostic) -> bool {
+    if let Some(NumberOrString::String(c)) = &diag.code
+        && c == "E0002"
+    {
+        return true;
+    }
+    let msg = diag.message.to_ascii_lowercase();
+    // Common phrasings: "expected ';'", "missing semicolon",
+    // "expected a ';'", "expected `;`". Restrict to messages that
+    // mention `;` explicitly so we don't grab an unrelated parse
+    // error.
+    let mentions_semi = msg.contains("';'") || msg.contains("`;`") || msg.contains("semicolon");
+    let mentions_expected_or_missing = msg.contains("expected") || msg.contains("missing");
+    mentions_semi && mentions_expected_or_missing
+}
+
+/// RES-190: build an "Insert `;`" `CodeAction` for a missing-
+/// semicolon diagnostic. The edit inserts a `;` at the diagnostic's
+/// start position — that's where the parser flagged the problem,
+/// which is at the end of the preceding token.
+pub(crate) fn build_insert_semicolon_action(uri: &Url, diag: &Diagnostic) -> Option<CodeAction> {
+    let insert_range = Range {
+        start: diag.range.start,
+        end: diag.range.start,
+    };
+    let text_edit = TextEdit {
+        range: insert_range,
+        new_text: ";".to_string(),
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![text_edit]);
+    let workspace_edit = WorkspaceEdit {
+        changes: Some(changes),
+        document_changes: None,
+        change_annotations: None,
+    };
+    Some(CodeAction {
+        title: "Insert `;`".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(workspace_edit),
+        command: None,
+        is_preferred: Some(true),
+        disabled: None,
+        data: None,
+    })
 }
 
 /// RES-183: walk the full AST and collect the `Range` of every
@@ -2081,6 +2135,22 @@ impl LanguageServer for Backend {
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
         for diag in &params.context.diagnostics {
+            // RES-190: missing-semicolon quick-fix. Triggers on parser
+            // diagnostics whose message refers to a missing/expected
+            // `;`. The action inserts `;` at the diagnostic's start
+            // position so the editor's "lightbulb" can apply it
+            // directly. Detection is by message substring (matches
+            // existing `..Default::default()` Diagnostic construction
+            // that leaves `code: None`); when the parser starts
+            // emitting the E0002 code, swap to a `code == "E0002"`
+            // check without changing the user-visible behaviour.
+            if is_missing_semicolon_diagnostic(diag) {
+                if let Some(action) = build_insert_semicolon_action(&uri, diag) {
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                }
+                continue;
+            }
+
             // Only act on L0010 "no contract" diagnostics.
             if !diag.message.contains("L0010")
                 && !diag.message.contains("requires")
@@ -3637,6 +3707,153 @@ fn main(int n) {\n\
         // A `{` only on line 3; scanning from line 0 returns 3.
         let src = "fn f(\n    int x,\n    int y\n) {\n    return x + y;\n}";
         assert_eq!(find_brace_line(src, 0), Some(3));
+    }
+
+    // ============================================================
+    // RES-190: missing-semicolon code action
+    // ============================================================
+
+    #[test]
+    fn res190_detects_missing_semi_by_message_apostrophes() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(2, 10), Position::new(2, 10)),
+            message: "expected ';' before keyword".into(),
+            ..Default::default()
+        };
+        assert!(is_missing_semicolon_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res190_detects_missing_semi_by_message_backticks() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 5), Position::new(0, 5)),
+            message: "expected `;` after expression".into(),
+            ..Default::default()
+        };
+        assert!(is_missing_semicolon_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res190_detects_missing_semi_by_word_semicolon() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 5), Position::new(0, 5)),
+            message: "missing semicolon at end of statement".into(),
+            ..Default::default()
+        };
+        assert!(is_missing_semicolon_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res190_detects_missing_semi_by_e0002_code() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 5), Position::new(0, 5)),
+            code: Some(NumberOrString::String("E0002".into())),
+            message: "parse error".into(),
+            ..Default::default()
+        };
+        assert!(is_missing_semicolon_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res190_does_not_match_unrelated_diag() {
+        // Unrelated parse error must NOT trigger the action.
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            message: "expected `}` to close block".into(),
+            ..Default::default()
+        };
+        assert!(!is_missing_semicolon_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res190_does_not_match_message_mentioning_semi_without_expected() {
+        // A message that just mentions `;` casually shouldn't grab.
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            message: "you wrote two ';' in a row".into(),
+            ..Default::default()
+        };
+        assert!(!is_missing_semicolon_diagnostic(&diag));
+    }
+
+    #[test]
+    fn res190_action_inserts_semicolon_at_diag_start() {
+        let uri = Url::parse("file:///tmp/test_missing_semi.rz").unwrap();
+        let diag = Diagnostic {
+            range: Range::new(Position::new(2, 10), Position::new(2, 10)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("resilient-parser".into()),
+            message: "expected ';'".into(),
+            ..Default::default()
+        };
+        assert!(is_missing_semicolon_diagnostic(&diag));
+
+        let action = build_insert_semicolon_action(&uri, &diag).expect("action");
+        assert_eq!(action.title, "Insert `;`");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+
+        let edit = action.edit.expect("expected edit");
+        let mut changes = edit.changes.expect("expected changes map");
+        let file_edits = changes.remove(&uri).expect("expected edits for our URI");
+        assert_eq!(file_edits.len(), 1);
+        let te = &file_edits[0];
+        assert_eq!(te.new_text, ";");
+        // The insert range is zero-width at the diagnostic's start
+        // position — that's where the parser flagged the problem.
+        assert_eq!(te.range.start.line, 2);
+        assert_eq!(te.range.start.character, 10);
+        assert_eq!(te.range.end.line, 2);
+        assert_eq!(te.range.end.character, 10);
+    }
+
+    #[test]
+    fn res190_action_attaches_originating_diagnostic() {
+        // The CodeAction must carry the diagnostic it acts on so the
+        // editor can dismiss the lightbulb after applying the fix.
+        let uri = Url::parse("file:///tmp/test_dismissal.rz").unwrap();
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            message: "expected ';'".into(),
+            ..Default::default()
+        };
+        let action = build_insert_semicolon_action(&uri, &diag).expect("action");
+        let attached = action.diagnostics.expect("expected diagnostics list");
+        assert_eq!(attached.len(), 1);
+        assert_eq!(attached[0].message, diag.message);
+    }
+
+    #[test]
+    fn res190_fixed_text_lines_up_with_a_valid_program() {
+        // End-to-end shape check: starting from a snippet with a
+        // missing `;`, applying the action's edit produces a string
+        // that contains the inserted `;` at the expected offset.
+        let original = "let x = 1\nlet y = 2;\n";
+        // The parser would point at the start of `let y` on line 1
+        // (or the EOL of line 0). Synthesize a diagnostic at the
+        // end of line 0.
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 9), Position::new(0, 9)),
+            message: "expected ';'".into(),
+            ..Default::default()
+        };
+        let uri = Url::parse("file:///tmp/test_apply.rz").unwrap();
+        let action = build_insert_semicolon_action(&uri, &diag).expect("action");
+        let edit = action
+            .edit
+            .expect("edit")
+            .changes
+            .expect("changes")
+            .remove(&uri)
+            .expect("edits");
+        let te = &edit[0];
+        // Apply the edit by hand: insert `;` at line 0, col 9.
+        let mut lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        let line0 = &mut lines[0];
+        let col = te.range.start.character as usize;
+        line0.insert_str(col, &te.new_text);
+        let fixed = lines.join("\n") + "\n";
+        assert_eq!(fixed, "let x = 1;\nlet y = 2;\n");
     }
 
     // ============================================================

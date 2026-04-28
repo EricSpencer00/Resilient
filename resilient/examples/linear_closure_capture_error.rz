@@ -1,0 +1,36 @@
+// RES-385b: linear types — closure capture (error-path demo).
+//
+// A closure that captures a `linear FileHandle` consumes the outer
+// binding at construction. Once the closure literal has been built,
+// the outer binding is no longer available — any subsequent
+// reference is a single-use violation.
+//
+// Here `outer_use_after_capture` builds a closure that references
+// `fh`, then tries to consume `fh` directly. The linearity walker
+// flags the second use with a `linear-use` diagnostic pointing at
+// the post-construction reference.
+//
+// This file is `.interactive`-tagged so the standard golden runner
+// skips it (the example is intended for `rz check`, where the
+// linearity diagnostic surfaces). The pinned diagnostic in the
+// `.expected.txt` sidecar documents the user-visible message.
+
+struct FileHandle { int fd }
+
+fn close(linear FileHandle fh) {
+    return 0;
+}
+
+fn outer_use_after_capture(linear FileHandle fh) {
+    let cb = fn() { close(fh); return 0; };
+    close(fh);
+    return 0;
+}
+
+fn main() {
+    let fh: linear FileHandle = new FileHandle { fd: 7 };
+    outer_use_after_capture(fh);
+    return 0;
+}
+
+main();

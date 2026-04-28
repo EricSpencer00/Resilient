@@ -386,6 +386,66 @@ fn walk(
             }
             Ok(())
         }
+        // RES-385b: closure / anonymous-fn body. Capture semantics
+        // are by-move: any consumption of an outer linear binding
+        // inside the body propagates to the outer scope as a
+        // consumption at the closure-construction site. The
+        // captured value is therefore unavailable for other uses
+        // after the closure is built — which is what users want
+        // when wrapping a one-shot resource into a callback.
+        //
+        // Multi-invocation rejection of a linear-capturing closure
+        // is enforced by binding the closure to a `linear`-typed
+        // local: calling such a binding twice errors via the same
+        // use-after-move rule that catches direct double-consumes
+        // (see the existing `linear_value_used_twice_is_rejected`
+        // test in `purity_tests`).
+        //
+        // Closure parameters annotated `linear T` introduce new
+        // linear locals inside the body, mirroring the named-fn
+        // case in `check_fn_body`. Those locals stay scoped to
+        // the closure — the outer scope only sees outer-binding
+        // mutations.
+        Node::FunctionLiteral {
+            parameters, body, ..
+        } => {
+            let mut inner = bindings.clone();
+            for (ty, pname) in parameters {
+                if is_linear(ty) {
+                    inner.insert(
+                        pname.clone(),
+                        LinearBinding {
+                            ty_name: strip_linear(ty).to_string(),
+                            defined_at: Span::default(),
+                            consumed_at: None,
+                        },
+                    );
+                }
+            }
+            walk(body, &mut inner, fn_name, source_path)?;
+            // Propagate outer-binding consumption back. Only outer
+            // names (those present in the original `bindings`)
+            // matter; the closure's own parameter bindings stay
+            // scoped to the closure. A closure param that *shadows*
+            // an outer name takes over that key inside `inner`, so
+            // its consumption must NOT be propagated back to the
+            // (different) outer binding of the same name.
+            let outer_names: Vec<String> = bindings.keys().cloned().collect();
+            for name in outer_names {
+                let shadowed = parameters.iter().any(|(_, p)| p == &name);
+                if shadowed {
+                    continue;
+                }
+                if let Some(inner_b) = inner.get(&name)
+                    && let Some(consumed_at) = inner_b.consumed_at
+                    && let Some(outer_b) = bindings.get_mut(&name)
+                    && outer_b.consumed_at.is_none()
+                {
+                    outer_b.consumed_at = Some(consumed_at);
+                }
+            }
+            Ok(())
+        }
         // Literals and terminal nodes with no sub-expressions the
         // linearity pass cares about.
         _ => Ok(()),
@@ -449,5 +509,137 @@ mod tests {
         assert!(!is_linear("linear")); // no space, no base type
         assert_eq!(strip_linear("linear FileHandle"), "FileHandle");
         assert_eq!(strip_linear("FileHandle"), "FileHandle");
+    }
+
+    // ============================================================
+    // RES-385b: lifetime tracking through closures
+    // ============================================================
+    //
+    // The `walk` traversal must descend into `FunctionLiteral`
+    // bodies. Captures of outer `linear` bindings should propagate
+    // back to the outer scope as consumption at the closure-
+    // construction site so subsequent uses error.
+
+    /// Construct a program AST through the project's parser and run
+    /// the linearity pass. Returns the first violation (if any) so
+    /// tests can assert the negative or positive case.
+    fn run_linear_pass(src: &str) -> Result<(), String> {
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "unexpected parse errors: {errs:?}");
+        check_linear_usage(&program, "<test>")
+    }
+
+    #[test]
+    fn closure_consuming_outer_linear_marks_it_consumed_at_construction() {
+        // Without this descent, `consume(fh)` inside the closure was
+        // invisible to the linear pass and the second use after the
+        // closure construction was silently accepted. The walker now
+        // sees the inner consumption and propagates it.
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn make(linear FileHandle fh) {\n\
+                let cb = fn() { consume(fh); return 0; };\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let err = run_linear_pass(src).expect_err("post-construction use must be rejected");
+        assert!(
+            err.contains("linear-use") && err.contains("fh"),
+            "expected use-after-move on `fh`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn closure_not_capturing_linear_leaves_outer_alive() {
+        // A closure that doesn't reference the outer linear must not
+        // accidentally mark it as consumed.
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn make(linear FileHandle fh) {\n\
+                let cb = fn() { return 42; };\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        run_linear_pass(src).expect("non-capturing closure must not consume outer linear");
+    }
+
+    #[test]
+    fn closure_body_double_uses_internal_linear_param_rejected() {
+        // The same single-use rule applies to a closure's own
+        // parameters: a `linear T` parameter consumed twice inside
+        // the body errors, just like a named-fn parameter.
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn outer() {\n\
+                let cb = fn(linear FileHandle fh) {\n\
+                    consume(fh);\n\
+                    consume(fh);\n\
+                    return 0;\n\
+                };\n\
+                return 0;\n\
+            }\n";
+        let err = run_linear_pass(src)
+            .expect_err("double-use of closure's linear parameter must be rejected");
+        assert!(
+            err.contains("linear-use"),
+            "expected linear-use diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn closure_param_scope_does_not_leak_to_outer() {
+        // A closure parameter named `fh` must not collide with —
+        // or be confused for — an outer `fh` binding. The closure's
+        // local `fh` is scoped to the body; the outer `fh` is still
+        // live after the closure literal.
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn outer(linear FileHandle fh) {\n\
+                let cb = fn(linear FileHandle fh) { consume(fh); return 0; };\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        run_linear_pass(src)
+            .expect("closure param shadowing must not consume the outer binding of the same name");
+    }
+
+    #[test]
+    fn closure_capturing_linear_then_used_outside_rejected() {
+        // The closure consumes `fh` in its body; using `fh` outside
+        // after constructing the closure is a use-after-move.
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn outer(linear FileHandle fh) {\n\
+                let cb = fn() { consume(fh); return 0; };\n\
+                let dummy = fh;\n\
+                return 0;\n\
+            }\n";
+        let err = run_linear_pass(src).expect_err("post-capture move must be rejected");
+        assert!(
+            err.contains("linear-use") && err.contains("fh"),
+            "expected linear-use on `fh`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn nested_closure_propagates_capture_through_two_levels() {
+        // An inner closure consumes `fh`; the outer closure captures
+        // it transitively. Either way, the outermost binding must be
+        // marked consumed once both closures are constructed.
+        let src = "\
+            fn consume(linear FileHandle fh) { return 0; }\n\
+            fn outer(linear FileHandle fh) {\n\
+                let outer_cb = fn() {\n\
+                    let inner_cb = fn() { consume(fh); return 0; };\n\
+                    return 0;\n\
+                };\n\
+                consume(fh);\n\
+                return 0;\n\
+            }\n";
+        let err = run_linear_pass(src).expect_err("transitive capture must propagate");
+        assert!(
+            err.contains("linear-use"),
+            "expected linear-use diagnostic, got: {err}"
+        );
     }
 }
