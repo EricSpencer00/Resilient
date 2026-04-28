@@ -257,6 +257,9 @@ enum Tok {
     // no lone-`#` token in the logos surface anyway — only `#{` exists.
     #[token("#[")]
     HashLBracket,
+    // RES-324: `mod` keyword for namespace blocks.
+    #[token("mod")]
+    Mod,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -604,6 +607,8 @@ fn convert(t: Tok) -> Token {
         Tok::DotDotDot => Token::DotDotDot,
         // RES-343: `#[` opener for cfg attributes.
         Tok::HashLBracket => Token::HashLeftBracket,
+        // RES-324: `mod` keyword for namespace blocks.
+        Tok::Mod => Token::Mod,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

@@ -171,6 +171,10 @@ mod named_args;
 // logic lives here; main.rs only adds a Node variant and two small
 // dispatch calls.
 mod string_interp;
+// RES-324: `mod name { ... }` inline namespace blocks. All namespace
+// logic (eval and static check) lives in this module; the only core-
+// file changes are Token::Mod, Node::ModuleDecl, and the dispatch lines.
+mod modules;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -303,6 +307,8 @@ enum Token {
     HashLeftBracket,
     /// RES-316: `...` marker at the end of an `extern fn` parameter list.
     DotDotDot,
+    /// RES-324: `mod` keyword for inline namespace blocks.
+    Mod,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -436,6 +442,7 @@ impl Token {
             Token::Exists => "`exists`".to_string(),
             Token::DotDot => "`..`".to_string(),
             Token::DotDotDot => "`...`".to_string(),
+            Token::Mod => "`mod`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -889,6 +896,7 @@ impl Lexer {
                         "catch" => Token::Catch,
                         "forall" => Token::Forall,
                         "exists" => Token::Exists,
+                        "mod" => Token::Mod,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -1995,6 +2003,13 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-324: `mod name { decl* }` — inline namespace block.
+    ModuleDecl {
+        name: String,
+        body: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -2272,6 +2287,7 @@ impl Parser {
             Token::Let => Some(self.parse_let_statement()),
             Token::Static => Some(self.parse_static_let_statement()),
             Token::Const => Some(self.parse_const_statement()),
+            Token::Mod => Some(self.parse_module_decl()),
             Token::Return => Some(self.parse_return_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
@@ -4131,6 +4147,44 @@ impl Parser {
             type_annot,
             span: stmt_span,
         }
+    }
+
+    /// RES-324: `mod name { decl* }` — inline namespace block.
+    ///
+    /// Entered with `current_token == Token::Mod`. Consumes through the
+    /// closing `}` and returns `Node::ModuleDecl`. The caller (`parse_program`
+    /// or `parse_block_statement`) advances one more token after the `}`.
+    fn parse_module_decl(&mut self) -> Node {
+        let span = self.span_at_current();
+        self.next_token(); // skip `mod`
+
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected module name after 'mod', found {}", tok));
+                String::new()
+            }
+        };
+        self.next_token(); // skip name
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' after module name '{}', found {}",
+                name, tok
+            ));
+        }
+        // Delegate block-body parsing to the shared helper.
+        // parse_block_statement expects current_token == '{' and leaves
+        // current_token on '}' when it returns.
+        let block = self.parse_block_statement();
+        let body = match block {
+            Node::Block { stmts, .. } => stmts,
+            other => vec![other],
+        };
+
+        Node::ModuleDecl { name, body, span }
     }
 
     fn parse_let_statement(&mut self) -> Node {
@@ -11150,6 +11204,10 @@ impl Interpreter {
             // path. Delegate to a sibling so its locals don't
             // inflate this hot frame.
             Node::NamedArg { .. } => self.eval_stray_named_arg(node),
+            // RES-324: evaluate a `mod name { ... }` namespace block.
+            // Each contained declaration is registered under the
+            // prefixed key `"name::decl"` in the outer environment.
+            Node::ModuleDecl { name, body, .. } => crate::modules::eval_module(name, body, self),
         }
     }
 
@@ -11398,7 +11456,7 @@ impl Interpreter {
         // follows `main`.
         for statement in statements {
             match &statement.node {
-                Node::Function { .. } | Node::ImplBlock { .. } => {
+                Node::Function { .. } | Node::ImplBlock { .. } | Node::ModuleDecl { .. } => {
                     self.eval(&statement.node)
                         .map_err(|e| decorate_runtime_error(e, &statement.span))?;
                 }
@@ -11410,7 +11468,7 @@ impl Interpreter {
         for statement in statements {
             if matches!(
                 statement.node,
-                Node::Function { .. } | Node::ImplBlock { .. }
+                Node::Function { .. } | Node::ImplBlock { .. } | Node::ModuleDecl { .. }
             ) {
                 continue;
             }

@@ -459,6 +459,13 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // doesn't bind a name; only the value expression introduces
         // free variables.
         Node::NamedArg { value, .. } => walk(value, bound, free),
+        // RES-324: walk module body declarations for free-variable
+        // analysis; the module name itself is not a free variable.
+        Node::ModuleDecl { body, .. } => {
+            for node in body {
+                walk(node, bound, free);
+            }
+        }
     }
 }
 

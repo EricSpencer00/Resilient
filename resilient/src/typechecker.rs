@@ -1693,6 +1693,7 @@ impl TypeChecker {
                 crate::type_aliases::check(program, source_path)?;
                 crate::ranges::check(program, source_path)?;
                 crate::string_interp::check(program, source_path)?;
+                crate::modules::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -3291,6 +3292,13 @@ impl TypeChecker {
             // a parser/internal bug; surface a clean error rather
             // than crashing the typechecker.
             Node::NamedArg { value, .. } => self.check_node(value),
+            // RES-324: module declaration — type-check each body node.
+            Node::ModuleDecl { body, .. } => {
+                for node in body {
+                    self.check_node(node)?;
+                }
+                Ok(Type::Void)
+            }
         }
     }
 
