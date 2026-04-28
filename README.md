@@ -25,6 +25,27 @@
 
 > **Resilient is open source under the MIT license — contributions from humans *and* AI agents are first-class.**
 
+## Trust model
+
+Resilient treats AI-written code as **untrusted input** to a trusted
+verifier — not as a participant in the proof. The compiler, Z3, and TLA+
+re-derive every safety claim from the typed AST; nothing the LLM asserts
+in a comment or message is taken at face value.
+
+In short: the LLM is a *client* of the type system, not the prover.
+
+- **[STRUCTURAL_ENFORCEMENT.md](docs/STRUCTURAL_ENFORCEMENT.md)** —
+  the boundary, what's structural, what's external, what we trust.
+- **[EXPRESSIBLE_INVALID_STATES.md](docs/EXPRESSIBLE_INVALID_STATES.md)** —
+  the public registry of what Resilient *cannot yet* prevent
+  structurally, with a closing ticket per gap.
+- **[formal-verification-limitations.md](docs/formal-verification-limitations.md)** —
+  RES-202: where verification's guarantees end and real-world
+  uncertainty begins.
+
+If you've read a critique that says "this is just self-consistency, not
+safety," start with the first link.
+
 ## Core Philosophy
 
 Resilient is a statically-typed, compiled programming language designed from the ground up for extreme reliability in embedded and safety-critical systems. Its core philosophy is built on three pillars:
