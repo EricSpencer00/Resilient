@@ -1,0 +1,27 @@
+// RES-385c: io fn with linear parameter — accepted.
+//
+// An `io fn` is free to consume linear parameters because
+// IO functions can perform observable side effects. This example
+// shows the happy path: the io fn calls close() and consumes
+// the linear FileHandle without any type error.
+
+struct FileHandle { int fd }
+
+fn close(linear FileHandle fh) {
+    println("closing fd=" + fh.fd);
+    return 0;
+}
+
+io fn good_io_with_linear(linear FileHandle fh) {
+    close(fh);
+    return 0;
+}
+
+fn main() {
+    let fh: linear FileHandle = new FileHandle { fd: 3 };
+    good_io_with_linear(fh);
+    println("linear value consumed in io context");
+    return 0;
+}
+
+main();
