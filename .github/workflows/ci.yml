@@ -25,8 +25,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    name: build / test / clippy
+  build:
+    name: build / clippy / fmt
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -48,25 +48,38 @@ jobs:
       - name: cargo build
         run: cargo build --locked --verbose
 
-      - name: cargo test
-        run: cargo test --locked --verbose
-
       - name: cargo clippy
         run: cargo clippy --locked -- -D warnings
 
       - name: cargo fmt --check
         run: cargo fmt --check
 
-  z3:
-    name: build / test with --features z3
+  test:
+    name: test (${{ matrix.name }})
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: resilient
+    strategy:
+      matrix:
+        include:
+          - name: 'default'
+            features: ''
+            z3_install: false
+          - name: 'z3'
+            features: 'z3'
+            z3_install: true
+          - name: 'lsp'
+            features: 'lsp'
+            z3_install: false
+          - name: 'jit'
+            features: 'jit'
+            z3_install: false
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Z3 (libz3-dev for bindgen + linker)
+      - name: Install Z3 (if needed)
+        if: ${{ matrix.z3_install }}
         run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
 
       - name: Install Rust toolchain
@@ -78,20 +91,31 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: resilient
-          key: z3
+          key: test-${{ matrix.name }}
 
-      - name: cargo build --features z3
-        run: cargo build --locked --features z3
+      - name: cargo test
+        run: |
+          if [[ -z "${{ matrix.features }}" ]]; then
+            cargo test --locked --verbose
+          else
+            cargo test --locked --features "${{ matrix.features }}" --verbose
+          fi
         env:
-          # Linux distro paths for bindgen + linker.
-          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
-          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+          BINDGEN_EXTRA_CLANG_ARGS: ${{ matrix.z3_install && '-I/usr/include' || '' }}
+          LIBRARY_PATH: ${{ matrix.z3_install && '/usr/lib/x86_64-linux-gnu' || '' }}
 
-      - name: cargo test --features z3
-        run: cargo test --locked --features z3
-        env:
-          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
-          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+  test-result:
+    name: test-result
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [test]
+    steps:
+      - name: Check test results
+        run: |
+          if [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "::error::One or more test shards failed"
+            exit 1
+          fi
 
   board:
     name: board hygiene
