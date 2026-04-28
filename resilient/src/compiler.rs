@@ -1165,6 +1165,9 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::NamedArg { span, .. } => span.start.line as u32,
         // RES-221: interpolated string carries the opening quote's span.
         Node::InterpolatedString { span, .. } => span.start.line as u32,
+
+        // RES-324: module declaration; span at the `mod` keyword.
+        Node::ModuleDecl { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }

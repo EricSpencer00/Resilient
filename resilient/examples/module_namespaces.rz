@@ -1,0 +1,15 @@
+mod math {
+    fn add(Int a, Int b) -> Int { return a + b; }
+    fn mul(Int a, Int b) -> Int { return a * b; }
+}
+
+mod utils {
+    fn add(Int a, Int b) -> Int { return a + b + 100; }
+}
+
+fn main() {
+    println(math::add(3, 4));
+    println(math::mul(6, 7));
+    println(utils::add(1, 2));
+}
+main();

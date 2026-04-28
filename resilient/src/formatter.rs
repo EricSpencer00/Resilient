@@ -586,6 +586,18 @@ impl Formatter {
             }
             // FFI v1: extern blocks not yet formatted (Tasks 4-8).
             Node::Extern { .. } => {}
+            // RES-324: `mod name { ... }` namespace block.
+            Node::ModuleDecl { name, body, .. } => {
+                self.write(&format!("mod {} {{", name));
+                self.newline();
+                self.indent();
+                for s in body {
+                    self.fmt_stmt(s);
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             // Anything else was an expression; dispatch to fmt_expr
             // and terminate with a semicolon so a bare expression
             // statement at top level still looks like a statement.
@@ -998,6 +1010,7 @@ impl Formatter {
             | Node::Extern { .. }
             | Node::LetDestructureStruct { .. }
             | Node::TryCatch { .. }
+            | Node::ModuleDecl { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
