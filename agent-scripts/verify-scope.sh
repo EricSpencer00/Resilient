@@ -225,7 +225,10 @@ run_cargo() {
 }
 
 if (( SKIP_FMT == 0 )); then
-  run_cargo "cargo fmt --check" cargo fmt --all -- --check
+  # The repo has no top-level Cargo.toml, so `cargo fmt` from the
+  # repo root cannot find a manifest. Point it at the workspace
+  # crate the same way the clippy/test invocations below do.
+  run_cargo "cargo fmt --check" cargo fmt --manifest-path resilient/Cargo.toml --all -- --check
 fi
 if (( SKIP_CLIPPY == 0 )); then
   run_cargo "cargo clippy -D warnings" cargo clippy --manifest-path resilient/Cargo.toml --all-targets -- -D warnings
