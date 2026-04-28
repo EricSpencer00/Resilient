@@ -1692,6 +1692,7 @@ impl TypeChecker {
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
                 crate::type_aliases::check(program, source_path)?;
                 crate::ranges::check(program, source_path)?;
+                crate::string_interp::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -2963,6 +2964,8 @@ impl TypeChecker {
             Node::IntegerLiteral { .. } => Ok(Type::Int),
             Node::FloatLiteral { .. } => Ok(Type::Float),
             Node::StringLiteral { .. } => Ok(Type::String),
+            // RES-221: interpolated strings always produce a String value.
+            Node::InterpolatedString { .. } => Ok(Type::String),
             Node::BytesLiteral { .. } => Ok(Type::Bytes),
             Node::BooleanLiteral { .. } => Ok(Type::Bool),
 

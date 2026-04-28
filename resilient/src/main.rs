@@ -167,6 +167,11 @@ mod cfg_attr;
 // must follow positional, no duplicates) lives next to the parser.
 mod named_args;
 
+// RES-221: string interpolation — `"text {expr} more"`. All feature
+// logic lives here; main.rs only adds a Node variant and two small
+// dispatch calls.
+mod string_interp;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -1979,6 +1984,14 @@ enum Node {
     NamedArg {
         name: String,
         value: Box<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-221: string interpolation — `"text {expr} more"`.
+    /// Parsed from a `StringLiteral` token whose raw value contains `{`.
+    /// Each `StringPart::Expr` is evaluated at runtime and spliced in.
+    InterpolatedString {
+        parts: Vec<crate::string_interp::StringPart>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -5558,6 +5571,25 @@ impl Parser {
             // append-only and conflict-resistant.
             Token::Forall | Token::Exists => crate::quantifiers::parse_quantifier(self),
             _ => None,
+        };
+
+        // RES-221: upgrade a plain StringLiteral that contains `{` into
+        // an InterpolatedString node. Done here — after the outer match
+        // releases the borrow on `self.current_token` — so we can call
+        // `self.record_error` on parse failure without borrow conflicts.
+        left_expr = match left_expr {
+            Some(Node::StringLiteral { ref value, span }) if value.contains('{') => {
+                let raw = value.clone();
+                match crate::string_interp::parse_parts(&raw) {
+                    Ok(Some(parts)) => Some(Node::InterpolatedString { parts, span }),
+                    Ok(None) => Some(Node::StringLiteral { value: raw, span }),
+                    Err(e) => {
+                        self.record_error(format!("string interpolation error: {}", e));
+                        Some(Node::StringLiteral { value: raw, span })
+                    }
+                }
+            }
+            other => other,
         };
 
         // Parse infix expressions
@@ -10588,6 +10620,11 @@ impl Interpreter {
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),
             Node::FloatLiteral { value, .. } => Ok(Value::Float(*value)),
             Node::StringLiteral { value, .. } => Ok(Value::String(value.clone())),
+            // RES-221: evaluate each part of an interpolated string and
+            // concatenate into a single String value.
+            Node::InterpolatedString { parts, .. } => {
+                crate::string_interp::eval_interp(self, parts)
+            }
             Node::BytesLiteral { value, .. } => Ok(Value::Bytes(value.clone())),
             Node::BooleanLiteral { value, .. } => Ok(Value::Bool(*value)),
             Node::PrefixExpression {

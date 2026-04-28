@@ -951,6 +951,25 @@ impl Formatter {
                 }
                 self.fmt_expr(hi);
             }
+            // RES-221: re-emit the interpolated string literal by
+            // reconstructing each part. Literal text is escaped like an
+            // ordinary string; expressions are wrapped back in `{...}`.
+            Node::InterpolatedString { parts, .. } => {
+                self.write("\"");
+                for part in parts {
+                    match part {
+                        crate::string_interp::StringPart::Literal(s) => {
+                            self.write(&escape_string(s));
+                        }
+                        crate::string_interp::StringPart::Expr(expr) => {
+                            self.write("{");
+                            self.fmt_expr(expr);
+                            self.write("}");
+                        }
+                    }
+                }
+                self.write("\"");
+            }
             // Statement-shaped nodes that ended up in expression
             // position: degrade gracefully to their statement form.
             Node::Block { .. }

@@ -1,0 +1,4 @@
+Hello, World!
+Hello, Alice!
+The answer is 42.
+Program executed successfully
