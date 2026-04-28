@@ -7,6 +7,20 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-385c-linear-effect-interaction",
       "claimed_at": "2026-04-28T20:12:45Z"
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:03Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:03Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:03Z"
+    },
+    "README.md": {
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:25Z"
     }
   }
 }
