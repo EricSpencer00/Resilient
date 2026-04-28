@@ -1,3 +1,16 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/main.rs": {
+      "branch": "res-385a-linear-conditional-z3",
+      "claimed_at": "2026-04-28T21:45:52Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-385a-linear-conditional-z3",
+      "claimed_at": "2026-04-28T21:45:52Z"
+    },
+    "resilient/src/linear.rs": {
+      "branch": "res-385a-linear-conditional-z3",
+      "claimed_at": "2026-04-28T21:45:52Z"
+    }
+  }
 }
