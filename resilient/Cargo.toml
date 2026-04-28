@@ -97,6 +97,12 @@ cranelift-module = { version = "0.108", optional = true }
 # doesn't widen the default build's dep tree; activate with
 # `--features proptest`.
 proptest = { version = "1", optional = true }
+# RES-228: `--watch` mode — cross-platform file watcher with 200ms debounce.
+# Both crates are unconditional so the CLI flag is always available; the
+# overhead is minimal (< 1 ms on the hot path) because the watcher thread
+# only starts when --watch is actually passed.
+notify = { version = "8", features = ["macos_fsevent"] }
+notify-debouncer-mini = "0.7"
 # RES-194: Ed25519 signatures on RES-071 verification certificates.
 # `rand_core` brings in the OS RNG we use for keypair generation
 # in the test helpers (see `resilient/src/cert_sign.rs`).

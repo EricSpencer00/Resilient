@@ -179,6 +179,10 @@ mod modules;
 // A post-parse lowering pass fills in omitted trailing arguments with
 // their declared default expressions before the interpreter runs.
 mod default_params;
+// RES-228: `rz --watch <file>` — re-run on every save with a 200 ms
+// debounce. All watch logic lives in this module; main.rs only adds the
+// `mod` declaration and the dispatch call just before `execute_file`.
+mod watch_mode;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -14932,6 +14936,8 @@ COMMON FLAGS:\n\
                                  (repeatable; RES-343)\n\
         --target TRIPLE          Set the active triple for `#[cfg(target=...)]`\n\
                                  predicates (RES-343)\n\
+        --watch                  Re-run the file on every save (200 ms\n\
+                                 debounce); press Ctrl-C to stop (RES-228)\n\
 \n\
 SUBCOMMANDS:\n\
     check <file>        Type-check without running (RES-225)\n\
@@ -15074,6 +15080,8 @@ fn main() {
     // evaluated at parse time.
     let mut cfg_features: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut cfg_target: Option<String> = None;
+    // RES-228: `--watch` re-runs the program on every file save.
+    let mut watch_mode = false;
     let mut filename = "";
 
     // Simple argument parsing
@@ -15307,6 +15315,10 @@ fn main() {
                 cfg_target = Some(args[i].clone());
             } else if let Some(val) = arg.strip_prefix("--target=") {
                 cfg_target = Some(val.to_string());
+            } else if arg == "--watch" {
+                // RES-228: re-run the file on every save (200 ms debounce).
+                // Silently ignored in CI (see `watch_mode::is_non_interactive`).
+                watch_mode = true;
             } else {
                 filename = arg;
             }
@@ -15425,6 +15437,52 @@ fn main() {
             let mut buf = String::new();
             disasm::disassemble(&prog, &mut buf).expect("String write is infallible");
             print!("{}", buf);
+            return;
+        }
+
+        // RES-228: `--watch` mode — delegate to the watch module which
+        // re-runs `execute_file` on every save.  We build a closure that
+        // captures all the resolved flags so the watch loop can re-invoke
+        // the exact same execution as the non-watch path.
+        if watch_mode && !filename.is_empty() {
+            set_panic_on_fault(panic_on_fault_flag);
+            let file_path = std::path::Path::new(filename);
+            // Snapshot flag values into owned/Copy locals for the closure.
+            let filename_owned = filename.to_string();
+            let live_log_owned = emit_live_log.clone();
+            let cert_dir_owned = emit_cert_dir.clone();
+            let sign_key_owned = sign_cert_key.clone();
+            #[cfg(feature = "z3")]
+            let z3_theory_snap = z3_theory;
+            watch_mode::run_watch(file_path, || {
+                let result = execute_file(
+                    &filename_owned,
+                    type_check,
+                    audit,
+                    explain_effects,
+                    cert_dir_owned.as_deref(),
+                    sign_key_owned.as_deref(),
+                    use_vm,
+                    use_jit,
+                    verifier_timeout_ms,
+                    warn_unverified,
+                    verbose_invariants,
+                    live_log_owned.as_deref(),
+                    #[cfg(feature = "z3")]
+                    z3_theory_snap,
+                    no_cache,
+                );
+                match result {
+                    Ok(_) => {
+                        println!("Program executed successfully");
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        false
+                    }
+                }
+            });
             return;
         }
 
