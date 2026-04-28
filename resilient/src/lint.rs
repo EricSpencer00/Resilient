@@ -1768,7 +1768,7 @@ fn has_any_specs(node: &Node) -> bool {
             has_any_specs(body)
         }
         Node::Assume { .. } => true,
-        Node::Block { stmts, .. } => stmts.iter().any(|s| has_any_specs(s)),
+        Node::Block { stmts, .. } => stmts.iter().any(has_any_specs),
         Node::IfStatement {
             consequence,
             alternative,
@@ -1777,7 +1777,7 @@ fn has_any_specs(node: &Node) -> bool {
         Node::WhileStatement { body, .. }
         | Node::ForInStatement { body, .. }
         | Node::LiveBlock { body, .. } => has_any_specs(body),
-        Node::ImplBlock { methods, .. } => methods.iter().any(|m| has_any_specs(m)),
+        Node::ImplBlock { methods, .. } => methods.iter().any(has_any_specs),
         Node::Program(stmts) => stmts.iter().any(|s| has_any_specs(&s.node)),
         _ => false,
     }
