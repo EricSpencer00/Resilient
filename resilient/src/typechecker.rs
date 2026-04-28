@@ -4158,15 +4158,15 @@ fn check_body_effects(
                 // consumed (passed to a function). Consuming a linear
                 // parameter is observable IO — an operation on a
                 // resource — so a pure fn cannot do it.
-                if let Node::Identifier { name: arg_name, .. } = a {
-                    if linear_params.iter().any(|(param_ty, param_name)| {
+                if let Node::Identifier { name: arg_name, .. } = a
+                    && linear_params.iter().any(|(param_ty, param_name)| {
                         arg_name == param_name && crate::linear::is_linear(param_ty)
-                    }) {
-                        return Err(format!(
-                            "cannot consume linear parameter `{}` in pure context",
-                            arg_name
-                        ));
-                    }
+                    })
+                {
+                    return Err(format!(
+                        "cannot consume linear parameter `{}` in pure context",
+                        arg_name
+                    ));
                 }
             }
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
