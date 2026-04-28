@@ -1,0 +1,5 @@
+RES-385b error-path demo — surfaces a linearity diagnostic via `rz check`.
+The standard golden runner runs `rz <file>` (without `check`), which exercises
+runtime semantics; linearity errors are compile-time only. Tagging this file
+.interactive opts it out of that runner. The expected.txt pins the user-
+visible diagnostic for documentation/regression purposes.

@@ -1,0 +1,39 @@
+// RES-385b: linear types — closure capture (happy-path demo).
+//
+// A closure that captures a `linear FileHandle` consumes the outer
+// binding at the closure-construction site. The closure itself is
+// then a self-contained one-shot resource: invoking it consumes the
+// captured handle exactly once, just as if the consumption had been
+// inlined in place of the closure call.
+//
+// The linearity walker descends into the closure body and propagates
+// the consumption back to the outer scope. After the closure literal
+// is evaluated, `fh` is consumed from the outer fn's perspective —
+// any subsequent reference to `fh` would error. This file exercises
+// the *non-error* path: the outer fn never touches `fh` again, so
+// the typechecker signs off.
+//
+// At runtime this program is unremarkable — linearity is a compile-
+// time concept. The output simply confirms the closure ran.
+
+struct FileHandle { int fd }
+
+fn close(linear FileHandle fh) {
+    println("closing fd=" + fh.fd);
+    return 0;
+}
+
+fn run_in_callback(linear FileHandle fh) {
+    let cb = fn() { close(fh); return 0; };
+    cb();
+    return 0;
+}
+
+fn main() {
+    let fh: linear FileHandle = new FileHandle { fd: 9 };
+    run_in_callback(fh);
+    println("linear closure consumed exactly once");
+    return 0;
+}
+
+main();

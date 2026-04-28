@@ -1,0 +1,1 @@
+error[linear-use]: linear value `fh: linear FileHandle` used after move in fn `outer_use_after_capture` (first consumed at 25:29)

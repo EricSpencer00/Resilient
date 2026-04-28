@@ -1,0 +1,3 @@
+closing fd=9
+linear closure consumed exactly once
+Program executed successfully
