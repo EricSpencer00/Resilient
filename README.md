@@ -673,6 +673,42 @@ small code size (≈15 LOC, zero dependencies), not unpredictability.
 When the language grows a cryptographic-grade primitive it will
 live under a separate name with the appropriate guarantees.
 
+## Editor & IDE Support
+
+### Visual Studio Code
+
+Install the [Resilient extension](https://marketplace.visualstudio.com/items?itemName=fromamerica.resilient-vscode) from the VS Code Marketplace for syntax highlighting, diagnostics, hover information, go-to-definition, and one-click file execution.
+
+\`\`\`bash
+# Or install from command line:
+code --install-extension fromamerica.resilient-vscode
+\`\`\`
+
+**Features:**
+- Syntax highlighting with TextMate grammar
+- Real-time diagnostics (parse errors, type errors, contract violations)
+- Language server protocol (LSP) support: hover types, completion, go-to-definition, find references
+- One-click "Run Resilient File" button
+
+**Setup:** The extension auto-detects the \`rz\` binary on \`$PATH\`. If \`rz\` is elsewhere, configure \`resilient.serverPath\` in settings.
+
+### GitHub Syntax Highlighting
+
+\`.rz\` files are recognized and highlighted on GitHub as of the [Resilient registration in Linguist](https://github.com/github-linguist/linguist). The VS Code extension grammar powers the coloring.
+
+### Other Editors
+
+Resilient supports LSP, so any editor with LSP client support (Vim, Neovim, Emacs, Sublime, etc.) can integrate the language server:
+
+\`\`\`bash
+# Start the LSP server:
+rz --lsp
+
+# Then point your editor's LSP client to this process.
+\`\`\`
+
+See [docs/lsp.md](docs/lsp.md) for editor-specific setup instructions.
+
 ## Performance
 
 Run `cargo bench --manifest-path resilient/Cargo.toml` to benchmark the
