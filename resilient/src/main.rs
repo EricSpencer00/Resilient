@@ -3796,9 +3796,7 @@ impl Parser {
     }
 
     #[allow(clippy::type_complexity)]
-    fn parse_function_parameters(
-        &mut self,
-    ) -> (Vec<(String, String)>, Vec<Option<Box<Node>>>) {
+    fn parse_function_parameters(&mut self) -> (Vec<(String, String)>, Vec<Option<Box<Node>>>) {
         let mut parameters = Vec::new();
         let mut defaults: Vec<Option<Box<Node>>> = Vec::new();
 
