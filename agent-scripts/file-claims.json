@@ -1,36 +1,20 @@
 {
   "claims": {
-    "resilient/Cargo.toml": {
-      "branch": "res-219-rz-cli-and-release-binaries",
-      "claimed_at": "2026-04-26T21:04:32Z"
-    },
-    "README.md": {
-      "branch": "res-219-rz-cli-and-release-binaries",
-      "claimed_at": "2026-04-26T21:04:32Z"
-    },
-    "CONTRIBUTING.md": {
-      "branch": "res-219-rz-cli-and-release-binaries",
-      "claimed_at": "2026-04-26T21:04:32Z"
-    },
-    "CLAUDE.md": {
-      "branch": "res-219-rz-cli-and-release-binaries",
-      "claimed_at": "2026-04-26T21:04:32Z"
-    },
-    "Dockerfile": {
-      "branch": "res-219-rz-cli-and-release-binaries",
-      "claimed_at": "2026-04-26T21:04:32Z"
-    },
-    ".github/workflows/release.yml": {
-      "branch": "res-219-rz-cli-and-release-binaries",
-      "claimed_at": "2026-04-26T21:04:32Z"
-    },
     "resilient/src/main.rs": {
-      "branch": "res-393-parser-panic-empty-rhs",
-      "claimed_at": "2026-04-27T00:34:11Z"
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:03Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-118-default-params",
-      "claimed_at": "2026-04-28T01:31:32Z"
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:03Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:03Z"
+    },
+    "README.md": {
+      "branch": "claude/thirsty-jemison-0022ff",
+      "claimed_at": "2026-04-28T17:22:25Z"
     }
   }
 }

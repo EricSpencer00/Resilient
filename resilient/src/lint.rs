@@ -70,6 +70,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0009", // integer division by zero (literal / SMT-proven-possible)
     "L0010", // function has no requires/ensures contract
     "L0011", // RES-308: unused variable warning (let binding never read)
+    "L0012", // RES-397: spec annotation lacks `// source:` provenance comment
 ];
 
 /// RES-198: top-level entry. Runs every lint, filters via the
@@ -88,6 +89,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0009_division_by_zero(program, &mut out);
     run_l0010_no_contract(program, &mut out);
     run_l0011_unused_variable(program, &mut out);
+    run_l0012_spec_provenance(program, source, &mut out);
 
     // Filter via allow-comments.
     //
@@ -1682,6 +1684,180 @@ fn l0011_collect_let_bindings(node: &Node, out: &mut Vec<(String, Span)>) {
 }
 
 // ============================================================
+// L0012: spec annotation lacks `// source:` provenance comment (RES-397)
+// ============================================================
+//
+// Reddit critique (https://www.reddit.com/r/VibeCodersNest/comments/1ssv8ih/)
+// raised the strongest version of "filtering ≠ safety": if an LLM
+// invents the invariant, a self-consistent wrong spec is provable
+// and useless. The verification machinery is sound — it doesn't
+// trust the LLM — but the *invariants themselves* have no
+// provenance trail today. A wrong invariant from an LLM is
+// indistinguishable from a right one once it's in the source.
+//
+// L0012 requires every spec-bearing site to be preceded by a
+// `// source: <canonical-reference>` comment on the line above:
+//
+//   // source: RFC 9293 §3.5
+//   fn handle_segment(seq: int) requires seq >= 0 { ... }
+//
+//   // source: STM32F4 Reference Manual RM0090 §10.4.5
+//   assume(adc_value < 4096);
+//
+// Sites covered:
+//   - Function declarations with non-empty `requires`, `ensures`,
+//     `recovers_to`, or `fails`.
+//   - `assume(...)` statements.
+//
+// Suppress with `// resilient: allow L0012`. The default severity
+// is Warning; `--deny L0012` escalates to Error.
+
+/// RES-397: collect line numbers that have a spec annotation on
+/// them, given a `// source: ...` comment on the line above. The
+/// returned set contains `K+1` for every `// source: ...` on line
+/// `K`. This mirrors the line-offset convention used by
+/// `collect_allow_comments`.
+fn collect_source_comments(source: &str) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    for (line_no, raw) in (1u32..).zip(source.lines()) {
+        let trimmed = raw.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("// source:")
+            && !rest.trim().is_empty()
+        {
+            out.insert(line_no + 1);
+        }
+    }
+    out
+}
+
+fn run_l0012_spec_provenance(program: &Node, source: &str, out: &mut Vec<Lint>) {
+    // Quick pre-scan: if the program has no specs or assumes, skip L0012 entirely.
+    // This avoids the line-splitting in collect_source_comments() for programs
+    // without specs, significantly improving JIT performance (RES-398 perf fix).
+    if !has_any_specs(program) {
+        return;
+    }
+    let sources = collect_source_comments(source);
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        l0012_walk(&spanned.node, &sources, out);
+    }
+}
+
+fn has_any_specs(node: &Node) -> bool {
+    match node {
+        Node::Function {
+            requires,
+            ensures,
+            recovers_to,
+            fails,
+            body,
+            ..
+        } => {
+            let has_spec = !requires.is_empty()
+                || !ensures.is_empty()
+                || recovers_to.is_some()
+                || !fails.is_empty();
+            if has_spec {
+                return true;
+            }
+            has_any_specs(body)
+        }
+        Node::Assume { .. } => true,
+        Node::Block { stmts, .. } => stmts.iter().any(has_any_specs),
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => has_any_specs(consequence) || alternative.as_ref().is_some_and(|a| has_any_specs(a)),
+        Node::WhileStatement { body, .. }
+        | Node::ForInStatement { body, .. }
+        | Node::LiveBlock { body, .. } => has_any_specs(body),
+        Node::ImplBlock { methods, .. } => methods.iter().any(has_any_specs),
+        Node::Program(stmts) => stmts.iter().any(|s| has_any_specs(&s.node)),
+        _ => false,
+    }
+}
+
+fn l0012_walk(node: &Node, sources: &std::collections::HashSet<u32>, out: &mut Vec<Lint>) {
+    match node {
+        Node::Function {
+            name,
+            requires,
+            ensures,
+            recovers_to,
+            fails,
+            body,
+            span,
+            ..
+        } => {
+            let has_spec = !requires.is_empty()
+                || !ensures.is_empty()
+                || recovers_to.is_some()
+                || !fails.is_empty();
+            if has_spec && !name.is_empty() && !name.starts_with('_') {
+                let fn_line = span.start.line as u32;
+                if !sources.contains(&fn_line) {
+                    out.push(Lint {
+                        code: "L0012".into(),
+                        severity: Severity::Warning,
+                        message: format!(
+                            "function `{name}` has spec annotations without provenance — \
+                             add `// source: <canonical-reference>` on the line above, \
+                             or suppress with `// resilient: allow L0012`"
+                        ),
+                        line: fn_line,
+                        column: span.start.column as u32,
+                    });
+                }
+            }
+            l0012_walk(body, sources, out);
+        }
+        Node::Assume { span, .. } => {
+            let line = span.start.line as u32;
+            if !sources.contains(&line) {
+                out.push(Lint {
+                    code: "L0012".into(),
+                    severity: Severity::Warning,
+                    message: "`assume()` without provenance — \
+                              add `// source: <canonical-reference>` on the line above, \
+                              or suppress with `// resilient: allow L0012`"
+                        .to_string(),
+                    line,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                l0012_walk(stmt, sources, out);
+            }
+        }
+        Node::IfStatement {
+            consequence,
+            alternative,
+            ..
+        } => {
+            l0012_walk(consequence, sources, out);
+            if let Some(alt) = alternative {
+                l0012_walk(alt, sources, out);
+            }
+        }
+        Node::WhileStatement { body, .. } => l0012_walk(body, sources, out),
+        Node::ForInStatement { body, .. } => l0012_walk(body, sources, out),
+        Node::LiveBlock { body, .. } => l0012_walk(body, sources, out),
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                l0012_walk(method, sources, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -2542,6 +2718,111 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0011".to_string()),
             "L0011 must treat reads inside a `live` body as uses"
+        );
+    }
+
+    // ---------- RES-397 / L0012: spec provenance ----------
+
+    #[test]
+    fn l0012_in_known_codes() {
+        assert!(
+            KNOWN_CODES.contains(&"L0012"),
+            "L0012 must appear in KNOWN_CODES so --deny/--allow accept it"
+        );
+    }
+
+    #[test]
+    fn l0012_fires_on_function_with_requires_but_no_source() {
+        let src = "fn f(int x) requires x > 0 { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0012".to_string()),
+            "L0012 must fire on a fn with requires but no `// source:` comment"
+        );
+    }
+
+    #[test]
+    fn l0012_fires_on_function_with_ensures_but_no_source() {
+        let src = "fn f(int x) ensures result > 0 { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0012".to_string()),
+            "L0012 must fire on a fn with ensures but no `// source:` comment"
+        );
+    }
+
+    #[test]
+    fn l0012_silent_when_source_comment_present() {
+        let src = "// source: RFC 9293 §3.5\nfn f(int x) requires x > 0 { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0012".to_string()),
+            "L0012 must not fire when `// source:` precedes the spec-bearing fn"
+        );
+    }
+
+    #[test]
+    fn l0012_silent_for_function_without_spec() {
+        // A fn with neither requires nor ensures is L0010's territory,
+        // not L0012's. L0012 only fires when there IS a spec.
+        let src = "fn f(int x) { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0012".to_string()),
+            "L0012 must not fire on a fn without any spec annotation"
+        );
+    }
+
+    #[test]
+    fn l0012_silent_for_underscore_prefixed_function() {
+        let src = "fn _helper(int x) requires x > 0 { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0012".to_string()),
+            "L0012 must not fire on `_`-prefixed helper fns"
+        );
+    }
+
+    #[test]
+    fn l0012_fires_on_assume_without_source() {
+        let src = "fn f(int x) {\n    assume(x > 0);\n    return x;\n}\n";
+        assert!(
+            codes(src).contains(&"L0012".to_string()),
+            "L0012 must fire on `assume()` without a preceding `// source:` comment"
+        );
+    }
+
+    #[test]
+    fn l0012_silent_when_source_comment_precedes_assume() {
+        let src = "fn f(int x) {\n    // source: derived from caller's domain\n    assume(x > 0);\n    return x;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0012".to_string()),
+            "L0012 must not fire on `assume()` with a `// source:` line above"
+        );
+    }
+
+    #[test]
+    fn l0012_suppressed_by_allow_comment() {
+        let src = "// resilient: allow L0012\nfn f(int x) requires x > 0 { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0012".to_string()),
+            "L0012 must be suppressible with `// resilient: allow L0012`"
+        );
+    }
+
+    #[test]
+    fn l0012_empty_source_comment_does_not_satisfy() {
+        // `// source:` with nothing after the colon must not
+        // count — the whole point is to require a real reference.
+        let src = "// source:   \nfn f(int x) requires x > 0 { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0012".to_string()),
+            "L0012 must still fire when `// source:` is empty"
+        );
+    }
+
+    #[test]
+    fn l0012_fires_on_recovers_to() {
+        // RES-387: fns with `fails` + `recovers_to:` are spec-bearing too.
+        let src = "fn f(int x) fails Bad recovers_to: x > 0; { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0012".to_string()),
+            "L0012 must fire on a fn with `recovers_to:` but no `// source:` comment"
         );
     }
 }
