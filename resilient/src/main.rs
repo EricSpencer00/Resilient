@@ -5506,9 +5506,12 @@ impl Parser {
                 // advancing past it.
                 let op_span = self.span_at_current();
                 self.next_token();
-                // Prefix precedence is higher than any infix operator
-                // so `-1 + 2` parses as `(-1) + 2`, not `-(1 + 2)`.
-                let right = self.parse_expression(11)?;
+                // RES-311: precedence 10 (one below Dot/LeftParen=11) so
+                // that `!r.ok` parses as `!(r.ok)` — field access binds
+                // tighter than prefix `!` / unary `-`, matching Rust/C/Go.
+                // Arithmetic precedences (+9, *10) are still below 10 so
+                // `-1 + 2` stays `(-1) + 2`.
+                let right = self.parse_expression(10)?;
                 Some(Node::PrefixExpression {
                     operator: op.to_string(),
                     right: Box::new(right),
@@ -5518,6 +5521,10 @@ impl Parser {
             Token::LeftParen => {
                 self.next_token(); // Skip '('
                 let expr = self.parse_expression(0);
+                // RES-310: parse_expression leaves current_token on the
+                // last token it consumed; advance one more so we can
+                // check that the next token is the closing ')'.
+                self.next_token();
                 if self.current_token != Token::RightParen {
                     let tok = self.current_token.clone();
                     self.record_error(format!(

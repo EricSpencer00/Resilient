@@ -1,0 +1,12 @@
+// RES-311: unary ! binds less tightly than field access
+struct R {
+    Bool ok
+}
+fn main() {
+    let r = new R { ok: true };
+    let a = !r.ok;
+    println(a);
+    let b = !r.ok;
+    println(b);
+}
+main();
