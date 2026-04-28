@@ -1,0 +1,11 @@
+// RES-310: parenthesized expressions in let bindings and expressions
+fn main() {
+    let x = 120;
+    let y = (x);
+    let z = (x / 60);
+    println(y);
+    println(z);
+    let w = (x + 1) * 2;
+    println(w);
+}
+main();
