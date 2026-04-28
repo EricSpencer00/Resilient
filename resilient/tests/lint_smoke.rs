@@ -25,9 +25,10 @@ fn tmp_file(tag: &str, body: &str) -> PathBuf {
 
 #[test]
 fn lint_exits_zero_on_clean_program() {
+    // RES-397: `// source:` comment satisfies L0012 spec-provenance lint.
     let src = tmp_file(
         "clean",
-        "fn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -92,9 +93,11 @@ fn lint_deny_escalates_to_error_exit_two() {
 
 #[test]
 fn lint_allow_flag_suppresses_code() {
+    // RES-397: `// source:` comment satisfies L0012; `--allow L0001`
+    // silences the unused-let warning, leaving a clean lint.
     let src = tmp_file(
         "allow",
-        "fn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -207,9 +210,10 @@ fn lint_l0011_fires_on_unused_let_with_rustc_message() {
 #[test]
 fn lint_l0011_silent_for_underscore_prefix() {
     // `_temp` is exempt — file is clean, exit 0.
+    // RES-397: `// source:` satisfies L0012.
     let src = tmp_file(
         "l0011_underscore",
-        "fn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -227,10 +231,10 @@ fn lint_l0011_silent_for_underscore_prefix() {
 
 #[test]
 fn lint_l0011_silent_when_let_is_used() {
-    // Used `let` is clean.
+    // Used `let` is clean. RES-397: `// source:` satisfies L0012.
     let src = tmp_file(
         "l0011_used",
-        "fn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
     );
     let out = Command::new(bin())
         .args(["lint"])

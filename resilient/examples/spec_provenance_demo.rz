@@ -1,0 +1,26 @@
+// RES-397: spec provenance — every spec annotation cites a canonical source.
+//
+// The L0012 lint requires a `// source: <canonical-reference>` comment on
+// the line immediately above any function with `requires`/`ensures`/`fails`/
+// `recovers_to` clauses, or any `assume()` statement.
+//
+// Sources can be: an RFC, a hardware manual, a paper citation, a design doc,
+// or "derived from <api-contract>". The point is that the *invariant* itself
+// has a paper trail — it didn't appear from nothing.
+
+// source: derived from caller's domain (positive ints only)
+fn double_positive(int x) requires x > 0 ensures result > x {
+    return x + x;
+}
+
+fn main() {
+    let y = double_positive(7);
+    println("double_positive(7) = " + y);
+
+    // source: RFC 1149 §2 (avian carriers transmit non-negative byte counts)
+    assume(y >= 0);
+
+    println("done");
+}
+
+main();
