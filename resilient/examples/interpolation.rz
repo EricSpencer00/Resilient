@@ -1,0 +1,12 @@
+fn greet(string name) -> string {
+    return "Hello, {name}!";
+}
+fn main() {
+    let name = "World";
+    println("Hello, {name}!");
+    println(greet("Alice"));
+    let x = 6;
+    let y = 7;
+    println("The answer is {x * y}.");
+}
+main();

@@ -91,6 +91,14 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         | Node::BytesLiteral { .. }
         | Node::BooleanLiteral { .. }
         | Node::DurationLiteral { .. } => {}
+        // RES-221: walk each Expr part; literals have no free variables.
+        Node::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let crate::string_interp::StringPart::Expr(expr) = part {
+                    walk(expr, bound, free);
+                }
+            }
+        }
 
         // ---- Top-level shape ----
         Node::Program(stmts) => {
