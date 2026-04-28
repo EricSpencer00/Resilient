@@ -1,12 +1,3 @@
 {
-  "claims": {
-    "resilient/src/main.rs": {
-      "branch": "res-385c-linear-effect-interaction",
-      "claimed_at": "2026-04-28T20:12:45Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-385c-linear-effect-interaction",
-      "claimed_at": "2026-04-28T20:12:45Z"
-    }
-  }
+  "claims": {}
 }
