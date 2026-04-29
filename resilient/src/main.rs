@@ -8233,6 +8233,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-416: integer-array reductions (identity 0 / 1 for empty arrays).
     ("array_sum", builtin_array_sum),
     ("array_product", builtin_array_product),
+    // RES-417: min/max over an integer array. Empty array errors.
+    ("array_min", builtin_array_min),
+    ("array_max", builtin_array_max),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9167,6 +9170,71 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-417: `array_min(arr)` — minimum integer in a non-empty integer
+/// array. Empty array is an error (no sensible default). Non-int
+/// elements produce a typed error.
+fn builtin_array_min(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_min: empty array has no minimum".to_string());
+            }
+            let mut best: Option<i64> = None;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        best = Some(best.map_or(*n, |cur| cur.min(*n)));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_min: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(best.unwrap()))
+        }
+        [other] => Err(format!("array_min: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_min: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-417: `array_max(arr)` — maximum integer in a non-empty integer
+/// array. Empty array is an error. Non-int elements error.
+fn builtin_array_max(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_max: empty array has no maximum".to_string());
+            }
+            let mut best: Option<i64> = None;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        best = Some(best.map_or(*n, |cur| cur.max(*n)));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_max: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(best.unwrap()))
+        }
+        [other] => Err(format!("array_max: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_max: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -23997,6 +24065,93 @@ mod tests {
         );
         assert!(
             builtin_array_product(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-417: array_min / array_max ----------
+
+    #[test]
+    fn array_min_basic() {
+        assert_int(
+            builtin_array_min(&[int_array(&[3, 1, 4, 1, 5, 9, 2, 6])]).unwrap(),
+            1,
+            "min",
+        );
+        assert_int(
+            builtin_array_min(&[int_array(&[-5])]).unwrap(),
+            -5,
+            "min single",
+        );
+        assert_int(
+            builtin_array_min(&[int_array(&[-10, 0, 10])]).unwrap(),
+            -10,
+            "min mixed sign",
+        );
+    }
+
+    #[test]
+    fn array_min_empty_errors() {
+        let err = builtin_array_min(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_min_rejects_non_int() {
+        let err =
+            builtin_array_min(&[Value::Array(vec![Value::Int(1), Value::Float(2.0)])]).unwrap_err();
+        assert!(err.contains("all int elements"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_min_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_min(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_min(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    #[test]
+    fn array_max_basic() {
+        assert_int(
+            builtin_array_max(&[int_array(&[3, 1, 4, 1, 5, 9, 2, 6])]).unwrap(),
+            9,
+            "max",
+        );
+        assert_int(
+            builtin_array_max(&[int_array(&[-5])]).unwrap(),
+            -5,
+            "max single",
+        );
+        assert_int(
+            builtin_array_max(&[int_array(&[-10, 0, 10])]).unwrap(),
+            10,
+            "max mixed sign",
+        );
+    }
+
+    #[test]
+    fn array_max_empty_errors() {
+        let err = builtin_array_max(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_max_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_max(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_max(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
