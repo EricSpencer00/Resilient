@@ -1052,6 +1052,15 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-412: reverse a string (chars) or an array (clones).
+        env.set(
+            "string_reverse".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set("array_reverse".to_string(), fn_any_to_any());
         // RES-145: replace + format.
         env.set(
             "replace".to_string(),
@@ -3882,6 +3891,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "contains",
         "to_upper",
         "to_lower",
+        // RES-412: reverse string/array.
+        "string_reverse",
+        "array_reverse",
         "replace",
         "format",
         "starts_with",
