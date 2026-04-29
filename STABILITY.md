@@ -98,7 +98,12 @@ with no warning cycle:
 - **Z3 verification** — verifier directives, certificate format, and the
   SMT encoding (especially the overflow-aware encoding tracked by RES-134).
   Runs only with `--features z3`; API shape is expected to change as the
-  verifier evolves.
+  verifier evolves. The V1 verifier surface is intentionally **state-local**
+  (per-function `requires`/`ensures`, single-step `recovers_to`, snapshot
+  cluster invariants); reasoning over **traces** — liveness, fairness,
+  multi-actor interleavings, refinement — is a V2 capability tracked under
+  RES-396 (G22 TLA+ ladder, see [ROADMAP.md](ROADMAP.md)). Don't read V1
+  Z3 success as a temporal-property guarantee.
 - **Package manager (`resilient pkg`)** — subcommand names, manifest format
   (RES-212), and resolution rules.
 - **Language server (`--lsp`)** — request/response shapes beyond stock LSP
