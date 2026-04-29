@@ -1198,6 +1198,14 @@ impl TypeChecker {
         // RES-456: rotation.
         env.set("array_rotate_left".to_string(), fn_any_any_to_any());
         env.set("array_rotate_right".to_string(), fn_any_any_to_any());
+        // RES-457: capitalize.
+        env.set(
+            "string_capitalize".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4206,6 +4214,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-456: rotation.
         "array_rotate_left",
         "array_rotate_right",
+        // RES-457: capitalize.
+        "string_capitalize",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
