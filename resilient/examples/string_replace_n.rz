@@ -1,0 +1,9 @@
+// RES-482 demo: string_replace_n with explicit count limit.
+
+fn main() {
+    println(string_replace_n("the the the the", "the", "X", 2));
+    println(string_replace_n("aaaa", "a", "B", 0));
+    println(string_replace_n("aaaa", "a", "B", 99));
+}
+
+main();
