@@ -1,0 +1,12 @@
+// RES-465 demo: int_to_base renders an integer in arbitrary radix.
+
+fn main() {
+    println(int_to_base(255, 16));
+    println(int_to_base(255, 2));
+    println(int_to_base(255, 8));
+    println(int_to_base(0, 2));
+    println(int_to_base(-42, 16));
+    println(int_to_base(35, 36));
+}
+
+main();
