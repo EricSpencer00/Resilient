@@ -1,0 +1,29 @@
+// RES-290: trait / interface system — Printable demo.
+//
+// Declares a `Printable` trait with a single `to_string` method, a
+// `Point` struct, and an `impl Printable for Point` block. The
+// typechecker validates that the impl provides every method the
+// trait declares; runtime dispatch goes through the existing
+// `<Type>$<method>` mangling that struct method calls already use.
+
+trait Printable {
+    fn to_string(self) -> string;
+}
+
+struct Point {
+    int x,
+    int y,
+}
+
+impl Printable for Point {
+    fn to_string(self) -> string {
+        return "Point(" + self.x + ", " + self.y + ")";
+    }
+}
+
+fn main() {
+    let p = new Point { x: 3, y: 4 };
+    println(p.to_string());
+}
+
+main();
