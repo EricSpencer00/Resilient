@@ -8279,6 +8279,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_substring", builtin_string_substring),
     // RES-455: sliding fixed-size windows.
     ("array_window", builtin_array_window),
+    // RES-456: rotate elements by n positions (wrapping).
+    ("array_rotate_left", builtin_array_rotate_left),
+    ("array_rotate_right", builtin_array_rotate_right),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9832,6 +9835,69 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-456: `array_rotate_left(arr, n)` — shift elements n positions
+/// left, wrapping around. n is reduced modulo len. Negative n errors.
+fn builtin_array_rotate_left(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_rotate_left: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            if items.is_empty() {
+                return Ok(Value::Array(vec![]));
+            }
+            let k = (*n as usize) % items.len();
+            let mut out = Vec::with_capacity(items.len());
+            out.extend_from_slice(&items[k..]);
+            out.extend_from_slice(&items[..k]);
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_rotate_left: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_rotate_left: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-456: `array_rotate_right(arr, n)` — shift elements n positions
+/// right, wrapping around. n is reduced modulo len. Negative n errors.
+fn builtin_array_rotate_right(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_rotate_right: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            if items.is_empty() {
+                return Ok(Value::Array(vec![]));
+            }
+            let k = (*n as usize) % items.len();
+            let split = items.len() - k;
+            let mut out = Vec::with_capacity(items.len());
+            out.extend_from_slice(&items[split..]);
+            out.extend_from_slice(&items[..split]);
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_rotate_right: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_rotate_right: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28346,6 +28412,103 @@ mod tests {
         );
         assert!(
             builtin_array_window(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-456: array_rotate_left / array_rotate_right ----------
+
+    #[test]
+    fn array_rotate_left_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_left(&[int_array(&[1, 2, 3, 4, 5]), Value::Int(2)]).unwrap()
+            ),
+            vec![3, 4, 5, 1, 2]
+        );
+    }
+
+    #[test]
+    fn array_rotate_right_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_right(&[int_array(&[1, 2, 3, 4, 5]), Value::Int(2)]).unwrap()
+            ),
+            vec![4, 5, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_rotate_zero_returns_clone() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_left(&[int_array(&[1, 2, 3]), Value::Int(0)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_rotate_full_cycle_is_identity() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_left(&[int_array(&[1, 2, 3]), Value::Int(3)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_right(&[int_array(&[1, 2, 3]), Value::Int(3)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_rotate_n_modulo_len() {
+        // n=7, len=3 → n mod len = 1.
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_left(&[int_array(&[1, 2, 3]), Value::Int(7)]).unwrap()
+            ),
+            vec![2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn array_rotate_empty_array() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_rotate_left(&[Value::Array(vec![]), Value::Int(5)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_rotate_rejects_negative_count() {
+        assert!(
+            builtin_array_rotate_left(&[int_array(&[1, 2]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+        assert!(
+            builtin_array_rotate_right(&[int_array(&[1, 2]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+    }
+
+    #[test]
+    fn array_rotate_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_rotate_left(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (array, int)")
+        );
+        assert!(
+            builtin_array_rotate_right(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

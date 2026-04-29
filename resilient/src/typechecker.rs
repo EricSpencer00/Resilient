@@ -1195,6 +1195,9 @@ impl TypeChecker {
         );
         // RES-455: sliding windows.
         env.set("array_window".to_string(), fn_any_any_to_any());
+        // RES-456: rotation.
+        env.set("array_rotate_left".to_string(), fn_any_any_to_any());
+        env.set("array_rotate_right".to_string(), fn_any_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4200,6 +4203,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_substring",
         // RES-455: array_window.
         "array_window",
+        // RES-456: rotation.
+        "array_rotate_left",
+        "array_rotate_right",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
