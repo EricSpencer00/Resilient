@@ -1,0 +1,12 @@
+// RES-436 demo: string_count counts non-overlapping substring occurrences.
+
+fn main() {
+    println(string_count("the quick the brown the fox", "the"));
+    println(string_count("hello", "xyz"));
+    // Non-overlapping: "aaa" / "aa" → 1 (not 2).
+    println(string_count("aaa", "aa"));
+    println(string_count("aaaa", "aa"));
+    println(string_count("", "x"));
+}
+
+main();

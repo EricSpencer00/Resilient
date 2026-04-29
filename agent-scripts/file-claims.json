@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-435-array-chunk",
-      "claimed_at": "2026-04-29T21:39:40Z"
+      "branch": "res-436-string-count",
+      "claimed_at": "2026-04-29T21:51:01Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-435-array-chunk",
-      "claimed_at": "2026-04-29T21:39:40Z"
+      "branch": "res-436-string-count",
+      "claimed_at": "2026-04-29T21:51:01Z"
     }
   }
 }
