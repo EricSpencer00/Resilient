@@ -42,3 +42,20 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# wasm-pack runs `wasm-opt` as a post-build optimization pass. The
+# bundled wasm-opt rejects bulk-memory and other modern WASM proposals
+# unless explicitly enabled — but Rust's wasm32-unknown-unknown target
+# emits `memory.copy` / `memory.fill` (bulk-memory), `i32.extend8_s`
+# (sign-ext), and saturating float-to-int conversions by default. Match
+# the feature set Rust emits so wasm-opt accepts the binary.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = [
+    "-Oz",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+    "--enable-reference-types",
+    "--enable-multivalue",
+]
