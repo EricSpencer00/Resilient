@@ -1,0 +1,13 @@
+// RES-455 demo: array_window enumerates contiguous sliding windows.
+
+fn main() {
+    println(array_window([1, 2, 3, 4, 5], 2));
+    println(array_window([1, 2, 3, 4, 5], 3));
+    println(array_window([1, 2, 3], 3));
+    // Window larger than array → empty.
+    println(array_window([1, 2], 5));
+    // Single-element windows = each element wrapped.
+    println(array_window([10, 20, 30], 1));
+}
+
+main();
