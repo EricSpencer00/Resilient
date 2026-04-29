@@ -103,7 +103,10 @@ with no warning cycle:
   cluster invariants); reasoning over **traces** — liveness, fairness,
   multi-actor interleavings, refinement — is a V2 capability tracked under
   RES-396 (G22 TLA+ ladder, see [ROADMAP.md](ROADMAP.md)). Don't read V1
-  Z3 success as a temporal-property guarantee.
+  Z3 success as a temporal-property guarantee. Note: `recovers_to` is a
+  single-transition postcondition — it does not provide an eventually-holds
+  guarantee; multi-step recovery operators are a V2 capability tracked under
+  RES-396.
 - **Package manager (`resilient pkg`)** — subcommand names, manifest format
   (RES-212), and resolution rules.
 - **Language server (`--lsp`)** — request/response shapes beyond stock LSP

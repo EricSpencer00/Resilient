@@ -90,6 +90,24 @@ typechecker rejects with a clean `return type mismatch — declared
 required** — inferring them from call-site usage is a worse DX
 (errors fire at callers, not at the definition).
 
+### Function Contracts
+
+Functions can declare contracts using `requires`, `ensures`, and `recovers_to`:
+
+```rust
+fn safe_divide(int a, int b)
+    requires b != 0
+    ensures  result >= 0
+    recovers_to: result > 0
+{ return a / b; }
+```
+
+- `requires` — pre-condition checked before the function executes
+- `ensures` — post-condition checked after successful return
+- `recovers_to` — recovery postcondition (V1: single-step property; see RES-396 for V2's multi-step `<>` operator)
+
+All three clauses are checked at runtime and discharged by the Z3 verifier when `--features z3` is enabled. `recovers_to` is a **single-transition** postcondition — it asserts a property of the final state after recovery, not a guarantee of eventual reachability. Multi-step recovery operators are a V2 capability tracked under [RES-396](https://github.com/EricSpencer00/Resilient/issues/270); do not read `recovers_to` as providing temporal guarantees.
+
 ## Lexical: identifiers
 
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*` — **ASCII only**. Non-
