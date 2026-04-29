@@ -13,6 +13,12 @@ correct, and most complete — then ship it. Only surface blockers that
 genuinely cannot be resolved without human input (e.g., missing secrets,
 conflicting requirements).
 
+**Ship-to-merge, no review queue.** Once CI is green on a PR, it
+auto-merges. There is no human review gate. The CI suite *is* the
+gate — if it passes, the change ships. Build it accordingly: write
+tests that prove the change is correct, lint clean, and let CI close
+the loop.
+
 ---
 
 ## What is this repo?
@@ -26,6 +32,7 @@ embedded systems. The workspace contains:
 | `resilient-runtime/` | `#![no_std]` embedded runtime |
 | `resilient-runtime-cortex-m-demo/` | Cortex-M4F cross-compile smoke test |
 | `resilient-span/` | Source-span / diagnostic types |
+| `playground/` | WASM-targeted web playground |
 | `benchmarks/` | Performance benchmarks |
 | `fuzz/` | Fuzz harnesses |
 
@@ -59,35 +66,52 @@ Optional features: `--features z3` (SMT verifier), `--features lsp`,
 
 ---
 
-## Ticket workflow
+## Ticket workflow — ship-to-merge
 
-1. Browse [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues) — pick any open issue.
-2. **Pre-dispatch check** — before creating your branch, run:
+The path from picking a ticket to a merged commit is fully automated
+once CI is green. There is no maintainer review step — **green CI is
+the merge.** Your job is to make CI green.
+
+1. **Pick a ticket.** Prefer issues tagged `agent-ready`. Avoid `complex`,
+   `blocked`, and `needs-design` unless explicitly asked.
+2. **Pre-dispatch overlap check.** Before creating your branch:
    ```bash
    agent-scripts/check-overlaps.sh resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
    ```
-   If conflicts are found, wait for those PRs to merge before starting.
-3. Comment to claim the issue, then create a branch named `res-NNN-short-title`.
+   If conflicts are reported, wait for those PRs to merge before starting.
+3. **Claim the ticket.** Comment on the issue, then create a branch named
+   `res-NNN-short-title`.
 4. **Claim core files** immediately (before any edits):
    ```bash
    agent-scripts/claim-files.sh res-NNN-short-title resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
    ```
-5. Open a **draft PR** early with `Closes #N` in the body — this signals the ticket is taken.
-6. Write a handoff comment with `agent-scripts/agent-handoff.sh` whenever
-   dispatch starts, guardrails fail, guardrails pass, or you stop with
-   unfinished work. Assume another model may need to resume without your
-   context.
-7. When the PR is ready, run `agent-scripts/ready-or-bail.sh --pr N`.
-   Do not call `gh pr ready` directly; the guardrail owns the draft-to-ready
-   transition. The issue closes automatically on merge.
-   Claims are auto-released by CI on merge (see `.github/workflows/release-file-claims.yml`).
+5. **Open a draft PR early** with `Closes #N` in the body — this signals
+   the ticket is taken.
+6. **Build, test, lint locally.** Match every CI gate (see "CI gates"
+   below) before pushing. A red CI run wastes minutes you could spend
+   shipping.
+7. **Push to remote immediately after every commit.** Do not accumulate
+   local commits.
+8. **When everything is green locally, run:**
+   ```bash
+   agent-scripts/ready-or-bail.sh --pr N
+   ```
+   This runs the local guardrail, syncs your branch onto
+   `agents/integration`, marks the PR ready, and applies the
+   `integration-synced` label that releases the auto-merge gate.
+   Do not call `gh pr ready` directly — the guardrail owns the
+   draft-to-ready transition.
+9. **Walk away.** Once the PR is ready + integration-synced, the
+   `agent-auto-merge` workflow watches CI. As soon as every required
+   check is `SUCCESS`, GitHub squashes and merges the PR
+   (`gh pr merge --squash --auto --delete-branch`). The issue closes
+   automatically; file claims release on merge.
+
+If you spot CI fail-then-pass flakiness, open a follow-up ticket — do
+not retry blindly.
 
 Commit format: `RES-NNN: short description` (≤72 chars on the first line).
 Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
-
-**Push policy: push to remote immediately after every commit.** Do not
-accumulate local commits. As soon as a ticket is closed and committed, run
-`git push` so the branch is on remote. Keep as little as possible local-only.
 
 ---
 
@@ -156,52 +180,68 @@ the 3-line extension blocks — conflicts that are always safe to resolve by kee
 
 ---
 
-## Agent autonomy — what you may do freely
+## Agent autonomy — full discretion
+
+You can ship without asking on any of these:
 
 - Claim open GitHub Issues and implement them end-to-end.
 - Add new source files, tests, and `.expected.txt` golden sidecars.
 - Fix compiler warnings and clippy lints anywhere in the codebase.
 - Add or expand documentation (README, docs/, SYNTAX.md, LSP.md).
-- Update `Cargo.toml` dependency versions (patch-level only without asking).
+- Update `Cargo.toml` dependency versions (patch-level only).
 - Open draft PRs and push to feature branches.
-- Resolve merge conflicts on any PR branch, including checking out branches,
-  editing conflicting files, and force-pushing to unblock stalled PRs.
+- Resolve merge conflicts on any PR branch — including checking out
+  branches, editing conflicting files, and force-pushing to unblock
+  stalled PRs.
+- Mark a PR ready via `agent-scripts/ready-or-bail.sh` when the
+  guardrail passes — auto-merge takes it from there.
 - Post durable handoff comments on your PR with `agent-scripts/agent-handoff.sh`.
 
-## Agent autonomy — STOP and ask first
+## Hard stops — these still need explicit human input
 
-- **Any change to an existing test** (unit test, integration test, or
-  `.expected.txt` golden file) — see "Test protection" below.
-- Changes to `unsafe` blocks — see "Security rules" below.
-- Breaking changes to stable language surface (read STABILITY.md first).
-- Dependency major/minor version bumps.
-- Changes to `.github/workflows/` CI definitions.
-- Force-pushing or amending commits that have already been reviewed.
-- Anything that bypasses CI (`--no-verify`, skipping hooks).
-- Directly marking an agent PR ready without `agent-scripts/ready-or-bail.sh`.
+These are the only situations where an agent must NOT proceed
+autonomously. They are deliberately narrow because the auto-merge
+flow assumes everything else is recoverable from CI signal.
+
+- **`unsafe` blocks** — see "Security rules" below.
+- **Breaking changes to the stable language surface** — read STABILITY.md
+  first; if your change touches anything in the "Stable" feature list,
+  stop and surface the design decision.
+- **Secrets / credentials** — never commit them; if you find one already
+  committed, surface it to the maintainer.
+- **Bypassing CI** — never use `--no-verify`, `--no-gpg-sign`, or skip
+  hooks. The CI suite *is* the merge gate; circumventing it
+  short-circuits the whole flow.
+- **Force-pushing commits that are already merged** — once a commit
+  lands on `main`, treat it as immutable.
+
+Everything else — including modifying tests, bumping dependencies,
+editing CI workflows — is on the table as long as you can justify it
+in the PR body and CI stays green. The auto-merge gate trusts CI; you
+should too.
 
 ---
 
-## Test protection policy
+## Test discipline (not approval — discipline)
 
-**PRs that modify existing tests require maintainer approval before merge.**
+Tests are the merge gate. Treat them accordingly:
 
-This applies to:
-- Any `#[cfg(test)]` module change in `resilient/` or `resilient-runtime/`.
-- Any `.expected.txt` golden-output file change in `resilient/examples/`.
-- Any change to fuzz harnesses in `fuzz/`.
-- Any change to benchmark baselines in `benchmarks/`.
+- **A failing test is never a reason to weaken the test.** Fix the
+  implementation. If the test was wrong, fix the test in the same PR
+  with a clear "Test changes" section in the PR body explaining why
+  the old assertion was incorrect.
+- **Do not delete tests to make a PR green.** If the test is genuinely
+  obsolete, the PR body must say so and link the obsoleting ticket.
+- **Lowering an assertion = deleting the test.** Same rule.
+- **Modify existing tests sparingly.** Most PRs add tests rather than
+  edit them. If yours edits, flag it in the PR description under a
+  **"Test changes"** section with a one-line rationale per test.
+- **`#[cfg(test)]` modules, `.expected.txt` golden files, fuzz
+  harnesses, and benchmark baselines** all count as tests.
 
-When you need to modify a test because the behaviour intentionally changed:
-
-1. Call it out explicitly in the PR description under a **"Test changes"**
-   section with a one-line rationale for each modified test.
-2. Do **not** delete tests to make a PR green — fix the code instead.
-3. Lowering or removing an assertion in a test is treated the same as
-   deleting the test — requires the same approval.
-
-CI will reject a PR that fails any test. A failing test is never a
-reason to weaken the test; it is a reason to fix the implementation.
+The auto-merge workflow does not look at *which* tests changed — it
+looks at whether they pass. The discipline above is what keeps tests
+meaningful even though no human is gating each PR.
 
 ---
 
@@ -223,7 +263,9 @@ is non-negotiable.
 - Do not introduce new `unsafe` blocks without explicit justification in
   a code comment explaining the invariant that makes it sound.
 - Any PR that adds or modifies `unsafe` must be flagged in the PR
-  description and will require an additional reviewer.
+  description. The auto-merge workflow does not block on unsafe, but
+  the maintainer reads every `unsafe` diff post-merge — keep them clean
+  and well-justified or expect a revert.
 
 ### `no_std` constraints (`resilient-runtime/`)
 
@@ -262,13 +304,17 @@ is non-negotiable.
 
 ---
 
-## CI gates (all must pass)
+## CI gates (every gate is a merge gate)
+
+These are the checks branch protection requires before auto-merge fires.
+**Reproduce all of them locally before running `ready-or-bail.sh`** —
+discovering a fail in CI wastes minutes per cycle.
 
 | Check | Command |
 |---|---|
 | Build | `cargo build --locked` |
 | Tests | `cargo test --locked` |
-| Clippy | `cargo clippy --locked -- -D warnings` |
+| Clippy | `cargo clippy --locked --all-targets -- -D warnings` |
 | Format | `cargo fmt --check` |
 | Z3 | `cargo test --features z3` |
 | Embedded cross | `cargo build --target thumbv7em-none-eabihf` etc. |
@@ -276,7 +322,51 @@ is non-negotiable.
 | Perf gate | `cargo bench` regression check |
 | Fuzz | short fuzz run on changed harnesses |
 
-Do not open a PR for review until all CI jobs are green.
+Required-status-checks set on the `main` branch (these block auto-merge
+if any are not `SUCCESS`):
+
+- `build / test / clippy`
+- `build / test with --features z3`
+- `board hygiene`
+- `resilient-runtime-cortex-m-demo (thumbv7em-none-eabihf)`
+- `resilient-runtime (riscv32imac-unknown-none-elf)`
+- `resilient-runtime (thumbv6m-none-eabi)`
+- `cortex-m demo .text budget check`
+
+The `diff-shape guardrail` reports overlaps but does not block merge —
+overlaps on `main.rs` extension blocks are expected and are resolved
+during integration sync.
+
+---
+
+## Auto-merge mechanics (reference)
+
+Documented here so agents can debug a stuck PR without re-reading the
+workflow file.
+
+- **Trigger**: `.github/workflows/agent-auto-merge.yml` runs on
+  `pull_request` (`labeled`, `ready_for_review`, `synchronize`),
+  `check_suite: completed`, and on-demand via `workflow_dispatch`.
+- **Preconditions** (all must hold):
+  1. PR is **not draft** (set by `ready-or-bail.sh`).
+  2. PR has the **`integration-synced` label** (applied by
+     `sync-integration.sh` when the rebase onto `agents/integration`
+     succeeds without conflicts outside the append-only allowlist).
+  3. PR base is **`main`**.
+  4. **Every required status check is `SUCCESS`** (the diff-shape
+     guardrail's overlap sub-check is allowed to be `FAILURE`; everything
+     else must be green).
+- **Action**: workflow runs `gh pr merge $PR --squash --auto --delete-branch`.
+  GitHub's server-side auto-merge then waits for any in-flight checks
+  to settle and lands the squash merge.
+- **Issue closure**: GitHub closes the issue when the squash commit
+  containing `Closes #N` lands on `main`.
+- **File-claim release**: `.github/workflows/release-file-claims.yml`
+  fires on the merge commit and clears the agent's claim entries.
+
+If your PR is ready + green but not merging, the most likely cause is
+a missing `integration-synced` label. Re-run `ready-or-bail.sh` to
+re-apply it.
 
 ---
 
@@ -290,3 +380,5 @@ Do not open a PR for review until all CI jobs are green.
 - Do not introduce backwards-compatibility shims for removed code.
 - Do not half-implement a feature and leave a `TODO` — either finish it or
   scope it to a follow-up ticket.
+- Do not wait on a human review that is not coming. Green CI is the
+  merge — make CI green.
