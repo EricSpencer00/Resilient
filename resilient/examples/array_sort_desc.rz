@@ -1,0 +1,10 @@
+// RES-443 demo: array_sort_desc returns a new array sorted descending.
+
+fn main() {
+    println(array_sort_desc([3, 1, 4, 1, 5, 9, 2, 6]));
+    println(array_sort_desc([-3, 0, 5, -1, 0]));
+    println(array_sort_desc([]));
+    println(array_sort_desc([42]));
+}
+
+main();
