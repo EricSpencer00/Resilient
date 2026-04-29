@@ -1208,6 +1208,14 @@ impl TypeChecker {
         );
         // RES-458: array_cycle.
         env.set("array_cycle".to_string(), fn_any_any_to_any());
+        // RES-459: ASCII-class string predicates.
+        let str_to_bool = Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::Bool),
+        };
+        env.set("is_ascii_alpha".to_string(), str_to_bool.clone());
+        env.set("is_ascii_digit".to_string(), str_to_bool.clone());
+        env.set("is_ascii_alnum".to_string(), str_to_bool);
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4220,6 +4228,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_capitalize",
         // RES-458: array_cycle.
         "array_cycle",
+        // RES-459: ASCII predicates.
+        "is_ascii_alpha",
+        "is_ascii_digit",
+        "is_ascii_alnum",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
