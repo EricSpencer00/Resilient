@@ -180,7 +180,7 @@ returns a scalar, Resilient treats it as a single value.
 
 Goalpost G18 on the [roadmap](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)
 is **effect tracking**: annotating every function with the set
-of effects it can perform. The planned alphabet starts small:
+of effects it can perform. The alphabet today:
 
 - `@pure` — no reads or writes outside locals and arguments;
   no I/O, no `live` retries, no randomness. Deterministic as a
@@ -189,9 +189,13 @@ of effects it can perform. The planned alphabet starts small:
   anything observable outside the process).
 - `@random` — reads a non-deterministic source.
 
-The concrete form is not yet final — see RES-191 (`@pure`
-annotation), RES-192 (`@io` inference), and RES-193 (effect
-polymorphism for higher-order functions) in the ticket ledger.
+G18 is **closed** as of 2026-04-29 — RES-191 (`@pure`
+annotation), RES-192 (`@io` inference), RES-389 (declared
+effects on fn signatures), and RES-385c (linear × effect
+interaction) all landed. Higher-order effect polymorphism
+(RES-193) remains an open follow-up; the V1 surface is
+sound without it (HOFs default to `@io`).
+
 What matters for this document is *why* we block concurrency
 on effects.
 
