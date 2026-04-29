@@ -8165,6 +8165,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-144: single-line stdin read. std-only.
     ("input", builtin_input),
     ("abs", builtin_abs),
+    // RES-410: sign(x) — -1, 0, +1 for negative/zero/positive.
+    ("sign", builtin_sign),
     ("min", builtin_min),
     ("max", builtin_max),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
@@ -9752,6 +9754,27 @@ fn builtin_abs(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.abs())),
         [other] => Err(format!("abs: expected int or float, got {}", other)),
         _ => Err(format!("abs: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-410: `sign(x)` — sign of an int or float as -1, 0, +1.
+/// NaN passes through (Float NaN → Float NaN per IEEE 754).
+fn builtin_sign(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.signum())),
+        [Value::Float(f)] => {
+            if f.is_nan() {
+                Ok(Value::Float(f64::NAN))
+            } else if *f > 0.0 {
+                Ok(Value::Float(1.0))
+            } else if *f < 0.0 {
+                Ok(Value::Float(-1.0))
+            } else {
+                Ok(Value::Float(0.0))
+            }
+        }
+        [other] => Err(format!("sign: expected int or float, got {}", other)),
+        _ => Err(format!("sign: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -23196,6 +23219,62 @@ mod tests {
             Value::Int(7) => {}
             other => panic!("max: expected Int(7), got {:?}", other),
         }
+    }
+
+    // ---------- RES-410: sign(x) ----------
+
+    #[test]
+    fn sign_int_returns_int_signum() {
+        match builtin_sign(&[Value::Int(-7)]).unwrap() {
+            Value::Int(-1) => {}
+            other => panic!("sign(Int(-7)): expected Int(-1), got {:?}", other),
+        }
+        match builtin_sign(&[Value::Int(0)]).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("sign(Int(0)): expected Int(0), got {:?}", other),
+        }
+        match builtin_sign(&[Value::Int(42)]).unwrap() {
+            Value::Int(1) => {}
+            other => panic!("sign(Int(42)): expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sign_float_returns_float() {
+        match builtin_sign(&[Value::Float(-3.5)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, -1.0),
+            other => panic!("sign(Float(-3.5)): expected Float(-1.0), got {:?}", other),
+        }
+        match builtin_sign(&[Value::Float(0.0)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 0.0),
+            other => panic!("sign(Float(0.0)): expected Float(0.0), got {:?}", other),
+        }
+        match builtin_sign(&[Value::Float(2.7)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 1.0),
+            other => panic!("sign(Float(2.7)): expected Float(1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sign_nan_passes_through() {
+        match builtin_sign(&[Value::Float(f64::NAN)]).unwrap() {
+            Value::Float(f) => assert!(f.is_nan(), "expected NaN, got {}", f),
+            other => panic!("sign(NaN): expected Float(NaN), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sign_rejects_non_numeric() {
+        let err = builtin_sign(&[Value::String("oops".to_string())]).unwrap_err();
+        assert!(err.contains("sign:"), "expected sign error, got: {}", err);
+    }
+
+    #[test]
+    fn sign_rejects_wrong_arity() {
+        let err = builtin_sign(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "got: {}", err);
+        let err = builtin_sign(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "got: {}", err);
     }
 
     // ---------- RES-034: nested index assignment ----------

@@ -1,0 +1,12 @@
+// RES-410 demo: sign(x) returns -1, 0, or +1 for negative, zero, positive.
+
+fn main() {
+    println(sign(-7));
+    println(sign(0));
+    println(sign(42));
+    println(sign(-3.5));
+    println(sign(0.0));
+    println(sign(2.7));
+}
+
+main();
