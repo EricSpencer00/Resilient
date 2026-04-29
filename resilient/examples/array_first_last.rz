@@ -1,0 +1,12 @@
+// RES-428 demo: array_first and array_last get endpoint elements.
+
+fn main() {
+    println(array_first([10, 20, 30]));
+    println(array_last([10, 20, 30]));
+    println(array_first([42]));
+    println(array_last([42]));
+    println(array_first(["alpha", "beta", "gamma"]));
+    println(array_last(["alpha", "beta", "gamma"]));
+}
+
+main();

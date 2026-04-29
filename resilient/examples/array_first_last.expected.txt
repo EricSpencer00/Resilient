@@ -1,0 +1,7 @@
+10
+30
+42
+42
+alpha
+gamma
+Program executed successfully

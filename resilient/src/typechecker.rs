@@ -1129,6 +1129,9 @@ impl TypeChecker {
         env.set("array_unique".to_string(), fn_any_to_any());
         // RES-427: count element occurrences.
         env.set("array_count".to_string(), fn_any_any_to_any());
+        // RES-428: array first/last accessors.
+        env.set("array_first".to_string(), fn_any_to_any());
+        env.set("array_last".to_string(), fn_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4010,6 +4013,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_unique",
         // RES-427: array_count.
         "array_count",
+        // RES-428: array first/last.
+        "array_first",
+        "array_last",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
