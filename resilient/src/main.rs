@@ -8257,6 +8257,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("to_string", builtin_to_string),
     // RES-426: first-occurrence dedupe over scalar elements.
     ("array_unique", builtin_array_unique),
+    // RES-427: count occurrences of a scalar element.
+    ("array_count", builtin_array_count),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9191,6 +9193,34 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-427: `array_count(arr, x)` — count elements equal to `x` under
+/// scalar value-equality. Non-scalar elements raise a typed error.
+fn builtin_array_count(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            let mut count: i64 = 0;
+            for v in items {
+                match array_search_eq(v, needle) {
+                    Some(true) => count += 1,
+                    Some(false) => {}
+                    None => {
+                        return Err(format!(
+                            "array_count: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(count))
+        }
+        [a, _] => Err(format!("array_count: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_count: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -25226,6 +25256,85 @@ mod tests {
             builtin_array_unique(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-427: array_count ----------
+
+    #[test]
+    fn array_count_basic() {
+        assert_int(
+            builtin_array_count(&[int_array(&[1, 2, 1, 3, 1]), Value::Int(1)]).unwrap(),
+            3,
+            "count(1)",
+        );
+        assert_int(
+            builtin_array_count(&[int_array(&[1, 2, 3]), Value::Int(99)]).unwrap(),
+            0,
+            "not found",
+        );
+    }
+
+    #[test]
+    fn array_count_empty_returns_zero() {
+        assert_int(
+            builtin_array_count(&[Value::Array(vec![]), Value::Int(1)]).unwrap(),
+            0,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn array_count_int_float_coercion() {
+        assert_int(
+            builtin_array_count(&[
+                Value::Array(vec![Value::Int(1), Value::Float(1.0), Value::Int(2)]),
+                Value::Int(1),
+            ])
+            .unwrap(),
+            2,
+            "1 matches 1.0",
+        );
+    }
+
+    #[test]
+    fn array_count_strings() {
+        assert_int(
+            builtin_array_count(&[
+                Value::Array(vec![
+                    Value::String("a".into()),
+                    Value::String("b".into()),
+                    Value::String("a".into()),
+                ]),
+                Value::String("a".into()),
+            ])
+            .unwrap(),
+            2,
+            "string match",
+        );
+    }
+
+    #[test]
+    fn array_count_rejects_non_scalar_element() {
+        let err = builtin_array_count(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Int(1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_count_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_count(&[Value::Int(5), Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_count(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
