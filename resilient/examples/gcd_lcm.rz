@@ -1,0 +1,14 @@
+// RES-415 demo: gcd and lcm built-ins.
+
+fn main() {
+    println(gcd(12, 18));
+    println(gcd(7, 13));
+    println(gcd(100, 75));
+    println(gcd(0, 5));
+
+    println(lcm(4, 6));
+    println(lcm(7, 13));
+    println(lcm(0, 5));
+}
+
+main();

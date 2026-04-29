@@ -920,6 +920,21 @@ impl TypeChecker {
         env.set("ceil".to_string(), fn_any_to_any());
         env.set("min".to_string(), fn_any_any_to_any());
         env.set("max".to_string(), fn_any_any_to_any());
+        // RES-415: gcd/lcm — strict (Int, Int) -> Int.
+        env.set(
+            "gcd".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "lcm".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         env.set("pow".to_string(), fn_any_any_to_any());
         // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
         // promoted to Float if any arg is Float. Signed as
@@ -3876,6 +3891,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "abs",
         // RES-410: sign(x).
         "sign",
+        // RES-415: gcd/lcm.
+        "gcd",
+        "lcm",
         // RES-411: float predicates.
         "is_nan",
         "is_inf",
