@@ -1,0 +1,11 @@
+// RES-453 demo: string_at returns the i-th Unicode scalar as a 1-char string.
+
+fn main() {
+    let s = "hello";
+    println(string_at(s, 0));
+    println(string_at(s, 4));
+    // Unicode-scalar indexed (not byte).
+    println(string_at("café", 3));
+}
+
+main();

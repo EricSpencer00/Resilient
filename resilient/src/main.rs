@@ -8273,6 +8273,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_remove_at", builtin_array_remove_at),
     // RES-452: replace element at index; returns a new array.
     ("array_set_at", builtin_array_set_at),
+    // RES-453: total Unicode-scalar accessor (errors on bad index).
+    ("string_at", builtin_string_at),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9826,6 +9828,35 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-453: `string_at(s, i)` — Unicode-scalar at index `i` as a
+/// single-char String. Total: out-of-range or negative `i` is a typed
+/// error (vs `char_at` which returns Result).
+fn builtin_string_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(i)] => {
+            if *i < 0 {
+                return Err(format!("string_at: index {} is negative", i));
+            }
+            match s.chars().nth(*i as usize) {
+                Some(c) => Ok(Value::String(c.to_string())),
+                None => Err(format!(
+                    "string_at: index {} out of range (string has {} chars)",
+                    i,
+                    s.chars().count()
+                )),
+            }
+        }
+        [a, b] => Err(format!(
+            "string_at: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_at: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28034,6 +28065,63 @@ mod tests {
             builtin_array_set_at(&[int_array(&[1]), Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-453: string_at ----------
+
+    #[test]
+    fn string_at_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_string_at(&[Value::String("abc".into()), Value::Int(0)]).unwrap()
+            ),
+            "a"
+        );
+        assert_eq!(
+            extract_string(
+                builtin_string_at(&[Value::String("abc".into()), Value::Int(2)]).unwrap()
+            ),
+            "c"
+        );
+    }
+
+    #[test]
+    fn string_at_unicode_indexed_by_scalar_not_byte() {
+        // "café" is 5 UTF-8 bytes; 'é' is at scalar index 3.
+        assert_eq!(
+            extract_string(
+                builtin_string_at(&[Value::String("café".into()), Value::Int(3)]).unwrap()
+            ),
+            "é"
+        );
+    }
+
+    #[test]
+    fn string_at_negative_index_errors() {
+        let err = builtin_string_at(&[Value::String("abc".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_at_out_of_range_errors() {
+        let err = builtin_string_at(&[Value::String("abc".into()), Value::Int(5)]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {}", err);
+        let err = builtin_string_at(&[Value::String("".into()), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_at_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_at(&[Value::Int(1), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_string_at(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
