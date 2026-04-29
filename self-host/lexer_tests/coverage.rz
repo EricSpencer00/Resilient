@@ -1,0 +1,21 @@
+// RES-323: small but token-dense input for the self-hosted lexer
+// snapshot test. Exercises keywords, identifiers, integer/float/
+// hex literals, string with escape, line comment, block comment,
+// 1/2/3-char operators, and punctuation. Does NOT need to compile
+// as a Resilient program — the lexer treats source as a stream of
+// tokens, so this file is checked for token-stream identity only.
+fn add(int a, int b) -> int {
+    return a + b;
+}
+fn main() {
+    let xs = [1, 2, 3];
+    let s = "hi\nworld";
+    let h = 0xFF;
+    let pi = 3.14;
+    let r = 0..=10;
+    while r {
+        if a >= b && c <= d {
+            break;
+        }
+    }
+}

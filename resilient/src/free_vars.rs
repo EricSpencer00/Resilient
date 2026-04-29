@@ -489,6 +489,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(node, bound, free);
             }
         }
+        // RES-290: trait declarations have no expression bodies, so
+        // they introduce no free variables.
+        Node::TraitDecl { .. } => {}
     }
 }
 

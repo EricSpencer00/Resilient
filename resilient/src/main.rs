@@ -223,6 +223,12 @@ mod termination;
 // module only touches the extension-point blocks and the dispatch call.
 mod supervisor;
 
+// RES-290: trait / interface system — `trait Name { fn sig(...); ... }`
+// declarations and `impl Trait for Type { ... }` validation. Generic
+// bounds `<T: Trait>` are verified at call sites. Runtime dispatch
+// reuses the existing `<Type>$<method>` mangling — no VTable.
+mod traits;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -360,6 +366,8 @@ enum Token {
     Newtype,
     /// RES-333: `supervisor { strategy, children }` — actor restart policy.
     Supervisor,
+    /// RES-290: `trait Name { fn sig(...); ... }` — trait declaration keyword.
+    Trait,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -496,6 +504,7 @@ impl Token {
             Token::Mod => "`mod`".to_string(),
             Token::Newtype => "`newtype`".to_string(),
             Token::Supervisor => "`supervisor`".to_string(),
+            Token::Trait => "`trait`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -952,6 +961,7 @@ impl Lexer {
                         "mod" => Token::Mod,
                         "newtype" => Token::Newtype,
                         "supervisor" => Token::Supervisor,
+                        "trait" => Token::Trait,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -1501,10 +1511,17 @@ enum Node {
         /// matches source order so the inferer /
         /// monomorphization pass (RES-124b/c) can produce
         /// deterministic mangled names. Payload is the type-
-        /// parameter identifier only (no constraints yet;
-        /// `fn<T: Hashable>` etc. is a future extension).
+        /// parameter identifier; trait bounds (RES-290) live in
+        /// `type_param_bounds`, parallel-indexed to this vec.
         #[allow(dead_code)] // consumed by RES-124b+
         type_params: Vec<String>,
+        /// RES-290: trait bounds for each generic parameter, indexed
+        /// in lockstep with `type_params`. An empty inner vec means
+        /// "no bounds" (the legacy `fn<T>` form). For `fn<T: Drawable + Hashable>`,
+        /// `type_params == ["T"]` and `type_param_bounds == [["Drawable", "Hashable"]]`.
+        /// Validated by `crate::traits::check` against declared traits.
+        #[allow(dead_code)]
+        type_param_bounds: Vec<Vec<String>>,
         /// RES-387: declared failure variants. Parsed from
         /// `fails Variant (, Variant)*` between the return type
         /// and `{`. Empty when the fn declares no failures.
@@ -1919,9 +1936,26 @@ enum Node {
     /// parameter typed as the enclosing struct. The interpreter and
     /// typechecker handle this variant by iterating `methods` and
     /// dispatching to each method as a regular top-level fn.
+    ///
+    /// RES-290: `trait_name` is `Some(t)` for `impl t for <StructName> { ... }`
+    /// trait-impl blocks; the methods still mangle to `<StructName>$<method>`,
+    /// so runtime dispatch is unchanged. The trait name is consulted only by
+    /// `crate::traits::check` to validate signature coverage.
     ImplBlock {
+        trait_name: Option<String>,
         struct_name: String,
         methods: Vec<Node>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-290: `trait Name { fn sig(...) -> T; ... }` declaration.
+    /// Trait declarations carry method signatures only — no bodies. The
+    /// signatures are validated against `impl Trait for Type` blocks by
+    /// `crate::traits::check`. Trait dispatch reuses the existing
+    /// `<Type>$<method>` mangling; there is no VTable.
+    TraitDecl {
+        name: String,
+        methods: Vec<crate::traits::TraitMethodSig>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2413,6 +2447,7 @@ impl Parser {
             Token::Actor => Some(self.parse_actor_decl()),
             Token::Try => Some(crate::try_catch::parse(self)),
             Token::Supervisor => Some(crate::supervisor::parse(self)),
+            Token::Trait => Some(crate::traits::parse(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -2783,8 +2818,9 @@ impl Parser {
         // (`fn<T> name(...)` — legacy form kept for backward compat)
         // or after the name (`fn name<T>(...)` — canonical new form).
         // Both forms set the same `type_params` field; they cannot be
-        // combined in a single declaration.
-        let pre_name_type_params = self.parse_optional_type_params();
+        // combined in a single declaration. RES-290 extends this to
+        // also carry trait bounds via the parallel `bounds` vec.
+        let (pre_name_type_params, pre_name_bounds) = self.parse_optional_type_params();
 
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
@@ -2800,15 +2836,15 @@ impl Parser {
 
         // Post-name form: `fn name<T, U>(...)`.  Only applied when the
         // pre-name form produced no params so the two forms don't stack.
-        let post_name_type_params = if pre_name_type_params.is_empty() {
+        let (post_name_type_params, post_name_bounds) = if pre_name_type_params.is_empty() {
             self.parse_optional_type_params()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
-        let type_params = if pre_name_type_params.is_empty() {
-            post_name_type_params
+        let (type_params, type_param_bounds) = if pre_name_type_params.is_empty() {
+            (post_name_type_params, post_name_bounds)
         } else {
-            pre_name_type_params
+            (pre_name_type_params, pre_name_bounds)
         };
 
         // Check if we have a left parenthesis as expected
@@ -2842,6 +2878,7 @@ impl Parser {
                     pure,
                     effects,
                     type_params: type_params.clone(),
+                    type_param_bounds: type_param_bounds.clone(),
                     fails: Vec::new(),
                 };
             }
@@ -2860,6 +2897,7 @@ impl Parser {
                 pure,
                 effects,
                 type_params,
+                type_param_bounds,
                 fails: Vec::new(),
             };
         }
@@ -2917,6 +2955,7 @@ impl Parser {
                     pure,
                     effects,
                     type_params: type_params.clone(),
+                    type_param_bounds: type_param_bounds.clone(),
                     fails,
                 };
             }
@@ -2937,6 +2976,7 @@ impl Parser {
             pure,
             effects,
             type_params,
+            type_param_bounds,
             fails,
         }
     }
@@ -2948,28 +2988,56 @@ impl Parser {
     /// struct. The `ImplBlock` node the parser emits is deconstructed
     /// by the interpreter and typechecker back into its individual
     /// methods, so downstream stages see them as plain functions.
+    ///
+    /// RES-290: also parses `impl <TraitName> for <StructName> { ... }`.
+    /// When `for` is present after the first identifier, the first name
+    /// becomes `trait_name` and the second becomes `struct_name`. The
+    /// methods still mangle to `<StructName>$<method>` so runtime
+    /// dispatch is unchanged; `crate::traits::check` consults the trait
+    /// name to validate that every required method is provided.
     fn parse_impl_block(&mut self) -> Node {
         let impl_span = self.span_at_current();
         self.next_token(); // skip 'impl'
 
-        let struct_name = match &self.current_token {
+        let first_name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             other => {
                 self.record_error(format!(
-                    "Expected struct name after 'impl', found {}",
+                    "Expected struct or trait name after 'impl', found {}",
                     other
                 ));
                 String::new()
             }
         };
-        self.next_token(); // skip name
+        self.next_token(); // skip first name
+
+        // RES-290: if the next token is `for`, this is `impl Trait for Type`.
+        // Otherwise it's the legacy `impl Type` form.
+        let (trait_name, struct_name) = if self.current_token == Token::For {
+            self.next_token(); // skip 'for'
+            let type_name = match &self.current_token {
+                Token::Identifier(n) => n.clone(),
+                other => {
+                    self.record_error(format!(
+                        "Expected type name after 'impl {} for', found {}",
+                        first_name, other
+                    ));
+                    String::new()
+                }
+            };
+            self.next_token(); // skip type name
+            (Some(first_name), type_name)
+        } else {
+            (None, first_name)
+        };
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '{{' after 'impl {}', found {}",
-                struct_name, tok
-            ));
+            let header = match &trait_name {
+                Some(t) => format!("impl {} for {}", t, struct_name),
+                None => format!("impl {}", struct_name),
+            };
+            self.record_error(format!("Expected '{{' after '{}', found {}", header, tok));
         } else {
             self.next_token(); // skip '{'
         }
@@ -3001,6 +3069,7 @@ impl Parser {
         // token, same as with `fn` / `struct` decls.
 
         Node::ImplBlock {
+            trait_name,
             struct_name,
             methods,
             span: impl_span,
@@ -3436,6 +3505,7 @@ impl Parser {
             // always monomorphic. `impl<T>` is a future
             // extension.
             type_params: Vec::new(),
+            type_param_bounds: Vec::new(),
             fails,
         }
     }
@@ -3938,20 +4008,50 @@ impl Parser {
     /// separated identifiers. Otherwise return an empty vec
     /// and leave the cursor untouched.
     ///
-    /// This is parser-level work only — the inferer + monomorph
-    /// pass (RES-124b/c) will build on the AST field this
-    /// populates.
-    fn parse_optional_type_params(&mut self) -> Vec<String> {
-        let mut out = Vec::new();
+    /// RES-290 extension: also parses `<T: Trait1 + Trait2>` trait
+    /// bounds. The returned tuple is `(names, bounds)`, where
+    /// `bounds[i]` is the (possibly empty) list of traits attached
+    /// to `names[i]`. For `<T, U: Comparable>`, the result is
+    /// `(["T", "U"], [vec![], vec!["Comparable"]])`.
+    fn parse_optional_type_params(&mut self) -> (Vec<String>, Vec<Vec<String>>) {
+        let mut names = Vec::new();
+        let mut bounds: Vec<Vec<String>> = Vec::new();
         if self.current_token != Token::Less {
-            return out;
+            return (names, bounds);
         }
         self.next_token(); // consume `<`
         while self.current_token != Token::Greater {
             match &self.current_token {
                 Token::Identifier(name) => {
-                    out.push(name.clone());
+                    names.push(name.clone());
                     self.next_token();
+                    // RES-290: optional `: Trait1 + Trait2` bound list.
+                    let mut this_bounds: Vec<String> = Vec::new();
+                    if self.current_token == Token::Colon {
+                        self.next_token(); // skip `:`
+                        loop {
+                            match &self.current_token {
+                                Token::Identifier(bname) => {
+                                    this_bounds.push(bname.clone());
+                                    self.next_token();
+                                }
+                                other => {
+                                    let tok = other.clone();
+                                    self.record_error(format!(
+                                        "Expected trait name after `:` in type-parameter bound, found {}",
+                                        tok
+                                    ));
+                                    break;
+                                }
+                            }
+                            if self.current_token == Token::Plus {
+                                self.next_token();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    bounds.push(this_bounds);
                 }
                 other => {
                     let tok = other.clone();
@@ -3981,7 +4081,7 @@ impl Parser {
         if self.current_token == Token::Greater {
             self.next_token();
         }
-        out
+        (names, bounds)
     }
 
     #[allow(clippy::type_complexity)]
@@ -11733,6 +11833,9 @@ impl Interpreter {
             // Each contained declaration is registered under the
             // prefixed key `"name::decl"` in the outer environment.
             Node::ModuleDecl { name, body, .. } => crate::modules::eval_module(name, body, self),
+            // RES-290: trait declarations carry no runtime payload — the
+            // typechecker validates them; here we just produce Void.
+            Node::TraitDecl { .. } => Ok(Value::Void),
         }
     }
 
@@ -13656,6 +13759,7 @@ fn classify_lex_token(
         | Token::Use
         | Token::As
         | Token::Impl
+        | Token::Trait
         | Token::Type
         | Token::Default
         | Token::BoolLiteral(_) => (sem_tok::KEYWORD, 0),

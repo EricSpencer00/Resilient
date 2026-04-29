@@ -178,11 +178,16 @@ impl Formatter {
                 self.newline();
             }
             Node::ImplBlock {
+                trait_name,
                 struct_name,
                 methods,
                 ..
             } => {
-                self.write(&format!("impl {} {{", struct_name));
+                let header = match trait_name {
+                    Some(t) => format!("impl {} for {} {{", t, struct_name),
+                    None => format!("impl {} {{", struct_name),
+                };
+                self.write(&header);
                 self.newline();
                 self.indent();
                 for (i, m) in methods.iter().enumerate() {
@@ -190,6 +195,34 @@ impl Formatter {
                         self.blank_line();
                     }
                     self.fmt_stmt(m);
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
+            Node::TraitDecl { name, methods, .. } => {
+                self.write(&format!("trait {} {{", name));
+                self.newline();
+                self.indent();
+                for sig in methods {
+                    let self_token = if sig.takes_self {
+                        if sig.param_arity > 1 {
+                            "self, "
+                        } else {
+                            "self"
+                        }
+                    } else {
+                        ""
+                    };
+                    let extras = sig
+                        .param_arity
+                        .saturating_sub(if sig.takes_self { 1 } else { 0 });
+                    let placeholders = (0..extras)
+                        .map(|i| format!("_{}", i))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.write(&format!("fn {}({}{});", sig.name, self_token, placeholders));
+                    self.newline();
                 }
                 self.dedent();
                 self.write("}");
@@ -1055,6 +1088,7 @@ impl Formatter {
             | Node::TryCatch { .. }
             | Node::ModuleDecl { .. }
             | Node::SupervisorDecl { .. }
+            | Node::TraitDecl { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }

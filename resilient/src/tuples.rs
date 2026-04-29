@@ -230,7 +230,7 @@ pub(crate) fn bind_tuple_destructure(
             items.len()
         ));
     }
-    for (n, val) in names.iter().zip(items.into_iter()) {
+    for (n, val) in names.iter().zip(items) {
         interp.env.set(n.clone(), val);
     }
     Ok(Value::Void)

@@ -389,6 +389,7 @@ mod tests {
             pure: false,
             effects: crate::EffectSet::io(),
             type_params: Vec::new(),
+            type_param_bounds: Vec::new(),
             fails: Vec::new(),
         }
     }
