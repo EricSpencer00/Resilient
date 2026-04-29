@@ -8173,6 +8173,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_finite", builtin_is_finite),
     ("min", builtin_min),
     ("max", builtin_max),
+    // RES-415: integer gcd/lcm.
+    ("gcd", builtin_gcd),
+    ("lcm", builtin_lcm),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -9838,6 +9841,49 @@ fn builtin_abs(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.abs())),
         [other] => Err(format!("abs: expected int or float, got {}", other)),
         _ => Err(format!("abs: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-415: `gcd(a, b)` — greatest common divisor of two ints via the
+/// Euclidean algorithm on absolute values. By convention `gcd(0, 0) = 0`.
+fn builtin_gcd(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            let mut x = a.unsigned_abs();
+            let mut y = b.unsigned_abs();
+            while y != 0 {
+                let t = x % y;
+                x = y;
+                y = t;
+            }
+            Ok(Value::Int(x as i64))
+        }
+        [a, b] => Err(format!("gcd: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("gcd: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-415: `lcm(a, b)` — least common multiple via gcd. `lcm(0, _) = 0`
+/// to keep the function total without division-by-zero.
+fn builtin_lcm(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *a == 0 || *b == 0 {
+                return Ok(Value::Int(0));
+            }
+            let mut x = a.unsigned_abs();
+            let mut y = b.unsigned_abs();
+            let (ax, by) = (x, y);
+            while y != 0 {
+                let t = x % y;
+                x = y;
+                y = t;
+            }
+            // lcm(a, b) = |a / gcd| * |b|
+            Ok(Value::Int(((ax / x) * by) as i64))
+        }
+        [a, b] => Err(format!("lcm: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("lcm: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -23700,6 +23746,123 @@ mod tests {
     fn index_of_rejects_wrong_arity() {
         let err = builtin_index_of(&[Value::String("a".into())]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "got: {}", err);
+    }
+
+    // ---------- RES-415: gcd / lcm ----------
+
+    fn assert_int(v: Value, expected: i64, label: &str) {
+        match v {
+            Value::Int(n) => assert_eq!(n, expected, "{}: expected {}", label, expected),
+            other => panic!("{}: expected Int({}), got {:?}", label, expected, other),
+        }
+    }
+
+    #[test]
+    fn gcd_basic_cases() {
+        assert_int(
+            builtin_gcd(&[Value::Int(12), Value::Int(18)]).unwrap(),
+            6,
+            "gcd(12,18)",
+        );
+        assert_int(
+            builtin_gcd(&[Value::Int(7), Value::Int(13)]).unwrap(),
+            1,
+            "gcd(7,13)",
+        );
+        assert_int(
+            builtin_gcd(&[Value::Int(100), Value::Int(75)]).unwrap(),
+            25,
+            "gcd(100,75)",
+        );
+    }
+
+    #[test]
+    fn gcd_with_zero_returns_other() {
+        assert_int(
+            builtin_gcd(&[Value::Int(0), Value::Int(5)]).unwrap(),
+            5,
+            "gcd(0,5)",
+        );
+        assert_int(
+            builtin_gcd(&[Value::Int(5), Value::Int(0)]).unwrap(),
+            5,
+            "gcd(5,0)",
+        );
+        assert_int(
+            builtin_gcd(&[Value::Int(0), Value::Int(0)]).unwrap(),
+            0,
+            "gcd(0,0)",
+        );
+    }
+
+    #[test]
+    fn gcd_handles_negatives() {
+        assert_int(
+            builtin_gcd(&[Value::Int(-12), Value::Int(18)]).unwrap(),
+            6,
+            "gcd(-12,18)",
+        );
+        assert_int(
+            builtin_gcd(&[Value::Int(-12), Value::Int(-18)]).unwrap(),
+            6,
+            "gcd(-12,-18)",
+        );
+    }
+
+    #[test]
+    fn gcd_rejects_non_ints_and_arity() {
+        assert!(
+            builtin_gcd(&[Value::Float(1.0), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_gcd(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    #[test]
+    fn lcm_basic_cases() {
+        assert_int(
+            builtin_lcm(&[Value::Int(4), Value::Int(6)]).unwrap(),
+            12,
+            "lcm(4,6)",
+        );
+        assert_int(
+            builtin_lcm(&[Value::Int(7), Value::Int(13)]).unwrap(),
+            91,
+            "lcm(7,13)",
+        );
+    }
+
+    #[test]
+    fn lcm_with_zero_is_zero() {
+        assert_int(
+            builtin_lcm(&[Value::Int(0), Value::Int(5)]).unwrap(),
+            0,
+            "lcm(0,5)",
+        );
+        assert_int(
+            builtin_lcm(&[Value::Int(5), Value::Int(0)]).unwrap(),
+            0,
+            "lcm(5,0)",
+        );
+    }
+
+    #[test]
+    fn lcm_rejects_non_ints_and_arity() {
+        assert!(
+            builtin_lcm(&[Value::String("a".into()), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_lcm(&[])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
     }
 
     // ---------- RES-034: nested index assignment ----------
