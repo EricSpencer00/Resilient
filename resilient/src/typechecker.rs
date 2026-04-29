@@ -3314,10 +3314,41 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
             // RES-333: supervisor declaration — validate child configurations.
-            // TODO: check that each child_fn_name exists and is an actor.
-            Node::Supervisor { .. } => {
-                // For now, accept any supervisor configuration.
-                // Full validation (child existence, strategy validity) deferred to Phase 2.
+            Node::Supervisor {
+                strategy, children, ..
+            } => {
+                // Validate strategy is one of the known restart policies
+                if strategy != "one_for_one" && strategy != "one_for_all" {
+                    return Err(format!(
+                        "Invalid supervisor strategy '{}'; must be 'one_for_one' or 'one_for_all'",
+                        strategy
+                    ));
+                }
+
+                // Validate each child configuration
+                for child in children {
+                    if child.id.is_empty() {
+                        return Err("Supervisor child must have an id field".to_string());
+                    }
+                    if child.fn_name.is_empty() {
+                        return Err(format!(
+                            "Supervisor child '{}' must have an fn field",
+                            child.id
+                        ));
+                    }
+                    // Validate restart mode
+                    if child.restart != "permanent"
+                        && child.restart != "transient"
+                        && child.restart != "temporary"
+                    {
+                        return Err(format!(
+                            "Invalid restart mode '{}' for child '{}'; must be 'permanent', 'transient', or 'temporary'",
+                            child.restart, child.id
+                        ));
+                    }
+                    // TODO (Phase 3): verify that child.fn_name refers to an actual actor function
+                }
+
                 Ok(Type::Void)
             }
         }
