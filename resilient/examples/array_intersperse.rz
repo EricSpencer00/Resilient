@@ -1,0 +1,10 @@
+// RES-437 demo: array_intersperse inserts a separator between elements.
+
+fn main() {
+    println(array_intersperse([1, 2, 3], 0));
+    println(array_intersperse([42], 0));
+    println(array_intersperse([], 0));
+    println(array_intersperse(["a", "b", "c"], "-"));
+}
+
+main();
