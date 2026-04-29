@@ -1184,18 +1184,31 @@ fn run_l0009_division_by_zero(program: &Node, out: &mut Vec<Lint>) {
     for spanned in stmts {
         match &spanned.node {
             Node::Function { body, requires, .. } => {
-                l0009_check_body(body, requires, out);
+                let axioms = combine_axioms(requires, body);
+                l0009_check_body(body, &axioms, out);
             }
             Node::ImplBlock { methods, .. } => {
                 for method in methods {
                     if let Node::Function { body, requires, .. } = method {
-                        l0009_check_body(body, requires, out);
+                        let axioms = combine_axioms(requires, body);
+                        l0009_check_body(body, &axioms, out);
                     }
                 }
             }
             _ => {}
         }
     }
+}
+
+/// RES-133b: combine the function's `requires` clauses with the
+/// leading `assume(P)` predicates from the body. The result is the
+/// axiom set the divide-by-zero prover sees — assumes at the start
+/// of a fn body are valid axioms because they're runtime-checked
+/// before any expression evaluates.
+fn combine_axioms(requires: &[Node], body: &Node) -> Vec<Node> {
+    let mut axioms: Vec<Node> = requires.to_vec();
+    axioms.extend(crate::assume_axioms::collect_leading_assume_axioms(body));
+    axioms
 }
 
 /// RES-350: walk one fn body, flagging divisions by zero. The
