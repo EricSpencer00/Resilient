@@ -1260,6 +1260,8 @@ impl TypeChecker {
         );
         // RES-466: remove first matching element.
         env.set("array_remove".to_string(), fn_any_any_to_any());
+        // RES-467: remove all matching elements.
+        env.set("array_remove_all".to_string(), fn_any_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4290,6 +4292,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "int_to_base",
         // RES-466: array_remove.
         "array_remove",
+        // RES-467: array_remove_all.
+        "array_remove_all",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
