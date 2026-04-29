@@ -1,0 +1,18 @@
+// RES-445 demo: array_starts_with / array_ends_with predicates.
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5];
+    println(array_starts_with(xs, [1, 2]));
+    println(array_starts_with(xs, [2, 3]));
+    println(array_starts_with(xs, []));
+
+    println(array_ends_with(xs, [4, 5]));
+    println(array_ends_with(xs, [3, 4]));
+    println(array_ends_with(xs, []));
+
+    // Prefix/suffix longer than array → false.
+    println(array_starts_with([1, 2], [1, 2, 3]));
+    println(array_ends_with([1, 2], [1, 2, 3]));
+}
+
+main();
