@@ -8323,6 +8323,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_ne", builtin_array_ne),
     // RES-475: fixed-op integer fold with explicit init.
     ("array_fold_int", builtin_array_fold_int),
+    // RES-477: one-sided char-set trimmers.
+    ("trim_start_chars", builtin_trim_start_chars),
+    ("trim_end_chars", builtin_trim_end_chars),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9879,6 +9882,47 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-477: shared dispatch for the one-sided char-set trimmers.
+fn trim_side_chars<F: Fn(&str, &dyn Fn(char) -> bool) -> String>(
+    name: &str,
+    args: &[Value],
+    op: F,
+) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(chars)] => {
+            if chars.is_empty() {
+                return Ok(Value::String(s.clone()));
+            }
+            let charset: Vec<char> = chars.chars().collect();
+            let pred: Box<dyn Fn(char) -> bool> = Box::new(move |c: char| charset.contains(&c));
+            Ok(Value::String(op(s.as_str(), &*pred)))
+        }
+        [a, b] => Err(format!(
+            "{}: expected (string, string), got ({}, {})",
+            name, a, b
+        )),
+        _ => Err(format!(
+            "{}: expected 2 arguments, got {}",
+            name,
+            args.len()
+        )),
+    }
+}
+
+/// RES-477: `trim_start_chars(s, chars)` — strip leading chars in set.
+fn builtin_trim_start_chars(args: &[Value]) -> RResult<Value> {
+    trim_side_chars("trim_start_chars", args, |s, pred| {
+        s.trim_start_matches(pred).to_string()
+    })
+}
+
+/// RES-477: `trim_end_chars(s, chars)` — strip trailing chars in set.
+fn builtin_trim_end_chars(args: &[Value]) -> RResult<Value> {
+    trim_side_chars("trim_end_chars", args, |s, pred| {
+        s.trim_end_matches(pred).to_string()
+    })
 }
 
 /// RES-475: `array_fold_int(arr, init, op)` — fold with named binary
@@ -30602,6 +30646,103 @@ mod tests {
             builtin_array_fold_int(&[int_array(&[1]), Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-477: trim_start_chars / trim_end_chars ----------
+
+    #[test]
+    fn trim_start_chars_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_start_chars(&[
+                    Value::String("---hello---".into()),
+                    Value::String("-".into())
+                ])
+                .unwrap()
+            ),
+            "hello---"
+        );
+    }
+
+    #[test]
+    fn trim_end_chars_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_end_chars(&[
+                    Value::String("---hello---".into()),
+                    Value::String("-".into())
+                ])
+                .unwrap()
+            ),
+            "---hello"
+        );
+    }
+
+    #[test]
+    fn trim_side_chars_multi_char_set() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_start_chars(&[
+                    Value::String("xyzhelloxyz".into()),
+                    Value::String("xyz".into())
+                ])
+                .unwrap()
+            ),
+            "helloxyz"
+        );
+    }
+
+    #[test]
+    fn trim_side_chars_empty_chars_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_start_chars(&[
+                    Value::String("  hello".into()),
+                    Value::String("".into())
+                ])
+                .unwrap()
+            ),
+            "  hello"
+        );
+    }
+
+    #[test]
+    fn trim_side_chars_empty_string() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_start_chars(&[Value::String("".into()), Value::String("x".into())])
+                    .unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn trim_side_chars_no_match_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_end_chars(&[
+                    Value::String("hello".into()),
+                    Value::String("xyz".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn trim_side_chars_reject_wrong_types_and_arity() {
+        assert!(
+            builtin_trim_start_chars(&[Value::Int(1), Value::String("x".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_trim_end_chars(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
