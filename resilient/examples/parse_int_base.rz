@@ -1,0 +1,17 @@
+// RES-464 demo: parse_int_base parses with explicit radix.
+
+fn main() {
+    let r1 = parse_int_base("42", 10);
+    println(unwrap(r1));
+    let r2 = parse_int_base("ff", 16);
+    println(unwrap(r2));
+    let r3 = parse_int_base("1010", 2);
+    println(unwrap(r3));
+    let r4 = parse_int_base("17", 8);
+    println(unwrap(r4));
+    // Failure returns Err; is_err() catches it without unwrapping.
+    let r5 = parse_int_base("xyz", 10);
+    println(is_err(r5));
+}
+
+main();
