@@ -1,5 +1,13 @@
 title: Resilient
-description: A programming language designed for extreme reliability in embedded and safety-critical systems.
+description: Statically-typed compiled language for safety-critical embedded systems. Z3-verified contracts, no_std runtime, self-healing live blocks for Cortex-M, RISC-V, and bare metal.
+author: Eric Spencer
+lang: en
+
+# Open Graph defaults — picked up by jekyll-seo-tag.
+social:
+  name: Resilient
+  links:
+    - https://github.com/EricSpencer00/Resilient
 
 # The site is served at ericspencer.us/Resilient via GitHub Pages
 # using the custom domain set on the EricSpencer00 account.
@@ -51,6 +59,7 @@ color_scheme: light
 plugins:
   - jekyll-remote-theme
   - jekyll-seo-tag
+  - jekyll-sitemap
 
 # Don't ship benchmark CSV / Cargo lockfile if anyone drops one
 # in docs/ — Jekyll skips these by default but we name them
