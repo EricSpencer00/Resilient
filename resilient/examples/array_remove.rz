@@ -1,0 +1,10 @@
+// RES-466 demo: array_remove drops the first element matching x.
+
+fn main() {
+    println(array_remove([1, 2, 1, 3, 1], 1));
+    println(array_remove([1, 2, 3], 99));
+    println(array_remove([], 1));
+    println(array_remove(["a", "b", "a", "c"], "a"));
+}
+
+main();

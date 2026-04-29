@@ -8302,6 +8302,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("parse_int_base", builtin_parse_int_base),
     // RES-465: render int with explicit radix.
     ("int_to_base", builtin_int_to_base),
+    // RES-466: remove the first element matching x.
+    ("array_remove", builtin_array_remove),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9855,6 +9857,41 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-466: `array_remove(arr, x)` — remove the first element matching
+/// `x` under scalar value-equality. If absent, returns a clone of `arr`.
+fn builtin_array_remove(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            let mut out = Vec::with_capacity(items.len());
+            let mut removed = false;
+            for v in items {
+                if !removed {
+                    match array_search_eq(v, needle) {
+                        Some(true) => {
+                            removed = true;
+                            continue;
+                        }
+                        Some(false) => {}
+                        None => {
+                            return Err(format!(
+                                "array_remove: element types not comparable ({} vs {})",
+                                v, needle
+                            ));
+                        }
+                    }
+                }
+                out.push(v.clone());
+            }
+            Ok(Value::Array(out))
+        }
+        [a, _] => Err(format!("array_remove: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_remove: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29551,6 +29588,107 @@ mod tests {
         );
         assert!(
             builtin_int_to_base(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-466: array_remove ----------
+
+    #[test]
+    fn array_remove_first_match() {
+        // Multiple matches: only the first is removed.
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove(&[int_array(&[1, 2, 1, 3, 1]), Value::Int(1)]).unwrap()
+            ),
+            vec![2, 1, 3, 1]
+        );
+    }
+
+    #[test]
+    fn array_remove_not_found_returns_clone() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove(&[int_array(&[1, 2, 3]), Value::Int(99)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_remove_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove(&[Value::Array(vec![]), Value::Int(1)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_remove_int_float_coerce() {
+        // Int 1 should match Float 1.0.
+        match builtin_array_remove(&[
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Float(1.0),
+        ])
+        .unwrap()
+        {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                match (&items[0], &items[1]) {
+                    (Value::Int(2), Value::Int(3)) => {}
+                    other => panic!("expected [2,3], got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_remove_strings() {
+        match builtin_array_remove(&[
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("a".into()),
+            ]),
+            Value::String("a".into()),
+        ])
+        .unwrap()
+        {
+            Value::Array(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_remove_does_not_mutate_input() {
+        let input = int_array(&[1, 2, 3]);
+        let _ = builtin_array_remove(&[input.clone(), Value::Int(1)]).unwrap();
+        assert_eq!(extract_int_array(input), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn array_remove_rejects_non_scalar_element() {
+        let err = builtin_array_remove(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_remove_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_remove(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_remove(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
