@@ -181,6 +181,9 @@ fn write_op(
         // RES-171a: array-ops disasm.
         Op::MakeArray { len } => write!(out, "MakeArray {}", len)?,
         Op::LoadIndex => write!(out, "LoadIndex")?,
+        // RES-407: bounds-elided variant — emitted when the
+        // verifier discharged `0 <= idx < len(arr)` for the site.
+        Op::LoadIndexUnchecked => write!(out, "LoadIndexUnchecked")?,
         Op::StoreIndex => write!(out, "StoreIndex")?,
         // FFI v2.
         Op::CallForeign(idx) => write!(out, "CallForeign {idx:<6}")?,

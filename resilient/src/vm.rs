@@ -741,6 +741,22 @@ fn run_inner(
                 }
                 stack.push(items[idx as usize].clone());
             }
+            // RES-407: emitted only when `bounds_check::check_array_bounds`
+            // discharged the bounds obligation for this site. Skips the
+            // bounds check; type checks on operands stay.
+            Op::LoadIndexUnchecked => {
+                let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let arr_val = stack.pop().ok_or(VmError::EmptyStack)?;
+                let Value::Int(idx) = idx_val else {
+                    return Err(VmError::TypeMismatch("LoadIndexUnchecked (non-int index)"));
+                };
+                let Value::Array(items) = arr_val else {
+                    return Err(VmError::TypeMismatch(
+                        "LoadIndexUnchecked (non-array target)",
+                    ));
+                };
+                stack.push(items[idx as usize].clone());
+            }
             Op::StoreIndex => {
                 // Stack layout on entry (top → bottom):
                 //   [v, idx, arr, ...]
@@ -946,7 +962,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 31;
+const OP_KIND_COUNT: usize = 32;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -986,6 +1002,7 @@ fn op_to_index(op: Op) -> usize {
         Op::StoreIndex => 28,
         Op::CallForeign(_) => 29,
         Op::CallBuiltin { .. } => 30,
+        Op::LoadIndexUnchecked => OP_KIND_LOAD_INDEX_UNCHECKED,
         // Note: StructLiteral/GetField/SetField fall through to the
         // catch-all index below since they share their semantics with
         // the match path. Keep them grouped at the tail of the table.
@@ -995,10 +1012,11 @@ fn op_to_index(op: Op) -> usize {
     }
 }
 
-const OP_KIND_STRUCT_LITERAL: usize = 31;
-const OP_KIND_GET_FIELD: usize = 32;
-const OP_KIND_SET_FIELD: usize = 33;
-const HANDLER_TABLE_LEN: usize = 34;
+const OP_KIND_LOAD_INDEX_UNCHECKED: usize = 31;
+const OP_KIND_STRUCT_LITERAL: usize = 32;
+const OP_KIND_GET_FIELD: usize = 33;
+const OP_KIND_SET_FIELD: usize = 34;
+const HANDLER_TABLE_LEN: usize = 35;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1035,6 +1053,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[28] = h_store_index;
     table[29] = h_call_foreign;
     table[30] = h_call_builtin;
+    table[OP_KIND_LOAD_INDEX_UNCHECKED] = h_load_index_unchecked;
     table[OP_KIND_STRUCT_LITERAL] = h_struct_literal;
     table[OP_KIND_GET_FIELD] = h_get_field;
     table[OP_KIND_SET_FIELD] = h_set_field;
@@ -1456,6 +1475,25 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             len: items.len(),
         });
     }
+    state.stack.push(items[idx as usize].clone());
+    Ok(Step::Continue)
+}
+
+/// RES-407: bounds-check-elided sibling of [`h_load_index`]. Type
+/// checks on operands are kept — the verifier rules out a stale
+/// in-range claim only on the index value, not on type confusion.
+#[inline(never)]
+fn h_load_index_unchecked(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let idx_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let arr_val = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    let Value::Int(idx) = idx_val else {
+        return Err(VmError::TypeMismatch("LoadIndexUnchecked (non-int index)"));
+    };
+    let Value::Array(items) = arr_val else {
+        return Err(VmError::TypeMismatch(
+            "LoadIndexUnchecked (non-array target)",
+        ));
+    };
     state.stack.push(items[idx as usize].clone());
     Ok(Step::Continue)
 }

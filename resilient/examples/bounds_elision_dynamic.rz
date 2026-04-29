@@ -1,0 +1,18 @@
+// RES-407: per-access bounds-check elision (unprovable case).
+//
+// `i` is a free function parameter, so the bounds-check pass cannot
+// discharge `0 <= i < len(xs)`. The compiler keeps the runtime
+// `LoadIndex` and the VM checks bounds on every access. Runtime
+// behaviour matches the proven case for in-range inputs; the
+// difference is the elision claim, not the result.
+fn pick(int i) -> int {
+    let xs = [100, 200, 300];
+    return xs[i];
+}
+
+fn main() {
+    let v = pick(2);
+    println(v);
+}
+
+main();

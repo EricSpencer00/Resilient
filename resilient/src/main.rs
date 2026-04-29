@@ -14347,6 +14347,30 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
         );
     }
 
+    // RES-407: bounds-check elision summary. Sourced from the
+    // bounds_check pass's thread-local stats. The counts are zero
+    // when the pass didn't run (no `--typecheck`), in which case we
+    // skip the section entirely so the audit stays tidy.
+    let bstats = bounds_check::last_stats();
+    let total_bounds = bstats.proven + bstats.unproven;
+    if total_bounds > 0 {
+        println!();
+        println!(
+            "  array-bounds elided (proven static):      \x1B[32m{} / {}\x1B[0m",
+            bstats.proven, total_bounds
+        );
+        println!(
+            "  array-bounds left for runtime check:      \x1B[33m{} / {}\x1B[0m",
+            bstats.unproven, total_bounds
+        );
+        for site in bounds_check::proven_sites_sorted() {
+            println!(
+                "    \x1B[32melided\x1B[0m at {}:{}",
+                site.start.line, site.start.column
+            );
+        }
+    }
+
     // RES-192: per-fn inferred effect set. Sorted so the output
     // is stable across runs; color green for pure, yellow for
     // IO. Skips the table entirely when no user fn was seen
