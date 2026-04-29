@@ -8244,6 +8244,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("ord", builtin_ord),
     // RES-420: concatenate two arrays.
     ("array_concat", builtin_array_concat),
+    // RES-421: take/drop first n elements.
+    ("array_take", builtin_array_take),
+    ("array_drop", builtin_array_drop),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9178,6 +9181,50 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-421: `array_take(arr, n)` — first `n` elements of `arr`. Returns
+/// the full array if `n >= len`. Negative `n` is a typed error.
+fn builtin_array_take(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!("array_take: count must be non-negative, got {}", n));
+            }
+            let take = (*n as usize).min(items.len());
+            Ok(Value::Array(items[..take].to_vec()))
+        }
+        [a, b] => Err(format!(
+            "array_take: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_take: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-421: `array_drop(arr, n)` — `arr` with the first `n` elements
+/// removed. Returns empty if `n >= len`. Negative `n` is an error.
+fn builtin_array_drop(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!("array_drop: count must be non-negative, got {}", n));
+            }
+            let drop = (*n as usize).min(items.len());
+            Ok(Value::Array(items[drop..].to_vec()))
+        }
+        [a, b] => Err(format!(
+            "array_drop: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_drop: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -24560,6 +24607,101 @@ mod tests {
         );
         assert!(
             builtin_array_concat(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-421: array_take / array_drop ----------
+
+    fn extract_int_array(v: Value) -> Vec<i64> {
+        match v {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!("non-int in test array"),
+                })
+                .collect(),
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn array_take_first_n() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_take(&[int_array(&[1, 2, 3, 4, 5]), Value::Int(3)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_take_zero_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_take(&[int_array(&[1, 2, 3]), Value::Int(0)]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_take_more_than_len_returns_full() {
+        assert_eq!(
+            extract_int_array(builtin_array_take(&[int_array(&[1, 2]), Value::Int(99)]).unwrap()),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn array_take_rejects_negative_and_arity() {
+        assert!(
+            builtin_array_take(&[int_array(&[1]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+        assert!(
+            builtin_array_take(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    #[test]
+    fn array_drop_skips_first_n() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_drop(&[int_array(&[1, 2, 3, 4, 5]), Value::Int(2)]).unwrap()
+            ),
+            vec![3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn array_drop_zero_returns_full() {
+        assert_eq!(
+            extract_int_array(builtin_array_drop(&[int_array(&[1, 2, 3]), Value::Int(0)]).unwrap()),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_drop_more_than_len_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_drop(&[int_array(&[1, 2]), Value::Int(99)]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_drop_rejects_negative_and_arity() {
+        assert!(
+            builtin_array_drop(&[int_array(&[1]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+        assert!(
+            builtin_array_drop(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
