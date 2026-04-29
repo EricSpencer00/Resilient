@@ -1,15 +1,11 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-133c-assume-false-dead-code",
+      "branch": "res-410-sign-builtin",
       "claimed_at": "2026-04-29T20:00:32Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-133c-assume-false-dead-code",
-      "claimed_at": "2026-04-29T20:00:32Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-133c-assume-false-dead-code",
+      "branch": "res-410-sign-builtin",
       "claimed_at": "2026-04-29T20:00:32Z"
     }
   }
