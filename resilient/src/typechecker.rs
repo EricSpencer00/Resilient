@@ -1131,6 +1131,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-448: array_position(arr, x, start).
+        env.set(
+            "array_position".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4118,6 +4126,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-447: int_min / int_max.
         "int_min",
         "int_max",
+        // RES-448: array_position.
+        "array_position",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.

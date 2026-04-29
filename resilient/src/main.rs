@@ -8261,6 +8261,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-447: i64 boundary constants as zero-arg functions.
     ("int_min", builtin_int_min),
     ("int_max", builtin_int_max),
+    // RES-448: array_index_of starting at a given offset.
+    ("array_position", builtin_array_position),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9814,6 +9816,38 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-448: `array_position(arr, x, start)` — first index `i >= start`
+/// where `arr[i]` matches `x` under scalar value-equality, or -1.
+/// `start` is clamped at 0; `start >= len` returns -1.
+fn builtin_array_position(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle, Value::Int(start)] => {
+            let from = (*start).max(0) as usize;
+            for (i, v) in items.iter().enumerate().skip(from) {
+                match array_search_eq(v, needle) {
+                    Some(true) => return Ok(Value::Int(i as i64)),
+                    Some(false) => {}
+                    None => {
+                        return Err(format!(
+                            "array_position: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(-1))
+        }
+        [a, _, c] => Err(format!(
+            "array_position: expected (array, _, int), got ({}, _, {})",
+            a, c
+        )),
+        _ => Err(format!(
+            "array_position: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -27407,6 +27441,73 @@ mod tests {
             builtin_int_max(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 0 arguments")
+        );
+    }
+
+    // ---------- RES-448: array_position ----------
+
+    #[test]
+    fn array_position_finds_after_start() {
+        // First 1 is at index 0, but starting at 2 we find the next at index 4.
+        assert_int(
+            builtin_array_position(&[int_array(&[1, 2, 3, 4, 1, 5]), Value::Int(1), Value::Int(2)])
+                .unwrap(),
+            4,
+            "from start=2",
+        );
+    }
+
+    #[test]
+    fn array_position_start_zero_matches_index_of() {
+        assert_int(
+            builtin_array_position(&[int_array(&[10, 20, 30]), Value::Int(20), Value::Int(0)])
+                .unwrap(),
+            1,
+            "start=0",
+        );
+    }
+
+    #[test]
+    fn array_position_negative_start_clamped_to_zero() {
+        assert_int(
+            builtin_array_position(&[int_array(&[1, 2, 3]), Value::Int(1), Value::Int(-5)])
+                .unwrap(),
+            0,
+            "negative start",
+        );
+    }
+
+    #[test]
+    fn array_position_start_past_len_returns_minus_one() {
+        assert_int(
+            builtin_array_position(&[int_array(&[1, 2, 3]), Value::Int(2), Value::Int(99)])
+                .unwrap(),
+            -1,
+            "start past end",
+        );
+    }
+
+    #[test]
+    fn array_position_not_found_returns_minus_one() {
+        assert_int(
+            builtin_array_position(&[int_array(&[1, 2, 3]), Value::Int(99), Value::Int(0)])
+                .unwrap(),
+            -1,
+            "absent",
+        );
+    }
+
+    #[test]
+    fn array_position_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_position(&[Value::Int(1), Value::Int(2), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (array, _, int)")
+        );
+        assert!(
+            builtin_array_position(&[int_array(&[1]), Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
