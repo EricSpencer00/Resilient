@@ -8286,6 +8286,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("trim_end", builtin_trim_end),
     // RES-439: bisect array at index — returns (first n, rest) tuple.
     ("array_split_at", builtin_array_split_at),
+    // RES-440: integer bitwise operations.
+    ("bit_and", builtin_bit_and),
+    ("bit_or", builtin_bit_or),
+    ("bit_xor", builtin_bit_xor),
+    ("bit_not", builtin_bit_not),
+    ("bit_shl", builtin_bit_shl),
+    ("bit_shr", builtin_bit_shr),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9222,6 +9229,70 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
             "array_product: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-440: `bit_and(a, b)` — bitwise AND on i64.
+fn builtin_bit_and(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a & b)),
+        [a, b] => Err(format!("bit_and: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("bit_and: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-440: `bit_or(a, b)` — bitwise OR on i64.
+fn builtin_bit_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a | b)),
+        [a, b] => Err(format!("bit_or: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("bit_or: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-440: `bit_xor(a, b)` — bitwise XOR on i64.
+fn builtin_bit_xor(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a ^ b)),
+        [a, b] => Err(format!("bit_xor: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("bit_xor: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-440: `bit_not(a)` — bitwise NOT (one's complement) on i64.
+fn builtin_bit_not(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a)] => Ok(Value::Int(!a)),
+        [other] => Err(format!("bit_not: expected int, got {}", other)),
+        _ => Err(format!("bit_not: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-440: `bit_shl(a, n)` — left shift. n must be 0..=63.
+fn builtin_bit_shl(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(n)] => {
+            if !(0..=63).contains(n) {
+                return Err(format!("bit_shl: shift amount must be 0..=63, got {}", n));
+            }
+            Ok(Value::Int(a.wrapping_shl(*n as u32)))
+        }
+        [a, b] => Err(format!("bit_shl: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("bit_shl: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-440: `bit_shr(a, n)` — arithmetic right shift. n must be 0..=63.
+fn builtin_bit_shr(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(n)] => {
+            if !(0..=63).contains(n) {
+                return Err(format!("bit_shr: shift amount must be 0..=63, got {}", n));
+            }
+            Ok(Value::Int(a.wrapping_shr(*n as u32)))
+        }
+        [a, b] => Err(format!("bit_shr: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("bit_shr: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -26662,6 +26733,115 @@ mod tests {
             builtin_array_split_at(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-440: bitwise ops ----------
+
+    #[test]
+    fn bit_and_basic() {
+        assert_int(
+            builtin_bit_and(&[Value::Int(0b1100), Value::Int(0b1010)]).unwrap(),
+            0b1000,
+            "and",
+        );
+        assert_int(
+            builtin_bit_and(&[Value::Int(0xFF), Value::Int(0x0F)]).unwrap(),
+            0x0F,
+            "mask low",
+        );
+    }
+
+    #[test]
+    fn bit_or_basic() {
+        assert_int(
+            builtin_bit_or(&[Value::Int(0b1100), Value::Int(0b0011)]).unwrap(),
+            0b1111,
+            "or",
+        );
+    }
+
+    #[test]
+    fn bit_xor_basic() {
+        assert_int(
+            builtin_bit_xor(&[Value::Int(0b1100), Value::Int(0b1010)]).unwrap(),
+            0b0110,
+            "xor",
+        );
+        // a ^ a == 0
+        assert_int(
+            builtin_bit_xor(&[Value::Int(42), Value::Int(42)]).unwrap(),
+            0,
+            "xor self",
+        );
+    }
+
+    #[test]
+    fn bit_not_basic() {
+        // ~0 == -1 (two's complement i64).
+        assert_int(builtin_bit_not(&[Value::Int(0)]).unwrap(), -1, "not(0)");
+        assert_int(builtin_bit_not(&[Value::Int(-1)]).unwrap(), 0, "not(-1)");
+    }
+
+    #[test]
+    fn bit_shl_basic() {
+        assert_int(
+            builtin_bit_shl(&[Value::Int(1), Value::Int(4)]).unwrap(),
+            16,
+            "1<<4",
+        );
+        assert_int(
+            builtin_bit_shl(&[Value::Int(7), Value::Int(0)]).unwrap(),
+            7,
+            "shl 0",
+        );
+    }
+
+    #[test]
+    fn bit_shr_basic() {
+        assert_int(
+            builtin_bit_shr(&[Value::Int(16), Value::Int(2)]).unwrap(),
+            4,
+            "16>>2",
+        );
+        // Arithmetic shift: -8 >> 1 = -4.
+        assert_int(
+            builtin_bit_shr(&[Value::Int(-8), Value::Int(1)]).unwrap(),
+            -4,
+            "arith shr",
+        );
+    }
+
+    #[test]
+    fn bit_shifts_reject_out_of_range_amount() {
+        assert!(
+            builtin_bit_shl(&[Value::Int(1), Value::Int(64)])
+                .unwrap_err()
+                .contains("0..=63")
+        );
+        assert!(
+            builtin_bit_shr(&[Value::Int(1), Value::Int(-1)])
+                .unwrap_err()
+                .contains("0..=63")
+        );
+    }
+
+    #[test]
+    fn bitwise_reject_non_int_and_arity() {
+        assert!(
+            builtin_bit_and(&[Value::Float(1.0), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_bit_or(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+        assert!(
+            builtin_bit_not(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 

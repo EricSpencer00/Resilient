@@ -1186,6 +1186,23 @@ impl TypeChecker {
         );
         // RES-439: bisect array at index → tuple.
         env.set("array_split_at".to_string(), fn_any_any_to_any());
+        // RES-440: integer bitwise ops — strict (Int) -> Int / (Int, Int) -> Int.
+        let int_int_to_int = Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("bit_and".to_string(), int_int_to_int.clone());
+        env.set("bit_or".to_string(), int_int_to_int.clone());
+        env.set("bit_xor".to_string(), int_int_to_int.clone());
+        env.set("bit_shl".to_string(), int_int_to_int.clone());
+        env.set("bit_shr".to_string(), int_int_to_int);
+        env.set(
+            "bit_not".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4094,6 +4111,13 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "trim_end",
         // RES-439: array_split_at.
         "array_split_at",
+        // RES-440: bitwise ops.
+        "bit_and",
+        "bit_or",
+        "bit_xor",
+        "bit_not",
+        "bit_shl",
+        "bit_shr",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
