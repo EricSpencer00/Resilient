@@ -1264,6 +1264,9 @@ impl TypeChecker {
         env.set("array_remove_all".to_string(), fn_any_any_to_any());
         // RES-468: collapse adjacent duplicates.
         env.set("array_dedup".to_string(), fn_any_to_any());
+        // RES-469: scalar all/any equality predicates.
+        env.set("array_all_eq".to_string(), fn_any_any_to_any());
+        env.set("array_any_eq".to_string(), fn_any_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4298,6 +4301,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_remove_all",
         // RES-468: array_dedup.
         "array_dedup",
+        // RES-469: all/any equality.
+        "array_all_eq",
+        "array_any_eq",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.

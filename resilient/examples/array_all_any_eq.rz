@@ -1,0 +1,15 @@
+// RES-469 demo: array_all_eq and array_any_eq predicates.
+
+fn main() {
+    println(array_all_eq([7, 7, 7], 7));
+    println(array_all_eq([7, 7, 8], 7));
+    // Empty is vacuously true for all_eq.
+    println(array_all_eq([], 7));
+
+    println(array_any_eq([1, 2, 3], 2));
+    println(array_any_eq([1, 2, 3], 99));
+    // Empty is false for any_eq.
+    println(array_any_eq([], 7));
+}
+
+main();
