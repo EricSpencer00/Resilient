@@ -8294,6 +8294,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("trim_chars", builtin_trim_chars),
     // RES-461: indent every line with n ASCII spaces.
     ("string_indent", builtin_string_indent),
+    // RES-462: adjacent pairs as tuples.
+    ("array_pairs", builtin_array_pairs),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9847,6 +9849,26 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-462: `array_pairs(arr)` — adjacent 2-tuples. Like
+/// `array_window(arr, 2)` but yields tuples for destructuring.
+/// Empty or single-element arrays return empty.
+fn builtin_array_pairs(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out = Vec::with_capacity(items.len().saturating_sub(1));
+            for w in items.windows(2) {
+                out.push(Value::Tuple(vec![w[0].clone(), w[1].clone()]));
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_pairs: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_pairs: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29097,6 +29119,54 @@ mod tests {
             builtin_string_indent(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-462: array_pairs ----------
+
+    #[test]
+    fn array_pairs_basic() {
+        let pairs = extract_tuples(builtin_array_pairs(&[int_array(&[1, 2, 3, 4])]).unwrap());
+        assert_eq!(pairs.len(), 3);
+        match (&pairs[0], &pairs[1], &pairs[2]) {
+            (
+                (Value::Int(1), Value::Int(2)),
+                (Value::Int(2), Value::Int(3)),
+                (Value::Int(3), Value::Int(4)),
+            ) => {}
+            other => panic!("unexpected pairs: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_pairs_two_elements() {
+        let pairs = extract_tuples(builtin_array_pairs(&[int_array(&[10, 20])]).unwrap());
+        assert_eq!(pairs.len(), 1);
+    }
+
+    #[test]
+    fn array_pairs_single_element_returns_empty() {
+        let pairs = extract_tuples(builtin_array_pairs(&[int_array(&[42])]).unwrap());
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn array_pairs_empty_returns_empty() {
+        let pairs = extract_tuples(builtin_array_pairs(&[Value::Array(vec![])]).unwrap());
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn array_pairs_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_pairs(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_pairs(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
