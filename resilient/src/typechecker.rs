@@ -1061,6 +1061,14 @@ impl TypeChecker {
             },
         );
         env.set("array_reverse".to_string(), fn_any_to_any());
+        // RES-413: repeat a string n times.
+        env.set(
+            "string_repeat".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-145: replace + format.
         env.set(
             "replace".to_string(),
@@ -3894,6 +3902,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-412: reverse string/array.
         "string_reverse",
         "array_reverse",
+        // RES-413: repeat a string.
+        "string_repeat",
         "replace",
         "format",
         "starts_with",

@@ -8227,6 +8227,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-412: reverse a string (Unicode-aware) or an array (clones elements).
     ("string_reverse", builtin_string_reverse),
     ("array_reverse", builtin_array_reverse),
+    // RES-413: repeat a string n times.
+    ("string_repeat", builtin_string_repeat),
     // RES-145: string manipulation expansion.
     ("replace", builtin_replace),
     ("format", builtin_format),
@@ -9059,6 +9061,30 @@ fn builtin_string_reverse(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("string_reverse: expected string, got {}", other)),
         _ => Err(format!(
             "string_reverse: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-413: `string_repeat(s, n)` — returns `s` repeated `n` times.
+/// Negative `n` is a typed error; zero or empty produces an empty string.
+fn builtin_string_repeat(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "string_repeat: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            Ok(Value::String(s.repeat(*n as usize)))
+        }
+        [a, b] => Err(format!(
+            "string_repeat: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_repeat: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -23552,6 +23578,53 @@ mod tests {
     fn array_reverse_rejects_wrong_arity() {
         let err = builtin_array_reverse(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "got: {}", err);
+    }
+
+    // ---------- RES-413: string_repeat ----------
+
+    #[test]
+    fn string_repeat_repeats_n_times() {
+        match builtin_string_repeat(&[Value::String("ab".into()), Value::Int(3)]).unwrap() {
+            Value::String(s) => assert_eq!(s, "ababab"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_repeat_zero_returns_empty() {
+        match builtin_string_repeat(&[Value::String("xyz".into()), Value::Int(0)]).unwrap() {
+            Value::String(s) => assert_eq!(s, ""),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_repeat_empty_input_stays_empty() {
+        match builtin_string_repeat(&[Value::String("".into()), Value::Int(5)]).unwrap() {
+            Value::String(s) => assert_eq!(s, ""),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_repeat_rejects_negative_count() {
+        let err = builtin_string_repeat(&[Value::String("a".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_repeat_rejects_wrong_types() {
+        let err = builtin_string_repeat(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("expected (string, int)"), "got: {}", err);
+        let err =
+            builtin_string_repeat(&[Value::String("a".into()), Value::Float(2.0)]).unwrap_err();
+        assert!(err.contains("expected (string, int)"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_repeat_rejects_wrong_arity() {
+        let err = builtin_string_repeat(&[Value::String("a".into())]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "got: {}", err);
     }
 
     // ---------- RES-034: nested index assignment ----------
