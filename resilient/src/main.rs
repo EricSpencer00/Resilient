@@ -8249,6 +8249,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_drop", builtin_array_drop),
     // RES-422: ascending sort over an integer array.
     ("array_sort", builtin_array_sort),
+    // RES-423: flatten one level of nesting.
+    ("array_flatten", builtin_array_flatten),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9183,6 +9185,34 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-423: `array_flatten(arr)` — concatenate the inner arrays of an
+/// array-of-arrays one level deep. Top-level non-array elements produce
+/// a typed error. Empty outer or inner arrays are fine.
+fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out: Vec<Value> = Vec::new();
+            for v in items {
+                match v {
+                    Value::Array(inner) => out.extend_from_slice(inner),
+                    other => {
+                        return Err(format!(
+                            "array_flatten: expected array of arrays, got inner {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_flatten: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_flatten: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -24793,6 +24823,73 @@ mod tests {
         );
         assert!(
             builtin_array_sort(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-423: array_flatten ----------
+
+    fn arr(items: Vec<Value>) -> Value {
+        Value::Array(items)
+    }
+
+    #[test]
+    fn array_flatten_concatenates_inner_arrays() {
+        let input = arr(vec![
+            int_array(&[1, 2]),
+            int_array(&[3]),
+            int_array(&[4, 5, 6]),
+        ]);
+        assert_eq!(
+            extract_int_array(builtin_array_flatten(&[input]).unwrap()),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+    }
+
+    #[test]
+    fn array_flatten_handles_empty_outer_and_inner() {
+        // Empty outer.
+        assert_eq!(
+            extract_int_array(builtin_array_flatten(&[arr(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+        // Outer with empty inners.
+        let input = arr(vec![arr(vec![]), arr(vec![]), int_array(&[7])]);
+        assert_eq!(
+            extract_int_array(builtin_array_flatten(&[input]).unwrap()),
+            vec![7]
+        );
+    }
+
+    #[test]
+    fn array_flatten_preserves_heterogeneous_inner_types() {
+        let input = arr(vec![
+            arr(vec![Value::Int(1), Value::String("a".into())]),
+            arr(vec![Value::Bool(true)]),
+        ]);
+        match builtin_array_flatten(&[input]).unwrap() {
+            Value::Array(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_flatten_rejects_non_array_inner_element() {
+        let input = arr(vec![int_array(&[1]), Value::Int(99)]);
+        let err = builtin_array_flatten(&[input]).unwrap_err();
+        assert!(err.contains("array of arrays"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_flatten_rejects_non_array_top_level_and_arity() {
+        assert!(
+            builtin_array_flatten(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_flatten(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
