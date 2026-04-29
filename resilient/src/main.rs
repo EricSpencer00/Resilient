@@ -8328,6 +8328,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("trim_end_chars", builtin_trim_end_chars),
     // RES-478: explicit-name alias for array_count.
     ("array_count_eq", builtin_array_count_eq),
+    // RES-479: is_empty / is_blank string predicates.
+    ("is_empty", builtin_is_empty),
+    ("is_blank", builtin_is_blank),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9883,6 +9886,25 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             "array_flatten: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-479: `is_empty(s)` — true iff `s` has length 0.
+fn builtin_is_empty(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Bool(s.is_empty())),
+        [other] => Err(format!("is_empty: expected string, got {}", other)),
+        _ => Err(format!("is_empty: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-479: `is_blank(s)` — true iff `s` is empty or contains only
+/// Unicode whitespace.
+fn builtin_is_blank(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Bool(s.chars().all(|c| c.is_whitespace()))),
+        [other] => Err(format!("is_blank: expected string, got {}", other)),
+        _ => Err(format!("is_blank: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -30777,6 +30799,65 @@ mod tests {
             err.contains("array_count_eq"),
             "error mentions wrong function: {}",
             err
+        );
+    }
+
+    // ---------- RES-479: is_empty / is_blank ----------
+
+    #[test]
+    fn is_empty_basic() {
+        assert_eq_bool(
+            builtin_is_empty(&[Value::String("".into())]).unwrap(),
+            true,
+            "empty",
+        );
+        assert_eq_bool(
+            builtin_is_empty(&[Value::String("x".into())]).unwrap(),
+            false,
+            "non-empty",
+        );
+        assert_eq_bool(
+            builtin_is_empty(&[Value::String(" ".into())]).unwrap(),
+            false,
+            "whitespace counts as non-empty",
+        );
+    }
+
+    #[test]
+    fn is_blank_basic() {
+        assert_eq_bool(
+            builtin_is_blank(&[Value::String("".into())]).unwrap(),
+            true,
+            "empty is blank",
+        );
+        assert_eq_bool(
+            builtin_is_blank(&[Value::String("   ".into())]).unwrap(),
+            true,
+            "spaces only",
+        );
+        assert_eq_bool(
+            builtin_is_blank(&[Value::String("\t\n ".into())]).unwrap(),
+            true,
+            "tabs / newlines",
+        );
+        assert_eq_bool(
+            builtin_is_blank(&[Value::String(" hello ".into())]).unwrap(),
+            false,
+            "with content",
+        );
+    }
+
+    #[test]
+    fn is_empty_blank_reject_non_string_and_arity() {
+        assert!(
+            builtin_is_empty(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_is_blank(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 

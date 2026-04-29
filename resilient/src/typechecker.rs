@@ -1302,6 +1302,13 @@ impl TypeChecker {
         env.set("trim_end_chars".to_string(), str_str_to_str_b);
         // RES-478: array_count_eq alias.
         env.set("array_count_eq".to_string(), fn_any_any_to_any());
+        // RES-479: string predicates.
+        let str_to_bool_b = Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::Bool),
+        };
+        env.set("is_empty".to_string(), str_to_bool_b.clone());
+        env.set("is_blank".to_string(), str_to_bool_b);
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4356,6 +4363,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "trim_end_chars",
         // RES-478: array_count_eq alias.
         "array_count_eq",
+        // RES-479: string predicates.
+        "is_empty",
+        "is_blank",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
