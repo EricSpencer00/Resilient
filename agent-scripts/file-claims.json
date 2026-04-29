@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-445-array-prefix-suffix",
-      "claimed_at": "2026-04-29T22:12:42Z"
+      "branch": "res-446-string-find-all",
+      "claimed_at": "2026-04-29T22:14:58Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-445-array-prefix-suffix",
-      "claimed_at": "2026-04-29T22:12:42Z"
+      "branch": "res-446-string-find-all",
+      "claimed_at": "2026-04-29T22:14:58Z"
     }
   }
 }
