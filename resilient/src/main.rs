@@ -2365,6 +2365,7 @@ impl Parser {
             Token::Newtype => Some(self.parse_newtype_decl()),
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
+            Token::Supervisor => Some(self.parse_supervisor_decl()),
             Token::Try => Some(crate::try_catch::parse(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
@@ -3539,6 +3540,141 @@ impl Parser {
         Node::RegionDecl {
             name,
             span: kw_span,
+        }
+    }
+
+    /// RES-333: Parse a supervisor tree declaration.
+    /// Syntax: `supervisor { strategy: <one_for_one|one_for_all>, children: [ ... ] }`
+    fn parse_supervisor_decl(&mut self) -> Node {
+        let supervisor_span = self.span_at_current();
+        self.next_token(); // skip `supervisor`
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `{{` after `supervisor`, found {}",
+                tok
+            ));
+        } else {
+            self.next_token(); // skip `{`
+        }
+
+        let mut strategy = String::new();
+        let mut children: Vec<crate::SupervisorChild> = Vec::new();
+
+        while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+            // `strategy: <strategy_name>` — "strategy" identifier followed by `:`
+            if let Token::Identifier(kw) = &self.current_token.clone() {
+                if kw == "strategy" && self.peek_token == Token::Colon {
+                    self.next_token(); // skip `strategy`
+                    self.next_token(); // skip `:`
+                    if let Token::Identifier(s) = &self.current_token {
+                        strategy = s.clone();
+                        self.next_token(); // skip strategy value
+                    } else {
+                        self.record_error(format!(
+                            "Expected strategy name after `strategy:`, found {}",
+                            self.current_token
+                        ));
+                    }
+                    if self.current_token == Token::Comma {
+                        self.next_token(); // skip comma
+                    }
+                    continue;
+                }
+                // `children: [...]` — "children" identifier followed by `:`
+                if kw == "children" && self.peek_token == Token::Colon {
+                    self.next_token(); // skip `children`
+                    self.next_token(); // skip `:`
+                    if self.current_token != Token::LeftBracket {
+                        self.record_error(format!(
+                            "Expected `[` after `children:`, found {}",
+                            self.current_token
+                        ));
+                        break;
+                    }
+                    self.next_token(); // skip `[`
+
+                    while self.current_token != Token::RightBracket
+                        && self.current_token != Token::Eof
+                    {
+                        if self.current_token == Token::LeftBrace {
+                            self.next_token(); // skip `{`
+                            let mut child_id = String::new();
+                            let mut child_fn = String::new();
+                            let mut child_restart = String::new();
+
+                            while self.current_token != Token::RightBrace
+                                && self.current_token != Token::Eof
+                            {
+                                if let Token::Identifier(field) = &self.current_token.clone() {
+                                    if field == "id" && self.peek_token == Token::Colon {
+                                        self.next_token(); // skip `id`
+                                        self.next_token(); // skip `:`
+                                        if let Token::StringLiteral(s) = &self.current_token {
+                                            child_id = s.clone();
+                                        }
+                                        self.next_token();
+                                    } else if field == "fn" && self.peek_token == Token::Colon {
+                                        self.next_token(); // skip `fn`
+                                        self.next_token(); // skip `:`
+                                        if let Token::StringLiteral(s) = &self.current_token {
+                                            child_fn = s.clone();
+                                        }
+                                        self.next_token();
+                                    } else if field == "restart" && self.peek_token == Token::Colon {
+                                        self.next_token(); // skip `restart`
+                                        self.next_token(); // skip `:`
+                                        if let Token::StringLiteral(s) = &self.current_token {
+                                            child_restart = s.clone();
+                                        }
+                                        self.next_token();
+                                    } else {
+                                        self.next_token();
+                                    }
+                                } else {
+                                    self.next_token();
+                                }
+                                if self.current_token == Token::Comma {
+                                    self.next_token();
+                                }
+                            }
+                            if self.current_token == Token::RightBrace {
+                                self.next_token(); // skip `}`
+                            }
+                            children.push(crate::SupervisorChild {
+                                id: child_id,
+                                fn_name: child_fn,
+                                restart: child_restart,
+                                span: supervisor_span.clone(),
+                            });
+                        } else {
+                            self.next_token();
+                        }
+                        if self.current_token == Token::Comma {
+                            self.next_token();
+                        }
+                    }
+                    if self.current_token == Token::RightBracket {
+                        self.next_token(); // skip `]`
+                    }
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    }
+                    continue;
+                }
+            }
+            self.next_token();
+        }
+
+        if self.current_token == Token::RightBrace {
+            self.next_token(); // skip `}`
+        }
+
+        Node::Supervisor {
+            strategy,
+            children,
+            span: supervisor_span,
         }
     }
 
