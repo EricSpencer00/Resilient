@@ -112,6 +112,11 @@ mod bounds_check;
 // Removes unreachable ops after unconditional returns and folds
 // constant-condition branches.
 mod dce;
+// RES-360: closed-form invariant checker for `live { }` recovery bodies.
+// V2 TLA+ verification requires recovery expressions to be closed-form.
+// This pass detects violations early: opaque FFI calls, recursion,
+// closures capturing from outer scope. V1 emits warnings; V2 escalates.
+mod recovery_checker;
 
 // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
 // failure handlers. Holds parser + typechecker logic for the feature;

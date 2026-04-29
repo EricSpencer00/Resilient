@@ -1,0 +1,29 @@
+// RES-360: Live block with direct recursion (FAIL - V2)
+// This example demonstrates code that should be REJECTED by V2's
+// closed-form constraint checker (RES-360). It recursively calls itself
+// inside the recovery body, which V2 TLA+ cannot reason about.
+//
+// V1 behavior: Emits warning but runs (depth-limited).
+// V2 behavior: Typechecker will reject with error[live-closed]:
+// recursion in recovery body is not closed-form.
+
+fn recursive_recover(int n) -> int {
+    live {
+        if n <= 0 {
+            return 0;
+        } else {
+            // This recursive call in the recovery body violates the
+            // closed-form invariant: V2 TLA+ cannot reason about
+            // unbounded recursion.
+            let prev = recursive_recover(n - 1);
+            return prev + n;
+        }
+    }
+}
+
+fn main() {
+    let result = recursive_recover(3);
+    println(result);
+}
+
+main();

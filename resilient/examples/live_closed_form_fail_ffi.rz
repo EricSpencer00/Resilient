@@ -1,0 +1,30 @@
+// RES-360: Live block with opaque FFI in recovery (FAIL - V2)
+// This example demonstrates code that should be REJECTED by V2's
+// closed-form constraint checker (RES-360). It calls an opaque FFI
+// function (malloc) inside the recovery body, which V2 TLA+ cannot model.
+//
+// V1 behavior: Emits warning but runs without error.
+// V2 behavior: Typechecker will reject with error[live-closed]: opaque FFI
+// call in recovery body cannot be modeled as a TLA+ action.
+
+extern "libc.so.6" {
+    fn malloc(size: Int) -> Int;
+}
+
+fn dangerous_recover(int size) -> int {
+    live {
+        // This FFI call in the recovery body violates the closed-form
+        // invariant: V2 TLA+ cannot reason about malloc's side effects
+        // (heap modification, allocation failure, etc.).
+        let ptr = malloc(size);
+        assume(ptr != 0);
+        return ptr;
+    }
+}
+
+fn main() {
+    let result = dangerous_recover(256);
+    println(result);
+}
+
+main();
