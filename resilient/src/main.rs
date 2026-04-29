@@ -8253,6 +8253,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
     ("array_join", builtin_array_join),
+    // RES-425: explicit scalar-to-string conversion.
+    ("to_string", builtin_to_string),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9187,6 +9189,23 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-425: `to_string(x)` — explicit conversion of a scalar value
+/// (Int/Float/Bool/String) to its String representation. Strings are
+/// returned unchanged. Non-scalar values raise a typed error.
+fn builtin_to_string(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.clone())),
+        [Value::Int(n)] => Ok(Value::String(n.to_string())),
+        [Value::Float(f)] => Ok(Value::String(f.to_string())),
+        [Value::Bool(b)] => Ok(Value::String(b.to_string())),
+        [other] => Err(format!("to_string: expected scalar value, got {}", other)),
+        _ => Err(format!(
+            "to_string: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -25020,6 +25039,77 @@ mod tests {
             builtin_array_join(&[str_array(&["a"])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-425: to_string ----------
+
+    #[test]
+    fn to_string_int_renders_decimal() {
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::Int(42)]).unwrap()),
+            "42"
+        );
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::Int(-7)]).unwrap()),
+            "-7"
+        );
+    }
+
+    #[test]
+    fn to_string_float_basic() {
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::Float(1.5)]).unwrap()),
+            "1.5"
+        );
+        // Whole-number floats render without trailing zero in default Display.
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::Float(2.0)]).unwrap()),
+            "2"
+        );
+    }
+
+    #[test]
+    fn to_string_bool() {
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::Bool(true)]).unwrap()),
+            "true"
+        );
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::Bool(false)]).unwrap()),
+            "false"
+        );
+    }
+
+    #[test]
+    fn to_string_string_round_trips() {
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::String("hello".into())]).unwrap()),
+            "hello"
+        );
+        assert_eq!(
+            extract_string(builtin_to_string(&[Value::String("".into())]).unwrap()),
+            ""
+        );
+    }
+
+    #[test]
+    fn to_string_rejects_non_scalar() {
+        let err = builtin_to_string(&[Value::Array(vec![Value::Int(1)])]).unwrap_err();
+        assert!(err.contains("scalar value"), "got: {}", err);
+    }
+
+    #[test]
+    fn to_string_rejects_wrong_arity() {
+        assert!(
+            builtin_to_string(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+        assert!(
+            builtin_to_string(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 

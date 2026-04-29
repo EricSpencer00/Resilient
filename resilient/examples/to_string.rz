@@ -1,0 +1,16 @@
+// RES-425 demo: to_string converts scalar values to strings.
+
+fn main() {
+    println(to_string(42));
+    println(to_string(-7));
+    println(to_string(1.5));
+    println(to_string(true));
+    println(to_string(false));
+    println(to_string("already a string"));
+
+    // Useful for building strings without format().
+    let n = 7;
+    println(array_join(["count:", to_string(n)], " "));
+}
+
+main();
