@@ -1,0 +1,11 @@
+// RES-460 demo: trim_chars strips a custom char set from both sides.
+
+fn main() {
+    println(trim_chars("---hello---", "-"));
+    println(trim_chars("xyzhelloyzx", "xyz"));
+    println(trim_chars("hello", "xyz"));
+    println(trim_chars("  hello  ", ""));
+    println(trim_chars("00042000", "0"));
+}
+
+main();
