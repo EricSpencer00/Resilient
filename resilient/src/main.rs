@@ -8275,6 +8275,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_chars", builtin_string_chars),
     // RES-434: split string into lines (LF, CRLF, no trailing empty).
     ("string_lines", builtin_string_lines),
+    // RES-435: split array into fixed-size chunks (last may be short).
+    ("array_chunk", builtin_array_chunk),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9209,6 +9211,36 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-435: `array_chunk(arr, n)` — split `arr` into chunks of at
+/// most `n` elements (last chunk may be shorter). `n` must be > 0;
+/// `n <= 0` is a typed error. Empty `arr` returns empty.
+fn builtin_array_chunk(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n <= 0 {
+                return Err(format!(
+                    "array_chunk: chunk size must be positive, got {}",
+                    n
+                ));
+            }
+            let chunk_size = *n as usize;
+            let chunks: Vec<Value> = items
+                .chunks(chunk_size)
+                .map(|c| Value::Array(c.to_vec()))
+                .collect();
+            Ok(Value::Array(chunks))
+        }
+        [a, b] => Err(format!(
+            "array_chunk: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_chunk: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -26129,6 +26161,86 @@ mod tests {
             builtin_string_lines(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-435: array_chunk ----------
+
+    fn extract_chunks(v: Value) -> Vec<Vec<i64>> {
+        match v {
+            Value::Array(outer) => outer
+                .into_iter()
+                .map(|inner| match inner {
+                    Value::Array(items) => items
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Int(n) => n,
+                            _ => panic!("non-int element"),
+                        })
+                        .collect(),
+                    _ => panic!("non-array chunk"),
+                })
+                .collect(),
+            _ => panic!("expected outer Array"),
+        }
+    }
+
+    #[test]
+    fn array_chunk_evenly_divides() {
+        let chunks = extract_chunks(
+            builtin_array_chunk(&[int_array(&[1, 2, 3, 4, 5, 6]), Value::Int(2)]).unwrap(),
+        );
+        assert_eq!(chunks, vec![vec![1, 2], vec![3, 4], vec![5, 6]]);
+    }
+
+    #[test]
+    fn array_chunk_last_may_be_short() {
+        let chunks = extract_chunks(
+            builtin_array_chunk(&[int_array(&[1, 2, 3, 4, 5]), Value::Int(2)]).unwrap(),
+        );
+        assert_eq!(chunks, vec![vec![1, 2], vec![3, 4], vec![5]]);
+    }
+
+    #[test]
+    fn array_chunk_n_equal_to_len() {
+        let chunks =
+            extract_chunks(builtin_array_chunk(&[int_array(&[1, 2, 3]), Value::Int(3)]).unwrap());
+        assert_eq!(chunks, vec![vec![1, 2, 3]]);
+    }
+
+    #[test]
+    fn array_chunk_n_larger_than_len_returns_one_short_chunk() {
+        let chunks =
+            extract_chunks(builtin_array_chunk(&[int_array(&[1, 2]), Value::Int(99)]).unwrap());
+        assert_eq!(chunks, vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn array_chunk_empty_input_returns_empty() {
+        let chunks =
+            extract_chunks(builtin_array_chunk(&[Value::Array(vec![]), Value::Int(3)]).unwrap());
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn array_chunk_rejects_non_positive_n() {
+        let err = builtin_array_chunk(&[int_array(&[1, 2]), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("must be positive"), "got: {}", err);
+        let err = builtin_array_chunk(&[int_array(&[1, 2]), Value::Int(-3)]).unwrap_err();
+        assert!(err.contains("must be positive"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_chunk_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_chunk(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (array, int)")
+        );
+        assert!(
+            builtin_array_chunk(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
