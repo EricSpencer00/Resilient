@@ -8253,6 +8253,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_sort_desc", builtin_array_sort_desc),
     // RES-444: Fisher-Yates random permutation.
     ("array_shuffle", builtin_array_shuffle),
+    // RES-445: array prefix / suffix predicates.
+    ("array_starts_with", builtin_array_starts_with),
+    ("array_ends_with", builtin_array_ends_with),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9806,6 +9809,76 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-445: `array_starts_with(arr, prefix)` — true if `arr` begins
+/// with `prefix`'s elements under scalar value-equality. Empty
+/// prefix always matches.
+fn builtin_array_starts_with(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(arr), Value::Array(prefix)] => {
+            if prefix.len() > arr.len() {
+                return Ok(Value::Bool(false));
+            }
+            for (a, p) in arr.iter().zip(prefix.iter()) {
+                match array_search_eq(a, p) {
+                    Some(true) => {}
+                    Some(false) => return Ok(Value::Bool(false)),
+                    None => {
+                        return Err(format!(
+                            "array_starts_with: element types not comparable ({} vs {})",
+                            a, p
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Bool(true))
+        }
+        [a, b] => Err(format!(
+            "array_starts_with: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_starts_with: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-445: `array_ends_with(arr, suffix)` — true if `arr` ends with
+/// `suffix`'s elements under scalar value-equality. Empty suffix
+/// always matches.
+fn builtin_array_ends_with(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(arr), Value::Array(suffix)] => {
+            if suffix.len() > arr.len() {
+                return Ok(Value::Bool(false));
+            }
+            let offset = arr.len() - suffix.len();
+            for (i, s) in suffix.iter().enumerate() {
+                let a = &arr[offset + i];
+                match array_search_eq(a, s) {
+                    Some(true) => {}
+                    Some(false) => return Ok(Value::Bool(false)),
+                    None => {
+                        return Err(format!(
+                            "array_ends_with: element types not comparable ({} vs {})",
+                            a, s
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Bool(true))
+        }
+        [a, b] => Err(format!(
+            "array_ends_with: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_ends_with: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -27078,6 +27151,111 @@ mod tests {
             builtin_array_shuffle(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-445: array_starts_with / array_ends_with ----------
+
+    fn assert_eq_bool(v: Value, expected: bool, label: &str) {
+        match v {
+            Value::Bool(b) => assert_eq!(b, expected, "{}: expected {}", label, expected),
+            other => panic!("{}: expected Bool, got {:?}", label, other),
+        }
+    }
+
+    #[test]
+    fn array_starts_with_basic() {
+        assert_eq_bool(
+            builtin_array_starts_with(&[int_array(&[1, 2, 3, 4]), int_array(&[1, 2])]).unwrap(),
+            true,
+            "starts_with [1,2]",
+        );
+        assert_eq_bool(
+            builtin_array_starts_with(&[int_array(&[1, 2, 3]), int_array(&[2, 3])]).unwrap(),
+            false,
+            "wrong start",
+        );
+    }
+
+    #[test]
+    fn array_starts_with_empty_prefix_always_true() {
+        assert_eq_bool(
+            builtin_array_starts_with(&[int_array(&[1, 2, 3]), Value::Array(vec![])]).unwrap(),
+            true,
+            "empty prefix",
+        );
+        assert_eq_bool(
+            builtin_array_starts_with(&[Value::Array(vec![]), Value::Array(vec![])]).unwrap(),
+            true,
+            "empty / empty",
+        );
+    }
+
+    #[test]
+    fn array_starts_with_prefix_too_long() {
+        assert_eq_bool(
+            builtin_array_starts_with(&[int_array(&[1, 2]), int_array(&[1, 2, 3])]).unwrap(),
+            false,
+            "prefix longer than array",
+        );
+    }
+
+    #[test]
+    fn array_ends_with_basic() {
+        assert_eq_bool(
+            builtin_array_ends_with(&[int_array(&[1, 2, 3, 4]), int_array(&[3, 4])]).unwrap(),
+            true,
+            "ends with [3,4]",
+        );
+        assert_eq_bool(
+            builtin_array_ends_with(&[int_array(&[1, 2, 3]), int_array(&[1, 2])]).unwrap(),
+            false,
+            "wrong end",
+        );
+    }
+
+    #[test]
+    fn array_ends_with_empty_suffix_always_true() {
+        assert_eq_bool(
+            builtin_array_ends_with(&[int_array(&[1, 2, 3]), Value::Array(vec![])]).unwrap(),
+            true,
+            "empty suffix",
+        );
+    }
+
+    #[test]
+    fn array_ends_with_suffix_too_long() {
+        assert_eq_bool(
+            builtin_array_ends_with(&[int_array(&[1, 2]), int_array(&[1, 2, 3])]).unwrap(),
+            false,
+            "suffix longer",
+        );
+    }
+
+    #[test]
+    fn array_prefix_suffix_int_float_coerce() {
+        assert_eq_bool(
+            builtin_array_starts_with(&[
+                Value::Array(vec![Value::Int(1), Value::Int(2)]),
+                Value::Array(vec![Value::Float(1.0)]),
+            ])
+            .unwrap(),
+            true,
+            "int/float coerce on prefix",
+        );
+    }
+
+    #[test]
+    fn array_prefix_suffix_reject_non_array_and_arity() {
+        assert!(
+            builtin_array_starts_with(&[Value::Int(1), int_array(&[1])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_ends_with(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
