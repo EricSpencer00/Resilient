@@ -217,6 +217,14 @@ impl std::fmt::Display for DiagCode {
 ///   primary. Rendered as additional `note:` blocks. Empty by
 ///   default; no new renderer work required — the terminal
 ///   formatter just prints them after the primary block.
+///
+/// **V2 TLA+ encoding requirement (RES-396):** This type MUST remain
+/// a structured record with named fields, not a flat string. V2's
+/// diagnostic projection into the TLA+ model extracts individual fields
+/// (spec_path, action_name, trace_step, etc.) to encode verification
+/// traces. Flattening diagnostics to strings would require V2 to
+/// parse them back, defeating the purpose. Do not refactor this to
+/// `pub struct Diagnostic(pub String)` or similar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct Diagnostic {
@@ -788,5 +796,24 @@ mod codes_tests {
     fn res206a_codes_all_count_matches_vec_len() {
         // Regression guard: `all()` must not drop entries.
         assert_eq!(codes::all().len(), 10);
+    }
+
+    #[test]
+    fn res359_diagnostic_fields_are_public_and_named() {
+        // RES-396: V2 TLA+ encoding requires Diagnostic to be a
+        // structured record with named fields, not a flat string
+        // or newtype. Create a Diagnostic and verify all public
+        // fields are directly accessible by name.
+        use crate::span::Pos;
+        let pos = Pos::new(1, 1, 0);
+        let test_span = Span::new(pos, pos);
+        let d = Diagnostic::new(Severity::Error, test_span, "msg");
+        // These field accesses verify the struct has named fields.
+        // If Diagnostic were ever flattened to String, these would fail.
+        let _span = d.span;
+        let _severity = d.severity;
+        let _code = d.code;
+        let _message = d.message;
+        let _notes = d.notes;
     }
 }
