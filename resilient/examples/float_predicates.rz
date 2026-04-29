@@ -1,0 +1,19 @@
+// RES-411 demo: is_nan, is_inf, is_finite predicates.
+
+fn main() {
+    // Finite floats and ints are always finite, never NaN, never inf.
+    println(is_nan(1.5));
+    println(is_inf(1.5));
+    println(is_finite(1.5));
+
+    println(is_nan(0.0));
+    println(is_inf(0.0));
+    println(is_finite(0.0));
+
+    // Ints flow through as finite, non-NaN, non-inf.
+    println(is_nan(42));
+    println(is_inf(42));
+    println(is_finite(42));
+}
+
+main();

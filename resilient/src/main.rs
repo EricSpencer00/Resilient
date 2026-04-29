@@ -8167,6 +8167,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("abs", builtin_abs),
     // RES-410: sign(x) — -1, 0, +1 for negative/zero/positive.
     ("sign", builtin_sign),
+    // RES-411: float predicates per IEEE 754.
+    ("is_nan", builtin_is_nan),
+    ("is_inf", builtin_is_inf),
+    ("is_finite", builtin_is_finite),
     ("min", builtin_min),
     ("max", builtin_max),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
@@ -9754,6 +9758,40 @@ fn builtin_abs(args: &[Value]) -> RResult<Value> {
         [Value::Float(f)] => Ok(Value::Float(f.abs())),
         [other] => Err(format!("abs: expected int or float, got {}", other)),
         _ => Err(format!("abs: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-411: `is_nan(x)` — IEEE 754 NaN predicate. Int args return false.
+fn builtin_is_nan(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Bool(f.is_nan())),
+        [Value::Int(_)] => Ok(Value::Bool(false)),
+        [other] => Err(format!("is_nan: expected int or float, got {}", other)),
+        _ => Err(format!("is_nan: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-411: `is_inf(x)` — true if x is +inf or -inf. Int args return false.
+fn builtin_is_inf(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Bool(f.is_infinite())),
+        [Value::Int(_)] => Ok(Value::Bool(false)),
+        [other] => Err(format!("is_inf: expected int or float, got {}", other)),
+        _ => Err(format!("is_inf: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-411: `is_finite(x)` — true if x is neither NaN nor infinite.
+/// Int args are always finite.
+fn builtin_is_finite(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Bool(f.is_finite())),
+        [Value::Int(_)] => Ok(Value::Bool(true)),
+        [other] => Err(format!("is_finite: expected int or float, got {}", other)),
+        _ => Err(format!(
+            "is_finite: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -23275,6 +23313,126 @@ mod tests {
         assert!(err.contains("expected 1 argument"), "got: {}", err);
         let err = builtin_sign(&[Value::Int(1), Value::Int(2)]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "got: {}", err);
+    }
+
+    // ---------- RES-411: is_nan / is_inf / is_finite ----------
+
+    fn assert_bool(v: Value, expected: bool, label: &str) {
+        match v {
+            Value::Bool(b) => assert_eq!(b, expected, "{}: expected {}", label, expected),
+            other => panic!("{}: expected Bool({}), got {:?}", label, expected, other),
+        }
+    }
+
+    #[test]
+    fn is_nan_detects_nan_only() {
+        assert_bool(
+            builtin_is_nan(&[Value::Float(f64::NAN)]).unwrap(),
+            true,
+            "is_nan(NaN)",
+        );
+        assert_bool(
+            builtin_is_nan(&[Value::Float(1.5)]).unwrap(),
+            false,
+            "is_nan(1.5)",
+        );
+        assert_bool(
+            builtin_is_nan(&[Value::Float(f64::INFINITY)]).unwrap(),
+            false,
+            "is_nan(inf)",
+        );
+        assert_bool(
+            builtin_is_nan(&[Value::Int(0)]).unwrap(),
+            false,
+            "is_nan(0)",
+        );
+    }
+
+    #[test]
+    fn is_inf_detects_both_infinities() {
+        assert_bool(
+            builtin_is_inf(&[Value::Float(f64::INFINITY)]).unwrap(),
+            true,
+            "is_inf(+inf)",
+        );
+        assert_bool(
+            builtin_is_inf(&[Value::Float(f64::NEG_INFINITY)]).unwrap(),
+            true,
+            "is_inf(-inf)",
+        );
+        assert_bool(
+            builtin_is_inf(&[Value::Float(1.5)]).unwrap(),
+            false,
+            "is_inf(1.5)",
+        );
+        assert_bool(
+            builtin_is_inf(&[Value::Float(f64::NAN)]).unwrap(),
+            false,
+            "is_inf(NaN)",
+        );
+        assert_bool(
+            builtin_is_inf(&[Value::Int(0)]).unwrap(),
+            false,
+            "is_inf(0)",
+        );
+    }
+
+    #[test]
+    fn is_finite_excludes_nan_and_inf() {
+        assert_bool(
+            builtin_is_finite(&[Value::Float(1.5)]).unwrap(),
+            true,
+            "is_finite(1.5)",
+        );
+        assert_bool(
+            builtin_is_finite(&[Value::Float(0.0)]).unwrap(),
+            true,
+            "is_finite(0.0)",
+        );
+        assert_bool(
+            builtin_is_finite(&[Value::Float(f64::INFINITY)]).unwrap(),
+            false,
+            "is_finite(inf)",
+        );
+        assert_bool(
+            builtin_is_finite(&[Value::Float(f64::NAN)]).unwrap(),
+            false,
+            "is_finite(NaN)",
+        );
+        assert_bool(
+            builtin_is_finite(&[Value::Int(42)]).unwrap(),
+            true,
+            "is_finite(42)",
+        );
+    }
+
+    #[test]
+    fn float_predicates_reject_non_numeric() {
+        let err = builtin_is_nan(&[Value::String("oops".to_string())]).unwrap_err();
+        assert!(err.contains("is_nan:"), "got: {}", err);
+        let err = builtin_is_inf(&[Value::Bool(true)]).unwrap_err();
+        assert!(err.contains("is_inf:"), "got: {}", err);
+        let err = builtin_is_finite(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("is_finite:"), "got: {}", err);
+    }
+
+    #[test]
+    fn float_predicates_reject_wrong_arity() {
+        assert!(
+            builtin_is_nan(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+        assert!(
+            builtin_is_inf(&[Value::Float(1.0), Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+        assert!(
+            builtin_is_finite(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
     }
 
     // ---------- RES-034: nested index assignment ----------
