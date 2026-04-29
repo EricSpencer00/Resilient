@@ -55,6 +55,12 @@ time, commit it, and only then move the post.
 | **G20** | Self-hosting | ⏳ Blocked on RES-323 (lexer in Resilient) → RES-379 (parser in Resilient). |
 | **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19. RES-383 security audit landed 2026-04-29. |
 
+### V2 ladder (post-V1 ship)
+
+| # | Goalpost | Status |
+|---|---|---|
+| **G22** | TLA+ model checking — temporal verification (Path B: external `.tla` + `@refines` mappings, TLC default backend) | ⏳ V2+ design locked — RES-396 (#270). Ship surface = V2.0 bridge (`rz tla check`) + V2.1 `@refines` + V2.2 counterexample replay; V2.3 fairness/liveness and V2.4 Apalache backend follow. ~10 contributor-weeks total. See [`docs/superpowers/specs/2026-04-26-tla-model-checking.md`](docs/superpowers/specs/2026-04-26-tla-model-checking.md) and the [closure doc](docs/superpowers/specs/2026-04-29-tla-decision-closure.md). |
+
 ### New between G4 and G5 (core-language improvements landed in session 2)
 
 Not assigned their own goalpost but worth listing, since each is a
@@ -103,6 +109,7 @@ changelog entry below.
 - 2026-04-17 — G15 JIT real expression + control-flow (Phases B–E via RES-096/099/100/102).
   G18 no_std embedded toolchain proven end-to-end ✅ (RES-075/097/098).
 - 2026-04-19 — G21 FFI v1 shipped (tree-walker + static registry, 748 tests pass).
+- 2026-04-29 — G22 TLA+ ladder seeded (RES-396 V2+ design closure; Path B / TLC / V2.0–V2.2 ship scope confirmed).
 - 2026-04-20 — Migrated ticket tracking from `.board/` to GitHub Issues.
 - 2026-04-29 — G18 closed: linear × effect interaction (RES-385c) and concurrency design (RES-208) landed.
   G19 closed: certificate manifest schema v1 (RES-331) plus end-to-end signed `verify-all`.

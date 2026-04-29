@@ -52,16 +52,15 @@ The companion spec lists four V1 design choices that must be preserved
 so V2 isn't retroactively forced into the wrong shape. These need to
 be enforced in the V1 backlog — not deferred to V2.0 implementation.
 
-| # | V1 invariant | Where to enforce | Recommended ticket |
+| # | V1 invariant | Where to enforce | Filed ticket |
 |---|---|---|---|
-| 1 | Diagnostics carry a tagged enum (extensible to `(spec_path, action_name, trace_step)`), not a flat string | [`resilient/src/diag.rs`](../../../resilient/src/diag.rs) | `RES-DIAG-TAGGED`: audit `diag.rs`, confirm extensibility, add a doc-comment marker pinning the invariant. ~1 day. |
-| 2 | `live { }` block has a closed-form invariant (no arbitrary user-supplied recovery effects) | live-block parser & verifier (`recovers_to_bmc.rs`, `verifier_liveness.rs`) | `RES-LIVE-CLOSED`: add a parser check that rejects `live` blocks whose recovery body cannot be encoded as a TLA+ action. ~3 days. |
-| 3 | Actor primitives ([RES-208](https://github.com/EricSpencer00/Resilient/issues/17), [RES-332](https://github.com/EricSpencer00/Resilient/issues/124), [RES-333](https://github.com/EricSpencer00/Resilient/issues/125)) define message ordering + atomicity granularity explicitly | `supervisor.rs`, `verifier_actors.rs`, SYNTAX.md | `RES-ACTOR-SEMANTICS`: open a sub-spec under `docs/superpowers/specs/` pinning down `send`/`receive` ordering and the atomicity boundary of `receive`-body. Bake outcome into [RES-332](https://github.com/EricSpencer00/Resilient/issues/124) acceptance criteria. ~1 week. |
-| 4 | `recovers_to` is documented as a one-step property; multi-step is V2's `<>` | STABILITY.md, SYNTAX.md, `verifier_liveness.rs` doc-comments | `RES-RECOVERS-DOC`: one-line clarifications + a `// V2 will extend this to <>(...)` marker in the verifier. ~½ day. |
+| 1 | Diagnostics carry a tagged enum (extensible to `(spec_path, action_name, trace_step)`), not a flat string | [`resilient/src/diag.rs`](../../../resilient/src/diag.rs) | [#359 RES-DIAG-TAGGED](https://github.com/EricSpencer00/Resilient/issues/359) — agent-ready, ~1 day |
+| 2 | `live { }` block has a closed-form invariant (no arbitrary user-supplied recovery effects) | live-block parser & verifier (`recovers_to_bmc.rs`, `verifier_liveness.rs`) | [#360 RES-LIVE-CLOSED](https://github.com/EricSpencer00/Resilient/issues/360) — agent-ready, ~3 days |
+| 3 | Actor primitives ([RES-208](https://github.com/EricSpencer00/Resilient/issues/17), [RES-332](https://github.com/EricSpencer00/Resilient/issues/124), [RES-333](https://github.com/EricSpencer00/Resilient/issues/125)) define message ordering + atomicity granularity explicitly | `supervisor.rs`, `verifier_actors.rs`, SYNTAX.md | [#361 RES-ACTOR-SEMANTICS](https://github.com/EricSpencer00/Resilient/issues/361) — needs-design, blocks #124, ~1 week |
+| 4 | `recovers_to` is documented as a one-step property; multi-step is V2's `<>` | STABILITY.md, SYNTAX.md, `verifier_liveness.rs` doc-comments | [#363 RES-RECOVERS-DOC](https://github.com/EricSpencer00/Resilient/issues/363) — agent-ready, good-first-issue, ~½ day |
 
-**Action:** open four GitHub issues with the labels `enhancement`,
-`v1-preservation`, and a milestone tying them to V1.0 ship. Total
-effort: ~2 contributor-weeks.
+**Status:** all four V1-preservation tickets filed. Total effort across
+the four: ~2 contributor-weeks.
 
 ### Follow-up 2 — V2 open-questions resolution spec
 
@@ -70,10 +69,11 @@ Five open questions in the companion spec (Q1–Q5) need answers
 implementation questions; answering them under V2.0 would force
 late-stage redesign.
 
-Recommended ticket: `RES-V2-OPEN-Qs` — a single sub-spec under
-`docs/superpowers/specs/` titled "TLA+ V2.0 design lock-in" that
-answers each of Q1–Q5 with a recommendation + tradeoff analysis.
-Effort: ~1 contributor-week.
+Filed: [#373 RES-V2-OPEN-Qs](https://github.com/EricSpencer00/Resilient/issues/373)
+— a single sub-spec under `docs/superpowers/specs/` titled "TLA+ V2.0
+design lock-in" that answers each of Q1–Q5 with a recommendation +
+tradeoff analysis. Effort: ~1 contributor-week. Tagged `blocked` —
+gates V2.0/V2.1/V2.2 implementation tickets.
 
 ### Follow-up 3 — V2.0 / V2.1 / V2.2 implementation tickets
 
@@ -92,21 +92,29 @@ backlog.
 
 ---
 
-## Closure recommendation for [#270](https://github.com/EricSpencer00/Resilient/issues/270)
+## Closure status for [#270](https://github.com/EricSpencer00/Resilient/issues/270)
 
-This ticket can close as soon as a maintainer:
+All six acceptance-criteria items are resolved:
 
-1. Confirms the three resolved decisions above (already implicit in
-   the companion spec; this closure makes it explicit).
-2. Files the four V1-preservation tickets from Follow-up 1 (or
-   delegates to an agent).
-3. Files the V2-open-questions sub-spec ticket from Follow-up 2 (or
-   defers to V2 kickoff).
-4. Notes V2.0/V2.1/V2.2 from Follow-up 3 as forward-looking — to be
-   filed at V2 ship time, not now.
+1. ✅ Path A vs B vs C — **Path B** confirmed (companion spec Decision log)
+2. ✅ TLC vs Apalache — **TLC default**, Apalache opt-in (companion spec Decision log)
+3. ✅ Phasing — **V2.0 + V2.1 + V2.2 = ship V2**; V2.3/V2.4 follow (companion spec)
+4. ✅ V1-preservation checklist enforced — four tickets filed:
+   [#359](https://github.com/EricSpencer00/Resilient/issues/359),
+   [#360](https://github.com/EricSpencer00/Resilient/issues/360),
+   [#361](https://github.com/EricSpencer00/Resilient/issues/361),
+   [#363](https://github.com/EricSpencer00/Resilient/issues/363)
+5. ✅ Open-questions resolution sub-spec — filed as
+   [#373](https://github.com/EricSpencer00/Resilient/issues/373) with
+   `blocked` label gating V2.0/V2.1/V2.2
+6. ✅ V2.0/V2.1/V2.2 implementation tickets — recorded as forward-looking
+   below; will be filed at V2 ship time (filing now would clutter the
+   V1 backlog and risks them getting picked up before [#373](https://github.com/EricSpencer00/Resilient/issues/373) lands)
 
-The only actionable V1 work that gates V1.0 ship is **Follow-up 1**.
-Items 2 and 3 are forward-looking and do not block V1.
+[#270](https://github.com/EricSpencer00/Resilient/issues/270) closes with
+this PR; the ladder is documented in
+[ROADMAP.md](../../../ROADMAP.md) under G22 and the temporal-vs-state-local
+distinction is noted in [STABILITY.md](../../../STABILITY.md).
 
 ---
 
