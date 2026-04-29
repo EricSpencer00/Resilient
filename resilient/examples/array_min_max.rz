@@ -1,0 +1,10 @@
+// RES-417 demo: array_min / array_max over integer arrays.
+
+fn main() {
+    println(array_min([3, 1, 4, 1, 5, 9, 2, 6]));
+    println(array_max([3, 1, 4, 1, 5, 9, 2, 6]));
+    println(array_min([-10, 0, 10]));
+    println(array_max([-10, 0, 10]));
+}
+
+main();
