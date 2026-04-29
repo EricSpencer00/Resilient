@@ -1,0 +1,6 @@
+42
+255
+10
+15
+true
+Program executed successfully

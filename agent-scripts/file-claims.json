@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-463-string-bytes-len",
-      "claimed_at": "2026-04-29T22:59:08Z"
+      "branch": "res-464-int-parse-base",
+      "claimed_at": "2026-04-29T23:01:34Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-463-string-bytes-len",
-      "claimed_at": "2026-04-29T22:59:08Z"
+      "branch": "res-464-int-parse-base",
+      "claimed_at": "2026-04-29T23:01:34Z"
     }
   }
 }
