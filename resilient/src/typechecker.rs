@@ -1154,6 +1154,21 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-451: insert/remove at index.
+        env.set(
+            "array_insert_at".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "array_remove_at".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int],
+                return_type: Box::new(Type::Any),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4148,6 +4163,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_pad_right",
         // RES-450: array_swap.
         "array_swap",
+        // RES-451: insert/remove at index.
+        "array_insert_at",
+        "array_remove_at",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
