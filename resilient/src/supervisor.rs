@@ -1,3 +1,4 @@
+use crate::typechecker::TypeEnvironment;
 /// RES-333: supervisor tree parsing and support.
 ///
 /// Supervisor declarations provide restart policies for actor failures.
@@ -275,4 +276,73 @@ fn parse_child(parser: &mut crate::Parser) -> Option<SupervisorChild> {
         fn_name,
         restart,
     })
+}
+
+/// RES-333: Phase 3 typechecker validation for supervisor declarations.
+/// Validates strategy, child specifications, and referenced functions.
+pub(crate) fn check(node: &Node, env: &TypeEnvironment) -> Result<(), String> {
+    match node {
+        Node::SupervisorDecl {
+            strategy, children, ..
+        } => {
+            // Validate strategy
+            if strategy != "one_for_one" && strategy != "one_for_all" {
+                return Err(format!(
+                    "invalid supervisor strategy `{}`; must be `one_for_one` or `one_for_all`",
+                    strategy
+                ));
+            }
+
+            // Validate that we have children
+            if children.is_empty() {
+                return Err("supervisor must have at least one child".to_string());
+            }
+
+            // Track child IDs to detect duplicates
+            let mut seen_ids = std::collections::HashSet::new();
+
+            // Validate each child
+            for child in children {
+                // Check for duplicate IDs
+                if !seen_ids.insert(child.id.clone()) {
+                    return Err(format!("duplicate child id `{}` in supervisor", child.id));
+                }
+
+                // Validate restart type
+                if child.restart != "permanent"
+                    && child.restart != "transient"
+                    && child.restart != "temporary"
+                {
+                    return Err(format!(
+                        "invalid restart type `{}` for child `{}`; must be `permanent`, `transient`, or `temporary`",
+                        child.restart, child.id
+                    ));
+                }
+
+                // Validate that the referenced function exists
+                if let Some(ty) = env.get(&child.fn_name) {
+                    // Check if it's a function type
+                    match ty {
+                        crate::typechecker::Type::Function { .. } => {
+                            // Valid — it's a function
+                        }
+                        _ => {
+                            return Err(format!(
+                                "child `{}` references `{}`, which is not a function",
+                                child.id, child.fn_name
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(format!(
+                        "child `{}` references undefined function `{}`",
+                        child.id, child.fn_name
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }

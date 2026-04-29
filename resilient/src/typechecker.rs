@@ -2622,7 +2622,11 @@ impl TypeChecker {
             }
 
             // RES-333: supervisor declaration. Phase 1: stub implementation.
-            Node::SupervisorDecl { .. } => Ok(Type::Void),
+            Node::SupervisorDecl { .. } => {
+                // RES-333: Phase 3 supervisor validation
+                crate::supervisor::check(node, &self.env)?;
+                Ok(Type::Void)
+            }
 
             // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`.
             // Extend the in-scope `fails` set with every caught
