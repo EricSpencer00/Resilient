@@ -1,0 +1,13 @@
+// RES-456 demo: array_rotate_left / array_rotate_right wrap elements.
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5];
+    println(array_rotate_left(xs, 2));
+    println(array_rotate_right(xs, 2));
+    println(array_rotate_left(xs, 0));
+    println(array_rotate_left(xs, 5));
+    println(array_rotate_left(xs, 7));
+    println(array_rotate_right([], 99));
+}
+
+main();
