@@ -33,6 +33,7 @@ This document is a human-facing summary grouped by category.
 | `lcm(a, b)` | (int, int) → int | RES-415: lcm(0, _) = 0 by convention |
 | `is_nan(x)` `is_inf(x)` `is_finite(x)` | number → bool | RES-411: IEEE 754 float predicates; ints flow through as finite |
 | `int_min()` `int_max()` | () → int | RES-447: i64::MIN / i64::MAX boundary constants |
+| `min3(a, b, c)` `max3(a, b, c)` | (number, number, number) → number | RES-473: ternary numeric min/max with same int↔float coercion as `min`/`max` |
 | `sqrt(x)` | number → float | NaN on negative input |
 | `pow(a, b)` | (number, number) → float | `a^b` |
 | `floor(x)` | number → float | toward -∞ |
@@ -97,6 +98,7 @@ This document is a human-facing summary grouped by category.
 | `is_ascii_alpha(s)` `is_ascii_digit(s)` `is_ascii_alnum(s)` | string → bool | RES-459: every-char ASCII-class predicates; empty is vacuously true |
 | `parse_int_base(s, base)` | (string, int) → Result<Int, String> | RES-464: parse with explicit radix (2..=36); whitespace stripped |
 | `int_to_base(n, base)` | (int, int) → string | RES-465: render with explicit radix; round-trips with `parse_int_base` |
+| `string_strip_prefix(s, prefix)` `string_strip_suffix(s, suffix)` | (string, string) → string | RES-471: conditional removers; if absent returns s unchanged |
 
 ### Notes on RES-339 parsing builtins
 
@@ -169,6 +171,9 @@ match r {
 | `array_dedup(arr)` | array → array | RES-468: collapse adjacent duplicates (vs array_unique which dedupes globally) |
 | `array_all_eq(arr, x)` | (array, T) → bool | RES-469: every element equals x; empty is vacuously true |
 | `array_any_eq(arr, x)` | (array, T) → bool | RES-469: alias for `array_contains` |
+| `array_eq(a, b)` | (array, array) → bool | RES-472: element-wise scalar equality; empty arrays equal |
+| `array_ne(a, b)` | (array, array) → bool | RES-474: negation of `array_eq` |
+| `array_fold_int(arr, init, op)` | (array, int, string) → int | RES-475: fold with named op (sum/product/min/max) starting from `init` |
 | `array_starts_with(arr, prefix)` `array_ends_with(arr, suffix)` | (array, array) → bool | RES-445: scalar value-equality on element prefixes/suffixes |
 | `array_window(arr, n)` | (array, int) → array of array | RES-455: sliding windows; n must be > 0 |
 | `array_pairs(arr)` | array → array of tuple | RES-462: adjacent 2-tuples (`array_window` analog yielding tuples) |
