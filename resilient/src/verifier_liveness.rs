@@ -46,6 +46,13 @@
 // Anything outside that family is surfaced as a partial-proof warning
 // — the bounded model is intentionally incomplete; follow-ups extend
 // the search.
+//
+// # V2 Extension: Multi-Step Recovery Operators
+//
+// V1's `recovers_to` is a single-transition postcondition. V2 will extend
+// this module to support `<>(Q)` — eventually-Q — which reasons over traces,
+// not just final states. See RES-396 for the full V2 TLA+ design. Do not
+// conflate V1 single-step recovery with V2's temporal reasoning.
 
 use crate::span::Span;
 use crate::{EventuallyClause, Node, ReceiveHandler};
