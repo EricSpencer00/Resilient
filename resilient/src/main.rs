@@ -8259,6 +8259,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_unique", builtin_array_unique),
     // RES-427: count occurrences of a scalar element.
     ("array_count", builtin_array_count),
+    // RES-428: first/last element accessors (empty array errors).
+    ("array_first", builtin_array_first),
+    ("array_last", builtin_array_last),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9193,6 +9196,38 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-428: `array_first(arr)` — first element of a non-empty array.
+/// Empty array is a typed error (no sensible default).
+fn builtin_array_first(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => items
+            .first()
+            .cloned()
+            .ok_or_else(|| "array_first: empty array".to_string()),
+        [other] => Err(format!("array_first: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_first: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-428: `array_last(arr)` — last element of a non-empty array.
+/// Empty array is a typed error.
+fn builtin_array_last(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => items
+            .last()
+            .cloned()
+            .ok_or_else(|| "array_last: empty array".to_string()),
+        [other] => Err(format!("array_last: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_last: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -25336,6 +25371,90 @@ mod tests {
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
+    }
+
+    // ---------- RES-428: array_first / array_last ----------
+
+    #[test]
+    fn array_first_returns_first_element() {
+        assert_int(
+            builtin_array_first(&[int_array(&[10, 20, 30])]).unwrap(),
+            10,
+            "first",
+        );
+        assert_int(
+            builtin_array_first(&[int_array(&[7])]).unwrap(),
+            7,
+            "first single",
+        );
+    }
+
+    #[test]
+    fn array_first_empty_errors() {
+        let err = builtin_array_first(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_first_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_first(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_first(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    #[test]
+    fn array_last_returns_last_element() {
+        assert_int(
+            builtin_array_last(&[int_array(&[10, 20, 30])]).unwrap(),
+            30,
+            "last",
+        );
+        assert_int(
+            builtin_array_last(&[int_array(&[7])]).unwrap(),
+            7,
+            "last single",
+        );
+    }
+
+    #[test]
+    fn array_last_empty_errors() {
+        let err = builtin_array_last(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_last_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_last(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_last(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    #[test]
+    fn array_first_last_preserve_element_type() {
+        match builtin_array_first(&[Value::Array(vec![Value::String("hi".into())])]).unwrap() {
+            Value::String(s) => assert_eq!(s, "hi"),
+            other => panic!("expected String, got {:?}", other),
+        }
+        match builtin_array_last(&[Value::Array(vec![Value::Bool(true), Value::Bool(false)])])
+            .unwrap()
+        {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
     }
 
     // ---------- RES-034: nested index assignment ----------
