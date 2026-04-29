@@ -1,0 +1,10 @@
+// RES-449 demo: array_pad_left and array_pad_right pad with a fill value.
+
+fn main() {
+    println(array_pad_left([1, 2], 5, 0));
+    println(array_pad_right([1, 2], 5, 0));
+    println(array_pad_left([1, 2, 3, 4, 5], 3, 0));
+    println(array_pad_right([], 3, "x"));
+}
+
+main();

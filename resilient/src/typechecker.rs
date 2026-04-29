@@ -1139,6 +1139,13 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-449: array padding (3-arg: arr, n, fill).
+        let fn_any_int_any_to_any = Type::Function {
+            params: vec![Type::Any, Type::Int, Type::Any],
+            return_type: Box::new(Type::Any),
+        };
+        env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
+        env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4128,6 +4135,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "int_max",
         // RES-448: array_position.
         "array_position",
+        // RES-449: array padding.
+        "array_pad_left",
+        "array_pad_right",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.

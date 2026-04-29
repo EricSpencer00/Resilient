@@ -8263,6 +8263,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("int_max", builtin_int_max),
     // RES-448: array_index_of starting at a given offset.
     ("array_position", builtin_array_position),
+    // RES-449: pad an array to a given length with fill value.
+    ("array_pad_left", builtin_array_pad_left),
+    ("array_pad_right", builtin_array_pad_right),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9819,6 +9822,61 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-449: shared validator for the array-pad builtins. Returns the
+/// (input, target_len, fill) triple on success.
+fn array_pad_args(name: &str, args: &[Value]) -> RResult<(Vec<Value>, usize, Value)> {
+    match args {
+        [Value::Array(items), Value::Int(n), fill] => {
+            if *n < 0 {
+                return Err(format!("{}: width must be non-negative, got {}", name, n));
+            }
+            const MAX_PAD: i64 = 1_000_000_000;
+            if *n > MAX_PAD {
+                return Err(format!("{}: width {} too large (max {})", name, n, MAX_PAD));
+            }
+            Ok((items.clone(), *n as usize, fill.clone()))
+        }
+        [a, b, _] => Err(format!(
+            "{}: expected (array, int, _), got ({}, {}, _)",
+            name, a, b
+        )),
+        _ => Err(format!(
+            "{}: expected 3 arguments, got {}",
+            name,
+            args.len()
+        )),
+    }
+}
+
+/// RES-449: `array_pad_left(arr, n, fill)` — pad on the left.
+fn builtin_array_pad_left(args: &[Value]) -> RResult<Value> {
+    let (mut items, target, fill) = array_pad_args("array_pad_left", args)?;
+    if items.len() >= target {
+        return Ok(Value::Array(items));
+    }
+    let needed = target - items.len();
+    let mut out = Vec::with_capacity(target);
+    for _ in 0..needed {
+        out.push(fill.clone());
+    }
+    out.append(&mut items);
+    Ok(Value::Array(out))
+}
+
+/// RES-449: `array_pad_right(arr, n, fill)` — pad on the right.
+fn builtin_array_pad_right(args: &[Value]) -> RResult<Value> {
+    let (mut items, target, fill) = array_pad_args("array_pad_right", args)?;
+    if items.len() >= target {
+        return Ok(Value::Array(items));
+    }
+    let needed = target - items.len();
+    items.reserve(needed);
+    for _ in 0..needed {
+        items.push(fill.clone());
+    }
+    Ok(Value::Array(items))
 }
 
 /// RES-448: `array_position(arr, x, start)` — first index `i >= start`
@@ -27506,6 +27564,92 @@ mod tests {
         );
         assert!(
             builtin_array_position(&[int_array(&[1]), Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-449: array_pad_left / array_pad_right ----------
+
+    #[test]
+    fn array_pad_left_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_pad_left(&[int_array(&[1, 2]), Value::Int(5), Value::Int(0)])
+                    .unwrap()
+            ),
+            vec![0, 0, 0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn array_pad_right_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_pad_right(&[int_array(&[1, 2]), Value::Int(5), Value::Int(0)])
+                    .unwrap()
+            ),
+            vec![1, 2, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn array_pad_already_long_unchanged() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_pad_left(&[int_array(&[1, 2, 3]), Value::Int(2), Value::Int(0)])
+                    .unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_pad_zero_target_unchanged() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_pad_left(&[int_array(&[1, 2]), Value::Int(0), Value::Int(0)])
+                    .unwrap()
+            ),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn array_pad_empty_input() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_pad_right(&[Value::Array(vec![]), Value::Int(3), Value::Int(7)])
+                    .unwrap()
+            ),
+            vec![7, 7, 7]
+        );
+    }
+
+    #[test]
+    fn array_pad_rejects_negative_width() {
+        let err =
+            builtin_array_pad_left(&[int_array(&[1]), Value::Int(-1), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_pad_rejects_too_large() {
+        let err =
+            builtin_array_pad_left(&[int_array(&[1]), Value::Int(2_000_000_000), Value::Int(0)])
+                .unwrap_err();
+        assert!(err.contains("too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_pad_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_pad_left(&[Value::Int(1), Value::Int(5), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (array, int, _)")
+        );
+        assert!(
+            builtin_array_pad_right(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 3 arguments")
         );
