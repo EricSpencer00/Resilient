@@ -8308,6 +8308,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_remove_all", builtin_array_remove_all),
     // RES-468: collapse adjacent duplicates.
     ("array_dedup", builtin_array_dedup),
+    // RES-469: scalar all/any equality predicates.
+    ("array_all_eq", builtin_array_all_eq),
+    ("array_any_eq", builtin_array_any_eq),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9864,6 +9867,39 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-469: `array_all_eq(arr, x)` — true iff every element of `arr`
+/// equals `x` under scalar value-equality. Empty arr → true (vacuously).
+fn builtin_array_all_eq(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            for v in items {
+                match array_search_eq(v, needle) {
+                    Some(true) => continue,
+                    Some(false) => return Ok(Value::Bool(false)),
+                    None => {
+                        return Err(format!(
+                            "array_all_eq: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Bool(true))
+        }
+        [a, _] => Err(format!("array_all_eq: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_all_eq: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-469: `array_any_eq(arr, x)` — alias for `array_contains` with
+/// the more pointed `_eq` suffix; some style guides prefer it.
+fn builtin_array_any_eq(args: &[Value]) -> RResult<Value> {
+    builtin_array_contains(args).map_err(|e| e.replace("array_contains", "array_any_eq"))
 }
 
 /// RES-468: `array_dedup(arr)` — collapse runs of adjacent duplicates
@@ -29919,6 +29955,92 @@ mod tests {
             builtin_array_dedup(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-469: array_all_eq / array_any_eq ----------
+
+    #[test]
+    fn array_all_eq_basic() {
+        assert_eq_bool(
+            builtin_array_all_eq(&[int_array(&[7, 7, 7]), Value::Int(7)]).unwrap(),
+            true,
+            "all 7",
+        );
+        assert_eq_bool(
+            builtin_array_all_eq(&[int_array(&[7, 7, 8]), Value::Int(7)]).unwrap(),
+            false,
+            "not all",
+        );
+    }
+
+    #[test]
+    fn array_all_eq_empty_is_vacuously_true() {
+        assert_eq_bool(
+            builtin_array_all_eq(&[Value::Array(vec![]), Value::Int(7)]).unwrap(),
+            true,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn array_all_eq_int_float_coerce() {
+        // [1, 1.0] all_eq 1 should be true.
+        assert_eq_bool(
+            builtin_array_all_eq(&[
+                Value::Array(vec![Value::Int(1), Value::Float(1.0)]),
+                Value::Int(1),
+            ])
+            .unwrap(),
+            true,
+            "int/float coerce",
+        );
+    }
+
+    #[test]
+    fn array_any_eq_alias_of_contains() {
+        // The error message identifies the function correctly.
+        let err = builtin_array_any_eq(&[Value::Int(1), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("array_any_eq"), "got: {}", err);
+        // Behavior matches array_contains.
+        assert_eq_bool(
+            builtin_array_any_eq(&[int_array(&[1, 2, 3]), Value::Int(2)]).unwrap(),
+            true,
+            "any eq 2",
+        );
+        assert_eq_bool(
+            builtin_array_any_eq(&[int_array(&[1, 2, 3]), Value::Int(99)]).unwrap(),
+            false,
+            "any eq 99",
+        );
+        assert_eq_bool(
+            builtin_array_any_eq(&[Value::Array(vec![]), Value::Int(0)]).unwrap(),
+            false,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn array_all_eq_rejects_non_scalar_element() {
+        let err = builtin_array_all_eq(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Int(1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_all_any_eq_reject_non_array_and_arity() {
+        assert!(
+            builtin_array_all_eq(&[Value::Int(1), Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_all_eq(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
