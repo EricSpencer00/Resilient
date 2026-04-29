@@ -1,0 +1,10 @@
+// RES-413 demo: string_repeat(s, n) repeats string n times.
+
+fn main() {
+    println(string_repeat("-", 10));
+    println(string_repeat("ab", 3));
+    println(string_repeat("hi", 0));
+    println(string_repeat("", 5));
+}
+
+main();
