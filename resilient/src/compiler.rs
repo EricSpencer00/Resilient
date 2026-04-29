@@ -1147,7 +1147,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::ClusterDecl { span, .. }
         | Node::FunctionLiteral { span, .. }
         | Node::TryCatch { span, .. }
-        | Node::Quantifier { span, .. } => span.start.line as u32,
+        | Node::Quantifier { span, .. }
+        | Node::SupervisorDecl { span, .. } => span.start.line as u32,
 
         // RES-291: integer range expression. Only emitted from the
         // tree-walker frontend today; bytecode lowering treats it as

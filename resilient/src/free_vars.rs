@@ -220,7 +220,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // RES-319: newtype declarations introduce no bindings (the
         // constructor call is lowered to NewtypeConstruct before this
         // pass runs, so no free-variable tracking is needed).
-        | Node::NewtypeDecl { .. } => {}
+        | Node::NewtypeDecl { .. }
+        // RES-333: supervisor declarations. Phase 1: no free-variable tracking.
+        | Node::SupervisorDecl { .. } => {}
         Node::NewtypeConstruct { value, .. } => walk(value, bound, free),
         // RES-386: Actor declarations are verifier-only.
         Node::Actor { .. } => {}

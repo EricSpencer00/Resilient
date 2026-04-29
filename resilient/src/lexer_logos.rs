@@ -263,6 +263,9 @@ enum Tok {
     // RES-319: `newtype Name = BaseType;` nominal type wrapper keyword.
     #[token("newtype")]
     Newtype,
+    // RES-333: `supervisor { strategy, children }` actor restart policy keyword.
+    #[token("supervisor")]
+    Supervisor,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
