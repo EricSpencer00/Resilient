@@ -8275,6 +8275,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_set_at", builtin_array_set_at),
     // RES-453: total Unicode-scalar accessor (errors on bad index).
     ("string_at", builtin_string_at),
+    // RES-454: Unicode-scalar substring [start, end).
+    ("string_substring", builtin_string_substring),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9828,6 +9830,32 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-454: `string_substring(s, start, end)` — half-open Unicode-
+/// scalar slice. start > end is a typed error; out-of-range indices
+/// are clamped to [0, char_count].
+fn builtin_string_substring(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(start), Value::Int(end)] => {
+            if start > end {
+                return Err(format!("string_substring: start {} > end {}", start, end));
+            }
+            let n = s.chars().count() as i64;
+            let lo = (*start).max(0).min(n) as usize;
+            let hi = (*end).max(0).min(n) as usize;
+            let out: String = s.chars().skip(lo).take(hi - lo).collect();
+            Ok(Value::String(out))
+        }
+        [a, b, c] => Err(format!(
+            "string_substring: expected (string, int, int), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "string_substring: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -28122,6 +28150,106 @@ mod tests {
             builtin_string_at(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-454: string_substring ----------
+
+    #[test]
+    fn string_substring_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_string_substring(&[
+                    Value::String("hello".into()),
+                    Value::Int(1),
+                    Value::Int(4)
+                ])
+                .unwrap()
+            ),
+            "ell"
+        );
+    }
+
+    #[test]
+    fn string_substring_unicode_scalar_indexing() {
+        // "café": c=0, a=1, f=2, é=3. [1,4) = "afé".
+        assert_eq!(
+            extract_string(
+                builtin_string_substring(&[
+                    Value::String("café".into()),
+                    Value::Int(1),
+                    Value::Int(4)
+                ])
+                .unwrap()
+            ),
+            "afé"
+        );
+    }
+
+    #[test]
+    fn string_substring_empty_range_returns_empty() {
+        assert_eq!(
+            extract_string(
+                builtin_string_substring(&[
+                    Value::String("hello".into()),
+                    Value::Int(2),
+                    Value::Int(2)
+                ])
+                .unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn string_substring_clamps_out_of_range() {
+        // start < 0 clamped to 0, end > len clamped to len.
+        assert_eq!(
+            extract_string(
+                builtin_string_substring(&[
+                    Value::String("abc".into()),
+                    Value::Int(-5),
+                    Value::Int(99)
+                ])
+                .unwrap()
+            ),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn string_substring_rejects_start_after_end() {
+        let err = builtin_string_substring(&[
+            Value::String("hello".into()),
+            Value::Int(3),
+            Value::Int(1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("start 3 > end 1"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_substring_empty_input() {
+        assert_eq!(
+            extract_string(
+                builtin_string_substring(&[Value::String("".into()), Value::Int(0), Value::Int(0)])
+                    .unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn string_substring_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_substring(&[Value::Int(1), Value::Int(0), Value::Int(1)])
+                .unwrap_err()
+                .contains("expected (string, int, int)")
+        );
+        assert!(
+            builtin_string_substring(&[Value::String("a".into()), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
