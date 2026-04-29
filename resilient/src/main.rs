@@ -8284,6 +8284,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_rotate_right", builtin_array_rotate_right),
     // RES-457: ASCII first-char upper, rest lower.
     ("string_capitalize", builtin_string_capitalize),
+    // RES-458: repeat an array n times.
+    ("array_cycle", builtin_array_cycle),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9837,6 +9839,50 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-458: `array_cycle(arr, n)` — concatenate `arr` to itself `n`
+/// times. `n=0` → empty. Negative `n` is a typed error. Empty `arr`
+/// → empty. Total output capped at 1B elements.
+fn builtin_array_cycle(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_cycle: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            const MAX_TOTAL: usize = 1_000_000_000;
+            let count = *n as usize;
+            let total = items.len().checked_mul(count).ok_or_else(|| {
+                format!(
+                    "array_cycle: overflow: len={} × n={} exceeds usize",
+                    items.len(),
+                    count
+                )
+            })?;
+            if total > MAX_TOTAL {
+                return Err(format!(
+                    "array_cycle: total {} too large (max {})",
+                    total, MAX_TOTAL
+                ));
+            }
+            let mut out = Vec::with_capacity(total);
+            for _ in 0..count {
+                out.extend_from_slice(items);
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_cycle: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_cycle: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28603,6 +28649,73 @@ mod tests {
             builtin_string_capitalize(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-458: array_cycle ----------
+
+    #[test]
+    fn array_cycle_basic() {
+        assert_eq!(
+            extract_int_array(builtin_array_cycle(&[int_array(&[1, 2]), Value::Int(3)]).unwrap()),
+            vec![1, 2, 1, 2, 1, 2]
+        );
+    }
+
+    #[test]
+    fn array_cycle_zero_returns_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_cycle(&[int_array(&[1, 2, 3]), Value::Int(0)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_cycle_one_returns_clone() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_cycle(&[int_array(&[5, 6, 7]), Value::Int(1)]).unwrap()
+            ),
+            vec![5, 6, 7]
+        );
+    }
+
+    #[test]
+    fn array_cycle_empty_array_stays_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_cycle(&[Value::Array(vec![]), Value::Int(99)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_cycle_rejects_negative_count() {
+        let err = builtin_array_cycle(&[int_array(&[1]), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_cycle_rejects_too_large() {
+        let err =
+            builtin_array_cycle(&[int_array(&[1, 2]), Value::Int(2_000_000_000)]).unwrap_err();
+        assert!(err.contains("too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_cycle_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_cycle(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (array, int)")
+        );
+        assert!(
+            builtin_array_cycle(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 

@@ -1206,6 +1206,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-458: array_cycle.
+        env.set("array_cycle".to_string(), fn_any_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4216,6 +4218,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_rotate_right",
         // RES-457: capitalize.
         "string_capitalize",
+        // RES-458: array_cycle.
+        "array_cycle",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
