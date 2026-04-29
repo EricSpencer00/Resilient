@@ -8306,6 +8306,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_remove", builtin_array_remove),
     // RES-467: remove every element matching x.
     ("array_remove_all", builtin_array_remove_all),
+    // RES-468: collapse adjacent duplicates.
+    ("array_dedup", builtin_array_dedup),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9859,6 +9861,38 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-468: `array_dedup(arr)` — collapse runs of adjacent duplicates
+/// to a single instance. Distinct from `array_unique` (which dedupes
+/// non-adjacent occurrences too). Useful for compressing sorted arrays.
+fn builtin_array_dedup(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match out.last() {
+                    Some(prev) => match array_search_eq(prev, v) {
+                        Some(true) => continue,
+                        Some(false) => out.push(v.clone()),
+                        None => {
+                            return Err(format!(
+                                "array_dedup: element types not comparable ({} vs {})",
+                                prev, v
+                            ));
+                        }
+                    },
+                    None => out.push(v.clone()),
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_dedup: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_dedup: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29790,6 +29824,101 @@ mod tests {
             builtin_array_remove_all(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-468: array_dedup ----------
+
+    #[test]
+    fn array_dedup_collapses_adjacent_runs() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_dedup(&[int_array(&[1, 1, 2, 2, 2, 3, 3, 1])]).unwrap()
+            ),
+            vec![1, 2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn array_dedup_preserves_already_unique() {
+        assert_eq!(
+            extract_int_array(builtin_array_dedup(&[int_array(&[1, 2, 3, 4])]).unwrap()),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn array_dedup_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_dedup(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_dedup_single_element() {
+        assert_eq!(
+            extract_int_array(builtin_array_dedup(&[int_array(&[42])]).unwrap()),
+            vec![42]
+        );
+    }
+
+    #[test]
+    fn array_dedup_all_same_collapses_to_one() {
+        assert_eq!(
+            extract_int_array(builtin_array_dedup(&[int_array(&[7, 7, 7, 7])]).unwrap()),
+            vec![7]
+        );
+    }
+
+    #[test]
+    fn array_dedup_strings() {
+        match builtin_array_dedup(&[Value::Array(vec![
+            Value::String("a".into()),
+            Value::String("a".into()),
+            Value::String("b".into()),
+            Value::String("b".into()),
+            Value::String("a".into()),
+        ])])
+        .unwrap()
+        {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 3);
+                let strs: Vec<String> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::String(s) => s,
+                        _ => panic!("non-string"),
+                    })
+                    .collect();
+                assert_eq!(strs, vec!["a", "b", "a"]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_dedup_rejects_non_scalar_runs() {
+        // Two adjacent non-scalar values force a comparison call that errors.
+        let err = builtin_array_dedup(&[Value::Array(vec![
+            Value::Array(vec![Value::Int(1)]),
+            Value::Array(vec![Value::Int(2)]),
+        ])])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_dedup_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_dedup(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_dedup(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
