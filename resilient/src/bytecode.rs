@@ -126,6 +126,15 @@ pub enum Op {
     /// failing index + length. Non-Array on the top of the stack
     /// surfaces as `VmError::TypeMismatch("LoadIndex")`.
     LoadIndex,
+    /// RES-407: variant of [`LoadIndex`] that skips the bounds check.
+    /// Emitted only when the typechecker's bounds-check pass
+    /// (`bounds_check::check_array_bounds`) discharged the obligation
+    /// `0 <= idx < len(arr)` for this exact source span. Type-check on
+    /// the operands stays — a non-int index or non-array target is
+    /// always a real bug, not something the verifier should be used to
+    /// suppress. With `--audit`, the driver reports the count of
+    /// elided sites alongside the bounds-check audit line.
+    LoadIndexUnchecked,
     /// RES-171a: pop a value `v`, pop an i64 index, pop a
     /// `Value::Array`, write `arr[idx] = v`, then push the
     /// modified array back. Compiler follows with a `StoreLocal(a)`
