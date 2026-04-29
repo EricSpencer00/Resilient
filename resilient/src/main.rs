@@ -8279,6 +8279,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_chunk", builtin_array_chunk),
     // RES-436: non-overlapping substring count.
     ("string_count", builtin_string_count),
+    // RES-437: insert separator between adjacent array elements.
+    ("array_intersperse", builtin_array_intersperse),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9213,6 +9215,32 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-437: `array_intersperse(arr, x)` — insert `x` between every
+/// pair of adjacent elements. `[a, b, c]` ⇒ `[a, x, b, x, c]`.
+/// Empty or single-element arrays return a clone unchanged.
+fn builtin_array_intersperse(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), sep] => {
+            if items.len() < 2 {
+                return Ok(Value::Array(items.clone()));
+            }
+            let mut out = Vec::with_capacity(items.len() * 2 - 1);
+            for (i, v) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(sep.clone());
+                }
+                out.push(v.clone());
+            }
+            Ok(Value::Array(out))
+        }
+        [a, _] => Err(format!("array_intersperse: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_intersperse: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -26331,6 +26359,79 @@ mod tests {
         );
         assert!(
             builtin_string_count(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-437: array_intersperse ----------
+
+    #[test]
+    fn array_intersperse_inserts_between_pairs() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_intersperse(&[int_array(&[1, 2, 3]), Value::Int(0)]).unwrap()
+            ),
+            vec![1, 0, 2, 0, 3]
+        );
+    }
+
+    #[test]
+    fn array_intersperse_single_element_unchanged() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_intersperse(&[int_array(&[42]), Value::Int(0)]).unwrap()
+            ),
+            vec![42]
+        );
+    }
+
+    #[test]
+    fn array_intersperse_empty_unchanged() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_intersperse(&[Value::Array(vec![]), Value::Int(0)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_intersperse_two_elements_produces_three() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_intersperse(&[int_array(&[1, 2]), Value::Int(99)]).unwrap()
+            ),
+            vec![1, 99, 2]
+        );
+    }
+
+    #[test]
+    fn array_intersperse_string_separator() {
+        let result = builtin_array_intersperse(&[
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ]),
+            Value::String(",".into()),
+        ])
+        .unwrap();
+        match result {
+            Value::Array(items) => assert_eq!(items.len(), 5),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_intersperse_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_intersperse(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_intersperse(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
