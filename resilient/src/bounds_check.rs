@@ -129,6 +129,11 @@ fn walk_toplevel(node: &Node, source_path: &str, errors: &mut Vec<String>) {
         for r in requires {
             ctx.axioms.push(r.clone());
         }
+        // RES-133b: leading `assume(P)` predicates are also axioms.
+        // The runtime check halts before any indexing in the body if
+        // they are violated, so the bounds prover may use them.
+        ctx.axioms
+            .extend(crate::assume_axioms::collect_leading_assume_axioms(body));
         walk_node(body, &ctx, source_path, errors);
     } else if let Node::ImplBlock { methods, .. } = node {
         for m in methods {
