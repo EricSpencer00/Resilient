@@ -1100,6 +1100,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-420: concatenate two arrays.
+        env.set("array_concat".to_string(), fn_any_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -3964,6 +3966,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-419: char-code conversions.
         "chr",
         "ord",
+        // RES-420: array_concat.
+        "array_concat",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.

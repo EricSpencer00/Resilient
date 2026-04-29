@@ -1,0 +1,10 @@
+// RES-420 demo: array_concat appends two arrays into a new one.
+
+fn main() {
+    println(array_concat([1, 2, 3], [4, 5]));
+    println(array_concat([], [1, 2]));
+    println(array_concat([1, 2], []));
+    println(array_concat(["a", "b"], ["c"]));
+}
+
+main();

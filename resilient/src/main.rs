@@ -8242,6 +8242,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-419: Unicode-scalar ↔ single-char string conversions.
     ("chr", builtin_chr),
     ("ord", builtin_ord),
+    // RES-420: concatenate two arrays.
+    ("array_concat", builtin_array_concat),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9176,6 +9178,27 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-420: `array_concat(a, b)` — returns a new array of `a`'s elements
+/// followed by `b`'s. Heterogeneous element types are allowed.
+fn builtin_array_concat(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            let mut out = Vec::with_capacity(a.len() + b.len());
+            out.extend_from_slice(a);
+            out.extend_from_slice(b);
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_concat: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_concat: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -24477,6 +24500,69 @@ mod tests {
             };
             assert_int(builtin_ord(&[Value::String(s)]).unwrap(), n, "round trip");
         }
+    }
+
+    // ---------- RES-420: array_concat ----------
+
+    #[test]
+    fn array_concat_joins_two_arrays() {
+        match builtin_array_concat(&[int_array(&[1, 2]), int_array(&[3, 4, 5])]).unwrap() {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 5);
+                let nums: Vec<i64> = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => *n,
+                        _ => panic!("non-int element"),
+                    })
+                    .collect();
+                assert_eq!(nums, vec![1, 2, 3, 4, 5]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_concat_with_empty_left_or_right() {
+        match builtin_array_concat(&[Value::Array(vec![]), int_array(&[1, 2])]).unwrap() {
+            Value::Array(items) if items.len() == 2 => {}
+            other => panic!("expected len-2 array, got {:?}", other),
+        }
+        match builtin_array_concat(&[int_array(&[1, 2]), Value::Array(vec![])]).unwrap() {
+            Value::Array(items) if items.len() == 2 => {}
+            other => panic!("expected len-2 array, got {:?}", other),
+        }
+        match builtin_array_concat(&[Value::Array(vec![]), Value::Array(vec![])]).unwrap() {
+            Value::Array(items) if items.is_empty() => {}
+            other => panic!("expected empty array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_concat_allows_heterogeneous_elements() {
+        match builtin_array_concat(&[
+            Value::Array(vec![Value::Int(1), Value::String("a".into())]),
+            Value::Array(vec![Value::Bool(true)]),
+        ])
+        .unwrap()
+        {
+            Value::Array(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_concat_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_concat(&[Value::Int(1), Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_concat(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
     }
 
     // ---------- RES-034: nested index assignment ----------
