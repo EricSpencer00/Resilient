@@ -1146,6 +1146,14 @@ impl TypeChecker {
         };
         env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
         env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
+        // RES-450: array_swap(arr, i, j) — 3-arg.
+        env.set(
+            "array_swap".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::Int],
+                return_type: Box::new(Type::Any),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4138,6 +4146,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-449: array padding.
         "array_pad_left",
         "array_pad_right",
+        // RES-450: array_swap.
+        "array_swap",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.

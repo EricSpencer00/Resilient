@@ -8266,6 +8266,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-449: pad an array to a given length with fill value.
     ("array_pad_left", builtin_array_pad_left),
     ("array_pad_right", builtin_array_pad_right),
+    // RES-450: exchange two elements; returns a new array.
+    ("array_swap", builtin_array_swap),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9819,6 +9821,34 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-450: `array_swap(arr, i, j)` — exchange elements at i and j.
+/// Both indices must be in [0, len). i == j returns a clone unchanged.
+fn builtin_array_swap(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(i), Value::Int(j)] => {
+            let len = items.len();
+            let in_bounds = |idx: i64| -> bool { idx >= 0 && (idx as usize) < len };
+            if !in_bounds(*i) || !in_bounds(*j) {
+                return Err(format!(
+                    "array_swap: index out of bounds (i={}, j={}, len={})",
+                    i, j, len
+                ));
+            }
+            let mut out = items.clone();
+            out.swap(*i as usize, *j as usize);
+            Ok(Value::Array(out))
+        }
+        [a, b, c] => Err(format!(
+            "array_swap: expected (array, int, int), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_swap: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -27650,6 +27680,71 @@ mod tests {
         );
         assert!(
             builtin_array_pad_right(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-450: array_swap ----------
+
+    #[test]
+    fn array_swap_exchanges_elements() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_swap(&[int_array(&[1, 2, 3, 4]), Value::Int(0), Value::Int(3)])
+                    .unwrap()
+            ),
+            vec![4, 2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn array_swap_same_index_unchanged() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_swap(&[int_array(&[1, 2, 3]), Value::Int(1), Value::Int(1)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_swap_does_not_mutate_input() {
+        let input = int_array(&[1, 2, 3]);
+        let _ = builtin_array_swap(&[input.clone(), Value::Int(0), Value::Int(2)]).unwrap();
+        assert_eq!(extract_int_array(input), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn array_swap_out_of_bounds_errors() {
+        assert!(
+            builtin_array_swap(&[int_array(&[1, 2]), Value::Int(0), Value::Int(99)])
+                .unwrap_err()
+                .contains("out of bounds")
+        );
+        assert!(
+            builtin_array_swap(&[int_array(&[1, 2]), Value::Int(-1), Value::Int(0)])
+                .unwrap_err()
+                .contains("out of bounds")
+        );
+    }
+
+    #[test]
+    fn array_swap_empty_array_always_errors() {
+        let err =
+            builtin_array_swap(&[Value::Array(vec![]), Value::Int(0), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("out of bounds"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_swap_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_swap(&[Value::Int(1), Value::Int(0), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (array, int, int)")
+        );
+        assert!(
+            builtin_array_swap(&[int_array(&[1]), Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
         );
