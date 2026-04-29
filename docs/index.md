@@ -123,6 +123,29 @@ Tree-walking interpreter for fast iteration → bytecode VM (~12×) → Cranelif
 | Language Server (LSP) | ✅ opt-in | `rz --lsp` (build with `--features lsp`) |
 | `#![no_std]` runtime | ✅ stable | `resilient-runtime/` crate |
 
+## How Resilient compares
+
+If you're evaluating Resilient against an existing safety-critical
+toolchain, start with the side-by-side comparisons:
+
+- **[Resilient vs Rust for embedded](compare/rust-vs-resilient)** —
+  for teams already using `embedded-rust` and looking for sharper
+  compile-time guarantees.
+- **[Resilient vs Ada / SPARK](compare/ada-spark-vs-resilient)** —
+  for teams in defense, avionics, or rail evaluating a modern
+  formally-verified alternative.
+- **[Resilient vs MISRA C](compare/misra-c-vs-resilient)** —
+  for automotive and industrial teams reaching the limits of MISRA C:2012.
+
+## Standards mapping
+
+Resilient is not a certified tool, but its features map directly to
+specific objectives in the major safety standards:
+
+- **[DO-178C (avionics)](standards/do-178c)** — objective-by-objective mapping
+- **[ISO 26262 (automotive ASIL D)](standards/iso-26262)** — objective-by-objective mapping
+- **[IEC 62304 (medical devices)](standards/iec-62304)** — class C software mapping
+
 ## Open source
 
 Resilient is MIT-licensed. Contributions from humans and AI agents are equally welcome — work is tracked in [GitHub Issues](https://github.com/EricSpencer00/Resilient/issues), and `cargo test` is the acceptance gate.

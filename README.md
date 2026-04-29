@@ -25,6 +25,8 @@
 
 > **Resilient is open source under the MIT license — contributions from humans *and* AI agents are first-class.**
 
+Resilient is a statically-typed compiled language for **safety-critical embedded systems** — Z3-verified function contracts (`requires` / `ensures`) discharged at compile time, a `#![no_std]` runtime that cross-compiles to Cortex-M and RISC-V bare metal, and self-healing `live { }` blocks that recover from transient hardware faults. Compare it to [Rust embedded](https://ericspencer.us/Resilient/compare/rust-vs-resilient), [Ada / SPARK](https://ericspencer.us/Resilient/compare/ada-spark-vs-resilient), and [MISRA C](https://ericspencer.us/Resilient/compare/misra-c-vs-resilient), or read the [DO-178C](https://ericspencer.us/Resilient/standards/do-178c), [ISO 26262](https://ericspencer.us/Resilient/standards/iso-26262), and [IEC 62304](https://ericspencer.us/Resilient/standards/iec-62304) standards mappings.
+
 ## Trust model
 
 Resilient treats AI-written code as **untrusted input** to a trusted
