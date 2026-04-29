@@ -606,7 +606,9 @@ impl Formatter {
                 self.newline();
             }
             // RES-333: `supervisor { strategy, children }` — restart policy for actor failures.
-            Node::Supervisor { strategy, children, .. } => {
+            Node::Supervisor {
+                strategy, children, ..
+            } => {
                 self.write(&format!("supervisor {{ strategy: {}", strategy));
                 self.write(", children: [");
                 if !children.is_empty() {

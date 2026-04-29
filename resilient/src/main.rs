@@ -2088,9 +2088,9 @@ enum Node {
 /// RES-333: one child process configuration inside a `supervisor` block.
 #[derive(Debug, Clone)]
 pub(crate) struct SupervisorChild {
-    pub(crate) id: String,           // identifier for the child
-    pub(crate) fn_name: String,      // actor function to spawn
-    pub(crate) restart: String,      // "permanent", "transient", or "temporary"
+    pub(crate) id: String,      // identifier for the child
+    pub(crate) fn_name: String, // actor function to spawn
+    pub(crate) restart: String, // "permanent", "transient", or "temporary"
     #[allow(dead_code)]
     pub(crate) span: span::Span,
 }
@@ -3551,10 +3551,7 @@ impl Parser {
 
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected `{{` after `supervisor`, found {}",
-                tok
-            ));
+            self.record_error(format!("Expected `{{` after `supervisor`, found {}", tok));
         } else {
             self.next_token(); // skip `{`
         }
@@ -3622,7 +3619,8 @@ impl Parser {
                                             child_fn = s.clone();
                                         }
                                         self.next_token();
-                                    } else if field == "restart" && self.peek_token == Token::Colon {
+                                    } else if field == "restart" && self.peek_token == Token::Colon
+                                    {
                                         self.next_token(); // skip `restart`
                                         self.next_token(); // skip `:`
                                         if let Token::StringLiteral(s) = &self.current_token {
@@ -3646,7 +3644,7 @@ impl Parser {
                                 id: child_id,
                                 fn_name: child_fn,
                                 restart: child_restart,
-                                span: supervisor_span.clone(),
+                                span: supervisor_span,
                             });
                         } else {
                             self.next_token();
