@@ -8321,6 +8321,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("max3", builtin_max3),
     // RES-474: element-wise array inequality.
     ("array_ne", builtin_array_ne),
+    // RES-475: fixed-op integer fold with explicit init.
+    ("array_fold_int", builtin_array_fold_int),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9874,6 +9876,50 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-475: `array_fold_int(arr, init, op)` — fold with named binary
+/// op over an integer array, starting from `init`. Op is one of
+/// "sum", "product", "min", "max". Distinct from RES-416/417 which
+/// use identity-element start (0 / 1 / first / first).
+fn builtin_array_fold_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(init), Value::String(op)] => {
+            let mut acc = *init;
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_fold_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                acc = match op.as_str() {
+                    "sum" => acc.wrapping_add(n),
+                    "product" => acc.wrapping_mul(n),
+                    "min" => acc.min(n),
+                    "max" => acc.max(n),
+                    other => {
+                        return Err(format!(
+                            "array_fold_int: unknown op {:?}; expected sum/product/min/max",
+                            other
+                        ));
+                    }
+                };
+            }
+            Ok(Value::Int(acc))
+        }
+        [a, b, c] => Err(format!(
+            "array_fold_int: expected (array, int, string), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_fold_int: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -30445,6 +30491,117 @@ mod tests {
             builtin_array_ne(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-475: array_fold_int ----------
+
+    #[test]
+    fn array_fold_int_sum() {
+        assert_int(
+            builtin_array_fold_int(&[
+                int_array(&[1, 2, 3, 4]),
+                Value::Int(100),
+                Value::String("sum".into()),
+            ])
+            .unwrap(),
+            110,
+            "sum from 100",
+        );
+    }
+
+    #[test]
+    fn array_fold_int_product() {
+        assert_int(
+            builtin_array_fold_int(&[
+                int_array(&[2, 3, 4]),
+                Value::Int(1),
+                Value::String("product".into()),
+            ])
+            .unwrap(),
+            24,
+            "product",
+        );
+        assert_int(
+            builtin_array_fold_int(&[
+                int_array(&[2, 3, 4]),
+                Value::Int(0),
+                Value::String("product".into()),
+            ])
+            .unwrap(),
+            0,
+            "init=0 absorbs",
+        );
+    }
+
+    #[test]
+    fn array_fold_int_min_max() {
+        assert_int(
+            builtin_array_fold_int(&[
+                int_array(&[3, 1, 4, 1, 5]),
+                Value::Int(2),
+                Value::String("min".into()),
+            ])
+            .unwrap(),
+            1,
+            "min with init",
+        );
+        assert_int(
+            builtin_array_fold_int(&[
+                int_array(&[3, 1, 4]),
+                Value::Int(99),
+                Value::String("max".into()),
+            ])
+            .unwrap(),
+            99,
+            "max with high init",
+        );
+    }
+
+    #[test]
+    fn array_fold_int_empty_returns_init() {
+        assert_int(
+            builtin_array_fold_int(&[
+                Value::Array(vec![]),
+                Value::Int(42),
+                Value::String("sum".into()),
+            ])
+            .unwrap(),
+            42,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn array_fold_int_rejects_unknown_op() {
+        let err =
+            builtin_array_fold_int(&[int_array(&[1]), Value::Int(0), Value::String("xor".into())])
+                .unwrap_err();
+        assert!(err.contains("unknown op"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_fold_int_rejects_non_int_element() {
+        let err = builtin_array_fold_int(&[
+            Value::Array(vec![Value::Int(1), Value::Float(2.0)]),
+            Value::Int(0),
+            Value::String("sum".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("all int elements"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_fold_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_fold_int(&[Value::Int(1), Value::Int(0), Value::String("sum".into())])
+                .unwrap_err()
+                .contains("expected (array, int, string)")
+        );
+        assert!(
+            builtin_array_fold_int(&[int_array(&[1]), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 

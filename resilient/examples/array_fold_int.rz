@@ -1,0 +1,16 @@
+// RES-475 demo: array_fold_int with named op (sum/product/min/max).
+
+fn main() {
+    // Sum starting from 100.
+    println(array_fold_int([1, 2, 3, 4], 100, "sum"));
+    // Product starting from 1 (identity).
+    println(array_fold_int([2, 3, 4], 1, "product"));
+    // Min with high init constrains result down.
+    println(array_fold_int([3, 1, 4, 1, 5], 2, "min"));
+    // Max with high init keeps init.
+    println(array_fold_int([3, 1, 4], 99, "max"));
+    // Empty array returns init.
+    println(array_fold_int([], 42, "sum"));
+}
+
+main();
