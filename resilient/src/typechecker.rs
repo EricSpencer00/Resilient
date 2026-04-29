@@ -1167,6 +1167,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-437: insert separator between adjacent elements.
+        env.set("array_intersperse".to_string(), fn_any_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4068,6 +4070,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_chunk",
         // RES-436: string_count.
         "string_count",
+        // RES-437: array_intersperse.
+        "array_intersperse",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
