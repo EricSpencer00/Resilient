@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-415-gcd-lcm",
-      "claimed_at": "2026-04-29T20:59:21Z"
+      "branch": "res-416-array-reductions",
+      "claimed_at": "2026-04-29T21:01:32Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-415-gcd-lcm",
-      "claimed_at": "2026-04-29T20:59:21Z"
+      "branch": "res-416-array-reductions",
+      "claimed_at": "2026-04-29T21:01:32Z"
     }
   }
 }
