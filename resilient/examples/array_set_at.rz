@@ -1,0 +1,10 @@
+// RES-452 demo: array_set_at replaces an element at a given index.
+
+fn main() {
+    println(array_set_at([1, 2, 3], 0, 99));
+    println(array_set_at([1, 2, 3], 1, 99));
+    println(array_set_at([1, 2, 3], 2, 99));
+    println(array_set_at(["a", "b", "c"], 1, "BANG"));
+}
+
+main();
