@@ -1,0 +1,9 @@
+// Test that assume is being executed
+
+fn main() {
+  println("Before assume(false)");
+  assume(false);
+  println("After assume(false) - should not be reached");
+}
+
+main();

@@ -1,0 +1,16 @@
+// RES-133a: Basic assume() statement
+// Runtime: assume evaluates the condition; if false, halts with "assume violated"
+
+fn main() {
+  let x = 5;
+
+  // This assumption holds, so execution continues
+  assume(x > 0);
+
+  // This one also holds
+  assume(x == 5);
+
+  println(x);
+}
+
+main();

@@ -1,0 +1,7 @@
+// RES-133a: assume with literal false - should halt
+
+fn main() {
+  assume(false);
+}
+
+main();

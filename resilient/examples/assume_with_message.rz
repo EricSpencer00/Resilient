@@ -1,0 +1,15 @@
+// RES-133a: assume(expr, "message") with optional failure message
+
+fn main() {
+  let x = 10;
+  let y = 20;
+
+  // assume can take an optional message that's printed on failure
+  assume(x > 0, "x must be positive");
+  assume(y < 100, "y must be less than 100");
+
+  println(x);
+  println(y);
+}
+
+main();

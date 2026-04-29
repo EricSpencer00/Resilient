@@ -1,0 +1,13 @@
+// RES-133a: assume() violation halts with error message
+// This program should fail at runtime with "ASSUME VIOLATED"
+
+fn main() {
+  let x = 3;
+
+  // This assumption is false, so the program halts
+  assume(x > 5);
+
+  println(x);
+}
+
+main();
