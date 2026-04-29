@@ -1,0 +1,13 @@
+// RES-446 demo: string_find_all returns every non-overlapping match index.
+
+fn main() {
+    println(string_find_all("the the the", "the"));
+    println(string_find_all("hello", "xyz"));
+    // Non-overlapping: "aaaa" / "aa" → [0, 2].
+    println(string_find_all("aaaa", "aa"));
+    println(string_find_all("", "x"));
+    // count = length of find_all result.
+    println(len(string_find_all("a-b-c-d", "-")));
+}
+
+main();

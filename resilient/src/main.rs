@@ -8256,6 +8256,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-445: array prefix / suffix predicates.
     ("array_starts_with", builtin_array_starts_with),
     ("array_ends_with", builtin_array_ends_with),
+    // RES-446: all byte indices of substring occurrences.
+    ("string_find_all", builtin_string_find_all),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9809,6 +9811,32 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-446: `string_find_all(s, sub)` — array of byte indices for
+/// every non-overlapping occurrence of `sub` in `s`. Empty needle
+/// is a typed error.
+fn builtin_string_find_all(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sub)] => {
+            if sub.is_empty() {
+                return Err("string_find_all: needle must not be empty".to_string());
+            }
+            let indices: Vec<Value> = s
+                .match_indices(sub.as_str())
+                .map(|(i, _)| Value::Int(i as i64))
+                .collect();
+            Ok(Value::Array(indices))
+        }
+        [a, b] => Err(format!(
+            "string_find_all: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_find_all: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -27254,6 +27282,84 @@ mod tests {
         );
         assert!(
             builtin_array_ends_with(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-446: string_find_all ----------
+
+    #[test]
+    fn string_find_all_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_string_find_all(&[
+                    Value::String("the the the".into()),
+                    Value::String("the".into())
+                ])
+                .unwrap()
+            ),
+            vec![0, 4, 8]
+        );
+    }
+
+    #[test]
+    fn string_find_all_no_matches() {
+        assert_eq!(
+            extract_int_array(
+                builtin_string_find_all(&[
+                    Value::String("hello".into()),
+                    Value::String("xyz".into())
+                ])
+                .unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn string_find_all_non_overlapping() {
+        // "aaaa" with needle "aa" should produce [0, 2] (non-overlapping).
+        assert_eq!(
+            extract_int_array(
+                builtin_string_find_all(&[
+                    Value::String("aaaa".into()),
+                    Value::String("aa".into())
+                ])
+                .unwrap()
+            ),
+            vec![0, 2]
+        );
+    }
+
+    #[test]
+    fn string_find_all_empty_haystack_returns_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_string_find_all(&[Value::String("".into()), Value::String("x".into())])
+                    .unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn string_find_all_rejects_empty_needle() {
+        let err =
+            builtin_string_find_all(&[Value::String("hello".into()), Value::String("".into())])
+                .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_find_all_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_find_all(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_find_all(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

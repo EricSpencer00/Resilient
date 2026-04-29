@@ -1114,6 +1114,8 @@ impl TypeChecker {
         // RES-445: array prefix/suffix predicates.
         env.set("array_starts_with".to_string(), fn_any_any_to_any());
         env.set("array_ends_with".to_string(), fn_any_any_to_any());
+        // RES-446: all match indices.
+        env.set("string_find_all".to_string(), fn_any_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4096,6 +4098,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-445: prefix/suffix predicates.
         "array_starts_with",
         "array_ends_with",
+        // RES-446: all match indices.
+        "string_find_all",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
