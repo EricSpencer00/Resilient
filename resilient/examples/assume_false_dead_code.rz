@@ -1,0 +1,20 @@
+// RES-133c test: assume(false) should warn about dead code
+
+fn test_dead_code() -> void {
+    assume(false);
+    println("this code is unreachable");
+}
+
+fn test_multiple_dead() -> void {
+    let x = 5;
+    assume(false);
+    let y = x + 1;
+    println(y);
+}
+
+fn main() {
+    test_dead_code();
+    test_multiple_dead();
+}
+
+main();

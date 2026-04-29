@@ -117,6 +117,10 @@ mod dce;
 // This pass detects violations early: opaque FFI calls, recursion,
 // closures capturing from outer scope. V1 emits warnings; V2 escalates.
 mod recovery_checker;
+// RES-133c: Detect assume(false) and warn about dead-code regions.
+// When assume(false) is used, the following statements are unreachable
+// in any valid model. This pass walks the AST to detect and warn.
+mod assume_false_checker;
 
 // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }` structured
 // failure handlers. Holds parser + typechecker logic for the feature;

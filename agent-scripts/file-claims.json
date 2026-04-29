@@ -1,16 +1,16 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-290-trait-system",
-      "claimed_at": "2026-04-29T05:38:49Z"
+      "branch": "res-133c-assume-false-dead-code",
+      "claimed_at": "2026-04-29T20:00:32Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-290-trait-system",
-      "claimed_at": "2026-04-29T05:38:49Z"
+      "branch": "res-133c-assume-false-dead-code",
+      "claimed_at": "2026-04-29T20:00:32Z"
     },
     "resilient/src/lexer_logos.rs": {
-      "branch": "res-290-trait-system",
-      "claimed_at": "2026-04-29T05:38:49Z"
+      "branch": "res-133c-assume-false-dead-code",
+      "claimed_at": "2026-04-29T20:00:32Z"
     }
   }
 }
