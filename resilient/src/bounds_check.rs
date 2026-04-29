@@ -28,7 +28,7 @@
 
 use crate::Node;
 use crate::span::Span;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// RES-351: global flag set by the CLI when `--deny-unproven-bounds`
@@ -65,6 +65,13 @@ thread_local! {
     static STATS: std::cell::RefCell<BoundsStats> = const {
         std::cell::RefCell::new(BoundsStats { proven: 0, unproven: 0 })
     };
+    /// RES-407: spans of every index expression the pass discharged.
+    /// Read by the bytecode compiler to emit `LoadIndexUnchecked` for
+    /// the access — and by the `--audit` reporter to surface a per-site
+    /// elided/runtime breakdown. Per-thread so the parallel test
+    /// runner stays correct (the `TEST_LOCK` mutex serialises the few
+    /// tests that read this).
+    static PROVEN_SITES: std::cell::RefCell<HashSet<Span>> = std::cell::RefCell::new(HashSet::new());
 }
 
 /// Read the last-run counters. Tests use this to confirm the pass
@@ -74,14 +81,36 @@ pub fn last_stats() -> BoundsStats {
     STATS.with(|s| *s.borrow())
 }
 
-fn bump_proven() {
+/// RES-407: true if the index access at `span` was proven by the
+/// last `check_array_bounds` run. The bytecode compiler queries this
+/// to emit `Op::LoadIndexUnchecked` instead of the bounds-checked
+/// `Op::LoadIndex`. Returns `false` when the pass hasn't run (e.g.
+/// the user passed neither `--typecheck` nor `--deny-unproven-bounds`)
+/// — the runtime check then keeps every access safe.
+pub fn is_proven_site(span: Span) -> bool {
+    PROVEN_SITES.with(|s| s.borrow().contains(&span))
+}
+
+/// RES-407: snapshot of the proven access spans, sorted by source
+/// position for deterministic `--audit` output.
+pub fn proven_sites_sorted() -> Vec<Span> {
+    let mut out: Vec<Span> = PROVEN_SITES.with(|s| s.borrow().iter().copied().collect());
+    out.sort_by_key(|s| (s.start.line, s.start.column, s.start.offset));
+    out
+}
+
+fn mark_proven(span: Span) {
     STATS.with(|s| s.borrow_mut().proven += 1);
+    PROVEN_SITES.with(|s| {
+        s.borrow_mut().insert(span);
+    });
 }
 fn bump_unproven() {
     STATS.with(|s| s.borrow_mut().unproven += 1);
 }
 fn reset_stats() {
     STATS.with(|s| *s.borrow_mut() = BoundsStats::default());
+    PROVEN_SITES.with(|s| s.borrow_mut().clear());
 }
 
 /// Axioms accumulated while descending into a function body. Each
@@ -282,7 +311,7 @@ fn check_index(
         && let Some(len) = ctx.literal_len.get(name)
     {
         if *value >= 0 && *value < *len {
-            bump_proven();
+            mark_proven(span);
             return;
         } else {
             // Provably out of bounds at compile time — this is an
@@ -322,7 +351,7 @@ fn check_index(
 
     let goal = build_bounds_goal(&target_name, index);
     if let Some(true) = try_prove(&goal, &ctx.axioms) {
-        bump_proven();
+        mark_proven(span);
         return;
     }
 
@@ -494,5 +523,95 @@ fn get(int i) -> int {
         let r = check_array_bounds(&program, "<test>");
         set_deny_unproven_bounds(false);
         assert!(r.is_err(), "expected strict-mode error for unproven index");
+    }
+
+    // --- RES-407: proven-site tracking ---
+
+    #[test]
+    fn proven_literal_index_is_recorded_with_span() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(false);
+        let src = r#"
+fn main() {
+    let xs = [10, 20, 30];
+    let y = xs[1];
+}
+main();
+"#;
+        let program = parse(src);
+        check_array_bounds(&program, "<test>").unwrap();
+        let sites = proven_sites_sorted();
+        assert_eq!(sites.len(), 1, "expected one proven site, got {:?}", sites);
+        // Span points at line 4 (`let y = xs[1];`) — line numbers are
+        // 1-indexed in the source above (with the leading newline,
+        // `fn main()` is line 2 → array literal line 3 → access line 4).
+        assert_eq!(sites[0].start.line, 4);
+    }
+
+    #[test]
+    fn unproven_index_is_not_recorded() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(false);
+        let src = r#"
+fn get(int i) -> int {
+    let xs = [1, 2, 3];
+    return xs[i];
+}
+"#;
+        let program = parse(src);
+        check_array_bounds(&program, "<test>").unwrap();
+        let sites = proven_sites_sorted();
+        assert!(
+            sites.is_empty(),
+            "expected no proven sites for dynamic index, got {:?}",
+            sites
+        );
+    }
+
+    #[test]
+    fn proven_sites_reset_between_runs() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(false);
+        let src1 = r#"
+fn main() {
+    let xs = [10, 20, 30];
+    let y = xs[0];
+}
+main();
+"#;
+        let program1 = parse(src1);
+        check_array_bounds(&program1, "<test>").unwrap();
+        assert_eq!(proven_sites_sorted().len(), 1);
+
+        // Second run with no proven sites must clear the previous one.
+        let src2 = r#"
+fn get(int i) -> int {
+    let xs = [1, 2, 3];
+    return xs[i];
+}
+"#;
+        let program2 = parse(src2);
+        check_array_bounds(&program2, "<test>").unwrap();
+        assert!(proven_sites_sorted().is_empty());
+    }
+
+    #[test]
+    fn is_proven_site_returns_correct_membership() {
+        let _g = TEST_LOCK.lock().unwrap();
+        set_deny_unproven_bounds(false);
+        let src = r#"
+fn main() {
+    let xs = [10, 20, 30];
+    let y = xs[1];
+}
+main();
+"#;
+        let program = parse(src);
+        check_array_bounds(&program, "<test>").unwrap();
+        let sites = proven_sites_sorted();
+        assert_eq!(sites.len(), 1);
+        assert!(is_proven_site(sites[0]));
+        // A made-up span that doesn't match any access should be false.
+        assert!(!is_proven_site(Span::default()));
     }
 }

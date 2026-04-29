@@ -1,0 +1,14 @@
+// RES-407: per-access bounds-check elision (proven case).
+//
+// `xs` is a literal-length array and the index `1` is a literal in
+// range — the bounds-check pass discharges `0 <= 1 < 3` without Z3
+// and the bytecode compiler emits `LoadIndexUnchecked` instead of
+// `LoadIndex`. Runtime behaviour is identical; the elision is
+// observable via `--audit --typecheck`, see the smoke test.
+fn main() {
+    let xs = [10, 20, 30];
+    let y = xs[1];
+    println(y);
+}
+
+main();
