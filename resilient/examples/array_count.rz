@@ -1,0 +1,14 @@
+// RES-427 demo: array_count returns the number of matching elements.
+
+fn main() {
+    let xs = [1, 2, 1, 3, 1, 2];
+    println(array_count(xs, 1));
+    println(array_count(xs, 2));
+    println(array_count(xs, 99));
+    println(array_count([], 1));
+
+    let words = ["the", "and", "the", "of", "the"];
+    println(array_count(words, "the"));
+}
+
+main();
