@@ -1,0 +1,14 @@
+// RES-451 demo: array_insert_at / array_remove_at by index.
+
+fn main() {
+    let xs = [1, 2, 3];
+    println(array_insert_at(xs, 0, 0));
+    println(array_insert_at(xs, 3, 4));
+    println(array_insert_at(xs, 1, 99));
+
+    println(array_remove_at([10, 20, 30, 40], 1));
+    println(array_remove_at([10, 20, 30], 0));
+    println(array_remove_at([10, 20, 30], 2));
+}
+
+main();
