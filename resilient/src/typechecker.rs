@@ -1309,6 +1309,14 @@ impl TypeChecker {
         };
         env.set("is_empty".to_string(), str_to_bool_b.clone());
         env.set("is_blank".to_string(), str_to_bool_b);
+        // RES-480: replace only first occurrence.
+        env.set(
+            "string_replace_first".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String, Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4366,6 +4374,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-479: string predicates.
         "is_empty",
         "is_blank",
+        // RES-480: string_replace_first.
+        "string_replace_first",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
