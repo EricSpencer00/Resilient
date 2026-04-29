@@ -1,0 +1,13 @@
+// RES-435 demo: array_chunk splits an array into fixed-size chunks.
+
+fn main() {
+    println(array_chunk([1, 2, 3, 4, 5, 6], 2));
+    // Last chunk is short when len is not a multiple of n.
+    println(array_chunk([1, 2, 3, 4, 5], 2));
+    // n larger than len → single short chunk.
+    println(array_chunk([1, 2], 99));
+    // Empty input → empty result.
+    println(array_chunk([], 3));
+}
+
+main();
