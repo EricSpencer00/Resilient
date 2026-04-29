@@ -8293,6 +8293,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_not", builtin_bit_not),
     ("bit_shl", builtin_bit_shl),
     ("bit_shr", builtin_bit_shr),
+    // RES-442: byte index of last substring occurrence, or -1.
+    ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9227,6 +9229,25 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-442: `last_index_of(s, sub)` — last byte index of `sub` in `s`,
+/// or -1 if absent. Empty `sub` returns `len(s)` (mirrors str::rfind).
+fn builtin_last_index_of(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sub)] => match s.rfind(sub.as_str()) {
+            Some(idx) => Ok(Value::Int(idx as i64)),
+            None => Ok(Value::Int(-1)),
+        },
+        [a, b] => Err(format!(
+            "last_index_of: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "last_index_of: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -26842,6 +26863,65 @@ mod tests {
             builtin_bit_not(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-442: last_index_of ----------
+
+    #[test]
+    fn last_index_of_finds_last_occurrence() {
+        assert_int(
+            builtin_last_index_of(&[
+                Value::String("the the the".into()),
+                Value::String("the".into()),
+            ])
+            .unwrap(),
+            8,
+            "last 'the'",
+        );
+        assert_int(
+            builtin_last_index_of(&[
+                Value::String("hello world".into()),
+                Value::String("world".into()),
+            ])
+            .unwrap(),
+            6,
+            "single occurrence",
+        );
+    }
+
+    #[test]
+    fn last_index_of_returns_minus_one_when_not_found() {
+        assert_int(
+            builtin_last_index_of(&[Value::String("abc".into()), Value::String("xyz".into())])
+                .unwrap(),
+            -1,
+            "not found",
+        );
+    }
+
+    #[test]
+    fn last_index_of_empty_substring_returns_len() {
+        // str::rfind("") returns Some(s.len()) per Rust semantics.
+        assert_int(
+            builtin_last_index_of(&[Value::String("abc".into()), Value::String("".into())])
+                .unwrap(),
+            3,
+            "empty needle = len",
+        );
+    }
+
+    #[test]
+    fn last_index_of_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_last_index_of(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_last_index_of(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
