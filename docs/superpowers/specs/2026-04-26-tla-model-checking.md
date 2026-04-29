@@ -380,7 +380,9 @@ Maintainer review 2026-04-26 — defaults confirmed:
 - [ ] **V1 design choices preservation** — open follow-up: explicit sweep
       across the V1 actor backlog (RES-208, RES-332, RES-333) to confirm
       message-ordering and atomicity granularity are pinned down before
-      V1 ships. Tracked under RES-396 follow-ons.
+      V1 ships. Tracked under RES-396 follow-ons in
+      [2026-04-29-tla-decision-closure.md](2026-04-29-tla-decision-closure.md)
+      (Follow-up 1).
 
 ---
 
