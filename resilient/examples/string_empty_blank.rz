@@ -1,0 +1,14 @@
+// RES-479 demo: is_empty (strict) vs is_blank (whitespace-only).
+
+fn main() {
+    println(is_empty(""));
+    println(is_empty(" "));
+    println(is_empty("hello"));
+
+    println(is_blank(""));
+    println(is_blank("   "));
+    println(is_blank("\t\n "));
+    println(is_blank(" hi "));
+}
+
+main();
