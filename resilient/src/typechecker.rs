@@ -911,6 +911,10 @@ impl TypeChecker {
         env.set("abs".to_string(), fn_any_to_any());
         // RES-410: sign(x) — -1/0/+1.
         env.set("sign".to_string(), fn_any_to_any());
+        // RES-411: float predicates — return Bool, signed as Any per pattern.
+        env.set("is_nan".to_string(), fn_any_to_any());
+        env.set("is_inf".to_string(), fn_any_to_any());
+        env.set("is_finite".to_string(), fn_any_to_any());
         env.set("sqrt".to_string(), fn_any_to_any());
         env.set("floor".to_string(), fn_any_to_any());
         env.set("ceil".to_string(), fn_any_to_any());
@@ -3847,6 +3851,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "abs",
         // RES-410: sign(x).
         "sign",
+        // RES-411: float predicates.
+        "is_nan",
+        "is_inf",
+        "is_finite",
         "min",
         "max",
         // RES-295.
