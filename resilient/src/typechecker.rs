@@ -1738,6 +1738,7 @@ impl TypeChecker {
                 crate::default_params::check(program, source_path)?;
                 crate::generics::check(program, source_path)?;
                 crate::newtypes::check(program, source_path)?;
+                crate::traits::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
@@ -3394,6 +3395,9 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
+            // RES-290: trait declarations carry only signatures and are
+            // validated by `crate::traits::check`; nothing to do here.
+            Node::TraitDecl { .. } => Ok(Type::Void),
         }
     }
 

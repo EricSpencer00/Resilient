@@ -1,0 +1,39 @@
+// RES-290: trait / interface system — Comparable demo.
+//
+// Declares a `Comparable` trait, an explicit `impl Comparable for
+// Score` block, and a generic helper `compare_against<T: Comparable>`
+// whose bound is validated at the call site. Passing a struct that
+// implements the trait is accepted; passing one that doesn't would
+// be rejected by the typechecker (covered by traits.rs unit tests).
+
+trait Comparable {
+    fn cmp(self, int other) -> int;
+}
+
+struct Score {
+    int value,
+}
+
+impl Comparable for Score {
+    fn cmp(self, int other) -> int {
+        if self.value < other {
+            return -1;
+        }
+        if self.value > other {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+fn compare_against<T: Comparable>(T item, int threshold) -> int {
+    return item.cmp(threshold);
+}
+
+fn main() {
+    println(compare_against(new Score { value: 42 }, 40));
+    println(compare_against(new Score { value: 42 }, 42));
+    println(compare_against(new Score { value: 42 }, 50));
+}
+
+main();
