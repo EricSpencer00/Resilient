@@ -1,0 +1,13 @@
+  a
+  b
+  c
+---
+    foo
+---
+  a
+  b
+
+---
+
+---
+Program executed successfully

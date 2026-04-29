@@ -8292,6 +8292,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_ascii_alnum", builtin_is_ascii_alnum),
     // RES-460: trim arbitrary char set from both sides.
     ("trim_chars", builtin_trim_chars),
+    // RES-461: indent every line with n ASCII spaces.
+    ("string_indent", builtin_string_indent),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9845,6 +9847,49 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-461: `string_indent(s, n)` — prefix every line of `s` with `n`
+/// ASCII spaces. Useful for formatting nested output. Negative `n` is
+/// a typed error. Empty input → empty.
+fn builtin_string_indent(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "string_indent: width must be non-negative, got {}",
+                    n
+                ));
+            }
+            if s.is_empty() {
+                return Ok(Value::String(String::new()));
+            }
+            let pad = " ".repeat(*n as usize);
+            // Note: lines() treats trailing newline as a separator and
+            // does not yield an empty trailing line. Preserve trailing
+            // newline if present.
+            let trailing_nl = s.ends_with('\n');
+            let body: String = s
+                .lines()
+                .map(|line| format!("{}{}", pad, line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let out = if trailing_nl {
+                format!("{}\n", body)
+            } else {
+                body
+            };
+            Ok(Value::String(out))
+        }
+        [a, b] => Err(format!(
+            "string_indent: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_indent: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28967,6 +29012,89 @@ mod tests {
         );
         assert!(
             builtin_trim_chars(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-461: string_indent ----------
+
+    #[test]
+    fn string_indent_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_string_indent(&[Value::String("a\nb\nc".into()), Value::Int(2)]).unwrap()
+            ),
+            "  a\n  b\n  c"
+        );
+    }
+
+    #[test]
+    fn string_indent_zero_width_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_string_indent(&[Value::String("a\nb".into()), Value::Int(0)]).unwrap()
+            ),
+            "a\nb"
+        );
+    }
+
+    #[test]
+    fn string_indent_single_line() {
+        assert_eq!(
+            extract_string(
+                builtin_string_indent(&[Value::String("hello".into()), Value::Int(4)]).unwrap()
+            ),
+            "    hello"
+        );
+    }
+
+    #[test]
+    fn string_indent_preserves_trailing_newline() {
+        assert_eq!(
+            extract_string(
+                builtin_string_indent(&[Value::String("a\nb\n".into()), Value::Int(2)]).unwrap()
+            ),
+            "  a\n  b\n"
+        );
+    }
+
+    #[test]
+    fn string_indent_blank_lines_get_indented() {
+        // A blank line still gets the indent prefix.
+        assert_eq!(
+            extract_string(
+                builtin_string_indent(&[Value::String("a\n\nb".into()), Value::Int(2)]).unwrap()
+            ),
+            "  a\n  \n  b"
+        );
+    }
+
+    #[test]
+    fn string_indent_empty_input() {
+        assert_eq!(
+            extract_string(
+                builtin_string_indent(&[Value::String("".into()), Value::Int(4)]).unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn string_indent_rejects_negative_width() {
+        let err = builtin_string_indent(&[Value::String("a".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_indent_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_indent(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_string_indent(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
