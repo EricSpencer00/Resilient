@@ -1,0 +1,11 @@
+// RES-458 demo: array_cycle repeats an array n times.
+
+fn main() {
+    println(array_cycle([1, 2], 3));
+    println(array_cycle([1, 2, 3], 0));
+    println(array_cycle([5, 6, 7], 1));
+    println(array_cycle([], 99));
+    println(array_cycle(["a", "b"], 4));
+}
+
+main();
