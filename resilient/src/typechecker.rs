@@ -1069,6 +1069,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-414: first byte index of sub in s, or -1.
+        env.set(
+            "index_of".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-145: replace + format.
         env.set(
             "replace".to_string(),
@@ -3904,6 +3912,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_reverse",
         // RES-413: repeat a string.
         "string_repeat",
+        // RES-414: substring search.
+        "index_of",
         "replace",
         "format",
         "starts_with",
