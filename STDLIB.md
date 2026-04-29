@@ -32,6 +32,7 @@ This document is a human-facing summary grouped by category.
 | `gcd(a, b)` | (int, int) → int | RES-415: Euclidean algorithm on absolute values; gcd(0,0)=0 |
 | `lcm(a, b)` | (int, int) → int | RES-415: lcm(0, _) = 0 by convention |
 | `is_nan(x)` `is_inf(x)` `is_finite(x)` | number → bool | RES-411: IEEE 754 float predicates; ints flow through as finite |
+| `int_min()` `int_max()` | () → int | RES-447: i64::MIN / i64::MAX boundary constants |
 | `sqrt(x)` | number → float | NaN on negative input |
 | `pow(a, b)` | (number, number) → float | `a^b` |
 | `floor(x)` | number → float | toward -∞ |
@@ -85,6 +86,17 @@ This document is a human-facing summary grouped by category.
 | `chr(n)` | int → string | RES-419: single-char string for Unicode scalar; surrogate / out-of-range errors |
 | `ord(s)` | string → int | RES-419: Unicode scalar of single-character string |
 | `to_string(x)` | scalar → string | RES-425: explicit conversion (Int / Float / Bool / String pass-through) |
+| `last_index_of(s, sub)` | (string, string) → int | RES-442: last byte index of `sub` in `s`, or -1; empty needle returns `len(s)` |
+| `string_find_all(s, sub)` | (string, string) → array of int | RES-446: every non-overlapping match index; empty needle is a typed error |
+| `string_at(s, i)` | (string, int) → string | RES-453: i-th Unicode scalar as a single-char string; out-of-range / negative is a typed error |
+| `string_substring(s, start, end)` | (string, int, int) → string | RES-454: half-open Unicode-scalar slice; indices clamped; start > end errors |
+| `string_capitalize(s)` | string → string | RES-457: ASCII first char upper, rest lower |
+| `string_bytes_len(s)` | string → int | RES-463: UTF-8 byte length (vs `len` which counts scalars) |
+| `string_indent(s, n)` | (string, int) → string | RES-461: prefix every line with n spaces; trailing newline preserved |
+| `trim_chars(s, chars)` | (string, string) → string | RES-460: strip arbitrary char set from both sides |
+| `is_ascii_alpha(s)` `is_ascii_digit(s)` `is_ascii_alnum(s)` | string → bool | RES-459: every-char ASCII-class predicates; empty is vacuously true |
+| `parse_int_base(s, base)` | (string, int) → Result<Int, String> | RES-464: parse with explicit radix (2..=36); whitespace stripped |
+| `int_to_base(n, base)` | (int, int) → string | RES-465: render with explicit radix; round-trips with `parse_int_base` |
 
 ### Notes on RES-339 parsing builtins
 
@@ -147,6 +159,24 @@ match r {
 | `array_contains(arr, x)` | (array, T) → bool | RES-418: scalar value-equality (Int↔Float coerce) |
 | `array_index_of(arr, x)` | (array, T) → int | RES-418: first matching index, or -1 |
 | `array_count(arr, x)` | (array, T) → int | RES-427: number of matching elements |
+| `array_position(arr, x, start)` | (array, T, int) → int | RES-448: array_index_of starting at `start` (clamped at 0); -1 if absent |
+| `array_swap(arr, i, j)` | (array, int, int) → array | RES-450: bounds-checked element exchange; new array |
+| `array_insert_at(arr, i, x)` | (array, int, T) → array | RES-451: insert at i; valid range [0, len]; i==len appends |
+| `array_remove_at(arr, i)` | (array, int) → array | RES-451: remove at i; valid range [0, len) |
+| `array_set_at(arr, i, x)` | (array, int, T) → array | RES-452: replace element at i; bounds-checked |
+| `array_remove(arr, x)` | (array, T) → array | RES-466: drop the first element matching x; clone if absent |
+| `array_remove_all(arr, x)` | (array, T) → array | RES-467: drop every matching element |
+| `array_dedup(arr)` | array → array | RES-468: collapse adjacent duplicates (vs array_unique which dedupes globally) |
+| `array_all_eq(arr, x)` | (array, T) → bool | RES-469: every element equals x; empty is vacuously true |
+| `array_any_eq(arr, x)` | (array, T) → bool | RES-469: alias for `array_contains` |
+| `array_starts_with(arr, prefix)` `array_ends_with(arr, suffix)` | (array, array) → bool | RES-445: scalar value-equality on element prefixes/suffixes |
+| `array_window(arr, n)` | (array, int) → array of array | RES-455: sliding windows; n must be > 0 |
+| `array_pairs(arr)` | array → array of tuple | RES-462: adjacent 2-tuples (`array_window` analog yielding tuples) |
+| `array_rotate_left(arr, n)` `array_rotate_right(arr, n)` | (array, int) → array | RES-456: cyclic shift; n reduced modulo len |
+| `array_shuffle(arr)` | array → array | RES-444: Fisher-Yates random permutation; impure (RNG) |
+| `array_pad_left(arr, n, fill)` `array_pad_right(arr, n, fill)` | (array, int, T) → array | RES-449: pad to length n with fill |
+| `array_cycle(arr, n)` | (array, int) → array | RES-458: concatenate arr to itself n times; cap 1B |
+| `array_sort_desc(arr)` | array of int → array of int | RES-443: descending sort |
 
 ### Maps
 
