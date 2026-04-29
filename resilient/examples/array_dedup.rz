@@ -1,0 +1,12 @@
+// RES-468 demo: array_dedup collapses runs of adjacent duplicates.
+
+fn main() {
+    println(array_dedup([1, 1, 2, 2, 2, 3, 3, 1]));
+    // Distinct from array_unique: non-adjacent dupes survive dedup.
+    println(array_dedup([1, 2, 1, 2, 1]));
+    println(array_dedup([7, 7, 7, 7]));
+    println(array_dedup([]));
+    println(array_dedup([42]));
+}
+
+main();
