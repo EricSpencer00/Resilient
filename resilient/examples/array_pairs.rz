@@ -1,0 +1,10 @@
+// RES-462 demo: array_pairs returns adjacent 2-tuples for destructuring.
+
+fn main() {
+    println(array_pairs([1, 2, 3, 4, 5]));
+    println(array_pairs([10, 20]));
+    println(array_pairs([42]));
+    println(array_pairs([]));
+}
+
+main();
