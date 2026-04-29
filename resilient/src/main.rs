@@ -8314,6 +8314,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-471: conditional prefix/suffix strippers.
     ("string_strip_prefix", builtin_string_strip_prefix),
     ("string_strip_suffix", builtin_string_strip_suffix),
+    // RES-472: element-wise array equality.
+    ("array_eq", builtin_array_eq),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9867,6 +9869,40 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-472: `array_eq(a, b)` — true iff `a` and `b` have equal length
+/// and equal scalar elements at each index. Non-scalar elements are a
+/// typed error; identical arrays of length 0 return true.
+fn builtin_array_eq(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            if a.len() != b.len() {
+                return Ok(Value::Bool(false));
+            }
+            for (x, y) in a.iter().zip(b.iter()) {
+                match array_search_eq(x, y) {
+                    Some(true) => continue,
+                    Some(false) => return Ok(Value::Bool(false)),
+                    None => {
+                        return Err(format!(
+                            "array_eq: element types not comparable ({} vs {})",
+                            x, y
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Bool(true))
+        }
+        [a, b] => Err(format!(
+            "array_eq: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_eq: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -30185,6 +30221,82 @@ mod tests {
         );
         assert!(
             builtin_string_strip_suffix(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-472: array_eq ----------
+
+    #[test]
+    fn array_eq_identical_returns_true() {
+        assert_eq_bool(
+            builtin_array_eq(&[int_array(&[1, 2, 3]), int_array(&[1, 2, 3])]).unwrap(),
+            true,
+            "identical",
+        );
+    }
+
+    #[test]
+    fn array_eq_different_lengths_false() {
+        assert_eq_bool(
+            builtin_array_eq(&[int_array(&[1, 2, 3]), int_array(&[1, 2])]).unwrap(),
+            false,
+            "len mismatch",
+        );
+    }
+
+    #[test]
+    fn array_eq_different_elements_false() {
+        assert_eq_bool(
+            builtin_array_eq(&[int_array(&[1, 2, 3]), int_array(&[1, 9, 3])]).unwrap(),
+            false,
+            "element mismatch",
+        );
+    }
+
+    #[test]
+    fn array_eq_empty_arrays_true() {
+        assert_eq_bool(
+            builtin_array_eq(&[Value::Array(vec![]), Value::Array(vec![])]).unwrap(),
+            true,
+            "both empty",
+        );
+    }
+
+    #[test]
+    fn array_eq_int_float_coerce() {
+        // [1, 2.0, 3] == [1.0, 2, 3] under scalar coercion.
+        assert_eq_bool(
+            builtin_array_eq(&[
+                Value::Array(vec![Value::Int(1), Value::Float(2.0), Value::Int(3)]),
+                Value::Array(vec![Value::Float(1.0), Value::Int(2), Value::Int(3)]),
+            ])
+            .unwrap(),
+            true,
+            "int/float",
+        );
+    }
+
+    #[test]
+    fn array_eq_rejects_non_scalar_element() {
+        let err = builtin_array_eq(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_eq_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_eq(&[Value::Int(1), int_array(&[1])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_eq(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
