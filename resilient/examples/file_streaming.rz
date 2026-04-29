@@ -1,0 +1,33 @@
+// RES-409: streaming file I/O — open, chunked read, seek, close.
+//
+// Writes a known string to a tmpfile, then reads it back chunk by
+// chunk to demonstrate that memory-bounded reads are now possible.
+// Cleans up at the end so re-runs are deterministic.
+fn main() {
+    let path = "/tmp/resilient-res409-streaming.txt";
+
+    // Bootstrap the file with the existing whole-file writer.
+    file_write(path, "abcdefghij");
+
+    // Open a streaming reader.
+    let opened = file_open(path, "r");
+    let f = unwrap(opened);
+
+    // Read 3 bytes at a time.
+    let chunk1 = unwrap(file_read_chunk(f, 3));
+    println(chunk1);
+    let chunk2 = unwrap(file_read_chunk(f, 3));
+    println(chunk2);
+
+    // Seek back to the start.
+    let pos = unwrap(file_seek(f, 0, "start"));
+    println(pos);
+    let chunk3 = unwrap(file_read_chunk(f, 5));
+    println(chunk3);
+
+    // Close — second close would error.
+    let close = file_close(f);
+    println(is_ok(close));
+}
+
+main();

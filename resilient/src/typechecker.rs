@@ -1239,6 +1239,47 @@ impl TypeChecker {
             },
         );
 
+        // RES-409: streaming file I/O — `file_open`, `file_read_chunk`,
+        // `file_write_chunk`, `file_seek`, `file_close`. The `File`
+        // handle is a `Type::Any` (a struct in disguise) until the type
+        // system grows a dedicated linear-resource form. Each builtin
+        // returns `Type::Result` so the user is forced to handle errors.
+        env.set(
+            "file_open".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "file_read_chunk".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "file_write_chunk".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Bytes],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "file_seek".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::String],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        env.set(
+            "file_close".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Result),
+            },
+        );
+
         // RES-151: read-only env-var accessor. `Result<String, String>`
         // — absence is a first-class outcome, not a runtime halt.
         env.set(
@@ -3481,6 +3522,13 @@ const IMPURE_BUILTINS: &[&str] = &[
     // RES-143: disk I/O.
     "file_read",
     "file_write",
+    // RES-409: streaming file I/O. All five reach the disk and so
+    // count as impure for the effect inferrer.
+    "file_open",
+    "file_read_chunk",
+    "file_write_chunk",
+    "file_seek",
+    "file_close",
     // RES-151: env-var reads depend on process state outside
     // the fn.
     "env",
