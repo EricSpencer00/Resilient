@@ -1,0 +1,11 @@
+// RES-414 demo: index_of(s, sub) returns first byte index or -1.
+
+fn main() {
+    println(index_of("hello world", "world"));
+    println(index_of("hello world", "xyz"));
+    println(index_of("abc", ""));
+    println(index_of("foobar", "foo"));
+    println(index_of("aaa", "a"));
+}
+
+main();
