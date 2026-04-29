@@ -1,0 +1,7 @@
+00042
+    hi
+hi...
+x***
+longstring
+a
+Program executed successfully
