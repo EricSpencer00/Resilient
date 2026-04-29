@@ -8267,6 +8267,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_pad_right", builtin_string_pad_right),
     // RES-430: pair elements as tuples; truncate to shorter array.
     ("array_zip", builtin_array_zip),
+    // RES-431: generate [start, start+1, ..., end-1].
+    ("array_range", builtin_array_range),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9201,6 +9203,41 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-431: `array_range(start, end)` — half-open integer range
+/// [start, end). `start >= end` returns empty (no error).
+fn builtin_array_range(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(start), Value::Int(end)] => {
+            if start >= end {
+                return Ok(Value::Array(Vec::new()));
+            }
+            // i64 difference fits in usize on 64-bit platforms; clamp
+            // to a sensible upper bound to avoid OOM on absurd inputs.
+            const MAX_RANGE: i64 = 1_000_000_000;
+            let span = end - start;
+            if span > MAX_RANGE {
+                return Err(format!(
+                    "array_range: range {} too large (max {})",
+                    span, MAX_RANGE
+                ));
+            }
+            let mut out = Vec::with_capacity(span as usize);
+            for i in *start..*end {
+                out.push(Value::Int(i));
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_range: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_range: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -25757,6 +25794,68 @@ mod tests {
         );
         assert!(
             builtin_array_zip(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-431: array_range ----------
+
+    #[test]
+    fn array_range_basic() {
+        assert_eq!(
+            extract_int_array(builtin_array_range(&[Value::Int(0), Value::Int(5)]).unwrap()),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_eq!(
+            extract_int_array(builtin_array_range(&[Value::Int(3), Value::Int(7)]).unwrap()),
+            vec![3, 4, 5, 6]
+        );
+    }
+
+    #[test]
+    fn array_range_handles_negatives() {
+        assert_eq!(
+            extract_int_array(builtin_array_range(&[Value::Int(-3), Value::Int(2)]).unwrap()),
+            vec![-3, -2, -1, 0, 1]
+        );
+    }
+
+    #[test]
+    fn array_range_empty_when_start_ge_end() {
+        assert_eq!(
+            extract_int_array(builtin_array_range(&[Value::Int(5), Value::Int(5)]).unwrap()),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            extract_int_array(builtin_array_range(&[Value::Int(5), Value::Int(0)]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_range_single_element() {
+        assert_eq!(
+            extract_int_array(builtin_array_range(&[Value::Int(7), Value::Int(8)]).unwrap()),
+            vec![7]
+        );
+    }
+
+    #[test]
+    fn array_range_rejects_too_large() {
+        let err = builtin_array_range(&[Value::Int(0), Value::Int(2_000_000_000)]).unwrap_err();
+        assert!(err.contains("too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_range_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_range(&[Value::Float(1.0), Value::Int(5)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_array_range(&[Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
