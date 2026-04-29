@@ -1079,6 +1079,9 @@ impl TypeChecker {
         // RES-416: integer-array reductions.
         env.set("array_sum".to_string(), fn_any_to_any());
         env.set("array_product".to_string(), fn_any_to_any());
+        // RES-417: array min/max.
+        env.set("array_min".to_string(), fn_any_to_any());
+        env.set("array_max".to_string(), fn_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -3934,6 +3937,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-416: array reductions.
         "array_sum",
         "array_product",
+        // RES-417: array min/max.
+        "array_min",
+        "array_max",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
