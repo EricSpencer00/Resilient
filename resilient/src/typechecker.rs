@@ -1276,6 +1276,13 @@ impl TypeChecker {
         env.set("string_strip_suffix".to_string(), str_str_to_str);
         // RES-472: element-wise array equality.
         env.set("array_eq".to_string(), fn_any_any_to_any());
+        // RES-473: ternary numeric min/max.
+        let any3_to_any = Type::Function {
+            params: vec![Type::Any, Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        };
+        env.set("min3".to_string(), any3_to_any.clone());
+        env.set("max3".to_string(), any3_to_any);
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4318,6 +4325,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_strip_suffix",
         // RES-472: array_eq.
         "array_eq",
+        // RES-473: min3 / max3.
+        "min3",
+        "max3",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
