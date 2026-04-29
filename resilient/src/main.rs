@@ -9132,19 +9132,28 @@ fn builtin_pad_right(args: &[Value]) -> RResult<Value> {
     }
 }
 
-/// RES-145: `format(fmt, args)` — interpolate an array of values into
-/// a format string. Grammar:
+/// RES-145 / RES-404: `format(fmt, args)` — interpolate an array of
+/// values into a format string with optional printf-style specifiers.
+///
+/// Grammar:
 ///
 /// - `{}` consumes the next argument, left-to-right. The value is
 ///   rendered via its runtime `Display` impl (so strings print
 ///   unquoted, like `println`).
+/// - `{:spec}` consumes the next argument and applies a format spec.
+///   Supported (a strict subset of Rust's `std::fmt`):
+///   `[align][0][width][.precision][type]`. `align` is `<` (left) or
+///   `>` (right) — default is right for numbers, left for strings.
+///   `0` zero-pads numbers (sign before the zeros for negatives).
+///   `width` is the minimum total character width.
+///   `.precision` is digit count after the decimal for floats and
+///   truncation length for strings. `type` is `x` / `X` (hex), `b`
+///   (binary), `o` (octal) — numbers only.
 /// - `{{` / `}}` escape to a literal `{` / `}`.
-/// - Any other use of `{` / `}` is a runtime error: unmatched open,
-///   unmatched close, or a non-empty specifier like `{:width}`
-///   (deliberately out of scope — this is not printf; see the
-///   ticket's Notes).
-/// - Mismatched arg count (fewer args than `{}` placeholders, or
-///   leftover args) is a runtime error.
+/// - Any other use of `{` / `}` (positional indices, unsupported
+///   specifier characters) is a runtime error.
+/// - Mismatched arg count (fewer args than placeholders, or leftover
+///   args) is a runtime error.
 fn builtin_format(args: &[Value]) -> RResult<Value> {
     let (fmt, pool) = match args {
         [Value::String(f), Value::Array(a)] => (f, a),
@@ -9175,30 +9184,38 @@ fn builtin_format(args: &[Value]) -> RResult<Value> {
                     i += 2;
                     continue;
                 }
-                // `{}` → consume next arg.
-                if i + 1 < bytes.len() && bytes[i + 1] == b'}' {
-                    let v = pool.get(idx).ok_or_else(|| {
-                        format!(
-                            "format: not enough arguments — placeholder #{} has no value (got {} total)",
-                            idx + 1,
-                            pool.len()
-                        )
-                    })?;
-                    match v {
-                        Value::String(s) => out.push_str(s),
-                        other => out.push_str(&format!("{}", other)),
-                    }
-                    idx += 1;
-                    i += 2;
-                    continue;
-                }
-                // Anything else after `{` is rejected — either an
-                // unmatched `{` or a specifier like `{:04}` which
-                // the MVP deliberately doesn't parse.
-                return Err(format!(
-                    "format: unexpected `{{` at byte {} — only `{{}}` (placeholder) and `{{{{` (escaped brace) are supported",
-                    i
-                ));
+                // Find matching `}`. The supported subset cannot
+                // contain `}` inside the spec, so first close wins.
+                let close_rel = fmt[i + 1..]
+                    .find('}')
+                    .ok_or_else(|| format!("format: unterminated `{{` at byte {}", i))?;
+                let close = i + 1 + close_rel;
+                let inner = &fmt[i + 1..close];
+
+                // Parse the inner: empty → default; `:spec` → parse
+                // spec; anything else is a positional index, which
+                // we don't support.
+                let spec = if inner.is_empty() {
+                    FormatSpec::default()
+                } else if let Some(spec_src) = inner.strip_prefix(':') {
+                    parse_format_spec(spec_src)?
+                } else {
+                    return Err(format!(
+                        "format: positional indices are not supported — only `{{}}` and `{{:spec}}` (got `{{{}}}`)",
+                        inner
+                    ));
+                };
+
+                let v = pool.get(idx).ok_or_else(|| {
+                    format!(
+                        "format: not enough arguments — placeholder #{} has no value (got {} total)",
+                        idx + 1,
+                        pool.len()
+                    )
+                })?;
+                out.push_str(&apply_format_spec(v, &spec)?);
+                idx += 1;
+                i = close + 1;
             }
             b'}' => {
                 // `}}` → literal `}`.
@@ -9213,9 +9230,6 @@ fn builtin_format(args: &[Value]) -> RResult<Value> {
                 ));
             }
             _ => {
-                // Copy one UTF-8 scalar at a time using the string
-                // slice: `char_indices` would do this, but we're
-                // already walking bytes. Find the next char boundary.
                 let rest = &fmt[i..];
                 let ch = rest.chars().next().unwrap();
                 out.push(ch);
@@ -9233,6 +9247,218 @@ fn builtin_format(args: &[Value]) -> RResult<Value> {
     }
 
     Ok(Value::String(out))
+}
+
+/// RES-404: parsed format specifier from a `{:spec}` placeholder.
+#[derive(Default, Debug)]
+struct FormatSpec {
+    align: Option<char>,
+    zero_pad: bool,
+    width: Option<usize>,
+    precision: Option<usize>,
+    radix: Option<char>,
+}
+
+/// RES-404: parse the inside of `{:...}` (the part after the colon).
+fn parse_format_spec(spec_src: &str) -> Result<FormatSpec, String> {
+    let mut spec = FormatSpec::default();
+    let mut s = spec_src;
+
+    // [align]: `<` or `>`.
+    if let Some(c) = s.chars().next()
+        && (c == '<' || c == '>')
+    {
+        spec.align = Some(c);
+        s = &s[c.len_utf8()..];
+    }
+
+    // [0]: zero-pad flag. Only consume the leading `0` if it's
+    // followed by another digit — otherwise `{:0}` (width 0) is
+    // a degenerate but legal width specifier.
+    if s.starts_with('0') && s.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) {
+        spec.zero_pad = true;
+        s = &s[1..];
+    }
+
+    // [width]: digits.
+    let digit_end = s
+        .bytes()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(s.len());
+    if digit_end > 0 {
+        spec.width = Some(
+            s[..digit_end]
+                .parse::<usize>()
+                .map_err(|_| format!("format: invalid width in spec `{}`", spec_src))?,
+        );
+        s = &s[digit_end..];
+    }
+
+    // [.precision]: `.` then digits.
+    if let Some(rest) = s.strip_prefix('.') {
+        let pdigit_end = rest
+            .bytes()
+            .position(|b| !b.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if pdigit_end == 0 {
+            return Err(format!(
+                "format: expected digits after `.` in spec `{}`",
+                spec_src
+            ));
+        }
+        spec.precision = Some(rest[..pdigit_end].parse::<usize>().unwrap());
+        s = &rest[pdigit_end..];
+    }
+
+    // [type]: x / X / b / o.
+    if let Some(c) = s.chars().next()
+        && matches!(c, 'x' | 'X' | 'b' | 'o')
+    {
+        spec.radix = Some(c);
+        s = &s[c.len_utf8()..];
+    }
+
+    if !s.is_empty() {
+        return Err(format!(
+            "format: unrecognised format spec `{}` (trailing `{}`)",
+            spec_src, s
+        ));
+    }
+
+    Ok(spec)
+}
+
+/// RES-404: render a value through a parsed [`FormatSpec`].
+fn apply_format_spec(value: &Value, spec: &FormatSpec) -> Result<String, String> {
+    // Step 1: render the value's "core" form, applying radix and
+    // precision. Default-align and zero-pad apply afterwards.
+    let core = match value {
+        Value::Int(i) => render_int(*i, spec.radix)?,
+        Value::Float(f) => match spec.precision {
+            None => {
+                if let Some(r) = spec.radix {
+                    return Err(format!(
+                        "format: radix `{}` does not apply to a Float value",
+                        r
+                    ));
+                }
+                f.to_string()
+            }
+            Some(p) => {
+                if let Some(r) = spec.radix {
+                    return Err(format!(
+                        "format: radix `{}` does not apply to a Float value",
+                        r
+                    ));
+                }
+                format!("{:.1$}", f, p)
+            }
+        },
+        Value::String(s) => {
+            if let Some(r) = spec.radix {
+                return Err(format!(
+                    "format: radix `{}` does not apply to a String value",
+                    r
+                ));
+            }
+            match spec.precision {
+                None => s.clone(),
+                Some(p) => s.chars().take(p).collect(),
+            }
+        }
+        Value::Bool(b) => {
+            if let Some(r) = spec.radix {
+                return Err(format!(
+                    "format: radix `{}` does not apply to a Bool value",
+                    r
+                ));
+            }
+            b.to_string()
+        }
+        other => {
+            if spec.radix.is_some() || spec.precision.is_some() {
+                return Err(format!(
+                    "format: radix/precision spec does not apply to value `{}`",
+                    other
+                ));
+            }
+            format!("{}", other)
+        }
+    };
+
+    // Step 2: apply width / fill / alignment.
+    let Some(width) = spec.width else {
+        return Ok(core);
+    };
+    let len = core.chars().count();
+    if len >= width {
+        return Ok(core);
+    }
+    let pad_count = width - len;
+
+    let default_align = match value {
+        Value::String(_) => '<',
+        _ => '>',
+    };
+    let align = spec.align.unwrap_or(default_align);
+    let fill = if spec.zero_pad { '0' } else { ' ' };
+
+    // Special case: zero-pad, right-align, negative number — sign
+    // goes before the zeros (matches Rust's behaviour).
+    if fill == '0' && align == '>' && core.starts_with('-') {
+        let mut buf = String::with_capacity(width);
+        buf.push('-');
+        for _ in 0..pad_count {
+            buf.push('0');
+        }
+        buf.push_str(&core[1..]);
+        return Ok(buf);
+    }
+
+    let pad: String = std::iter::repeat_n(fill, pad_count).collect();
+    Ok(match align {
+        '<' => format!("{}{}", core, pad),
+        _ => format!("{}{}", pad, core),
+    })
+}
+
+/// RES-404: render an integer with the optional radix specifier.
+/// Negative values keep their leading sign in every base.
+fn render_int(i: i64, radix: Option<char>) -> Result<String, String> {
+    Ok(match radix {
+        None => i.to_string(),
+        Some('x') => {
+            if i < 0 {
+                format!("-{:x}", i.unsigned_abs())
+            } else {
+                format!("{:x}", i)
+            }
+        }
+        Some('X') => {
+            if i < 0 {
+                format!("-{:X}", i.unsigned_abs())
+            } else {
+                format!("{:X}", i)
+            }
+        }
+        Some('b') => {
+            if i < 0 {
+                format!("-{:b}", i.unsigned_abs())
+            } else {
+                format!("{:b}", i)
+            }
+        }
+        Some('o') => {
+            if i < 0 {
+                format!("-{:o}", i.unsigned_abs())
+            } else {
+                format!("{:o}", i)
+            }
+        }
+        Some(other) => {
+            return Err(format!("format: unknown radix `{}`", other));
+        }
+    })
 }
 
 /// `push(arr, x)` — returns a new array with `x` appended. The input
@@ -14121,6 +14347,30 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
         );
     }
 
+    // RES-407: bounds-check elision summary. Sourced from the
+    // bounds_check pass's thread-local stats. The counts are zero
+    // when the pass didn't run (no `--typecheck`), in which case we
+    // skip the section entirely so the audit stays tidy.
+    let bstats = bounds_check::last_stats();
+    let total_bounds = bstats.proven + bstats.unproven;
+    if total_bounds > 0 {
+        println!();
+        println!(
+            "  array-bounds elided (proven static):      \x1B[32m{} / {}\x1B[0m",
+            bstats.proven, total_bounds
+        );
+        println!(
+            "  array-bounds left for runtime check:      \x1B[33m{} / {}\x1B[0m",
+            bstats.unproven, total_bounds
+        );
+        for site in bounds_check::proven_sites_sorted() {
+            println!(
+                "    \x1B[32melided\x1B[0m at {}:{}",
+                site.start.line, site.start.column
+            );
+        }
+    }
+
     // RES-192: per-fn inferred effect set. Sorted so the output
     // is stable across runs; color green for pure, yellow for
     // IO. Skips the table entirely when no user fn was seen
@@ -18387,20 +18637,168 @@ mod tests {
     }
 
     #[test]
-    fn format_errors_on_unsupported_specifier() {
-        // `{:04}` is printf-style, out of scope for this MVP.
-        let err = builtin_format(&[
-            Value::String("{:04}".into()),
-            Value::Array(vec![Value::Int(1)]),
-        ])
-        .unwrap_err();
-        assert!(err.contains("unexpected `{`"), "err was: {}", err);
-    }
-
-    #[test]
     fn format_rejects_non_array_second_arg() {
         let err = builtin_format(&[Value::String("{}".into()), Value::Int(42)]).unwrap_err();
         assert!(err.contains("expected (string, array)"), "err was: {}", err);
+    }
+
+    // --- RES-404: format-specifier subset ---
+
+    fn fmt(template: &str, args: Vec<Value>) -> String {
+        match builtin_format(&[Value::String(template.into()), Value::Array(args)]).unwrap() {
+            Value::String(s) => s,
+            other => panic!("expected Value::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn format_zero_pad_int_width() {
+        assert_eq!(fmt("{:04}", vec![Value::Int(7)]), "0007");
+    }
+
+    #[test]
+    fn format_zero_pad_negative_int_keeps_sign() {
+        // Sign comes before the zeros, occupying one slot of the width.
+        assert_eq!(fmt("{:05}", vec![Value::Int(-3)]), "-0003");
+    }
+
+    #[test]
+    fn format_right_align_with_space_pad() {
+        assert_eq!(fmt("{:>5}", vec![Value::Int(42)]), "   42");
+    }
+
+    #[test]
+    fn format_left_align_with_space_pad() {
+        assert_eq!(fmt("{:<5}", vec![Value::Int(42)]), "42   ");
+    }
+
+    #[test]
+    fn format_default_align_int_is_right() {
+        assert_eq!(fmt("{:5}", vec![Value::Int(42)]), "   42");
+    }
+
+    #[test]
+    fn format_default_align_string_is_left() {
+        assert_eq!(fmt("{:5}", vec![Value::String("ab".into())]), "ab   ");
+    }
+
+    #[test]
+    fn format_float_precision() {
+        assert_eq!(fmt("{:.3}", vec![Value::Float(5.6789)]), "5.679");
+    }
+
+    #[test]
+    fn format_hex_lower() {
+        assert_eq!(fmt("{:x}", vec![Value::Int(255)]), "ff");
+    }
+
+    #[test]
+    fn format_hex_upper() {
+        assert_eq!(fmt("{:X}", vec![Value::Int(255)]), "FF");
+    }
+
+    #[test]
+    fn format_binary() {
+        assert_eq!(fmt("{:b}", vec![Value::Int(10)]), "1010");
+    }
+
+    #[test]
+    fn format_octal() {
+        assert_eq!(fmt("{:o}", vec![Value::Int(8)]), "10");
+    }
+
+    #[test]
+    fn format_zero_pad_hex_combined() {
+        assert_eq!(fmt("{:08x}", vec![Value::Int(255)]), "000000ff");
+    }
+
+    #[test]
+    fn format_string_precision_truncates() {
+        assert_eq!(fmt("{:.3}", vec![Value::String("abcdef".into())]), "abc");
+    }
+
+    #[test]
+    fn format_combined_width_and_precision_float() {
+        // Width 8, precision 2 → "    5.68".
+        assert_eq!(fmt("{:8.2}", vec![Value::Float(5.6789)]), "    5.68");
+    }
+
+    #[test]
+    fn format_radix_on_string_errors() {
+        let err = builtin_format(&[
+            Value::String("{:x}".into()),
+            Value::Array(vec![Value::String("abc".into())]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("does not apply to a String value"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_radix_on_float_errors() {
+        let err = builtin_format(&[
+            Value::String("{:b}".into()),
+            Value::Array(vec![Value::Float(1.5)]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("does not apply to a Float value"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_unrecognised_spec_errors() {
+        let err = builtin_format(&[
+            Value::String("{:?}".into()),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unrecognised format spec"), "err was: {}", err);
+    }
+
+    #[test]
+    fn format_dot_without_digits_errors() {
+        let err = builtin_format(&[
+            Value::String("{:.}".into()),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("expected digits after `.`"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_positional_index_unsupported() {
+        let err = builtin_format(&[
+            Value::String("{0}".into()),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("positional indices are not supported"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn format_width_short_circuit_when_value_already_long() {
+        // Width 3 but the rendered value is already 4 chars — no pad.
+        assert_eq!(fmt("{:3}", vec![Value::Int(1234)]), "1234");
+    }
+
+    #[test]
+    fn format_zero_width_no_pad() {
+        // `{:0}` is degenerate but legal: width 0, no padding.
+        assert_eq!(fmt("{:0}", vec![Value::Int(7)]), "7");
     }
 
     // --- RES-144: input() builtin ---

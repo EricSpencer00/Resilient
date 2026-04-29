@@ -1,0 +1,47 @@
+// RES-404: format() specifiers — width, precision, radix.
+//
+// Demonstrates the printf-style format spec subset supported by
+// the format(fmt, args) builtin:
+//   {}         plain placeholder
+//   {:08}      zero-pad to width 8 (right-aligned)
+//   {:>10}     space-pad to width 10, right-align
+//   {:<10}     space-pad to width 10, left-align
+//   {:.3}      float precision (3 fractional digits)
+//   {:x}/{:X}  hex (lower / upper case)
+//   {:b}       binary
+//   {:o}       octal
+//   {:08x}     combined: zero-pad width 8, lower-case hex
+//
+// NOTE: `{` inside a string literal triggers interpolation parsing,
+// so `format()` users escape `{` as `\{`. A follow-up ticket extends
+// interpolation itself with the `{expr:spec}` syntax — until then,
+// `\{...}` is the workaround.
+fn main() {
+    // Plain placeholder
+    println(format("plain: \{}", [42]));
+
+    // Width / padding
+    println(format("zero-pad: [\{:04}]", [7]));
+    println(format("zero-pad-neg: [\{:05}]", [-3]));
+    println(format("right-align: [\{:>5}]", [42]));
+    println(format("left-align: [\{:<5}]", [42]));
+
+    // Float precision
+    println(format("pi: \{:.3}", [3.14159]));
+    println(format("pi-padded: [\{:8.2}]", [3.14159]));
+
+    // Radix
+    println(format("hex-lo: 0x\{:x}", [255]));
+    println(format("hex-up: 0x\{:X}", [255]));
+    println(format("bin: \{:b}", [10]));
+    println(format("oct: \{:o}", [8]));
+
+    // Combined: zero-pad hex (a register dump is the canonical use case)
+    println(format("reg: 0x\{:08x}", [255]));
+
+    // Strings: precision truncates, default alignment is left.
+    println(format("trunc: [\{:.3}]", ["abcdef"]));
+    println(format("padded: [\{:5}]", ["ab"]));
+}
+
+main();
