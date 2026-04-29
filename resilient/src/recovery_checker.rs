@@ -8,7 +8,7 @@
 //
 // V1 emits warnings; V2 will escalate to errors under --v2-strict.
 
-use crate::{Node};
+use crate::Node;
 use std::collections::HashSet;
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
@@ -32,7 +32,9 @@ impl Context {
     }
 
     fn collect_declarations(&mut self, program: &Node) {
-        let Node::Program(statements) = program else { return };
+        let Node::Program(statements) = program else {
+            return;
+        };
         for stmt in statements {
             if let Node::Extern { decls, .. } = &stmt.node {
                 for decl in decls {
@@ -43,7 +45,9 @@ impl Context {
     }
 
     fn check_live_blocks(&mut self, program: &Node) {
-        let Node::Program(statements) = program else { return };
+        let Node::Program(statements) = program else {
+            return;
+        };
         for stmt in statements {
             self.walk_for_live_blocks(&stmt.node);
         }
@@ -57,7 +61,9 @@ impl Context {
                 self.walk_for_live_blocks(body);
                 self.current_fn = prev_fn;
             }
-            Node::LiveBlock { body, invariants, .. } => {
+            Node::LiveBlock {
+                body, invariants, ..
+            } => {
                 self.check_node(body);
                 for inv in invariants {
                     self.check_node(inv);
@@ -68,14 +74,21 @@ impl Context {
                     self.walk_for_live_blocks(stmt);
                 }
             }
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 self.walk_for_live_blocks(condition);
                 self.walk_for_live_blocks(consequence);
                 if let Some(alt) = alternative {
                     self.walk_for_live_blocks(alt);
                 }
             }
-            Node::WhileStatement { condition, body, .. } => {
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
                 self.walk_for_live_blocks(condition);
                 self.walk_for_live_blocks(body);
             }
@@ -89,7 +102,11 @@ impl Context {
 
     fn check_node(&mut self, node: &Node) {
         match node {
-            Node::CallExpression { function, arguments, .. } => {
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
                 if let Some(fn_name) = self.extract_identifier(function) {
                     if self.extern_fns.contains(&fn_name) {
                         eprintln!(
@@ -98,7 +115,7 @@ impl Context {
                             fn_name
                         );
                     } else if let Some(ref current) = self.current_fn {
-                        if fn_name == *current {
+                        if fn_name == current {
                             eprintln!(
                                 "warning: function '{}' recursively calls itself \
                                 in recovery body",
@@ -138,14 +155,21 @@ impl Context {
             Node::Assume { condition, .. } => {
                 self.check_node(condition);
             }
-            Node::IfStatement { condition, consequence, alternative, .. } => {
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
                 self.check_node(condition);
                 self.check_node(consequence);
                 if let Some(alt) = alternative {
                     self.check_node(alt);
                 }
             }
-            Node::WhileStatement { condition, body, .. } => {
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
                 self.check_node(condition);
                 self.check_node(body);
             }
