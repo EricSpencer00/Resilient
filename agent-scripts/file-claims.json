@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-449-array-pad",
-      "claimed_at": "2026-04-29T22:21:47Z"
+      "branch": "res-450-array-swap",
+      "claimed_at": "2026-04-29T22:25:10Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-449-array-pad",
-      "claimed_at": "2026-04-29T22:21:47Z"
+      "branch": "res-450-array-swap",
+      "claimed_at": "2026-04-29T22:25:10Z"
     }
   }
 }
