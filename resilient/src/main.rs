@@ -8251,6 +8251,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_sort", builtin_array_sort),
     // RES-443: descending sort.
     ("array_sort_desc", builtin_array_sort_desc),
+    // RES-444: Fisher-Yates random permutation.
+    ("array_shuffle", builtin_array_shuffle),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9804,6 +9806,29 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-444: `array_shuffle(arr)` — Fisher-Yates random permutation
+/// using the same SplitMix64 RNG state as `random_int`. Empty or
+/// single-element arrays return a clone unchanged. Non-pure (RNG).
+fn builtin_array_shuffle(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out = items.clone();
+            // Fisher-Yates: for i = n-1 down to 1, swap with rand 0..=i.
+            for i in (1..out.len()).rev() {
+                // splitmix64_next gives a u64; reduce to 0..=i.
+                let j = (splitmix64_next() % (i as u64 + 1)) as usize;
+                out.swap(i, j);
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_shuffle: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_shuffle: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -27004,6 +27029,53 @@ mod tests {
         );
         assert!(
             builtin_array_sort_desc(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-444: array_shuffle ----------
+
+    #[test]
+    fn array_shuffle_preserves_length_and_elements() {
+        let result = builtin_array_shuffle(&[int_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])]).unwrap();
+        let mut out = extract_int_array(result);
+        out.sort();
+        assert_eq!(out, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    }
+
+    #[test]
+    fn array_shuffle_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_shuffle(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_shuffle_single_element_unchanged() {
+        assert_eq!(
+            extract_int_array(builtin_array_shuffle(&[int_array(&[42])]).unwrap()),
+            vec![42]
+        );
+    }
+
+    #[test]
+    fn array_shuffle_does_not_mutate_input() {
+        let input = int_array(&[1, 2, 3, 4, 5]);
+        let _ = builtin_array_shuffle(std::slice::from_ref(&input)).unwrap();
+        assert_eq!(extract_int_array(input), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn array_shuffle_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_shuffle(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_shuffle(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

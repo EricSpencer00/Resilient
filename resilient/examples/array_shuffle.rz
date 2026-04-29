@@ -1,0 +1,19 @@
+// RES-444 demo: array_shuffle returns a random permutation.
+// Sort the result back to verify all input elements are preserved.
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let shuffled = array_shuffle(xs);
+    // Length preserved.
+    println(len(shuffled));
+    // Sum preserved (every element shows up exactly once).
+    println(array_sum(shuffled));
+    // Sorting back gives original.
+    println(array_sort(shuffled));
+
+    // Empty / single-element are no-ops.
+    println(array_shuffle([]));
+    println(array_shuffle([42]));
+}
+
+main();
