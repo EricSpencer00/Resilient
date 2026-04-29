@@ -1,0 +1,12 @@
+// RES-431 demo: array_range generates [start, end) integer arrays.
+
+fn main() {
+    println(array_range(0, 5));
+    println(array_range(3, 7));
+    println(array_range(-3, 2));
+    println(array_range(5, 5));
+    println(array_range(5, 0));
+    println(array_sum(array_range(1, 11)));
+}
+
+main();
