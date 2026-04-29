@@ -8269,6 +8269,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_zip", builtin_array_zip),
     // RES-431: generate [start, start+1, ..., end-1].
     ("array_range", builtin_array_range),
+    // RES-432: array of n copies of elem.
+    ("array_repeat", builtin_array_repeat),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9203,6 +9205,40 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-432: `array_repeat(elem, n)` — array containing `n` clones of
+/// `elem`. n=0 → empty. Negative n is a typed error. Capped at 1B
+/// to avoid OOM on absurd inputs.
+fn builtin_array_repeat(args: &[Value]) -> RResult<Value> {
+    match args {
+        [elem, Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_repeat: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            const MAX_REPEAT: i64 = 1_000_000_000;
+            if *n > MAX_REPEAT {
+                return Err(format!(
+                    "array_repeat: count {} too large (max {})",
+                    n, MAX_REPEAT
+                ));
+            }
+            let len = *n as usize;
+            let mut out = Vec::with_capacity(len);
+            for _ in 0..len {
+                out.push(elem.clone());
+            }
+            Ok(Value::Array(out))
+        }
+        [_, b] => Err(format!("array_repeat: expected count to be int, got {}", b)),
+        _ => Err(format!(
+            "array_repeat: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -25856,6 +25892,75 @@ mod tests {
         );
         assert!(
             builtin_array_range(&[Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-432: array_repeat ----------
+
+    #[test]
+    fn array_repeat_basic() {
+        match builtin_array_repeat(&[Value::Int(7), Value::Int(3)]).unwrap() {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 3);
+                for v in &items {
+                    match v {
+                        Value::Int(7) => {}
+                        other => panic!("expected Int(7), got {:?}", other),
+                    }
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_repeat_zero_is_empty() {
+        match builtin_array_repeat(&[Value::Int(99), Value::Int(0)]).unwrap() {
+            Value::Array(items) => assert!(items.is_empty()),
+            other => panic!("expected empty Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_repeat_preserves_element_type() {
+        match builtin_array_repeat(&[Value::String("hi".into()), Value::Int(2)]).unwrap() {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                match (&items[0], &items[1]) {
+                    (Value::String(a), Value::String(b)) => {
+                        assert_eq!(a, "hi");
+                        assert_eq!(b, "hi");
+                    }
+                    other => panic!("expected two Strings, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_repeat_rejects_negative() {
+        let err = builtin_array_repeat(&[Value::Int(1), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_repeat_rejects_too_large() {
+        let err = builtin_array_repeat(&[Value::Int(1), Value::Int(2_000_000_000)]).unwrap_err();
+        assert!(err.contains("too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_repeat_rejects_non_int_count_and_arity() {
+        assert!(
+            builtin_array_repeat(&[Value::Int(1), Value::Float(2.0)])
+                .unwrap_err()
+                .contains("count to be int")
+        );
+        assert!(
+            builtin_array_repeat(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
