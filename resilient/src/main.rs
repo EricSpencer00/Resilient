@@ -8316,6 +8316,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_strip_suffix", builtin_string_strip_suffix),
     // RES-472: element-wise array equality.
     ("array_eq", builtin_array_eq),
+    // RES-473: ternary numeric min/max.
+    ("min3", builtin_min3),
+    ("max3", builtin_max3),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9872,6 +9875,38 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-473: ternary numeric reducer applied for min3 / max3 — chains
+/// the existing two-arg `min` / `max` to keep the type-promotion rules
+/// identical.
+fn min_max3(name: &str, args: &[Value], two_arg: fn(&[Value]) -> RResult<Value>) -> RResult<Value> {
+    if args.len() != 3 {
+        return Err(format!(
+            "{}: expected 3 arguments, got {}",
+            name,
+            args.len()
+        ));
+    }
+    let intermediate = two_arg(&[args[0].clone(), args[1].clone()]).map_err(|e| {
+        e.replace("min:", &format!("{}:", name))
+            .replace("max:", &format!("{}:", name))
+    })?;
+    two_arg(&[intermediate, args[2].clone()]).map_err(|e| {
+        e.replace("min:", &format!("{}:", name))
+            .replace("max:", &format!("{}:", name))
+    })
+}
+
+/// RES-473: `min3(a, b, c)` — minimum of three numeric values, using
+/// the same int↔float coercion as `min`.
+fn builtin_min3(args: &[Value]) -> RResult<Value> {
+    min_max3("min3", args, builtin_min)
+}
+
+/// RES-473: `max3(a, b, c)` — maximum of three.
+fn builtin_max3(args: &[Value]) -> RResult<Value> {
+    min_max3("max3", args, builtin_max)
 }
 
 /// RES-472: `array_eq(a, b)` — true iff `a` and `b` have equal length
@@ -30299,6 +30334,66 @@ mod tests {
             builtin_array_eq(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-473: min3 / max3 ----------
+
+    #[test]
+    fn min3_basic() {
+        assert_int(
+            builtin_min3(&[Value::Int(3), Value::Int(1), Value::Int(2)]).unwrap(),
+            1,
+            "min3 ints",
+        );
+    }
+
+    #[test]
+    fn max3_basic() {
+        assert_int(
+            builtin_max3(&[Value::Int(3), Value::Int(7), Value::Int(2)]).unwrap(),
+            7,
+            "max3 ints",
+        );
+    }
+
+    #[test]
+    fn min3_max3_promote_to_float() {
+        match builtin_min3(&[Value::Int(3), Value::Float(1.5), Value::Int(2)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 1.5),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        match builtin_max3(&[Value::Int(1), Value::Int(2), Value::Float(2.5)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 2.5),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn min3_max3_handle_negatives() {
+        assert_int(
+            builtin_min3(&[Value::Int(-5), Value::Int(-1), Value::Int(0)]).unwrap(),
+            -5,
+            "min3 negatives",
+        );
+        assert_int(
+            builtin_max3(&[Value::Int(-5), Value::Int(-1), Value::Int(0)]).unwrap(),
+            0,
+            "max3 negatives",
+        );
+    }
+
+    #[test]
+    fn min3_max3_reject_non_numeric_and_arity() {
+        assert!(
+            builtin_min3(&[Value::String("a".into()), Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("min3:")
+        );
+        assert!(
+            builtin_max3(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
