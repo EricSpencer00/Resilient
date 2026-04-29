@@ -1085,6 +1085,21 @@ impl TypeChecker {
         // RES-418: element search.
         env.set("array_contains".to_string(), fn_any_any_to_any());
         env.set("array_index_of".to_string(), fn_any_any_to_any());
+        // RES-419: Unicode-scalar ↔ char conversions.
+        env.set(
+            "chr".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "ord".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -3946,6 +3961,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-418: array search.
         "array_contains",
         "array_index_of",
+        // RES-419: char-code conversions.
+        "chr",
+        "ord",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
