@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-451-array-insert-remove",
-      "claimed_at": "2026-04-29T22:27:51Z"
+      "branch": "res-452-array-set-at",
+      "claimed_at": "2026-04-29T22:30:21Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-451-array-insert-remove",
-      "claimed_at": "2026-04-29T22:27:51Z"
+      "branch": "res-452-array-set-at",
+      "claimed_at": "2026-04-29T22:30:21Z"
     }
   }
 }
