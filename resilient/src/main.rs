@@ -8277,6 +8277,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_lines", builtin_string_lines),
     // RES-435: split array into fixed-size chunks (last may be short).
     ("array_chunk", builtin_array_chunk),
+    // RES-436: non-overlapping substring count.
+    ("string_count", builtin_string_count),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9211,6 +9213,27 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-436: `string_count(s, sub)` — count non-overlapping occurrences
+/// of `sub` in `s`. Empty `sub` is a typed error. Empty `s` → 0.
+fn builtin_string_count(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sub)] => {
+            if sub.is_empty() {
+                return Err("string_count: needle must not be empty".to_string());
+            }
+            Ok(Value::Int(s.matches(sub.as_str()).count() as i64))
+        }
+        [a, b] => Err(format!(
+            "string_count: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_count: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -26239,6 +26262,75 @@ mod tests {
         );
         assert!(
             builtin_array_chunk(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-436: string_count ----------
+
+    #[test]
+    fn string_count_basic() {
+        assert_int(
+            builtin_string_count(&[
+                Value::String("the the the".into()),
+                Value::String("the".into()),
+            ])
+            .unwrap(),
+            3,
+            "count(the in 'the the the')",
+        );
+        assert_int(
+            builtin_string_count(&[Value::String("hello".into()), Value::String("xyz".into())])
+                .unwrap(),
+            0,
+            "no matches",
+        );
+    }
+
+    #[test]
+    fn string_count_non_overlapping() {
+        // "aaa" with needle "aa" should count 1 (non-overlapping).
+        assert_int(
+            builtin_string_count(&[Value::String("aaa".into()), Value::String("aa".into())])
+                .unwrap(),
+            1,
+            "non-overlapping",
+        );
+        // "aaaa" with needle "aa" should count 2.
+        assert_int(
+            builtin_string_count(&[Value::String("aaaa".into()), Value::String("aa".into())])
+                .unwrap(),
+            2,
+            "non-overlapping 4 chars",
+        );
+    }
+
+    #[test]
+    fn string_count_empty_haystack_returns_zero() {
+        assert_int(
+            builtin_string_count(&[Value::String("".into()), Value::String("x".into())]).unwrap(),
+            0,
+            "empty haystack",
+        );
+    }
+
+    #[test]
+    fn string_count_rejects_empty_needle() {
+        let err = builtin_string_count(&[Value::String("hello".into()), Value::String("".into())])
+            .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_count_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_count(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_count(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

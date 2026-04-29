@@ -1159,6 +1159,14 @@ impl TypeChecker {
         env.set("string_lines".to_string(), fn_any_to_any());
         // RES-435: split array into fixed-size chunks.
         env.set("array_chunk".to_string(), fn_any_any_to_any());
+        // RES-436: non-overlapping substring count.
+        env.set(
+            "string_count".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4058,6 +4066,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_lines",
         // RES-435: array_chunk.
         "array_chunk",
+        // RES-436: string_count.
+        "string_count",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
