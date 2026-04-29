@@ -127,3 +127,7 @@ jobs:
           else
               echo "push to main — skipping commit-message enforcement"
           fi
+
+      - name: Stdlib coverage
+        shell: bash
+        run: bash agent-scripts/verify-stdlib-coverage.sh
