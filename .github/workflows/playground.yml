@@ -1,0 +1,85 @@
+# RES-368: build and deploy the WASM playground to GitHub Pages.
+#
+# Runs on every push to main that touches the playground source or
+# the bundled examples; runs on pull-request as a build-and-size
+# check (no deploy). The deploy target is the repo's Pages site at
+# https://ericspencer00.github.io/Resilient/ — playground lives at
+# /playground/ underneath.
+
+name: playground
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "playground/**"
+      - "resilient/examples/**"
+      - ".github/workflows/playground.yml"
+  pull_request:
+    paths:
+      - "playground/**"
+      - "resilient/examples/**"
+      - ".github/workflows/playground.yml"
+
+# `pages` writes; `id-token: write` is required for the official
+# `actions/deploy-pages@v4` flow.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Serialize deploys: a queued push and an in-flight push both
+# targeting `main` should not race. Cancel the in-flight if a newer
+# one arrives.
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install rust toolchain (with wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: install wasm-pack
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          fi
+
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            playground/target
+          key: ${{ runner.os }}-playground-${{ hashFiles('playground/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-playground-
+
+      - name: build playground (release, size-checked)
+        run: |
+          bash playground/build.sh --check-size
+
+      - name: upload artifact
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: playground/dist
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
