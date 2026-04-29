@@ -1,0 +1,14 @@
+// RES-440 demo: integer bitwise built-ins.
+
+fn main() {
+    println(bit_and(0xFF, 0x0F));
+    println(bit_or(0xF0, 0x0F));
+    println(bit_xor(0xFF, 0x0F));
+    println(bit_not(0));
+    println(bit_shl(1, 4));
+    println(bit_shr(256, 2));
+    // Arithmetic right shift preserves sign.
+    println(bit_shr(-8, 1));
+}
+
+main();
