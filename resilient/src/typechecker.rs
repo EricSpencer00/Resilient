@@ -1157,6 +1157,8 @@ impl TypeChecker {
         env.set("string_chars".to_string(), fn_any_to_any());
         // RES-434: split string into lines (LF, CRLF).
         env.set("string_lines".to_string(), fn_any_to_any());
+        // RES-435: split array into fixed-size chunks.
+        env.set("array_chunk".to_string(), fn_any_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4054,6 +4056,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_chars",
         // RES-434: string_lines.
         "string_lines",
+        // RES-435: array_chunk.
+        "array_chunk",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
