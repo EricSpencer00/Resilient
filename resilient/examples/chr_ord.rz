@@ -1,0 +1,13 @@
+// RES-419 demo: chr(n) and ord(s) for Unicode scalar conversions.
+
+fn main() {
+    println(chr(65));
+    println(chr(97));
+    println(chr(0x20AC));
+
+    println(ord("A"));
+    println(ord("z"));
+    println(ord("€"));
+}
+
+main();

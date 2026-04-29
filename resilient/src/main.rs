@@ -8239,6 +8239,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-418: element search over an array.
     ("array_contains", builtin_array_contains),
     ("array_index_of", builtin_array_index_of),
+    // RES-419: Unicode-scalar ↔ single-char string conversions.
+    ("chr", builtin_chr),
+    ("ord", builtin_ord),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9175,6 +9178,45 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
             "array_product: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-419: `chr(n)` — single-character string for Unicode scalar `n`.
+/// Negative, out-of-range, or surrogate code points produce a typed error.
+fn builtin_chr(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            let code = u32::try_from(*n).map_err(|_| format!("chr: negative code point {}", n))?;
+            match char::from_u32(code) {
+                Some(c) => Ok(Value::String(c.to_string())),
+                None => Err(format!(
+                    "chr: {} is not a valid Unicode scalar (out of range or surrogate)",
+                    n
+                )),
+            }
+        }
+        [other] => Err(format!("chr: expected int, got {}", other)),
+        _ => Err(format!("chr: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-419: `ord(s)` — Unicode scalar of the only character in `s`.
+/// Empty or multi-char strings are a typed error.
+fn builtin_ord(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let mut iter = s.chars();
+            let first = iter.next().ok_or_else(|| "ord: empty string".to_string())?;
+            if iter.next().is_some() {
+                return Err(format!(
+                    "ord: expected single-character string, got {} chars",
+                    s.chars().count()
+                ));
+            }
+            Ok(Value::Int(first as i64))
+        }
+        [other] => Err(format!("ord: expected string, got {}", other)),
+        _ => Err(format!("ord: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -24337,6 +24379,104 @@ mod tests {
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
+    }
+
+    // ---------- RES-419: chr / ord ----------
+
+    #[test]
+    fn chr_returns_single_char_string() {
+        match builtin_chr(&[Value::Int(65)]).unwrap() {
+            Value::String(s) => assert_eq!(s, "A"),
+            other => panic!("expected \"A\", got {:?}", other),
+        }
+        match builtin_chr(&[Value::Int(0x1F600)]).unwrap() {
+            Value::String(s) => assert_eq!(s, "😀"),
+            other => panic!("expected emoji, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chr_rejects_negative() {
+        let err = builtin_chr(&[Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("negative code point"), "got: {}", err);
+    }
+
+    #[test]
+    fn chr_rejects_out_of_range() {
+        // 0xD800 is a UTF-16 surrogate, invalid as a Unicode scalar.
+        let err = builtin_chr(&[Value::Int(0xD800)]).unwrap_err();
+        assert!(err.contains("not a valid Unicode scalar"), "got: {}", err);
+        // 0x110000 is one past the maximum scalar (0x10FFFF).
+        let err = builtin_chr(&[Value::Int(0x110000)]).unwrap_err();
+        assert!(err.contains("not a valid Unicode scalar"), "got: {}", err);
+    }
+
+    #[test]
+    fn chr_rejects_non_int_and_arity() {
+        assert!(
+            builtin_chr(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_chr(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    #[test]
+    fn ord_returns_unicode_scalar() {
+        assert_int(
+            builtin_ord(&[Value::String("A".into())]).unwrap(),
+            65,
+            "ord(A)",
+        );
+        assert_int(
+            builtin_ord(&[Value::String("😀".into())]).unwrap(),
+            0x1F600,
+            "ord(emoji)",
+        );
+    }
+
+    #[test]
+    fn ord_rejects_empty_or_multichar() {
+        assert!(
+            builtin_ord(&[Value::String("".into())])
+                .unwrap_err()
+                .contains("empty string")
+        );
+        assert!(
+            builtin_ord(&[Value::String("abc".into())])
+                .unwrap_err()
+                .contains("single-character string")
+        );
+    }
+
+    #[test]
+    fn ord_rejects_non_string_and_arity() {
+        assert!(
+            builtin_ord(&[Value::Int(65)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_ord(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    #[test]
+    fn chr_ord_round_trip() {
+        // ord(chr(n)) == n for any valid scalar.
+        for n in [65i64, 97, 0x20AC, 0x1F600] {
+            let s = match builtin_chr(&[Value::Int(n)]).unwrap() {
+                Value::String(s) => s,
+                _ => panic!("chr did not return String"),
+            };
+            assert_int(builtin_ord(&[Value::String(s)]).unwrap(), n, "round trip");
+        }
     }
 
     // ---------- RES-034: nested index assignment ----------
