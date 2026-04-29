@@ -1,0 +1,19 @@
+/* RES-323: verification-keyword coverage for the self-hosted lexer.
+ * Block comments are stripped and do not appear in the token stream;
+ * the test is a single function with a contract block that exercises
+ * `requires`, `ensures`, `invariant`, `assume`, `assert`, plus the
+ * three-character operator `..<` (alternative range form). */
+fn divide(int x, int y) -> int
+    requires y != 0
+    ensures result * y == x
+{
+    assume x >= 0;
+    assert y > 0;
+    let i = 0;
+    while i < x
+        invariant i >= 0
+    {
+        i = i + 1;
+    }
+    return x / y;
+}
