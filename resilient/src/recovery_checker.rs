@@ -115,10 +115,10 @@ impl Context {
                             fn_name
                         );
                     } else if let Some(ref current) = self.current_fn {
+                        #[allow(clippy::collapsible_if)]
                         if &fn_name == current {
                             eprintln!(
-                                "warning: function '{}' recursively calls itself \
-                                in recovery body",
+                                "warning: function '{}' recursively calls itself in recovery body",
                                 current
                             );
                         }
