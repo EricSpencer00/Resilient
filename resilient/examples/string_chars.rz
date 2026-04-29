@@ -1,0 +1,11 @@
+// RES-433 demo: string_chars splits a string into single-char strings.
+
+fn main() {
+    println(string_chars("hello"));
+    println(string_chars(""));
+    println(string_chars("a"));
+    // Round-trip via array_join "" reconstructs the original.
+    println(array_join(string_chars("foobar"), ""));
+}
+
+main();

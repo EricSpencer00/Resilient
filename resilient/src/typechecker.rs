@@ -1153,6 +1153,8 @@ impl TypeChecker {
         env.set("array_range".to_string(), fn_any_any_to_any());
         // RES-432: array of n copies.
         env.set("array_repeat".to_string(), fn_any_any_to_any());
+        // RES-433: split string into single-char strings.
+        env.set("string_chars".to_string(), fn_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4046,6 +4048,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_range",
         // RES-432: array_repeat.
         "array_repeat",
+        // RES-433: string_chars.
+        "string_chars",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
