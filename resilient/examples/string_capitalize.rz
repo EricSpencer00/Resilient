@@ -1,0 +1,11 @@
+// RES-457 demo: string_capitalize: ASCII first char upper, rest lower.
+
+fn main() {
+    println(string_capitalize("hello"));
+    println(string_capitalize("HELLO"));
+    println(string_capitalize("hELLO wORLD"));
+    println(string_capitalize(""));
+    println(string_capitalize("123ABC"));
+}
+
+main();
