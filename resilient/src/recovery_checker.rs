@@ -115,7 +115,7 @@ impl Context {
                             fn_name
                         );
                     } else if let Some(ref current) = self.current_fn {
-                        if fn_name == current {
+                        if &fn_name == current {
                             eprintln!(
                                 "warning: function '{}' recursively calls itself \
                                 in recovery body",
