@@ -29,7 +29,8 @@ Complete reference for every builtin function available in Resilient.
 ## I/O Functions
 
 ### `print`
-**Signature:** `print() -> void` | `print(x: any) -> void`
+**Signature:** `print() -> void` | `print(x: any) -> void`  
+**Effect:** `@io`
 
 Print a value to stdout without a newline. Takes 0 or 1 argument. Flushes stdout.
 
@@ -41,6 +42,7 @@ print(42);
 
 ### `println`
 **Signature:** `println() -> void` | `println(x: any) -> void`
+**Effect:** `@io`
 
 Print a value to stdout with a trailing newline. Takes 0 or 1 argument.
 
@@ -52,6 +54,7 @@ println(x + 10);
 
 ### `input`
 **Signature:** `input() -> string`
+**Effect:** `@io`
 
 Read a single line from stdin (strips trailing newline).
 
@@ -67,6 +70,7 @@ println("Hello, " + name);
 
 ### `abs`
 **Signature:** `abs(x: int) -> int` | `abs(x: float) -> float`
+**Effect:** `@pure`
 
 Return the absolute value.
 
@@ -78,6 +82,7 @@ abs(-3.14);        // 3.14
 
 ### `min`
 **Signature:** `min(a: int, b: int) -> int` | `min(a: float, b: float) -> float`
+**Effect:** `@pure`
 
 Return the smaller of two values.
 
@@ -89,6 +94,7 @@ min(2.5, 1.8);     // 1.8
 
 ### `max`
 **Signature:** `max(a: int, b: int) -> int` | `max(a: float, b: float) -> float`
+**Effect:** `@pure`
 
 Return the larger of two values.
 
@@ -100,6 +106,7 @@ max(2.5, 1.8);     // 2.5
 
 ### `clamp`
 **Signature:** `clamp(x: int, lo: int, hi: int) -> int` | `clamp(x: float, lo: float, hi: float) -> float`
+**Effect:** `@pure`
 
 Restrict `x` to the range `[lo, hi]`. Returns error if `lo > hi`.
 
@@ -112,6 +119,7 @@ clamp(15, 0, 10);  // 10
 
 ### `to_float`
 **Signature:** `to_float(x: int) -> float`
+**Effect:** `@pure`
 
 Convert an integer to a float.
 
@@ -122,6 +130,7 @@ to_float(42);      // 42.0
 
 ### `to_int`
 **Signature:** `to_int(x: float) -> int`
+**Effect:** `@pure`
 
 Convert a float to an integer (truncates toward zero).
 
@@ -137,6 +146,7 @@ to_int(-2.5);      // -2
 
 ### `sqrt`
 **Signature:** `sqrt(x: float) -> float`
+**Effect:** `@pure`
 
 Return the square root of `x`.
 
@@ -148,6 +158,7 @@ sqrt(2.0);         // ~1.414
 
 ### `pow`
 **Signature:** `pow(base: float, exp: float) -> float`
+**Effect:** `@pure`
 
 Return `base` raised to the power `exp`.
 
@@ -159,6 +170,7 @@ pow(10.0, 2.0);    // 100.0
 
 ### `floor`
 **Signature:** `floor(x: float) -> float`
+**Effect:** `@pure`
 
 Return the largest integer ≤ `x`.
 
@@ -170,6 +182,7 @@ floor(-2.1);       // -3.0
 
 ### `ceil`
 **Signature:** `ceil(x: float) -> float`
+**Effect:** `@pure`
 
 Return the smallest integer ≥ `x`.
 
@@ -181,6 +194,7 @@ ceil(-2.9);        // -2.0
 
 ### `sin`
 **Signature:** `sin(x: float) -> float`
+**Effect:** `@pure`
 
 Return the sine of `x` (in radians).
 
@@ -192,6 +206,7 @@ sin(3.14159 / 2);  // ~1.0
 
 ### `cos`
 **Signature:** `cos(x: float) -> float`
+**Effect:** `@pure`
 
 Return the cosine of `x` (in radians).
 
@@ -203,6 +218,7 @@ cos(3.14159);      // ~-1.0
 
 ### `tan`
 **Signature:** `tan(x: float) -> float`
+**Effect:** `@pure`
 
 Return the tangent of `x` (in radians).
 
@@ -213,6 +229,7 @@ tan(0.0);          // 0.0
 
 ### `atan2`
 **Signature:** `atan2(y: float, x: float) -> float`
+**Effect:** `@pure`
 
 Return the arctangent of `y / x` (in radians), accounting for quadrant.
 
@@ -223,6 +240,7 @@ atan2(1.0, 1.0);   // π/4 (~0.785)
 
 ### `ln`
 **Signature:** `ln(x: float) -> float`
+**Effect:** `@pure`
 
 Return the natural logarithm (base e) of `x`.
 
@@ -233,6 +251,7 @@ ln(2.71828);       // ~1.0
 
 ### `log`
 **Signature:** `log(x: float, base: float) -> float`
+**Effect:** `@pure`
 
 Return the logarithm of `x` in the given `base`.
 
@@ -244,6 +263,7 @@ log(8.0, 2.0);     // 3.0
 
 ### `exp`
 **Signature:** `exp(x: float) -> float`
+**Effect:** `@pure`
 
 Return e raised to the power `x`.
 
@@ -287,6 +307,7 @@ as_uint8(-1);      // 255 (wraps)
 
 ### `clock_ms`
 **Signature:** `clock_ms() -> int`
+**Effect:** `@io`
 
 Return milliseconds elapsed since an unspecified epoch.
 
@@ -300,6 +321,7 @@ println(t2 - t1);  // milliseconds elapsed
 
 ### `clock_now`
 **Signature:** `clock_now() -> int`
+**Effect:** `@io`
 
 Return the current Unix timestamp in seconds.
 
@@ -311,6 +333,7 @@ println(now);      // seconds since 1970-01-01
 
 ### `clock_elapsed`
 **Signature:** `clock_elapsed(start: int) -> int`
+**Effect:** `@io`
 
 Return milliseconds elapsed since `start` (from `clock_ms()`).
 
@@ -327,6 +350,7 @@ println(clock_elapsed(t0));  // ms elapsed
 
 ### `random_int`
 **Signature:** `random_int(max: int) -> int`
+**Effect:** `@io`
 
 Return a random integer in `[0, max)`.
 
@@ -337,6 +361,7 @@ let dice = random_int(6) + 1;  // 1..6
 
 ### `random_float`
 **Signature:** `random_float() -> float`
+**Effect:** `@io`
 
 Return a random float in `[0.0, 1.0)`.
 
@@ -351,6 +376,7 @@ let x = random_float();        // 0.0 <= x < 1.0
 
 ### `len`
 **Signature:** `len(s: string) -> int`
+**Effect:** `@pure`
 
 Return the length of a string (byte count).
 
@@ -362,6 +388,7 @@ len("");           // 0
 
 ### `push`
 **Signature:** `push(s: string, c: string) -> string`
+**Effect:** `@pure`
 
 Append a single character (or string) to the end.
 
@@ -372,6 +399,7 @@ push("hello", "!");    // "hello!"
 
 ### `pop`
 **Signature:** `pop(s: string) -> string`
+**Effect:** `@pure`
 
 Remove and return the last character; returns original if empty.
 
@@ -383,6 +411,7 @@ pop("");           // ""
 
 ### `slice`
 **Signature:** `slice(s: string, start: int, end: int) -> string`
+**Effect:** `@pure`
 
 Return substring from index `start` (inclusive) to `end` (exclusive).
 
@@ -393,6 +422,7 @@ slice("hello", 1, 4);  // "ell"
 
 ### `split`
 **Signature:** `split(s: string, sep: string) -> [string]`
+**Effect:** `@pure`
 
 Split string by separator; returns a static array (up to 255 elements).
 
@@ -403,6 +433,7 @@ split("a,b,c", ",");   // ["a", "b", "c"]
 
 ### `trim`
 **Signature:** `trim(s: string) -> string`
+**Effect:** `@pure`
 
 Remove leading and trailing whitespace.
 
@@ -413,6 +444,7 @@ trim("  hello  ");     // "hello"
 
 ### `contains`
 **Signature:** `contains(haystack: string, needle: string) -> bool`
+**Effect:** `@pure`
 
 Check if `haystack` contains `needle`.
 
@@ -424,6 +456,7 @@ contains("hello", "x");            // false
 
 ### `to_upper`
 **Signature:** `to_upper(s: string) -> string`
+**Effect:** `@pure`
 
 Convert to uppercase (ASCII only).
 
@@ -434,6 +467,7 @@ to_upper("Hello");     // "HELLO"
 
 ### `to_lower`
 **Signature:** `to_lower(s: string) -> string`
+**Effect:** `@pure`
 
 Convert to lowercase (ASCII only).
 
@@ -444,6 +478,7 @@ to_lower("Hello");     // "hello"
 
 ### `replace`
 **Signature:** `replace(s: string, old: string, new: string) -> string`
+**Effect:** `@pure`
 
 Replace all occurrences of `old` with `new`.
 
@@ -454,6 +489,7 @@ replace("hello world", "world", "Resilient");  // "hello Resilient"
 
 ### `format`
 **Signature:** `format(fmt: string, args: [any]) -> string`
+**Effect:** `@pure`
 
 Format a string (simple `%s` placeholder support).
 
@@ -464,6 +500,7 @@ format("Value: %s", ["42"]);   // "Value: 42"
 
 ### `starts_with`
 **Signature:** `starts_with(s: string, prefix: string) -> bool`
+**Effect:** `@pure`
 
 Check if string starts with prefix.
 
@@ -475,6 +512,7 @@ starts_with("hello", "bye");   // false
 
 ### `ends_with`
 **Signature:** `ends_with(s: string, suffix: string) -> bool`
+**Effect:** `@pure`
 
 Check if string ends with suffix.
 
@@ -485,6 +523,7 @@ ends_with("hello.txt", ".txt"); // true
 
 ### `repeat`
 **Signature:** `repeat(s: string, n: int) -> string`
+**Effect:** `@pure`
 
 Return a string containing `s` repeated `n` times.
 
@@ -495,6 +534,7 @@ repeat("ab", 3);       // "ababab"
 
 ### `char_at`
 **Signature:** `char_at(s: string, idx: int) -> string`
+**Effect:** `@pure`
 
 Return the character at index `idx` (or empty string if out of bounds).
 
@@ -506,6 +546,7 @@ char_at("hello", 10);  // ""
 
 ### `pad_left`
 **Signature:** `pad_left(s: string, len: int, pad: string) -> string`
+**Effect:** `@pure`
 
 Pad string on the left to width `len` using character `pad`.
 
@@ -516,6 +557,7 @@ pad_left("5", 3, "0"); // "005"
 
 ### `pad_right`
 **Signature:** `pad_right(s: string, len: int, pad: string) -> string`
+**Effect:** `@pure`
 
 Pad string on the right to width `len` using character `pad`.
 
@@ -530,6 +572,7 @@ pad_right("5", 3, "0"); // "500"
 
 ### `parse_int`
 **Signature:** `parse_int(s: string) -> Result[int]`
+**Effect:** `@pure`
 
 Parse a string as a decimal integer.
 
@@ -541,6 +584,7 @@ parse_int("hello");    // Err("invalid integer")
 
 ### `parse_float`
 **Signature:** `parse_float(s: string) -> Result[float]`
+**Effect:** `@pure`
 
 Parse a string as a floating-point number.
 
@@ -556,6 +600,7 @@ parse_float("abc");    // Err("invalid float")
 
 ### `bytes_len`
 **Signature:** `bytes_len(data: [u8]) -> int`
+**Effect:** `@pure`
 
 Return the length of a byte array.
 
@@ -566,6 +611,7 @@ bytes_len([1, 2, 3]); // 3
 
 ### `bytes_slice`
 **Signature:** `bytes_slice(data: [u8], start: int, end: int) -> [u8]`
+**Effect:** `@pure`
 
 Return a slice of bytes from `start` to `end`.
 
@@ -576,6 +622,7 @@ bytes_slice([1, 2, 3, 4], 1, 3); // [2, 3]
 
 ### `byte_at`
 **Signature:** `byte_at(data: [u8], idx: int) -> int`
+**Effect:** `@pure`
 
 Return the byte value at index `idx`.
 
@@ -590,6 +637,7 @@ byte_at([65, 66, 67], 0); // 65 (ASCII 'A')
 
 ### `Ok`
 **Signature:** `Ok[T](value: T) -> Result[T]`
+**Effect:** `@pure`
 
 Construct a success result.
 
@@ -600,6 +648,7 @@ let r: Result[int] = Ok(42);
 
 ### `Err`
 **Signature:** `Err[T](msg: string) -> Result[T]`
+**Effect:** `@pure`
 
 Construct an error result.
 
@@ -610,6 +659,7 @@ let r: Result[int] = Err("something went wrong");
 
 ### `is_ok`
 **Signature:** `is_ok(r: Result[T]) -> bool`
+**Effect:** `@pure`
 
 Check if a result is `Ok`.
 
@@ -621,6 +671,7 @@ is_ok(Err("no")); // false
 
 ### `is_err`
 **Signature:** `is_err(r: Result[T]) -> bool`
+**Effect:** `@pure`
 
 Check if a result is `Err`.
 
@@ -632,6 +683,7 @@ is_err(Ok(0));       // false
 
 ### `unwrap`
 **Signature:** `unwrap[T](r: Result[T]) -> T`
+**Effect:** `@pure`
 
 Extract the value from `Ok`, or halt with the error message if `Err`.
 
@@ -643,6 +695,7 @@ let y = unwrap(Err("fail")); // halts with "fail"
 
 ### `unwrap_err`
 **Signature:** `unwrap_err[T](r: Result[T]) -> string`
+**Effect:** `@pure`
 
 Extract the error message from `Err`, or halt if `Ok`.
 
@@ -657,6 +710,7 @@ let msg = unwrap_err(Err("oops")); // "oops"
 
 ### `Some`
 **Signature:** `Some[T](value: T) -> Option[T]`
+**Effect:** `@pure`
 
 Construct a present option.
 
@@ -667,6 +721,7 @@ let x: Option[int] = Some(42);
 
 ### `None`
 **Signature:** `None[T]() -> Option[T]`
+**Effect:** `@pure`
 
 Construct an absent option.
 
@@ -677,6 +732,7 @@ let x: Option[int] = None();
 
 ### `is_some`
 **Signature:** `is_some(opt: Option[T]) -> bool`
+**Effect:** `@pure`
 
 Check if an option is `Some`.
 
@@ -688,6 +744,7 @@ is_some(None());    // false
 
 ### `is_none`
 **Signature:** `is_none(opt: Option[T]) -> bool`
+**Effect:** `@pure`
 
 Check if an option is `None`.
 
@@ -699,6 +756,7 @@ is_none(Some(5));   // false
 
 ### `unwrap_option`
 **Signature:** `unwrap_option[T](opt: Option[T]) -> T`
+**Effect:** `@pure`
 
 Extract the value from `Some`, or halt if `None`.
 
@@ -710,6 +768,7 @@ let y = unwrap_option(None()); // halts
 
 ### `option_unwrap`
 **Signature:** `option_unwrap[T](opt: Option[T]) -> T`
+**Effect:** `@pure`
 
 Alias for `unwrap_option`.
 
@@ -720,6 +779,7 @@ option_unwrap(Some(10)); // 10
 
 ### `option_unwrap_or`
 **Signature:** `option_unwrap_or[T](opt: Option[T], default: T) -> T`
+**Effect:** `@pure`
 
 Extract the value from `Some`, or return `default` if `None`.
 
@@ -857,6 +917,7 @@ let has_1 = set_has(s, 1); // true
 
 ### `file_read`
 **Signature:** `file_read(path: string) -> Result[string]`
+**Effect:** `@io`
 
 Read the entire contents of a file into a string.
 
@@ -871,6 +932,7 @@ match contents {
 
 ### `file_write`
 **Signature:** `file_write(path: string, data: string) -> Result[void]`
+**Effect:** `@io`
 
 Write data to a file (creates or overwrites).
 
@@ -885,6 +947,7 @@ file_write("output.txt", "Hello, world!");
 
 ### `env`
 **Signature:** `env(key: string, default_value: string) -> string`
+**Effect:** `@io`
 
 Get an environment variable, or return a default value if not set.
 
@@ -900,6 +963,7 @@ println(user);
 
 ### `drop`
 **Signature:** `drop[T](value: T) -> void`
+**Effect:** `@pure`
 
 Explicitly consume (drop) a value. Useful in linear-type contexts to mark a value as intentionally unused.
 
@@ -915,6 +979,7 @@ drop(x);  // Mark as consumed
 
 ### `live_retries`
 **Signature:** `live_retries() -> int`
+**Effect:** `@io`
 
 Return the retry count inside the currently executing live block.
 
@@ -930,11 +995,13 @@ live {
 
 ### `live_total_retries`
 **Signature:** `live_total_retries() -> int`
+**Effect:** `@io`
 
 Return the total number of retries across all live blocks in the program.
 
 ### `live_total_exhaustions`
 **Signature:** `live_total_exhaustions() -> int`
+**Effect:** `@io`
 
 Return the number of live blocks that have exhausted their retry limit.
 
@@ -944,6 +1011,7 @@ Return the number of live blocks that have exhausted their retry limit.
 
 ### `StringBuilder_new`
 **Signature:** `StringBuilder_new() -> StringBuilder`
+**Effect:** `@pure`
 
 Create a new string builder (for efficient string concatenation).
 
@@ -955,6 +1023,7 @@ let sb = StringBuilder_new();
 
 ### `cell`
 **Signature:** `cell[T](value: T) -> Cell[T]`
+**Effect:** `@pure`
 
 Wrap a value in a `Cell` for interior mutability in `no_std` contexts.
 
