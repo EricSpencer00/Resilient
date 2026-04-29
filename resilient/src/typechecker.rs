@@ -1232,6 +1232,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-462: adjacent pairs as tuples.
+        env.set("array_pairs".to_string(), fn_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4252,6 +4254,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "trim_chars",
         // RES-461: string_indent.
         "string_indent",
+        // RES-462: array_pairs.
+        "array_pairs",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
