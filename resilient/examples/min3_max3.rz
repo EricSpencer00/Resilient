@@ -1,0 +1,13 @@
+// RES-473 demo: min3 and max3 — ternary min/max.
+
+fn main() {
+    println(min3(3, 1, 2));
+    println(max3(3, 7, 2));
+    println(min3(-5, -1, 0));
+    println(max3(-5, -1, 0));
+    // Float promotion: any Float arg → Float result.
+    println(min3(3, 1.5, 2));
+    println(max3(1, 2, 2.5));
+}
+
+main();
