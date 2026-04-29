@@ -84,30 +84,37 @@ impl ControlFlowGraph {
         );
 
         // Extract CFG structure from body
-        // TODO: RES-392b Phase 1 - implement full CFG extraction
-        // For now, just record the body as a single basic block
-        let mut body_node = CfgNode {
-            id: 2,
-            node: Some(Box::new(body.clone())),
-            span: Span::default(),
-            successors: vec![(1, EdgeKind::Fallthrough)],
-        };
-
-        // Extract span from body for better diagnostics
-        body_node.span = match body {
+        // RES-392b Phase 1: Extract basic blocks and control-flow edges
+        let mut next_node_id = 2;
+        let body_span = match body {
             Node::Block { span, .. } => *span,
             _ => Span::default(),
         };
 
-        graph.nodes.insert(2, body_node);
+        // For MVP: treat body as a single basic block
+        // TODO: RES-392b Phase 1 - implement full CFG extraction for:
+        //   - If/else branches
+        //   - Loop back edges (while, for)
+        //   - Match arms
+        //   - Return/early exit edges
+        let body_node = CfgNode {
+            id: next_node_id,
+            node: Some(Box::new(body.clone())),
+            span: body_span,
+            successors: vec![(1, EdgeKind::Fallthrough)],
+        };
+
+        graph.nodes.insert(next_node_id, body_node);
+        next_node_id += 1;
 
         // Connect entry to body
         if let Some(entry_node) = graph.nodes.get_mut(&0) {
-            entry_node.successors = vec![(2, EdgeKind::Fallthrough)];
+            entry_node.successors = vec![(next_node_id - 1, EdgeKind::Fallthrough)];
         }
 
         // Mark prefix boundaries (instruction entry points)
-        graph.prefix_boundaries.push((2, Span::default()));
+        // Each statement in the body becomes a potential crash recovery point
+        graph.prefix_boundaries.push((next_node_id - 1, body_span));
 
         graph
     }
@@ -135,7 +142,7 @@ pub(crate) fn check_recovers_to_bmc(
     // RES-392b Phase 2: Per-prefix enumeration and Z3 verification
     let prefixes = cfg.enumerate_prefixes();
 
-    for (prefix_id, _span) in prefixes {
+    for (_prefix_id, _span) in prefixes {
         // TODO: RES-392b Phase 2 - emit Z3 obligation per prefix
         // For now, assume all prefixes recover (stub)
         //
