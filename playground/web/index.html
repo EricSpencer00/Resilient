@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Resilient Playground</title>
+    <link rel="stylesheet" href="style.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/idea.css"
+    />
+  </head>
+  <body>
+    <header>
+      <h1>Resilient Playground</h1>
+      <span class="banner" id="scaffold-banner" hidden>
+        scaffold build &mdash; interpreter integration pending
+      </span>
+      <nav>
+        <label for="example-select">Examples:</label>
+        <select id="example-select">
+          <option value="">&mdash; choose an example &mdash;</option>
+        </select>
+        <button id="run-btn" type="button">Run</button>
+        <button id="clear-btn" type="button">Clear output</button>
+        <a
+          href="https://github.com/EricSpencer00/Resilient"
+          target="_blank"
+          rel="noreferrer noopener"
+          class="github-link"
+          >Source &amp; docs &rarr;</a
+        >
+      </nav>
+    </header>
+
+    <main>
+      <section class="editor-pane" aria-label="Source editor">
+        <textarea id="editor"></textarea>
+      </section>
+      <section class="output-pane" aria-label="Program output">
+        <pre id="output"></pre>
+        <footer id="output-footer"></footer>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/rust/rust.js"></script>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
