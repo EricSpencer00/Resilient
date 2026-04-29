@@ -1,0 +1,13 @@
+// RES-481 demo: array_rest drops first, array_init drops last.
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5];
+    println(array_rest(xs));
+    println(array_init(xs));
+    println(array_rest([]));
+    println(array_init([]));
+    println(array_rest([42]));
+    println(array_init([42]));
+}
+
+main();
