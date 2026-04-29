@@ -1125,6 +1125,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-426: first-occurrence dedupe.
+        env.set("array_unique".to_string(), fn_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4002,6 +4004,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_join",
         // RES-425: to_string.
         "to_string",
+        // RES-426: array_unique.
+        "array_unique",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.

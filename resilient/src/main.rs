@@ -8255,6 +8255,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_join", builtin_array_join),
     // RES-425: explicit scalar-to-string conversion.
     ("to_string", builtin_to_string),
+    // RES-426: first-occurrence dedupe over scalar elements.
+    ("array_unique", builtin_array_unique),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9189,6 +9191,38 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-426: `array_unique(arr)` — preserve only the first occurrence
+/// of each scalar value, retaining original order. Non-scalar elements
+/// raise a typed error (same equality rule as `array_contains`).
+fn builtin_array_unique(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            'outer: for v in items {
+                for seen in &out {
+                    match array_search_eq(v, seen) {
+                        Some(true) => continue 'outer,
+                        Some(false) => {}
+                        None => {
+                            return Err(format!(
+                                "array_unique: element types not comparable ({} vs {})",
+                                v, seen
+                            ));
+                        }
+                    }
+                }
+                out.push(v.clone());
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_unique: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_unique: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -25108,6 +25142,88 @@ mod tests {
         );
         assert!(
             builtin_to_string(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-426: array_unique ----------
+
+    #[test]
+    fn array_unique_preserves_first_occurrences() {
+        assert_eq!(
+            extract_int_array(builtin_array_unique(&[int_array(&[1, 2, 1, 3, 2, 4])]).unwrap()),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn array_unique_already_unique_returns_same_order() {
+        assert_eq!(
+            extract_int_array(builtin_array_unique(&[int_array(&[5, 1, 4, 2])]).unwrap()),
+            vec![5, 1, 4, 2]
+        );
+    }
+
+    #[test]
+    fn array_unique_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_unique(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_unique_int_float_collide() {
+        // 1 (Int) and 1.0 (Float) should be treated as equal under
+        // scalar coercion — the first occurrence wins.
+        match builtin_array_unique(&[Value::Array(vec![
+            Value::Int(1),
+            Value::Float(1.0),
+            Value::Int(2),
+        ])])
+        .unwrap()
+        {
+            Value::Array(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected len-2 array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_unique_strings() {
+        match builtin_array_unique(&[Value::Array(vec![
+            Value::String("a".into()),
+            Value::String("b".into()),
+            Value::String("a".into()),
+            Value::String("c".into()),
+        ])])
+        .unwrap()
+        {
+            Value::Array(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected len-3 array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_unique_rejects_non_scalar_element() {
+        // Two non-scalar elements force a comparison call that errors.
+        let err = builtin_array_unique(&[Value::Array(vec![
+            Value::Array(vec![Value::Int(1)]),
+            Value::Array(vec![Value::Int(2)]),
+        ])])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_unique_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_unique(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_unique(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

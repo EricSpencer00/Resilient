@@ -1,0 +1,11 @@
+// RES-426 demo: array_unique keeps first occurrence in original order.
+
+fn main() {
+    println(array_unique([1, 2, 1, 3, 2, 4]));
+    println(array_unique([5, 1, 4, 2]));
+    println(array_unique([]));
+    println(array_unique(["a", "b", "a", "c", "b"]));
+    println(array_unique([true, false, true, false]));
+}
+
+main();
