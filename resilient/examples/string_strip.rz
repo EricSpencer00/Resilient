@@ -1,0 +1,12 @@
+// RES-471 demo: string_strip_prefix / string_strip_suffix.
+
+fn main() {
+    println(string_strip_prefix("foo:bar", "foo:"));
+    println(string_strip_prefix("hello", "world"));
+    println(string_strip_suffix("file.rs", ".rs"));
+    println(string_strip_suffix("file.txt", ".rs"));
+    // Empty prefix/suffix is a no-op.
+    println(string_strip_prefix("hello", ""));
+}
+
+main();

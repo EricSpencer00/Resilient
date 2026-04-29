@@ -8311,6 +8311,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-469: scalar all/any equality predicates.
     ("array_all_eq", builtin_array_all_eq),
     ("array_any_eq", builtin_array_any_eq),
+    // RES-471: conditional prefix/suffix strippers.
+    ("string_strip_prefix", builtin_string_strip_prefix),
+    ("string_strip_suffix", builtin_string_strip_suffix),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9864,6 +9867,49 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-471: `string_strip_prefix(s, prefix)` — if `s` starts with
+/// `prefix`, return `s` with the prefix removed; else return `s`.
+fn builtin_string_strip_prefix(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(prefix)] => {
+            let stripped = match s.strip_prefix(prefix.as_str()) {
+                Some(rest) => rest.to_string(),
+                None => s.clone(),
+            };
+            Ok(Value::String(stripped))
+        }
+        [a, b] => Err(format!(
+            "string_strip_prefix: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_strip_prefix: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-471: `string_strip_suffix(s, suffix)` — companion stripper.
+fn builtin_string_strip_suffix(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(suffix)] => {
+            let stripped = match s.strip_suffix(suffix.as_str()) {
+                Some(rest) => rest.to_string(),
+                None => s.clone(),
+            };
+            Ok(Value::String(stripped))
+        }
+        [a, b] => Err(format!(
+            "string_strip_suffix: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_strip_suffix: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -30039,6 +30085,106 @@ mod tests {
         );
         assert!(
             builtin_array_all_eq(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-471: string_strip_prefix / string_strip_suffix ----------
+
+    #[test]
+    fn string_strip_prefix_match_strips() {
+        assert_eq!(
+            extract_string(
+                builtin_string_strip_prefix(&[
+                    Value::String("foo:bar".into()),
+                    Value::String("foo:".into())
+                ])
+                .unwrap()
+            ),
+            "bar"
+        );
+    }
+
+    #[test]
+    fn string_strip_prefix_no_match_returns_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_string_strip_prefix(&[
+                    Value::String("hello".into()),
+                    Value::String("world".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn string_strip_prefix_empty_prefix_is_noop() {
+        assert_eq!(
+            extract_string(
+                builtin_string_strip_prefix(&[
+                    Value::String("hello".into()),
+                    Value::String("".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn string_strip_suffix_match_strips() {
+        assert_eq!(
+            extract_string(
+                builtin_string_strip_suffix(&[
+                    Value::String("file.rs".into()),
+                    Value::String(".rs".into())
+                ])
+                .unwrap()
+            ),
+            "file"
+        );
+    }
+
+    #[test]
+    fn string_strip_suffix_no_match_returns_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_string_strip_suffix(&[
+                    Value::String("file.txt".into()),
+                    Value::String(".rs".into())
+                ])
+                .unwrap()
+            ),
+            "file.txt"
+        );
+    }
+
+    #[test]
+    fn string_strip_suffix_empty_suffix_is_noop() {
+        assert_eq!(
+            extract_string(
+                builtin_string_strip_suffix(&[
+                    Value::String("hello".into()),
+                    Value::String("".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn string_strip_prefix_suffix_reject_wrong_types_and_arity() {
+        assert!(
+            builtin_string_strip_prefix(&[Value::Int(1), Value::String("x".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_strip_suffix(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
