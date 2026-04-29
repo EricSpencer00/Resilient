@@ -1224,6 +1224,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-461: indent every line with n spaces.
+        env.set(
+            "string_indent".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4242,6 +4250,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "is_ascii_alnum",
         // RES-460: trim_chars.
         "trim_chars",
+        // RES-461: string_indent.
+        "string_indent",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
