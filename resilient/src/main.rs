@@ -8236,6 +8236,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-417: min/max over an integer array. Empty array errors.
     ("array_min", builtin_array_min),
     ("array_max", builtin_array_max),
+    // RES-418: element search over an array.
+    ("array_contains", builtin_array_contains),
+    ("array_index_of", builtin_array_index_of),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9170,6 +9173,75 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-418: scalar value-equality for `array_contains` / `array_index_of`.
+/// Only Int/Float/String/Bool are comparable; nested or callable values
+/// return None so the caller raises a typed error.
+fn array_search_eq(a: &Value, b: &Value) -> Option<bool> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(x == y),
+        (Value::Float(x), Value::Float(y)) => Some(x == y),
+        (Value::Int(x), Value::Float(y)) => Some((*x as f64) == *y),
+        (Value::Float(x), Value::Int(y)) => Some(*x == (*y as f64)),
+        (Value::String(x), Value::String(y)) => Some(x == y),
+        (Value::Bool(x), Value::Bool(y)) => Some(x == y),
+        _ => None,
+    }
+}
+
+/// RES-418: `array_contains(arr, x)` — true if any element of `arr`
+/// equals `x` under scalar value-equality. Non-scalar elements error.
+fn builtin_array_contains(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            for v in items {
+                match array_search_eq(v, needle) {
+                    Some(true) => return Ok(Value::Bool(true)),
+                    Some(false) => {}
+                    None => {
+                        return Err(format!(
+                            "array_contains: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Bool(false))
+        }
+        [a, _] => Err(format!("array_contains: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_contains: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-418: `array_index_of(arr, x)` — first index where element
+/// equals `x`, or -1 if not found.
+fn builtin_array_index_of(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            for (i, v) in items.iter().enumerate() {
+                match array_search_eq(v, needle) {
+                    Some(true) => return Ok(Value::Int(i as i64)),
+                    Some(false) => {}
+                    None => {
+                        return Err(format!(
+                            "array_index_of: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(-1))
+        }
+        [a, _] => Err(format!("array_index_of: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_index_of: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -24154,6 +24226,116 @@ mod tests {
             builtin_array_max(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-418: array_contains / array_index_of ----------
+
+    #[test]
+    fn array_contains_finds_element() {
+        match builtin_array_contains(&[int_array(&[1, 2, 3]), Value::Int(2)]).unwrap() {
+            Value::Bool(true) => {}
+            other => panic!("expected true, got {:?}", other),
+        }
+        match builtin_array_contains(&[int_array(&[1, 2, 3]), Value::Int(99)]).unwrap() {
+            Value::Bool(false) => {}
+            other => panic!("expected false, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_contains_int_float_coercion() {
+        // 1 (Int) should match 1.0 (Float) under scalar coercion.
+        match builtin_array_contains(&[
+            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            Value::Float(1.0),
+        ])
+        .unwrap()
+        {
+            Value::Bool(true) => {}
+            other => panic!("expected true (int/float), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_contains_strings() {
+        match builtin_array_contains(&[
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ]),
+            Value::String("b".into()),
+        ])
+        .unwrap()
+        {
+            Value::Bool(true) => {}
+            other => panic!("expected true, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_contains_empty_is_false() {
+        match builtin_array_contains(&[Value::Array(vec![]), Value::Int(1)]).unwrap() {
+            Value::Bool(false) => {}
+            other => panic!("expected false, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_contains_rejects_non_scalar_element() {
+        let err = builtin_array_contains(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Int(1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_contains_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_contains(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_contains(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    #[test]
+    fn array_index_of_returns_first_match() {
+        assert_int(
+            builtin_array_index_of(&[int_array(&[10, 20, 30, 20]), Value::Int(20)]).unwrap(),
+            1,
+            "first match",
+        );
+        assert_int(
+            builtin_array_index_of(&[int_array(&[10, 20, 30]), Value::Int(99)]).unwrap(),
+            -1,
+            "not found",
+        );
+        assert_int(
+            builtin_array_index_of(&[Value::Array(vec![]), Value::Int(1)]).unwrap(),
+            -1,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn array_index_of_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_index_of(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_index_of(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
