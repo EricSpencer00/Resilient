@@ -3,10 +3,7 @@ description: Statically-typed compiled language for safety-critical embedded sys
 author: Eric Spencer
 lang: en
 
-# Open Graph / Twitter card defaults — picked up by jekyll-seo-tag.
-twitter:
-  username: EricSpencer00
-  card: summary_large_image
+# Open Graph defaults — picked up by jekyll-seo-tag.
 social:
   name: Resilient
   links:
