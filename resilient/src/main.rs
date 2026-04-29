@@ -8298,6 +8298,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_pairs", builtin_array_pairs),
     // RES-463: UTF-8 byte length of a string.
     ("string_bytes_len", builtin_string_bytes_len),
+    // RES-464: parse int with explicit radix.
+    ("parse_int_base", builtin_parse_int_base),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9851,6 +9853,42 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-464: `parse_int_base(s, base)` — parse `s` as a signed integer
+/// in the given `base` (2..=36). Returns Result<Int, String>. Bases
+/// outside 2..=36 are a typed error rather than a Result::Err so the
+/// caller's mistake is caught immediately.
+fn builtin_parse_int_base(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(base)] => {
+            if !(2..=36).contains(base) {
+                return Err(format!("parse_int_base: base must be 2..=36, got {}", base));
+            }
+            let trimmed = s.trim();
+            match i64::from_str_radix(trimmed, *base as u32) {
+                Ok(n) => Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(Value::Int(n)),
+                }),
+                Err(e) => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String(format!(
+                        "parse_int_base: invalid integer {:?} in base {}: {}",
+                        s, base, e
+                    ))),
+                }),
+            }
+        }
+        [a, b] => Err(format!(
+            "parse_int_base: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "parse_int_base: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29233,6 +29271,142 @@ mod tests {
             builtin_string_bytes_len(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-464: parse_int_base ----------
+
+    fn extract_result_ok_int(v: Value) -> i64 {
+        match v {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::Int(n) => n,
+                other => panic!("expected Int payload, got {:?}", other),
+            },
+            other => panic!("expected Ok result, got {:?}", other),
+        }
+    }
+
+    fn assert_result_err_contains(v: Value, needle: &str) {
+        match v {
+            Value::Result { ok: false, payload } => match *payload {
+                Value::String(s) => {
+                    assert!(
+                        s.contains(needle),
+                        "err `{}` does not contain `{}`",
+                        s,
+                        needle
+                    );
+                }
+                other => panic!("expected String payload, got {:?}", other),
+            },
+            other => panic!("expected Err result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_int_base_decimal() {
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("42".into()), Value::Int(10)]).unwrap()
+            ),
+            42
+        );
+    }
+
+    #[test]
+    fn parse_int_base_hex() {
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("ff".into()), Value::Int(16)]).unwrap()
+            ),
+            255
+        );
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("FF".into()), Value::Int(16)]).unwrap()
+            ),
+            255
+        );
+    }
+
+    #[test]
+    fn parse_int_base_binary_and_octal() {
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("1010".into()), Value::Int(2)]).unwrap()
+            ),
+            10
+        );
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("17".into()), Value::Int(8)]).unwrap()
+            ),
+            15
+        );
+    }
+
+    #[test]
+    fn parse_int_base_negative() {
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("-2a".into()), Value::Int(16)]).unwrap()
+            ),
+            -42
+        );
+    }
+
+    #[test]
+    fn parse_int_base_strips_whitespace() {
+        assert_eq!(
+            extract_result_ok_int(
+                builtin_parse_int_base(&[Value::String("  42  ".into()), Value::Int(10)]).unwrap()
+            ),
+            42
+        );
+    }
+
+    #[test]
+    fn parse_int_base_invalid_returns_err() {
+        assert_result_err_contains(
+            builtin_parse_int_base(&[Value::String("xyz".into()), Value::Int(10)]).unwrap(),
+            "invalid integer",
+        );
+        assert_result_err_contains(
+            builtin_parse_int_base(&[Value::String("".into()), Value::Int(10)]).unwrap(),
+            "invalid integer",
+        );
+    }
+
+    #[test]
+    fn parse_int_base_rejects_invalid_radix() {
+        assert!(
+            builtin_parse_int_base(&[Value::String("0".into()), Value::Int(1)])
+                .unwrap_err()
+                .contains("base must be 2..=36")
+        );
+        assert!(
+            builtin_parse_int_base(&[Value::String("0".into()), Value::Int(37)])
+                .unwrap_err()
+                .contains("base must be 2..=36")
+        );
+        assert!(
+            builtin_parse_int_base(&[Value::String("0".into()), Value::Int(0)])
+                .unwrap_err()
+                .contains("base must be 2..=36")
+        );
+    }
+
+    #[test]
+    fn parse_int_base_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_parse_int_base(&[Value::Int(1), Value::Int(10)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_parse_int_base(&[Value::String("0".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
