@@ -8271,6 +8271,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_range", builtin_array_range),
     // RES-432: array of n copies of elem.
     ("array_repeat", builtin_array_repeat),
+    // RES-433: split string into single-character strings.
+    ("string_chars", builtin_string_chars),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9205,6 +9207,21 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-433: `string_chars(s)` — array of single-character strings,
+/// one per Unicode scalar. Empty input → empty array.
+fn builtin_string_chars(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Array(
+            s.chars().map(|c| Value::String(c.to_string())).collect(),
+        )),
+        [other] => Err(format!("string_chars: expected string, got {}", other)),
+        _ => Err(format!(
+            "string_chars: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -25963,6 +25980,69 @@ mod tests {
             builtin_array_repeat(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-433: string_chars ----------
+
+    fn extract_strings(v: Value) -> Vec<String> {
+        match v {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(s) => s,
+                    _ => panic!("non-string in array"),
+                })
+                .collect(),
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn string_chars_basic() {
+        assert_eq!(
+            extract_strings(builtin_string_chars(&[Value::String("abc".into())]).unwrap()),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn string_chars_empty_returns_empty_array() {
+        assert_eq!(
+            extract_strings(builtin_string_chars(&[Value::String("".into())]).unwrap()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn string_chars_unicode_scalar_per_element() {
+        // "café" has 4 scalars (5 bytes); each element should be a single-char string.
+        let chars = extract_strings(builtin_string_chars(&[Value::String("café".into())]).unwrap());
+        assert_eq!(chars, vec!["c", "a", "f", "é"]);
+    }
+
+    #[test]
+    fn string_chars_round_trips_with_array_join() {
+        // string_chars + array_join with "" should reconstruct original.
+        let parts = builtin_string_chars(&[Value::String("hello".into())]).unwrap();
+        let joined = builtin_array_join(&[parts, Value::String("".into())]).unwrap();
+        match joined {
+            Value::String(s) => assert_eq!(s, "hello"),
+            _ => panic!("expected String"),
+        }
+    }
+
+    #[test]
+    fn string_chars_rejects_non_string_and_arity() {
+        assert!(
+            builtin_string_chars(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_string_chars(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
