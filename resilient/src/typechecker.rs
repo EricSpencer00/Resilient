@@ -1993,7 +1993,12 @@ impl TypeChecker {
                     // after the precondition has been checked, so
                     // the solver is allowed to assume them when
                     // discharging the recovery invariant.
-                    let axioms: Vec<Node> = requires.clone();
+                    // RES-133b: also admit leading `assume(P)` predicates
+                    // from the function body. They are runtime-checked
+                    // before any control flow, so by the time recovers_to
+                    // is evaluated they hold.
+                    let mut axioms: Vec<Node> = requires.clone();
+                    axioms.extend(crate::assume_axioms::collect_leading_assume_axioms(body));
 
                     let mut verdict = fold_const_bool(clause, &no_bindings);
                     let mut cx: Option<String> = None;

@@ -1,0 +1,20 @@
+// RES-133b: leading assume() predicates are admitted as axioms
+// when the verifier discharges `recovers_to`.
+//
+// Without RES-133b, this fn's recovers_to would not be discharged
+// statically because the verifier doesn't know that x >= 0 by the
+// time we reach the body. The runtime check would still be there.
+//
+// With RES-133b, the leading `assume(x >= 0)` is added to the axiom
+// set, and the verifier proves `result >= 0` from `x >= 0`.
+
+fn safe_increment(int x) fails IOError recovers_to: result >= 0 {
+    assume(x >= 0);
+    return x + 1;
+}
+
+fn main() {
+    let n = safe_increment(5);
+    println(n);
+}
+main();

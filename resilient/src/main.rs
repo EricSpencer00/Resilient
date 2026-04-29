@@ -100,6 +100,10 @@ mod linear;
 // Extends RES-392 (final-state only) with verification that recovers_to
 // holds from any instruction boundary in the function.
 mod recovers_to_bmc;
+// RES-133b: collect leading `assume(P)` predicates from a function body
+// for admission as Z3 axioms when discharging `ensures` / `recovers_to`.
+// MVP scope: top-of-function assumes only (sound — see module docs).
+mod assume_axioms;
 // RES-351: array bounds — static Z3 proof of `0 <= i < len(arr)`
 // at every index site, with an optional strict `--deny-unproven-bounds`
 // mode for safety-critical embedded builds.
