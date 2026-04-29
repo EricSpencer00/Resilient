@@ -1102,6 +1102,9 @@ impl TypeChecker {
         );
         // RES-420: concatenate two arrays.
         env.set("array_concat".to_string(), fn_any_any_to_any());
+        // RES-421: take/drop first n.
+        env.set("array_take".to_string(), fn_any_any_to_any());
+        env.set("array_drop".to_string(), fn_any_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -3968,6 +3971,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "ord",
         // RES-420: array_concat.
         "array_concat",
+        // RES-421: take/drop.
+        "array_take",
+        "array_drop",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.

@@ -1,0 +1,14 @@
+// RES-421 demo: array_take and array_drop slice arrays at fixed offsets.
+
+fn main() {
+    let xs = [10, 20, 30, 40, 50];
+    println(array_take(xs, 3));
+    println(array_take(xs, 0));
+    println(array_take(xs, 99));
+
+    println(array_drop(xs, 2));
+    println(array_drop(xs, 0));
+    println(array_drop(xs, 99));
+}
+
+main();
