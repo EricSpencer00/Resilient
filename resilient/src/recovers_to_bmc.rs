@@ -11,11 +11,12 @@
 // If Z3 finds a satisfying prefix_state, report the specific instruction
 // where recovery cannot be guaranteed.
 
-use std::collections::HashMap;
 use crate::{Node, Span};
+use std::collections::HashMap;
 
 /// Represents a control-flow node in the function's CFG.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CfgNode {
     /// Unique identifier for this node
     id: usize,
@@ -29,6 +30,7 @@ struct CfgNode {
 
 /// Represents different types of control-flow edges
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum EdgeKind {
     /// Normal sequential execution
     Fallthrough,
@@ -46,8 +48,10 @@ struct ControlFlowGraph {
     /// All nodes in the graph, indexed by id
     nodes: HashMap<usize, CfgNode>,
     /// Entry node ID
+    #[allow(dead_code)]
     entry: usize,
     /// Exit node ID
+    #[allow(dead_code)]
     exit: usize,
     /// Instruction boundary markers (line numbers where prefixes begin)
     prefix_boundaries: Vec<(usize, Span)>, // (node_id, span)
@@ -171,11 +175,7 @@ pub(crate) fn check_recovers_to_bmc(
 
     for (prefix_id, _span) in prefixes {
         // Placeholder for Z3 obligation generation
-        let _obligation = _generate_prefix_obligation(
-            prefix_id,
-            "init_state",
-            _recovers_clause,
-        );
+        let _obligation = _generate_prefix_obligation(prefix_id, "init_state", _recovers_clause);
 
         // TODO: RES-392b Phase 2 - invoke Z3 solver
         // For now, assume all prefixes recover (stub)
@@ -194,8 +194,6 @@ pub(crate) fn check_recovers_to_bmc(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_cfg_construction() {
         // TODO: RES-392b - test CFG extraction on simple function bodies
