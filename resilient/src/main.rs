@@ -8290,6 +8290,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_ascii_alpha", builtin_is_ascii_alpha),
     ("is_ascii_digit", builtin_is_ascii_digit),
     ("is_ascii_alnum", builtin_is_ascii_alnum),
+    // RES-460: trim arbitrary char set from both sides.
+    ("trim_chars", builtin_trim_chars),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9843,6 +9845,29 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-460: `trim_chars(s, chars)` — strip leading and trailing chars
+/// that appear in `chars`. Empty `chars` returns `s` unchanged.
+fn builtin_trim_chars(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(chars)] => {
+            if chars.is_empty() {
+                return Ok(Value::String(s.clone()));
+            }
+            let charset: Vec<char> = chars.chars().collect();
+            let trimmed = s.trim_matches(|c: char| charset.contains(&c)).to_string();
+            Ok(Value::String(trimmed))
+        }
+        [a, b] => Err(format!(
+            "trim_chars: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "trim_chars: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28857,6 +28882,93 @@ mod tests {
             builtin_is_ascii_alnum(&[Value::String("a".into()), Value::String("b".into())])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-460: trim_chars ----------
+
+    #[test]
+    fn trim_chars_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_chars(&[
+                    Value::String("---hello---".into()),
+                    Value::String("-".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn trim_chars_multiple_chars_in_set() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_chars(&[
+                    Value::String("xyzhelloyzx".into()),
+                    Value::String("xyz".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn trim_chars_no_match_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_chars(&[Value::String("hello".into()), Value::String("xyz".into())])
+                    .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn trim_chars_empty_chars_returns_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_chars(&[Value::String("  hello  ".into()), Value::String("".into())])
+                    .unwrap()
+            ),
+            "  hello  "
+        );
+    }
+
+    #[test]
+    fn trim_chars_empty_string() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_chars(&[Value::String("".into()), Value::String("x".into())]).unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn trim_chars_only_trims_chars_collapses_to_empty() {
+        assert_eq!(
+            extract_string(
+                builtin_trim_chars(&[Value::String("xxxxx".into()), Value::String("x".into())])
+                    .unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn trim_chars_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_trim_chars(&[Value::Int(1), Value::String("x".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_trim_chars(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
