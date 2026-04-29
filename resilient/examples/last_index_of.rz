@@ -1,0 +1,10 @@
+// RES-442 demo: last_index_of finds the LAST occurrence of substring.
+
+fn main() {
+    println(last_index_of("the the the", "the"));
+    println(last_index_of("hello world", "world"));
+    println(last_index_of("abc", "xyz"));
+    println(last_index_of("abc", ""));
+}
+
+main();
