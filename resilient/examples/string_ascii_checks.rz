@@ -1,0 +1,14 @@
+// RES-459 demo: is_ascii_alpha / is_ascii_digit / is_ascii_alnum.
+
+fn main() {
+    println(is_ascii_alpha("hello"));
+    println(is_ascii_alpha("hello world"));
+    println(is_ascii_digit("12345"));
+    println(is_ascii_digit("123a"));
+    println(is_ascii_alnum("abc123"));
+    println(is_ascii_alnum("abc 123"));
+    // Empty input is vacuously true.
+    println(is_ascii_alpha(""));
+}
+
+main();

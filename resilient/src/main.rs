@@ -8286,6 +8286,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_capitalize", builtin_string_capitalize),
     // RES-458: repeat an array n times.
     ("array_cycle", builtin_array_cycle),
+    // RES-459: ASCII-class string predicates.
+    ("is_ascii_alpha", builtin_is_ascii_alpha),
+    ("is_ascii_digit", builtin_is_ascii_digit),
+    ("is_ascii_alnum", builtin_is_ascii_alnum),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9842,6 +9846,31 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-459: shared dispatch for the ASCII-class predicates. Returns
+/// true when every char in `s` satisfies `pred`. Empty input → true.
+fn ascii_all<F: Fn(char) -> bool>(name: &str, args: &[Value], pred: F) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Bool(s.chars().all(pred))),
+        [other] => Err(format!("{}: expected string, got {}", name, other)),
+        _ => Err(format!("{}: expected 1 argument, got {}", name, args.len())),
+    }
+}
+
+/// RES-459: `is_ascii_alpha(s)` — true iff every char is `a..=z | A..=Z`.
+fn builtin_is_ascii_alpha(args: &[Value]) -> RResult<Value> {
+    ascii_all("is_ascii_alpha", args, |c| c.is_ascii_alphabetic())
+}
+
+/// RES-459: `is_ascii_digit(s)` — true iff every char is `0..=9`.
+fn builtin_is_ascii_digit(args: &[Value]) -> RResult<Value> {
+    ascii_all("is_ascii_digit", args, |c| c.is_ascii_digit())
+}
+
+/// RES-459: `is_ascii_alnum(s)` — alpha or digit, ASCII only.
+fn builtin_is_ascii_alnum(args: &[Value]) -> RResult<Value> {
+    ascii_all("is_ascii_alnum", args, |c| c.is_ascii_alphanumeric())
 }
 
 /// RES-458: `array_cycle(arr, n)` — concatenate `arr` to itself `n`
@@ -28716,6 +28745,118 @@ mod tests {
             builtin_array_cycle(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-459: ASCII-class predicates ----------
+
+    #[test]
+    fn is_ascii_alpha_basic() {
+        assert_eq_bool(
+            builtin_is_ascii_alpha(&[Value::String("hello".into())]).unwrap(),
+            true,
+            "alpha lower",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_alpha(&[Value::String("HELLO".into())]).unwrap(),
+            true,
+            "alpha upper",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_alpha(&[Value::String("Hello123".into())]).unwrap(),
+            false,
+            "with digits",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_alpha(&[Value::String("hi there".into())]).unwrap(),
+            false,
+            "with space",
+        );
+    }
+
+    #[test]
+    fn is_ascii_digit_basic() {
+        assert_eq_bool(
+            builtin_is_ascii_digit(&[Value::String("12345".into())]).unwrap(),
+            true,
+            "digits",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_digit(&[Value::String("123a".into())]).unwrap(),
+            false,
+            "with letter",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_digit(&[Value::String("-5".into())]).unwrap(),
+            false,
+            "minus sign isn't a digit",
+        );
+    }
+
+    #[test]
+    fn is_ascii_alnum_basic() {
+        assert_eq_bool(
+            builtin_is_ascii_alnum(&[Value::String("abc123".into())]).unwrap(),
+            true,
+            "alnum",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_alnum(&[Value::String("abc 123".into())]).unwrap(),
+            false,
+            "with space",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_alnum(&[Value::String("abc-123".into())]).unwrap(),
+            false,
+            "with hyphen",
+        );
+    }
+
+    #[test]
+    fn ascii_predicates_empty_returns_true_vacuously() {
+        assert_eq_bool(
+            builtin_is_ascii_alpha(&[Value::String("".into())]).unwrap(),
+            true,
+            "alpha empty",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_digit(&[Value::String("".into())]).unwrap(),
+            true,
+            "digit empty",
+        );
+        assert_eq_bool(
+            builtin_is_ascii_alnum(&[Value::String("".into())]).unwrap(),
+            true,
+            "alnum empty",
+        );
+    }
+
+    #[test]
+    fn ascii_predicates_reject_non_ascii() {
+        // Non-ASCII chars like "é" are NOT ASCII alpha.
+        assert_eq_bool(
+            builtin_is_ascii_alpha(&[Value::String("café".into())]).unwrap(),
+            false,
+            "non-ASCII alpha",
+        );
+    }
+
+    #[test]
+    fn ascii_predicates_reject_non_string_and_arity() {
+        assert!(
+            builtin_is_ascii_alpha(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_is_ascii_digit(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+        assert!(
+            builtin_is_ascii_alnum(&[Value::String("a".into()), Value::String("b".into())])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
