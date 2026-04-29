@@ -8277,6 +8277,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_at", builtin_string_at),
     // RES-454: Unicode-scalar substring [start, end).
     ("string_substring", builtin_string_substring),
+    // RES-455: sliding fixed-size windows.
+    ("array_window", builtin_array_window),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9830,6 +9832,35 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-455: `array_window(arr, n)` — sliding contiguous windows of
+/// size `n`. `n` must be > 0; `n > len` returns empty.
+fn builtin_array_window(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n <= 0 {
+                return Err(format!(
+                    "array_window: window size must be positive, got {}",
+                    n
+                ));
+            }
+            let size = *n as usize;
+            let windows: Vec<Value> = items
+                .windows(size)
+                .map(|w| Value::Array(w.to_vec()))
+                .collect();
+            Ok(Value::Array(windows))
+        }
+        [a, b] => Err(format!(
+            "array_window: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_window: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28250,6 +28281,73 @@ mod tests {
             builtin_string_substring(&[Value::String("a".into()), Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-455: array_window ----------
+
+    #[test]
+    fn array_window_basic() {
+        let chunks = extract_chunks(
+            builtin_array_window(&[int_array(&[1, 2, 3, 4]), Value::Int(2)]).unwrap(),
+        );
+        assert_eq!(chunks, vec![vec![1, 2], vec![2, 3], vec![3, 4]]);
+    }
+
+    #[test]
+    fn array_window_size_one() {
+        let chunks = extract_chunks(
+            builtin_array_window(&[int_array(&[10, 20, 30]), Value::Int(1)]).unwrap(),
+        );
+        assert_eq!(chunks, vec![vec![10], vec![20], vec![30]]);
+    }
+
+    #[test]
+    fn array_window_size_equals_len() {
+        let chunks =
+            extract_chunks(builtin_array_window(&[int_array(&[1, 2, 3]), Value::Int(3)]).unwrap());
+        assert_eq!(chunks, vec![vec![1, 2, 3]]);
+    }
+
+    #[test]
+    fn array_window_larger_than_len_returns_empty() {
+        let chunks =
+            extract_chunks(builtin_array_window(&[int_array(&[1, 2]), Value::Int(99)]).unwrap());
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn array_window_empty_input() {
+        let chunks =
+            extract_chunks(builtin_array_window(&[Value::Array(vec![]), Value::Int(2)]).unwrap());
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn array_window_rejects_non_positive_n() {
+        assert!(
+            builtin_array_window(&[int_array(&[1, 2]), Value::Int(0)])
+                .unwrap_err()
+                .contains("must be positive")
+        );
+        assert!(
+            builtin_array_window(&[int_array(&[1, 2]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("must be positive")
+        );
+    }
+
+    #[test]
+    fn array_window_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_window(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (array, int)")
+        );
+        assert!(
+            builtin_array_window(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
