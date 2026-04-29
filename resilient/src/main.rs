@@ -335,6 +335,11 @@ enum Token {
     Mod,
     /// RES-319: `newtype Name = BaseType;` — nominal type wrapper.
     Newtype,
+    /// RES-333: `supervisor { strategy, children }` — restart policy for
+    /// actor failures. Detects child failure and restarts according to
+    /// strategy (one_for_one, one_for_all) and restart mode (permanent,
+    /// transient, temporary).
+    Supervisor,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -470,6 +475,7 @@ impl Token {
             Token::DotDotDot => "`...`".to_string(),
             Token::Mod => "`mod`".to_string(),
             Token::Newtype => "`newtype`".to_string(),
+            Token::Supervisor => "`supervisor`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -925,6 +931,7 @@ impl Lexer {
                         "exists" => Token::Exists,
                         "mod" => Token::Mod,
                         "newtype" => Token::Newtype,
+                        "supervisor" => Token::Supervisor,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2067,6 +2074,25 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-333: `supervisor { strategy, children }` — actor restart policy.
+    /// Monitors child actors and restarts them according to the configured
+    /// restart policy and strategy.
+    Supervisor {
+        strategy: String, // "one_for_one" or "one_for_all"
+        children: Vec<SupervisorChild>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+}
+
+/// RES-333: one child process configuration inside a `supervisor` block.
+#[derive(Debug, Clone)]
+pub(crate) struct SupervisorChild {
+    pub(crate) id: String,           // identifier for the child
+    pub(crate) fn_name: String,      // actor function to spawn
+    pub(crate) restart: String,      // "permanent", "transient", or "temporary"
+    #[allow(dead_code)]
+    pub(crate) span: span::Span,
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -11386,6 +11412,9 @@ impl Interpreter {
             // Each contained declaration is registered under the
             // prefixed key `"name::decl"` in the outer environment.
             Node::ModuleDecl { name, body, .. } => crate::modules::eval_module(name, body, self),
+            // RES-333: supervisor top-level declaration. Returns Void;
+            // runtime spawning and monitoring is handled by a separate pass.
+            Node::Supervisor { .. } => Ok(Value::Void),
         }
     }
 

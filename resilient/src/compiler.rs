@@ -1175,6 +1175,9 @@ fn node_line(n: &Node) -> Option<u32> {
         // RES-319: newtype nodes carry a span.
         Node::NewtypeDecl { span, .. } => span.start.line as u32,
         Node::NewtypeConstruct { span, .. } => span.start.line as u32,
+
+        // RES-333: supervisor declaration carries a span.
+        Node::Supervisor { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }

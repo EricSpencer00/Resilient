@@ -263,6 +263,9 @@ enum Tok {
     // RES-319: `newtype Name = BaseType;` nominal type wrapper keyword.
     #[token("newtype")]
     Newtype,
+    // RES-333: `supervisor { strategy, children }` — actor restart policy.
+    #[token("supervisor")]
+    Supervisor,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -614,6 +617,8 @@ fn convert(t: Tok) -> Token {
         Tok::Mod => Token::Mod,
         // RES-319: newtype keyword.
         Tok::Newtype => Token::Newtype,
+        // RES-333: supervisor keyword.
+        Tok::Supervisor => Token::Supervisor,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),

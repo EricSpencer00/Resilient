@@ -3313,6 +3313,13 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
+            // RES-333: supervisor declaration — validate child configurations.
+            // TODO: check that each child_fn_name exists and is an actor.
+            Node::Supervisor { .. } => {
+                // For now, accept any supervisor configuration.
+                // Full validation (child existence, strategy validity) deferred to Phase 2.
+                Ok(Type::Void)
+            }
         }
     }
 

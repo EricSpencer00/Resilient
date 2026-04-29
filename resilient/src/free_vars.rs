@@ -473,6 +473,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
                 walk(node, bound, free);
             }
         }
+        // RES-333: supervisor declaration with string fields only
+        // (strategy, id, fn_name, restart). No free variables.
+        Node::Supervisor { .. } => {}
     }
 }
 
