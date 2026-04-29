@@ -266,6 +266,9 @@ enum Tok {
     // RES-333: `supervisor { strategy, children }` actor restart policy keyword.
     #[token("supervisor")]
     Supervisor,
+    // RES-290: `trait Name { fn sig(...); ... }` trait declaration keyword.
+    #[token("trait")]
+    Trait,
     // </EXTENSION_TOKENS>
     #[token("true")]
     True,
@@ -617,6 +620,10 @@ fn convert(t: Tok) -> Token {
         Tok::Mod => Token::Mod,
         // RES-319: newtype keyword.
         Tok::Newtype => Token::Newtype,
+        // RES-333: supervisor keyword.
+        Tok::Supervisor => Token::Supervisor,
+        // RES-290: trait keyword.
+        Tok::Trait => Token::Trait,
         // </EXTENSION_KEYWORDS>
         Tok::True => Token::BoolLiteral(true),
         Tok::False => Token::BoolLiteral(false),
