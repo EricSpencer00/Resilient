@@ -12,3 +12,4 @@ fn main() {
   let result = increment_safe(5);
   println(result);
 }
+main();
