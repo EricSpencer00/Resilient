@@ -1234,6 +1234,14 @@ impl TypeChecker {
         );
         // RES-462: adjacent pairs as tuples.
         env.set("array_pairs".to_string(), fn_any_to_any());
+        // RES-463: UTF-8 byte length.
+        env.set(
+            "string_bytes_len".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4256,6 +4264,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_indent",
         // RES-462: array_pairs.
         "array_pairs",
+        // RES-463: string_bytes_len.
+        "string_bytes_len",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
