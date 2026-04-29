@@ -1117,6 +1117,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-425: scalar-to-string conversion.
+        env.set(
+            "to_string".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -3992,6 +4000,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_flatten",
         // RES-424: array_join.
         "array_join",
+        // RES-425: to_string.
+        "to_string",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
