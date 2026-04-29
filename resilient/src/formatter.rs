@@ -605,6 +605,32 @@ impl Formatter {
                 self.write("}");
                 self.newline();
             }
+            // RES-333: supervisor declaration. Phase 1: minimal formatting.
+            Node::SupervisorDecl {
+                strategy, children, ..
+            } => {
+                self.write("supervisor {");
+                self.newline();
+                self.indent();
+                self.write(&format!("strategy: {},", strategy));
+                self.newline();
+                self.write("children: [");
+                self.newline();
+                self.indent();
+                for child in children {
+                    self.write(&format!(
+                        "{{ id: \"{}\", fn: {}, restart: {} }},",
+                        child.id, child.fn_name, child.restart
+                    ));
+                    self.newline();
+                }
+                self.dedent();
+                self.write("]");
+                self.newline();
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             // Anything else was an expression; dispatch to fmt_expr
             // and terminate with a semicolon so a bare expression
             // statement at top level still looks like a statement.
@@ -1028,6 +1054,7 @@ impl Formatter {
             | Node::LetDestructureStruct { .. }
             | Node::TryCatch { .. }
             | Node::ModuleDecl { .. }
+            | Node::SupervisorDecl { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }

@@ -2621,6 +2621,9 @@ impl TypeChecker {
                 Ok(Type::Struct(type_name.clone()))
             }
 
+            // RES-333: supervisor declaration. Phase 1: stub implementation.
+            Node::SupervisorDecl { .. } => Ok(Type::Void),
+
             // RES-224 (RES-387 follow-up): `try { ... } catch V { ... }`.
             // Extend the in-scope `fails` set with every caught
             // variant while type-checking the body, then restore for

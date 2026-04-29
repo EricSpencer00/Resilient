@@ -335,6 +335,8 @@ enum Token {
     Mod,
     /// RES-319: `newtype Name = BaseType;` — nominal type wrapper.
     Newtype,
+    /// RES-333: `supervisor { strategy, children }` — actor restart policy.
+    Supervisor,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -470,6 +472,7 @@ impl Token {
             Token::DotDotDot => "`...`".to_string(),
             Token::Mod => "`mod`".to_string(),
             Token::Newtype => "`newtype`".to_string(),
+            Token::Supervisor => "`supervisor`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -925,6 +928,7 @@ impl Lexer {
                         "exists" => Token::Exists,
                         "mod" => Token::Mod,
                         "newtype" => Token::Newtype,
+                        "supervisor" => Token::Supervisor,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2067,6 +2071,17 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-333: `supervisor { strategy, children }` — actor restart policy.
+    /// Starts child actors and monitors them according to a restart strategy.
+    #[allow(dead_code)] // Phase 2: parser will construct this
+    SupervisorDecl {
+        /// Restart strategy: "one_for_one" or "one_for_all"
+        strategy: String,
+        /// Array of child specifications
+        children: Vec<SupervisorChild>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -2104,6 +2119,18 @@ pub(crate) struct ReceiveHandler {
     pub(crate) ensures: Vec<Node>,
     pub(crate) body: Node,
     pub(crate) span: span::Span,
+}
+
+/// RES-333: one child specification inside a `supervisor` block.
+/// Defines a child actor and its restart policy.
+#[derive(Debug, Clone)]
+pub(crate) struct SupervisorChild {
+    /// Child identifier (must be unique within the supervisor)
+    pub(crate) id: String,
+    /// Function to call to start the child actor
+    pub(crate) fn_name: String,
+    /// Restart policy: "permanent" | "transient" | "temporary"
+    pub(crate) restart: String,
 }
 
 /// FFI v1: one foreign fn declaration inside an `extern` block.
@@ -11188,9 +11215,11 @@ impl Interpreter {
             // RES-386/RES-388/RES-390: actor/cluster declarations are
             // compile-time-only. The verifier hooks proof obligations
             // out of `check_program_with_source`; no runtime lowering.
-            Node::Actor { .. } | Node::ActorDecl { .. } | Node::ClusterDecl { .. } => {
-                Ok(Value::Void)
-            }
+            // RES-333: supervisor declarations are compile-time-only (Phase 1).
+            Node::Actor { .. }
+            | Node::ActorDecl { .. }
+            | Node::ClusterDecl { .. }
+            | Node::SupervisorDecl { .. } => Ok(Value::Void),
             // RES-224 (RES-387 follow-up): runtime evaluation of
             // `try { ... } catch V { ... }`. The MVP fault model does
             // not surface a runtime Failure value yet — `fails` is
