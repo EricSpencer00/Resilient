@@ -1,0 +1,6 @@
+[1, 2, 1, 2, 1, 2]
+[]
+[5, 6, 7]
+[]
+["a", "b", "a", "b", "a", "b", "a", "b"]
+Program executed successfully
