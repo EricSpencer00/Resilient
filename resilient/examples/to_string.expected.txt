@@ -1,0 +1,8 @@
+42
+-7
+1.5
+true
+false
+already a string
+count: 7
+Program executed successfully
