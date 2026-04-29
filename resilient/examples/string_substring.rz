@@ -1,0 +1,14 @@
+// RES-454 demo: string_substring slices by Unicode-scalar index.
+
+fn main() {
+    println(string_substring("hello world", 0, 5));
+    println(string_substring("hello world", 6, 11));
+    // Unicode-aware: "café" has 4 scalars, not 5.
+    println(string_substring("café", 1, 4));
+    // Out-of-range indices clamp.
+    println(string_substring("abc", -5, 99));
+    // Empty range returns empty.
+    println(string_substring("hello", 2, 2));
+}
+
+main();
