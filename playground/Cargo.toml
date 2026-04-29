@@ -1,0 +1,44 @@
+[package]
+name = "resilient-playground"
+version = "0.1.0"
+edition = "2024"
+description = "RES-368: WASM-targeted scaffold for the Resilient web playground."
+authors = ["Eric Spencer"]
+publish = false
+
+# `cdylib` is required for `wasm-bindgen` to produce a `.wasm` artifact
+# that `wasm-pack` can bundle for the browser. `rlib` keeps `cargo test`
+# (native) usable from this directory.
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# RES-368: bridge between Rust and JavaScript. `web-sys` is intentionally
+# absent — the JS side owns DOM, the Rust side stays a pure source-in
+# /text-out function. Keeps the WASM blob small and the API testable
+# from native Rust without a browser.
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# `js_sys::Date::now()` is the cheapest way to read a wall-clock in
+# the browser; pulling `web-sys::window().performance()` would require
+# threading an `Option` through the timing path for no precision win.
+js-sys = "0.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# Ship-quality release profile: optimize for size, abort on panic.
+# `lto` is intentionally `"thin"` (not full LTO) so build time stays
+# under a minute on CI; the 2 MiB gzip target in `.github/workflows/
+# playground.yml` is comfortably reachable without full LTO.
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

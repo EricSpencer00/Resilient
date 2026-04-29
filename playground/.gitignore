@@ -1,0 +1,5 @@
+# Build artifacts produced by `playground/build.sh` and `wasm-pack`.
+target/
+dist/
+pkg/
+Cargo.lock
