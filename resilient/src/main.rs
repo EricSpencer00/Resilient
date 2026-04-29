@@ -8282,6 +8282,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-456: rotate elements by n positions (wrapping).
     ("array_rotate_left", builtin_array_rotate_left),
     ("array_rotate_right", builtin_array_rotate_right),
+    // RES-457: ASCII first-char upper, rest lower.
+    ("string_capitalize", builtin_string_capitalize),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9835,6 +9837,32 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-457: `string_capitalize(s)` — ASCII first char upper, rest
+/// lower. ASCII-only (matches existing to_upper / to_lower).
+fn builtin_string_capitalize(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let mut iter = s.chars();
+            match iter.next() {
+                None => Ok(Value::String(String::new())),
+                Some(first) => {
+                    let mut out = String::with_capacity(s.len());
+                    out.push(first.to_ascii_uppercase());
+                    for c in iter {
+                        out.push(c.to_ascii_lowercase());
+                    }
+                    Ok(Value::String(out))
+                }
+            }
+        }
+        [other] => Err(format!("string_capitalize: expected string, got {}", other)),
+        _ => Err(format!(
+            "string_capitalize: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -28511,6 +28539,70 @@ mod tests {
             builtin_array_rotate_right(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-457: string_capitalize ----------
+
+    #[test]
+    fn string_capitalize_basic() {
+        assert_eq!(
+            extract_string(builtin_string_capitalize(&[Value::String("hello".into())]).unwrap()),
+            "Hello"
+        );
+        assert_eq!(
+            extract_string(builtin_string_capitalize(&[Value::String("HELLO".into())]).unwrap()),
+            "Hello"
+        );
+        assert_eq!(
+            extract_string(
+                builtin_string_capitalize(&[Value::String("hELLO wORLD".into())]).unwrap()
+            ),
+            "Hello world"
+        );
+    }
+
+    #[test]
+    fn string_capitalize_empty_returns_empty() {
+        assert_eq!(
+            extract_string(builtin_string_capitalize(&[Value::String("".into())]).unwrap()),
+            ""
+        );
+    }
+
+    #[test]
+    fn string_capitalize_single_char() {
+        assert_eq!(
+            extract_string(builtin_string_capitalize(&[Value::String("a".into())]).unwrap()),
+            "A"
+        );
+        assert_eq!(
+            extract_string(builtin_string_capitalize(&[Value::String("Z".into())]).unwrap()),
+            "Z"
+        );
+    }
+
+    #[test]
+    fn string_capitalize_starts_with_non_letter() {
+        // Non-letter first char passes through unchanged for the upper-case
+        // step; the rest still get lowercased.
+        assert_eq!(
+            extract_string(builtin_string_capitalize(&[Value::String("123ABC".into())]).unwrap()),
+            "123abc"
+        );
+    }
+
+    #[test]
+    fn string_capitalize_rejects_non_string_and_arity() {
+        assert!(
+            builtin_string_capitalize(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_string_capitalize(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
