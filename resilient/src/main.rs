@@ -200,6 +200,11 @@ mod newtypes;
 // expressible-but-invalid state called out in the Reddit critique.
 mod termination;
 
+// RES-333: supervisor trees — restart policy for actor failures.
+// All parser, formatter, and validation logic lives here; the main
+// module only touches the extension-point blocks and the dispatch call.
+mod supervisor;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -2367,6 +2372,7 @@ impl Parser {
             Token::Region => Some(self.parse_region_decl()),
             Token::Actor => Some(self.parse_actor_decl()),
             Token::Try => Some(crate::try_catch::parse(self)),
+            Token::Supervisor => Some(crate::supervisor::parse(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
