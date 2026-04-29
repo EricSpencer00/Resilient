@@ -1,0 +1,6 @@
+hello---
+---hello
+helloxyz
+xyzhello
+hello
+Program executed successfully
