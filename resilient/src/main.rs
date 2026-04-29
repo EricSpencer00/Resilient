@@ -8319,6 +8319,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-473: ternary numeric min/max.
     ("min3", builtin_min3),
     ("max3", builtin_max3),
+    // RES-474: element-wise array inequality.
+    ("array_ne", builtin_array_ne),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9874,6 +9876,15 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             "array_flatten: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-474: `array_ne(a, b)` — boolean negation of `array_eq`. True
+/// if the arrays differ in length or any corresponding element.
+fn builtin_array_ne(args: &[Value]) -> RResult<Value> {
+    match builtin_array_eq(args).map_err(|e| e.replace("array_eq", "array_ne"))? {
+        Value::Bool(b) => Ok(Value::Bool(!b)),
+        other => panic!("array_eq returned non-Bool: {:?}", other),
     }
 }
 
@@ -30394,6 +30405,46 @@ mod tests {
             builtin_max3(&[Value::Int(1), Value::Int(2)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-474: array_ne ----------
+
+    #[test]
+    fn array_ne_negates_array_eq() {
+        assert_eq_bool(
+            builtin_array_ne(&[int_array(&[1, 2, 3]), int_array(&[1, 2, 3])]).unwrap(),
+            false,
+            "ne identical",
+        );
+        assert_eq_bool(
+            builtin_array_ne(&[int_array(&[1, 2, 3]), int_array(&[1, 2, 4])]).unwrap(),
+            true,
+            "ne different",
+        );
+        assert_eq_bool(
+            builtin_array_ne(&[int_array(&[1, 2]), int_array(&[1, 2, 3])]).unwrap(),
+            true,
+            "ne length mismatch",
+        );
+        assert_eq_bool(
+            builtin_array_ne(&[Value::Array(vec![]), Value::Array(vec![])]).unwrap(),
+            false,
+            "ne empty",
+        );
+    }
+
+    #[test]
+    fn array_ne_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_ne(&[Value::Int(1), int_array(&[1])])
+                .unwrap_err()
+                .contains("array_ne:")
+        );
+        assert!(
+            builtin_array_ne(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 

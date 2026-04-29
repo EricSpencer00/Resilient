@@ -1,0 +1,10 @@
+// RES-474 demo: array_ne — negation of array_eq.
+
+fn main() {
+    println(array_ne([1, 2, 3], [1, 2, 3]));
+    println(array_ne([1, 2, 3], [1, 2, 4]));
+    println(array_ne([1, 2], [1, 2, 3]));
+    println(array_ne([], []));
+}
+
+main();
