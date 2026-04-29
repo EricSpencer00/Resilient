@@ -1,0 +1,11 @@
+// RES-472 demo: array_eq for element-wise array equality.
+
+fn main() {
+    println(array_eq([1, 2, 3], [1, 2, 3]));
+    println(array_eq([1, 2, 3], [1, 2, 4]));
+    println(array_eq([1, 2, 3], [1, 2]));
+    println(array_eq([], []));
+    println(array_eq(["a", "b"], ["a", "b"]));
+}
+
+main();

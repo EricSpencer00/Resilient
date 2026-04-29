@@ -1274,6 +1274,8 @@ impl TypeChecker {
         };
         env.set("string_strip_prefix".to_string(), str_str_to_str.clone());
         env.set("string_strip_suffix".to_string(), str_str_to_str);
+        // RES-472: element-wise array equality.
+        env.set("array_eq".to_string(), fn_any_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4314,6 +4316,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-471: prefix/suffix strippers.
         "string_strip_prefix",
         "string_strip_suffix",
+        // RES-472: array_eq.
+        "array_eq",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
