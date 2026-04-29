@@ -2672,6 +2672,28 @@ impl TypeChecker {
             // RES-390: ClusterDecl is compile-time-only.
             Node::ClusterDecl { .. } => Ok(Type::Void),
 
+            // RES-401: tuples — type-check each item in a literal,
+            // recurse into the destructure RHS, and treat element
+            // access as `Type::Any` until the type system grows a
+            // dedicated tuple shape (follow-up ticket).
+            Node::TupleLiteral { items, .. } => {
+                for it in items {
+                    self.check_node(it)?;
+                }
+                Ok(Type::Any)
+            }
+            Node::TupleIndex { tuple, .. } => {
+                self.check_node(tuple)?;
+                Ok(Type::Any)
+            }
+            Node::LetTupleDestructure { names, value, .. } => {
+                self.check_node(value)?;
+                for n in names {
+                    self.env.set(n.clone(), Type::Any);
+                }
+                Ok(Type::Void)
+            }
+
             // RES-388/RES-390: ActorDecl type-checks state fields,
             // always invariants, and receive handler bodies.
             Node::ActorDecl {

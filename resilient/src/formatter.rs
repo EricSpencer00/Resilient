@@ -1058,6 +1058,33 @@ impl Formatter {
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
+            // RES-401: tuple expressions and destructuring let.
+            Node::TupleLiteral { items, .. } => {
+                self.write("(");
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_expr(it);
+                }
+                self.write(")");
+            }
+            Node::TupleIndex { tuple, index, .. } => {
+                self.fmt_expr(tuple);
+                self.write(&format!(".{}", index));
+            }
+            Node::LetTupleDestructure { names, value, .. } => {
+                self.write("let (");
+                for (i, n) in names.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(n);
+                }
+                self.write(") = ");
+                self.fmt_expr(value);
+                self.write(";");
+            }
         }
     }
 
