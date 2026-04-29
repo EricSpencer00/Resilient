@@ -1,0 +1,10 @@
+// RES-333: Basic supervisor tree declaration
+// This demonstrates the syntax for declaring a supervisor with restart policy.
+
+supervisor {
+    strategy: one_for_one,
+    children: [
+        { id: "child1", fn: "actor_fn_1", restart: "permanent" },
+        { id: "child2", fn: "actor_fn_2", restart: "transient" }
+    ]
+}
