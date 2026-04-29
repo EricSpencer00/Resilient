@@ -1107,6 +1107,8 @@ impl TypeChecker {
         env.set("array_drop".to_string(), fn_any_any_to_any());
         // RES-422: integer sort ascending.
         env.set("array_sort".to_string(), fn_any_to_any());
+        // RES-443: integer sort descending.
+        env.set("array_sort_desc".to_string(), fn_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4082,6 +4084,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_drop",
         // RES-422: integer sort.
         "array_sort",
+        // RES-443: descending sort.
+        "array_sort_desc",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
