@@ -1,0 +1,12 @@
+// RES-477 demo: trim_start_chars / trim_end_chars one-sided trimmers.
+
+fn main() {
+    println(trim_start_chars("---hello---", "-"));
+    println(trim_end_chars("---hello---", "-"));
+    println(trim_start_chars("xyzhelloxyz", "xyz"));
+    println(trim_end_chars("xyzhelloxyz", "xyz"));
+    // No match leaves string unchanged.
+    println(trim_start_chars("hello", "xyz"));
+}
+
+main();
