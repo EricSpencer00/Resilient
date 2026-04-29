@@ -1,0 +1,13 @@
+// RES-416 demo: array_sum and array_product over integer arrays.
+
+fn main() {
+    println(array_sum([1, 2, 3, 4, 5]));
+    println(array_sum([-5, 5]));
+    println(array_sum([]));
+
+    println(array_product([2, 3, 4]));
+    println(array_product([5, 0, 7]));
+    println(array_product([]));
+}
+
+main();
