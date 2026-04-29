@@ -15,3 +15,4 @@ fn main() {
   println(value);
   assert(value >= 2);
 }
+main();
