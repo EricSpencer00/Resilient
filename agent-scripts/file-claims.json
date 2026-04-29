@@ -1,16 +1,8 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-333-supervisor-fresh",
-      "claimed_at": "2026-04-29T01:00:22Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-333-supervisor-fresh",
-      "claimed_at": "2026-04-29T01:00:22Z"
-    },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-333-supervisor-fresh",
-      "claimed_at": "2026-04-29T01:00:22Z"
+      "branch": "res-404-format-specifiers",
+      "claimed_at": "2026-04-29T05:40:23Z"
     }
   }
 }

@@ -1,0 +1,15 @@
+plain: 42
+zero-pad: [0007]
+zero-pad-neg: [-0003]
+right-align: [   42]
+left-align: [42   ]
+pi: 3.142
+pi-padded: [    3.14]
+hex-lo: 0xff
+hex-up: 0xFF
+bin: 1010
+oct: 10
+reg: 0x000000ff
+trunc: [abc]
+padded: [ab   ]
+Program executed successfully
