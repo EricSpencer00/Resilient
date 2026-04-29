@@ -1,0 +1,10 @@
+// RES-450 demo: array_swap exchanges two elements.
+
+fn main() {
+    println(array_swap([1, 2, 3, 4], 0, 3));
+    println(array_swap([10, 20, 30], 0, 1));
+    // Same index → unchanged.
+    println(array_swap([1, 2, 3], 1, 1));
+}
+
+main();
