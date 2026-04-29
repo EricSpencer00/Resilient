@@ -1109,6 +1109,8 @@ impl TypeChecker {
         env.set("array_sort".to_string(), fn_any_to_any());
         // RES-443: integer sort descending.
         env.set("array_sort_desc".to_string(), fn_any_to_any());
+        // RES-444: Fisher-Yates shuffle (impure: uses RNG).
+        env.set("array_shuffle".to_string(), fn_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -3708,6 +3710,8 @@ const IMPURE_BUILTINS: &[&str] = &[
     // point of view even though the seed pins it globally.
     "random_int",
     "random_float",
+    // RES-444: shuffle pulls from the same RNG.
+    "array_shuffle",
     // RES-143: disk I/O.
     "file_read",
     "file_write",
