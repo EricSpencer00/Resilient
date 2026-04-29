@@ -1026,10 +1026,26 @@ fn compile_expr(
         // Nested targets (e.g. `a[i][j]`) fall out naturally because
         // `compile_expr(target)` recurses: each `IndexExpression` at
         // an inner position pushes a clone of the sub-array.
-        Node::IndexExpression { target, index, .. } => {
+        //
+        // RES-407: if the typechecker's bounds-check pass discharged
+        // `0 <= index < len(target)` at this exact source span, emit
+        // the `LoadIndexUnchecked` variant — the runtime check is
+        // redundant and the elision is what hot-loop embedded code
+        // wants. Falls back to the checked op when the pass hasn't
+        // run or didn't prove this site.
+        Node::IndexExpression {
+            target,
+            index,
+            span,
+        } => {
             compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
             compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
-            chunk.emit(Op::LoadIndex, line);
+            let op = if crate::bounds_check::is_proven_site(*span) {
+                Op::LoadIndexUnchecked
+            } else {
+                Op::LoadIndex
+            };
+            chunk.emit(op, line);
             Ok(())
         }
         // RES-335: `Name { f1: e1, f2: e2 }` struct literal. Lowered
@@ -1943,5 +1959,83 @@ mod tests {
         };
         let err = StructRegistry::from_program(&just_int).unwrap_err();
         assert!(matches!(err, CompileError::Unsupported(_)), "got {:?}", err);
+    }
+
+    // ---------- RES-407: bounds-check elision ----------
+
+    use std::sync::Mutex;
+    static BOUNDS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Walk every chunk in `prog` (main + all user fns) and count
+    /// occurrences of `LoadIndex` and `LoadIndexUnchecked`.
+    fn count_load_index_ops(prog: &Program) -> (usize, usize) {
+        let chunks = std::iter::once(&prog.main).chain(prog.functions.iter().map(|f| &f.chunk));
+        let mut checked = 0usize;
+        let mut unchecked = 0usize;
+        for c in chunks {
+            for op in &c.code {
+                match op {
+                    Op::LoadIndex => checked += 1,
+                    Op::LoadIndexUnchecked => unchecked += 1,
+                    _ => {}
+                }
+            }
+        }
+        (checked, unchecked)
+    }
+
+    #[test]
+    fn res407_proven_literal_index_emits_unchecked_load() {
+        // `lock()` may poison if a sibling test panicked; recover the
+        // guard so this test doesn't transitively fail.
+        let _g = BOUNDS_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let src = r#"
+fn main() {
+    let xs = [10, 20, 30];
+    let y = xs[1];
+}
+main();
+"#;
+        let program = parse_one(src);
+        // Pass needs to run before compile so the proven-sites set is
+        // populated. The compiler reads it via thread-local.
+        crate::bounds_check::check_array_bounds(&program, "<test>").unwrap();
+        let prog = compile(&program).expect("compiles");
+        let (checked, unchecked) = count_load_index_ops(&prog);
+        assert_eq!(
+            unchecked, 1,
+            "expected one LoadIndexUnchecked for proven xs[1] (checked={})",
+            checked
+        );
+        assert_eq!(
+            checked, 0,
+            "expected no checked LoadIndex (unchecked={})",
+            unchecked
+        );
+    }
+
+    #[test]
+    fn res407_unprovable_index_keeps_checked_load() {
+        let _g = BOUNDS_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // `i` is a free parameter — bounds_check can't prove it.
+        let src = r#"
+fn get(int i) -> int {
+    let xs = [1, 2, 3];
+    return xs[i];
+}
+"#;
+        let program = parse_one(src);
+        crate::bounds_check::check_array_bounds(&program, "<test>").unwrap();
+        let prog = compile(&program).expect("compiles");
+        let (checked, unchecked) = count_load_index_ops(&prog);
+        assert_eq!(
+            unchecked, 0,
+            "expected no LoadIndexUnchecked for dynamic xs[i] (checked={})",
+            checked
+        );
+        assert!(
+            checked >= 1,
+            "expected at least one checked LoadIndex for dynamic xs[i]"
+        );
     }
 }
