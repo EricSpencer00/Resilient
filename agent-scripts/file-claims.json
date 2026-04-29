@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-446-string-find-all",
-      "claimed_at": "2026-04-29T22:14:58Z"
+      "branch": "res-447-int-bounds",
+      "claimed_at": "2026-04-29T22:17:01Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-446-string-find-all",
-      "claimed_at": "2026-04-29T22:14:58Z"
+      "branch": "res-447-int-bounds",
+      "claimed_at": "2026-04-29T22:17:01Z"
     }
   }
 }

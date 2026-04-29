@@ -8258,6 +8258,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_ends_with", builtin_array_ends_with),
     // RES-446: all byte indices of substring occurrences.
     ("string_find_all", builtin_string_find_all),
+    // RES-447: i64 boundary constants as zero-arg functions.
+    ("int_min", builtin_int_min),
+    ("int_max", builtin_int_max),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9814,6 +9817,22 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-447: `int_min()` — i64::MIN as a value for boundary cases.
+fn builtin_int_min(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!("int_min: expected 0 arguments, got {}", args.len()));
+    }
+    Ok(Value::Int(i64::MIN))
+}
+
+/// RES-447: `int_max()` — i64::MAX as a value for boundary cases.
+fn builtin_int_max(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!("int_max: expected 0 arguments, got {}", args.len()));
+    }
+    Ok(Value::Int(i64::MAX))
 }
 
 /// RES-446: `string_find_all(s, sub)` — array of byte indices for
@@ -27362,6 +27381,32 @@ mod tests {
             builtin_string_find_all(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-447: int_min / int_max ----------
+
+    #[test]
+    fn int_min_returns_i64_min() {
+        assert_int(builtin_int_min(&[]).unwrap(), i64::MIN, "int_min");
+    }
+
+    #[test]
+    fn int_max_returns_i64_max() {
+        assert_int(builtin_int_max(&[]).unwrap(), i64::MAX, "int_max");
+    }
+
+    #[test]
+    fn int_bounds_reject_args() {
+        assert!(
+            builtin_int_min(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 0 arguments")
+        );
+        assert!(
+            builtin_int_max(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 0 arguments")
         );
     }
 
