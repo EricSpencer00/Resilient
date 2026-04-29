@@ -223,6 +223,20 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         | Node::NewtypeDecl { .. }
         // RES-333: supervisor declarations. Phase 1: no free-variable tracking.
         | Node::SupervisorDecl { .. } => {}
+        // RES-401: tuples. Each item is walked; tuple-destructure also
+        // adds the bound names so subsequent expressions see them.
+        Node::TupleLiteral { items, .. } => {
+            for it in items {
+                walk(it, bound, free);
+            }
+        }
+        Node::TupleIndex { tuple, .. } => walk(tuple, bound, free),
+        Node::LetTupleDestructure { names, value, .. } => {
+            walk(value, bound, free);
+            for n in names {
+                bound.insert(n.clone());
+            }
+        }
         Node::NewtypeConstruct { value, .. } => walk(value, bound, free),
         // RES-386: Actor declarations are verifier-only.
         Node::Actor { .. } => {}

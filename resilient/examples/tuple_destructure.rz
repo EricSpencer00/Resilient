@@ -1,0 +1,15 @@
+// RES-401: tuple destructuring let.
+fn main() {
+    let pair = (3, 7);
+    let (x, y) = pair;
+    println(x);
+    println(y);
+
+    let triple = (1, 2, 3);
+    let (a, b, c) = triple;
+    println(a);
+    println(b);
+    println(c);
+}
+
+main();

@@ -1,0 +1,16 @@
+// RES-401: tuple literals + element access.
+fn main() {
+    let pair = (10, 20);
+    println(pair.0);
+    println(pair.1);
+
+    let triple = (1, 2, 3);
+    println(triple.0 + triple.1 + triple.2);
+
+    let mixed = (42, "hello", true);
+    println(mixed.0);
+    println(mixed.1);
+    println(mixed.2);
+}
+
+main();

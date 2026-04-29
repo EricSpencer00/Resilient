@@ -179,6 +179,11 @@ mod named_args;
 // logic lives here; main.rs only adds a Node variant and two small
 // dispatch calls.
 mod string_interp;
+// RES-401: tuples — literals, element access, destructuring let. All
+// feature logic (parser dispatch, interpreter helpers) lives in
+// `tuples.rs`; main.rs only adds the Node / Value variants and routes
+// through to the helpers.
+mod tuples;
 // RES-324: `mod name { ... }` inline namespace blocks. All namespace
 // logic (eval and static check) lives in this module; the only core-
 // file changes are Token::Mod, Node::ModuleDecl, and the dispatch lines.
@@ -2093,6 +2098,28 @@ enum Node {
         /// Array of child specifications
         children: Vec<SupervisorChild>,
         #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-401: tuple literal `(a, b, c)`. Empty `items` is the unit
+    /// value `()`. A single-element tuple is not constructible from
+    /// source today — `(x)` is parsed as a grouped expression to avoid
+    /// the ambiguity; users wanting a 1-tuple write `(x,)` (trailing
+    /// comma not yet supported as the disambiguator — file a follow-up
+    /// if needed).
+    TupleLiteral { items: Vec<Node>, span: span::Span },
+    /// RES-401: tuple element access — `t.0`, `t.1`. `index` is checked
+    /// at runtime against the actual tuple's length.
+    TupleIndex {
+        tuple: Box<Node>,
+        index: usize,
+        span: span::Span,
+    },
+    /// RES-401: tuple-destructuring `let` — `let (a, b) = pair;`.
+    /// Each name is bound in the enclosing environment; arity must
+    /// match the RHS at runtime.
+    LetTupleDestructure {
+        names: Vec<String>,
+        value: Box<Node>,
         span: span::Span,
     },
 }
@@ -4393,6 +4420,14 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'let'
 
+        // RES-401: tuple destructure form — `let (a, b, ...) = expr;`.
+        // The `(` immediately after `let` is unambiguous: the
+        // single-name and annotated forms both require an identifier
+        // next. Reroute to the dedicated parser.
+        if self.current_token == Token::LeftParen {
+            return crate::tuples::parse_let_tuple_destructure(self, stmt_span);
+        }
+
         let name = match &self.current_token {
             Token::Identifier(name) => name.clone(),
             _ => {
@@ -5787,22 +5822,10 @@ impl Parser {
                     span: op_span,
                 })
             }
-            Token::LeftParen => {
-                self.next_token(); // Skip '('
-                let expr = self.parse_expression(0);
-                // RES-310: parse_expression leaves current_token on the
-                // last token it consumed; advance one more so we can
-                // check that the next token is the closing ')'.
-                self.next_token();
-                if self.current_token != Token::RightParen {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected ')' closing parenthesized expression, found {}",
-                        tok
-                    ));
-                }
-                expr
-            }
+            // RES-401: `(` opens either a tuple literal or a grouped
+            // expression. The disambiguator (number of comma-separated
+            // items inside) lives in `tuples::parse_paren_or_tuple`.
+            Token::LeftParen => crate::tuples::parse_paren_or_tuple(self),
             Token::LeftBracket => Some(self.parse_array_literal()),
             // RES-148: `{"k" -> v, ...}` in expression position parses
             // as a Map literal. Map literals are only valid in
@@ -6902,6 +6925,21 @@ impl Parser {
         // RES-085: span covers the `.` at current_token on entry.
         let dot_span = self.span_at_current();
         self.next_token(); // skip '.'
+        // RES-401: `t.0`, `t.1` — tuple element access. The token after
+        // `.` is an integer literal (non-negative); produce a
+        // `TupleIndex` node and let the interpreter check the bound.
+        if let Token::IntLiteral(n) = &self.current_token {
+            let n_val = *n;
+            if n_val < 0 {
+                self.record_error(format!("Tuple index must be non-negative, got {}", n_val));
+                return Some(target);
+            }
+            return Some(Node::TupleIndex {
+                tuple: Box::new(target),
+                index: n_val as usize,
+                span: dot_span,
+            });
+        }
         let field = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             _ => {
@@ -7476,6 +7514,11 @@ enum Value {
     /// ordinary tree-walker values stay cheap while closures can still
     /// share state explicitly.
     Cell(i64),
+    /// RES-401: tuple. Heterogeneous fixed-length sequence. Empty
+    /// vector is the unit value. Distinct from `Array` so type-aware
+    /// passes can reject mixed-type array literals while still
+    /// permitting `(1, "two")`-style tuples.
+    Tuple(Vec<Value>),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -7569,6 +7612,7 @@ impl std::fmt::Debug for Value {
                 Ok(inner) => write!(f, "Cell({:?})", inner),
                 Err(_) => write!(f, "Cell(<missing>)"),
             },
+            Value::Tuple(items) => write!(f, "Tuple({} items)", items.len()),
         }
     }
 }
@@ -7591,6 +7635,18 @@ impl std::fmt::Display for Value {
                     write!(f, "{}", v)?;
                 }
                 write!(f, "]")
+            }
+            // RES-401: tuples render as `(a, b, c)`. The unit value
+            // (empty tuple) renders as `()` to mirror its source form.
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, ")")
             }
             Value::Struct { name, fields } => {
                 write!(f, "{} {{ ", name)?;
@@ -11229,6 +11285,16 @@ impl Interpreter {
                     out.push(self.eval(item)?);
                 }
                 Ok(Value::Array(out))
+            }
+            // RES-401: tuple literal / element access / let destructure.
+            // All three dispatch into helpers in `tuples.rs`; main.rs
+            // just routes here so the feature stays isolated.
+            Node::TupleLiteral { items, .. } => crate::tuples::eval_tuple_literal(self, items),
+            Node::TupleIndex { tuple, index, span } => {
+                crate::tuples::eval_tuple_index(self, tuple, *index, *span)
+            }
+            Node::LetTupleDestructure { names, value, span } => {
+                crate::tuples::bind_tuple_destructure(self, names, value, *span)
             }
             // RES-148: `{k -> v, ...}` — evaluate each key / value and
             // coerce keys to `MapKey` (errors if a key isn't one of
