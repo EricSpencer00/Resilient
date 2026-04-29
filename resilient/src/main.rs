@@ -8249,6 +8249,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_drop", builtin_array_drop),
     // RES-422: ascending sort over an integer array.
     ("array_sort", builtin_array_sort),
+    // RES-443: descending sort.
+    ("array_sort_desc", builtin_array_sort_desc),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9802,6 +9804,34 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-443: `array_sort_desc(arr)` — descending sort companion to
+/// RES-422's `array_sort`. Same input contract.
+fn builtin_array_sort_desc(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => nums.push(*n),
+                    other => {
+                        return Err(format!(
+                            "array_sort_desc: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            nums.sort_by(|a, b| b.cmp(a));
+            Ok(Value::Array(nums.into_iter().map(Value::Int).collect()))
+        }
+        [other] => Err(format!("array_sort_desc: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_sort_desc: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -26922,6 +26952,60 @@ mod tests {
             builtin_last_index_of(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-443: array_sort_desc ----------
+
+    #[test]
+    fn array_sort_desc_orders_descending() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_sort_desc(&[int_array(&[3, 1, 4, 1, 5, 9, 2, 6])]).unwrap()
+            ),
+            vec![9, 6, 5, 4, 3, 2, 1, 1]
+        );
+    }
+
+    #[test]
+    fn array_sort_desc_handles_negatives() {
+        assert_eq!(
+            extract_int_array(builtin_array_sort_desc(&[int_array(&[-3, 0, 5, -1, 0])]).unwrap()),
+            vec![5, 0, 0, -1, -3]
+        );
+    }
+
+    #[test]
+    fn array_sort_desc_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_sort_desc(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_sort_desc_does_not_mutate_input() {
+        let input = int_array(&[3, 1, 2]);
+        let _ = builtin_array_sort_desc(std::slice::from_ref(&input)).unwrap();
+        assert_eq!(extract_int_array(input), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn array_sort_desc_rejects_non_int_and_non_array() {
+        assert!(
+            builtin_array_sort_desc(&[Value::Array(vec![Value::Int(1), Value::Float(2.0)])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_sort_desc(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_sort_desc(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
