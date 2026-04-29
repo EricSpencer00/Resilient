@@ -8229,6 +8229,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_reverse", builtin_array_reverse),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
+    // RES-414: first byte index of substring, or -1 if not found.
+    ("index_of", builtin_index_of),
     // RES-145: string manipulation expansion.
     ("replace", builtin_replace),
     ("format", builtin_format),
@@ -9061,6 +9063,25 @@ fn builtin_string_reverse(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("string_reverse: expected string, got {}", other)),
         _ => Err(format!(
             "string_reverse: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-414: `index_of(s, sub)` — first byte index of `sub` in `s`, or
+/// -1 if not found. Empty `sub` returns 0 (matches str::find).
+fn builtin_index_of(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sub)] => match s.find(sub.as_str()) {
+            Some(idx) => Ok(Value::Int(idx as i64)),
+            None => Ok(Value::Int(-1)),
+        },
+        [a, b] => Err(format!(
+            "index_of: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "index_of: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -23624,6 +23645,60 @@ mod tests {
     #[test]
     fn string_repeat_rejects_wrong_arity() {
         let err = builtin_string_repeat(&[Value::String("a".into())]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "got: {}", err);
+    }
+
+    // ---------- RES-414: index_of ----------
+
+    #[test]
+    fn index_of_finds_substring() {
+        match builtin_index_of(&[
+            Value::String("hello world".into()),
+            Value::String("world".into()),
+        ])
+        .unwrap()
+        {
+            Value::Int(6) => {}
+            other => panic!("expected Int(6), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_of_returns_minus_one_when_not_found() {
+        match builtin_index_of(&[Value::String("abc".into()), Value::String("xyz".into())]).unwrap()
+        {
+            Value::Int(-1) => {}
+            other => panic!("expected Int(-1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_of_empty_substring_returns_zero() {
+        match builtin_index_of(&[Value::String("abc".into()), Value::String("".into())]).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_of_at_start_returns_zero() {
+        match builtin_index_of(&[Value::String("foobar".into()), Value::String("foo".into())])
+            .unwrap()
+        {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_of_rejects_wrong_types() {
+        let err = builtin_index_of(&[Value::Int(1), Value::String("a".into())]).unwrap_err();
+        assert!(err.contains("expected (string, string)"), "got: {}", err);
+    }
+
+    #[test]
+    fn index_of_rejects_wrong_arity() {
+        let err = builtin_index_of(&[Value::String("a".into())]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "got: {}", err);
     }
 
