@@ -1,0 +1,17 @@
+// RES-434 demo: string_lines splits text into lines (LF or CRLF).
+
+fn main() {
+    let text = "alpha\nbeta\ngamma";
+    println(string_lines(text));
+
+    // Trailing newline does NOT produce an empty trailing element.
+    println(string_lines("a\nb\n"));
+
+    // Blank lines are preserved.
+    println(string_lines("first\n\nthird"));
+
+    // Empty input → empty array.
+    println(string_lines(""));
+}
+
+main();

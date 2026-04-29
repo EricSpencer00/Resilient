@@ -1,0 +1,5 @@
+["alpha", "beta", "gamma"]
+["a", "b"]
+["first", "", "third"]
+[]
+Program executed successfully
