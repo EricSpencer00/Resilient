@@ -8251,6 +8251,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_sort", builtin_array_sort),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
+    // RES-424: join a string array with a separator.
+    ("array_join", builtin_array_join),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9185,6 +9187,37 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-424: `array_join(arr, sep)` — concatenate the elements of a
+/// string array separated by `sep`. All elements must be strings (no
+/// implicit string coercion). Empty array → "".
+fn builtin_array_join(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(sep)] => {
+            let mut parts: Vec<&str> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::String(s) => parts.push(s.as_str()),
+                    other => {
+                        return Err(format!(
+                            "array_join: expected all string elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::String(parts.join(sep.as_str())))
+        }
+        [a, b] => Err(format!(
+            "array_join: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_join: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -24892,6 +24925,101 @@ mod tests {
             builtin_array_flatten(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-424: array_join ----------
+
+    fn str_array(xs: &[&str]) -> Value {
+        Value::Array(xs.iter().map(|s| Value::String((*s).to_string())).collect())
+    }
+
+    fn extract_string(v: Value) -> String {
+        match v {
+            Value::String(s) => s,
+            _ => panic!("expected String"),
+        }
+    }
+
+    #[test]
+    fn array_join_basic() {
+        assert_eq!(
+            extract_string(
+                builtin_array_join(&[str_array(&["a", "b", "c"]), Value::String(",".into())])
+                    .unwrap()
+            ),
+            "a,b,c"
+        );
+    }
+
+    #[test]
+    fn array_join_empty_separator_concatenates() {
+        assert_eq!(
+            extract_string(
+                builtin_array_join(&[str_array(&["foo", "bar"]), Value::String("".into())])
+                    .unwrap()
+            ),
+            "foobar"
+        );
+    }
+
+    #[test]
+    fn array_join_multichar_separator() {
+        assert_eq!(
+            extract_string(
+                builtin_array_join(&[str_array(&["a", "b", "c"]), Value::String(" - ".into())])
+                    .unwrap()
+            ),
+            "a - b - c"
+        );
+    }
+
+    #[test]
+    fn array_join_empty_array_returns_empty_string() {
+        assert_eq!(
+            extract_string(
+                builtin_array_join(&[Value::Array(vec![]), Value::String(",".into())]).unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn array_join_single_element_no_separator() {
+        assert_eq!(
+            extract_string(
+                builtin_array_join(&[str_array(&["solo"]), Value::String(",".into())]).unwrap()
+            ),
+            "solo"
+        );
+    }
+
+    #[test]
+    fn array_join_rejects_non_string_element() {
+        let err = builtin_array_join(&[
+            Value::Array(vec![Value::String("a".into()), Value::Int(2)]),
+            Value::String(",".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("all string elements"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_join_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_join(&[Value::Int(1), Value::String(",".into())])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_join(&[str_array(&["a"]), Value::Int(99)])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_join(&[str_array(&["a"])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 

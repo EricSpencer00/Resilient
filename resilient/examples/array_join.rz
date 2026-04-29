@@ -1,0 +1,11 @@
+// RES-424 demo: array_join concatenates strings with a separator.
+
+fn main() {
+    println(array_join(["a", "b", "c"], ","));
+    println(array_join(["alpha", "beta", "gamma"], " - "));
+    println(array_join(["foo", "bar"], ""));
+    println(array_join([], ","));
+    println(array_join(["solo"], ","));
+}
+
+main();
