@@ -1,0 +1,14 @@
+// RES-429 demo: string_pad_left and string_pad_right pad to a given width.
+
+fn main() {
+    println(string_pad_left("42", 5, "0"));
+    println(string_pad_left("hi", 6, " "));
+    println(string_pad_right("hi", 5, "."));
+    println(string_pad_right("x", 4, "*"));
+    // Already-wide strings pass through unchanged.
+    println(string_pad_left("longstring", 3, "0"));
+    // Zero width is a noop.
+    println(string_pad_right("a", 0, "0"));
+}
+
+main();

@@ -8262,6 +8262,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-428: first/last element accessors (empty array errors).
     ("array_first", builtin_array_first),
     ("array_last", builtin_array_last),
+    // RES-429: pad a string to a Unicode-scalar width.
+    ("string_pad_left", builtin_string_pad_left),
+    ("string_pad_right", builtin_string_pad_right),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9199,6 +9202,76 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-429: shared validator for the pad builtins. Returns the
+/// (width, pad-char) pair on success.
+fn pad_args(name: &str, args: &[Value]) -> RResult<(String, usize, char)> {
+    match args {
+        [Value::String(s), Value::Int(width), Value::String(pad)] => {
+            if *width < 0 {
+                return Err(format!(
+                    "{}: width must be non-negative, got {}",
+                    name, width
+                ));
+            }
+            let mut chars = pad.chars();
+            let pad_char = chars
+                .next()
+                .ok_or_else(|| format!("{}: pad must be a single character, got empty", name))?;
+            if chars.next().is_some() {
+                return Err(format!(
+                    "{}: pad must be a single character, got {} chars",
+                    name,
+                    pad.chars().count()
+                ));
+            }
+            Ok((s.clone(), *width as usize, pad_char))
+        }
+        [a, b, c] => Err(format!(
+            "{}: expected (string, int, string), got ({}, {}, {})",
+            name, a, b, c
+        )),
+        _ => Err(format!(
+            "{}: expected 3 arguments, got {}",
+            name,
+            args.len()
+        )),
+    }
+}
+
+/// RES-429: `string_pad_left(s, width, pad)` — left-pad `s` to at least
+/// `width` Unicode scalars using the single-char `pad`.
+fn builtin_string_pad_left(args: &[Value]) -> RResult<Value> {
+    let (s, width, pad_char) = pad_args("string_pad_left", args)?;
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(s));
+    }
+    let needed = width - len;
+    let mut out = String::with_capacity(s.len() + needed * pad_char.len_utf8());
+    for _ in 0..needed {
+        out.push(pad_char);
+    }
+    out.push_str(&s);
+    Ok(Value::String(out))
+}
+
+/// RES-429: `string_pad_right(s, width, pad)` — right-pad `s` to at
+/// least `width` Unicode scalars using the single-char `pad`.
+fn builtin_string_pad_right(args: &[Value]) -> RResult<Value> {
+    let (s, width, pad_char) = pad_args("string_pad_right", args)?;
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(s));
+    }
+    let needed = width - len;
+    let mut out = String::with_capacity(s.len() + needed * pad_char.len_utf8());
+    out.push_str(&s);
+    for _ in 0..needed {
+        out.push(pad_char);
+    }
+    Ok(Value::String(out))
 }
 
 /// RES-428: `array_first(arr)` — first element of a non-empty array.
@@ -25455,6 +25528,118 @@ mod tests {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
+    }
+
+    // ---------- RES-429: string_pad_left / string_pad_right ----------
+
+    fn pad_call(f: fn(&[Value]) -> RResult<Value>, s: &str, w: i64, pad: &str) -> Value {
+        f(&[
+            Value::String(s.into()),
+            Value::Int(w),
+            Value::String(pad.into()),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn string_pad_left_basic() {
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_left, "42", 5, "0")),
+            "00042"
+        );
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_left, "hi", 5, " ")),
+            "   hi"
+        );
+    }
+
+    #[test]
+    fn string_pad_right_basic() {
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_right, "hi", 5, ".")),
+            "hi..."
+        );
+    }
+
+    #[test]
+    fn string_pad_already_wide_returns_unchanged() {
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_left, "abcdef", 3, "0")),
+            "abcdef"
+        );
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_right, "abcdef", 6, "0")),
+            "abcdef"
+        );
+    }
+
+    #[test]
+    fn string_pad_zero_width() {
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_left, "x", 0, "0")),
+            "x"
+        );
+    }
+
+    #[test]
+    fn string_pad_unicode_width_counts_chars_not_bytes() {
+        // "café" is 4 chars but 5 UTF-8 bytes. Padding to width 6 must
+        // produce 4 + 2 chars worth, not byte-count math.
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_left, "café", 6, "_")),
+            "__café"
+        );
+    }
+
+    #[test]
+    fn string_pad_with_unicode_pad_char() {
+        assert_eq!(
+            extract_string(pad_call(builtin_string_pad_right, "x", 4, "✓")),
+            "x✓✓✓"
+        );
+    }
+
+    #[test]
+    fn string_pad_rejects_negative_width() {
+        let err = builtin_string_pad_left(&[
+            Value::String("a".into()),
+            Value::Int(-1),
+            Value::String("0".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_pad_rejects_non_single_char_pad() {
+        let err = builtin_string_pad_right(&[
+            Value::String("a".into()),
+            Value::Int(5),
+            Value::String("ab".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("single character"), "got: {}", err);
+        let err = builtin_string_pad_left(&[
+            Value::String("a".into()),
+            Value::Int(5),
+            Value::String("".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("single character"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_pad_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_pad_left(&[Value::Int(1), Value::Int(5), Value::String("0".into())])
+                .unwrap_err()
+                .contains("expected (string, int, string)")
+        );
+        assert!(
+            builtin_string_pad_right(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
     }
 
     // ---------- RES-034: nested index assignment ----------
