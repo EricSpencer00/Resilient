@@ -1147,6 +1147,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-430: pair elements as tuples; truncate to shorter array.
+        env.set("array_zip".to_string(), fn_any_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4034,6 +4036,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-429: string padding.
         "string_pad_left",
         "string_pad_right",
+        // RES-430: array_zip.
+        "array_zip",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
