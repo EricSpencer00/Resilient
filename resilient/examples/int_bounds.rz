@@ -1,0 +1,11 @@
+// RES-447 demo: int_min() and int_max() expose i64 boundary values.
+
+fn main() {
+    println(int_min());
+    println(int_max());
+    // Useful as accumulator initial values.
+    println(min(int_max(), 42));
+    println(max(int_min(), 42));
+}
+
+main();
