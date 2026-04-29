@@ -1,0 +1,10 @@
+// RES-432 demo: array_repeat creates an array of n clones of an element.
+
+fn main() {
+    println(array_repeat(0, 5));
+    println(array_repeat("x", 3));
+    println(array_repeat(true, 4));
+    println(array_repeat(42, 0));
+}
+
+main();

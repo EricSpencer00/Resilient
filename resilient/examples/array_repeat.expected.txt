@@ -1,0 +1,5 @@
+[0, 0, 0, 0, 0]
+["x", "x", "x"]
+[true, true, true, true]
+[]
+Program executed successfully
