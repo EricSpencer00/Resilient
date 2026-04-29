@@ -8230,6 +8230,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-412: reverse a string (Unicode-aware) or an array (clones elements).
     ("string_reverse", builtin_string_reverse),
     ("array_reverse", builtin_array_reverse),
+    // RES-416: integer-array reductions (identity 0 / 1 for empty arrays).
+    ("array_sum", builtin_array_sum),
+    ("array_product", builtin_array_product),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9109,6 +9112,61 @@ fn builtin_string_repeat(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_repeat: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-416: `array_sum(arr)` — sum of an integer array. Empty → 0.
+/// Non-integer or heterogeneous elements produce a typed error
+/// (we don't promote to Float to keep a single, predictable type).
+fn builtin_array_sum(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut acc: i64 = 0;
+            for v in items {
+                match v {
+                    Value::Int(n) => acc = acc.wrapping_add(*n),
+                    other => {
+                        return Err(format!(
+                            "array_sum: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(acc))
+        }
+        [other] => Err(format!("array_sum: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_sum: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-416: `array_product(arr)` — product of an integer array.
+/// Empty → 1 (multiplicative identity). Non-int elements error.
+fn builtin_array_product(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut acc: i64 = 1;
+            for v in items {
+                match v {
+                    Value::Int(n) => acc = acc.wrapping_mul(*n),
+                    other => {
+                        return Err(format!(
+                            "array_product: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(acc))
+        }
+        [other] => Err(format!("array_product: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_product: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -23862,6 +23920,85 @@ mod tests {
             builtin_lcm(&[])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-416: array_sum / array_product ----------
+
+    fn int_array(xs: &[i64]) -> Value {
+        Value::Array(xs.iter().copied().map(Value::Int).collect())
+    }
+
+    #[test]
+    fn array_sum_basic() {
+        assert_int(
+            builtin_array_sum(&[int_array(&[1, 2, 3])]).unwrap(),
+            6,
+            "sum [1,2,3]",
+        );
+        assert_int(
+            builtin_array_sum(&[int_array(&[-5, 5])]).unwrap(),
+            0,
+            "sum [-5,5]",
+        );
+    }
+
+    #[test]
+    fn array_sum_empty_is_zero() {
+        assert_int(
+            builtin_array_sum(&[Value::Array(vec![])]).unwrap(),
+            0,
+            "sum []",
+        );
+    }
+
+    #[test]
+    fn array_sum_rejects_non_int_element() {
+        let err =
+            builtin_array_sum(&[Value::Array(vec![Value::Int(1), Value::Float(2.0)])]).unwrap_err();
+        assert!(err.contains("all int elements"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_sum_rejects_non_array() {
+        let err = builtin_array_sum(&[Value::Int(5)]).unwrap_err();
+        assert!(err.contains("expected array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_product_basic() {
+        assert_int(
+            builtin_array_product(&[int_array(&[2, 3, 4])]).unwrap(),
+            24,
+            "product [2,3,4]",
+        );
+        assert_int(
+            builtin_array_product(&[int_array(&[5, 0, 7])]).unwrap(),
+            0,
+            "product with zero",
+        );
+    }
+
+    #[test]
+    fn array_product_empty_is_one() {
+        assert_int(
+            builtin_array_product(&[Value::Array(vec![])]).unwrap(),
+            1,
+            "product []",
+        );
+    }
+
+    #[test]
+    fn array_product_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_product(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_product(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
