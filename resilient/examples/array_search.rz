@@ -1,0 +1,18 @@
+// RES-418 demo: array_contains and array_index_of.
+
+fn main() {
+    let xs = [10, 20, 30, 20, 40];
+    println(array_contains(xs, 20));
+    println(array_contains(xs, 99));
+    println(array_contains([], 1));
+
+    println(array_index_of(xs, 20));
+    println(array_index_of(xs, 30));
+    println(array_index_of(xs, 99));
+
+    let words = ["alpha", "beta", "gamma"];
+    println(array_contains(words, "beta"));
+    println(array_index_of(words, "gamma"));
+}
+
+main();
