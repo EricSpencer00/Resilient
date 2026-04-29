@@ -8281,6 +8281,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_count", builtin_string_count),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
+    // RES-438: one-sided whitespace trimmers.
+    ("trim_start", builtin_trim_start),
+    ("trim_end", builtin_trim_end),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9217,6 +9220,27 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
             "array_product: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-438: `trim_start(s)` — strip leading Unicode whitespace only.
+fn builtin_trim_start(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.trim_start().to_string())),
+        [other] => Err(format!("trim_start: expected string, got {}", other)),
+        _ => Err(format!(
+            "trim_start: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-438: `trim_end(s)` — strip trailing Unicode whitespace only.
+fn builtin_trim_end(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.trim_end().to_string())),
+        [other] => Err(format!("trim_end: expected string, got {}", other)),
+        _ => Err(format!("trim_end: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -26434,6 +26458,86 @@ mod tests {
             builtin_array_intersperse(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-438: trim_start / trim_end ----------
+
+    #[test]
+    fn trim_start_strips_leading_whitespace_only() {
+        assert_eq!(
+            extract_string(builtin_trim_start(&[Value::String("   hello   ".into())]).unwrap()),
+            "hello   "
+        );
+    }
+
+    #[test]
+    fn trim_end_strips_trailing_whitespace_only() {
+        assert_eq!(
+            extract_string(builtin_trim_end(&[Value::String("   hello   ".into())]).unwrap()),
+            "   hello"
+        );
+    }
+
+    #[test]
+    fn trim_sides_handle_no_whitespace() {
+        assert_eq!(
+            extract_string(builtin_trim_start(&[Value::String("hello".into())]).unwrap()),
+            "hello"
+        );
+        assert_eq!(
+            extract_string(builtin_trim_end(&[Value::String("hello".into())]).unwrap()),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn trim_sides_empty_returns_empty() {
+        assert_eq!(
+            extract_string(builtin_trim_start(&[Value::String("".into())]).unwrap()),
+            ""
+        );
+        assert_eq!(
+            extract_string(builtin_trim_end(&[Value::String("".into())]).unwrap()),
+            ""
+        );
+    }
+
+    #[test]
+    fn trim_sides_only_whitespace_collapses_to_empty() {
+        assert_eq!(
+            extract_string(builtin_trim_start(&[Value::String("   ".into())]).unwrap()),
+            ""
+        );
+        assert_eq!(
+            extract_string(builtin_trim_end(&[Value::String("   ".into())]).unwrap()),
+            ""
+        );
+    }
+
+    #[test]
+    fn trim_sides_handle_tabs_and_newlines() {
+        assert_eq!(
+            extract_string(builtin_trim_start(&[Value::String("\t\n hello".into())]).unwrap()),
+            "hello"
+        );
+        assert_eq!(
+            extract_string(builtin_trim_end(&[Value::String("hello\t\n ".into())]).unwrap()),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn trim_sides_reject_non_string_and_arity() {
+        assert!(
+            builtin_trim_start(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_trim_end(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
