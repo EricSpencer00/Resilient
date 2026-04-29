@@ -1169,6 +1169,21 @@ impl TypeChecker {
         );
         // RES-437: insert separator between adjacent elements.
         env.set("array_intersperse".to_string(), fn_any_any_to_any());
+        // RES-438: one-sided trimmers.
+        env.set(
+            "trim_start".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "trim_end".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4072,6 +4087,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_count",
         // RES-437: array_intersperse.
         "array_intersperse",
+        // RES-438: one-sided trimmers.
+        "trim_start",
+        "trim_end",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.

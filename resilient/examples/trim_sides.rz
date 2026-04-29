@@ -1,0 +1,12 @@
+// RES-438 demo: trim_start and trim_end strip whitespace from one side.
+
+fn main() {
+    println(trim_start("   hello   "));
+    println(trim_end("   hello   "));
+    println(trim_start("hello"));
+    println(trim_end("hello"));
+    println(trim_start("\t\n hello"));
+    println(trim_end("hello\t\n "));
+}
+
+main();
