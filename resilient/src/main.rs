@@ -8326,6 +8326,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-477: one-sided char-set trimmers.
     ("trim_start_chars", builtin_trim_start_chars),
     ("trim_end_chars", builtin_trim_end_chars),
+    // RES-478: explicit-name alias for array_count.
+    ("array_count_eq", builtin_array_count_eq),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9882,6 +9884,12 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             args.len()
         )),
     }
+}
+
+/// RES-478: `array_count_eq(arr, x)` — alias for `array_count` with
+/// the explicit `_eq` suffix to match the all_eq / any_eq family.
+fn builtin_array_count_eq(args: &[Value]) -> RResult<Value> {
+    builtin_array_count(args).map_err(|e| e.replace("array_count", "array_count_eq"))
 }
 
 /// RES-477: shared dispatch for the one-sided char-set trimmers.
@@ -30743,6 +30751,32 @@ mod tests {
             builtin_trim_end_chars(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-478: array_count_eq alias ----------
+
+    #[test]
+    fn array_count_eq_basic() {
+        assert_int(
+            builtin_array_count_eq(&[int_array(&[1, 2, 1, 3, 1]), Value::Int(1)]).unwrap(),
+            3,
+            "count_eq",
+        );
+        assert_int(
+            builtin_array_count_eq(&[int_array(&[1, 2, 3]), Value::Int(99)]).unwrap(),
+            0,
+            "count_eq absent",
+        );
+    }
+
+    #[test]
+    fn array_count_eq_error_message_uses_eq_name() {
+        let err = builtin_array_count_eq(&[Value::Int(1), Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("array_count_eq"),
+            "error mentions wrong function: {}",
+            err
         );
     }
 
