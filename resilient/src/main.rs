@@ -8333,6 +8333,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_blank", builtin_is_blank),
     // RES-480: replace only the first occurrence.
     ("string_replace_first", builtin_string_replace_first),
+    // RES-481: drop first / drop last; empty stays empty.
+    ("array_rest", builtin_array_rest),
+    ("array_init", builtin_array_init),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9886,6 +9889,42 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-481: `array_rest(arr)` — drop the first element. Empty → empty.
+fn builtin_array_rest(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                Ok(Value::Array(vec![]))
+            } else {
+                Ok(Value::Array(items[1..].to_vec()))
+            }
+        }
+        [other] => Err(format!("array_rest: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_rest: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-481: `array_init(arr)` — drop the last element. Empty → empty.
+fn builtin_array_init(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                Ok(Value::Array(vec![]))
+            } else {
+                Ok(Value::Array(items[..items.len() - 1].to_vec()))
+            }
+        }
+        [other] => Err(format!("array_init: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_init: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -30957,6 +30996,70 @@ mod tests {
             builtin_string_replace_first(&[Value::String("a".into()), Value::String("b".into())])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-481: array_rest / array_init ----------
+
+    #[test]
+    fn array_rest_drops_first() {
+        assert_eq!(
+            extract_int_array(builtin_array_rest(&[int_array(&[1, 2, 3, 4])]).unwrap()),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn array_init_drops_last() {
+        assert_eq!(
+            extract_int_array(builtin_array_init(&[int_array(&[1, 2, 3, 4])]).unwrap()),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_rest_init_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_rest(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            extract_int_array(builtin_array_init(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_rest_init_single_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_rest(&[int_array(&[42])]).unwrap()),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            extract_int_array(builtin_array_init(&[int_array(&[42])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_rest_init_does_not_mutate_input() {
+        let input = int_array(&[1, 2, 3]);
+        let _ = builtin_array_rest(std::slice::from_ref(&input)).unwrap();
+        let _ = builtin_array_init(std::slice::from_ref(&input)).unwrap();
+        assert_eq!(extract_int_array(input), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn array_rest_init_reject_non_array_and_arity() {
+        assert!(
+            builtin_array_rest(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_init(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 

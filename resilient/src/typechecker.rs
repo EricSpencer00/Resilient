@@ -1317,6 +1317,9 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-481: drop first / drop last.
+        env.set("array_rest".to_string(), fn_any_to_any());
+        env.set("array_init".to_string(), fn_any_to_any());
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4376,6 +4379,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "is_blank",
         // RES-480: string_replace_first.
         "string_replace_first",
+        // RES-481: array_rest / array_init.
+        "array_rest",
+        "array_init",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
