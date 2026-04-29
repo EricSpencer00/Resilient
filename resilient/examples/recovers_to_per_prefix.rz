@@ -1,0 +1,17 @@
+// RES-392b: Per-prefix bounded model checking for crash-recovery
+// This example demonstrates crash-recovery verification at EVERY instruction
+// boundary. The recovers_to postcondition must hold even if the system crashes
+// and restarts after any intermediate instruction.
+
+fn two_step_increment(int x) fails PowerLoss recovers_to: result >= 2 {
+  let temp = x + 1;    // Instruction 1: if crash+restart here, init must ensure result >= 2
+  let result = temp + 1; // Instruction 2: if crash+restart here, result >= 2 guaranteed
+  return result;
+}
+
+fn main() {
+  println("RES-392b: recovers_to verified at every instruction boundary");
+  let value = two_step_increment(0);
+  println(value);
+  assert(value >= 2);
+}

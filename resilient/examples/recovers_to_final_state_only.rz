@@ -1,0 +1,14 @@
+// RES-392: MVP crash-recovery — final-state only
+// This example demonstrates the original MVP where recovers_to only
+// verifies the postcondition at the final exit point, not after crashes
+// at intermediate instruction boundaries.
+
+fn increment_safe(int x) fails IOError recovers_to: result >= 0 {
+  return x + 1;
+}
+
+fn main() {
+  println("RES-392 MVP: recovers_to enforced at final state only");
+  let result = increment_safe(5);
+  println(result);
+}

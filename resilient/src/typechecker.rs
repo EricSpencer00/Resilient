@@ -2088,6 +2088,12 @@ impl TypeChecker {
                             });
                         }
                     }
+
+                    // RES-392b: per-prefix bounded model checking.
+                    // Extends the MVP (final-state only) with verification
+                    // that the recovers_to clause holds after recovery from
+                    // ANY instruction boundary in the function body.
+                    crate::recovers_to_bmc::check_recovers_to_bmc(name, body, clause)?;
                 }
 
                 // RES-065: push each requires clause's extractable

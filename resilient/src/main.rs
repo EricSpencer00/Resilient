@@ -96,6 +96,10 @@ mod ffi_trampolines;
 // used in type-annotation strings, plus the single-use-enforcement
 // pass invoked from the typechecker.
 mod linear;
+// RES-392b: per-prefix bounded model checking for crash-recovery semantics.
+// Extends RES-392 (final-state only) with verification that recovers_to
+// holds from any instruction boundary in the function.
+mod recovers_to_bmc;
 // RES-351: array bounds — static Z3 proof of `0 <= i < len(arr)`
 // at every index site, with an optional strict `--deny-unproven-bounds`
 // mode for safety-critical embedded builds.
