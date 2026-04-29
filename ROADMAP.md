@@ -50,10 +50,10 @@ time, commit it, and only then move the post.
 | **G15** | Cranelift backend / modules / VM | 🟡 RES-073 landed `use "path";` modules. Cranelift (RES-072) and bytecode VM (RES-076) still open. |
 | **G16** | `no_std` / Cortex-M embedded target | ⏳ — RES-075 ticket open |
 | **G17** | Language Server Protocol | ⏳ — RES-074 ticket open, blocked on RES-069 |
-| **G18** | Effect tracking | ⏳ |
-| **G19** | Proof-carrying assertions | 🟡 RES-071 landed `--emit-certificate`: SMT-LIB2 dumps re-verifiable by stock Z3. Full PCA semantics (signed certs, manifest) still ahead. |
-| **G20** | Self-hosting | ⏳ |
-| **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19 |
+| **G18** | Effect tracking | ✅ RES-191 (`@pure`), RES-192 (`@io` inference), RES-389 (declared effects), RES-385c (linear×effects). Actor concurrency design landed (RES-208, RES-332/333). |
+| **G19** | Proof-carrying assertions | ✅ RES-071 (`--emit-certificate`), RES-194 (Ed25519 signatures), RES-195 (`verify-all` + manifest), RES-331 (schema v1 doc). Bundle is round-trippable end-to-end. |
+| **G20** | Self-hosting | ⏳ Blocked on RES-323 (lexer in Resilient) → RES-379 (parser in Resilient). |
+| **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19. RES-383 security audit landed 2026-04-29. |
 
 ### New between G4 and G5 (core-language improvements landed in session 2)
 
@@ -104,3 +104,7 @@ changelog entry below.
   G18 no_std embedded toolchain proven end-to-end ✅ (RES-075/097/098).
 - 2026-04-19 — G21 FFI v1 shipped (tree-walker + static registry, 748 tests pass).
 - 2026-04-20 — Migrated ticket tracking from `.board/` to GitHub Issues.
+- 2026-04-29 — G18 closed: linear × effect interaction (RES-385c) and concurrency design (RES-208) landed.
+  G19 closed: certificate manifest schema v1 (RES-331) plus end-to-end signed `verify-all`.
+  RES-383 FFI v1 security audit signed off (no CVEs).
+  RES-392b per-prefix `recovers_to` BMC scaffolding.
