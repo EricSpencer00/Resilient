@@ -8336,6 +8336,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-481: drop first / drop last; empty stays empty.
     ("array_rest", builtin_array_rest),
     ("array_init", builtin_array_init),
+    // RES-482: replace up to n occurrences.
+    ("string_replace_n", builtin_string_replace_n),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9889,6 +9891,43 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-482: `string_replace_n(s, from, to, n)` — replace up to `n`
+/// occurrences. n=0 returns s unchanged. Negative n / empty from is
+/// a typed error. Wraps str::replacen.
+fn builtin_string_replace_n(args: &[Value]) -> RResult<Value> {
+    match args {
+        [
+            Value::String(s),
+            Value::String(from),
+            Value::String(to),
+            Value::Int(n),
+        ] => {
+            if *n < 0 {
+                return Err(format!(
+                    "string_replace_n: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            if from.is_empty() {
+                return Err("string_replace_n: needle must not be empty".to_string());
+            }
+            Ok(Value::String(s.replacen(
+                from.as_str(),
+                to.as_str(),
+                *n as usize,
+            )))
+        }
+        [a, b, c, d] => Err(format!(
+            "string_replace_n: expected (string, string, string, int), got ({}, {}, {}, {})",
+            a, b, c, d
+        )),
+        _ => Err(format!(
+            "string_replace_n: expected 4 arguments, got {}",
             args.len()
         )),
     }
@@ -31060,6 +31099,103 @@ mod tests {
             builtin_array_init(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-482: string_replace_n ----------
+
+    #[test]
+    fn string_replace_n_limits_count() {
+        assert_eq!(
+            extract_string(
+                builtin_string_replace_n(&[
+                    Value::String("the the the".into()),
+                    Value::String("the".into()),
+                    Value::String("X".into()),
+                    Value::Int(2)
+                ])
+                .unwrap()
+            ),
+            "X X the"
+        );
+    }
+
+    #[test]
+    fn string_replace_n_zero_returns_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_string_replace_n(&[
+                    Value::String("the the".into()),
+                    Value::String("the".into()),
+                    Value::String("X".into()),
+                    Value::Int(0)
+                ])
+                .unwrap()
+            ),
+            "the the"
+        );
+    }
+
+    #[test]
+    fn string_replace_n_large_n_replaces_all() {
+        assert_eq!(
+            extract_string(
+                builtin_string_replace_n(&[
+                    Value::String("a a a".into()),
+                    Value::String("a".into()),
+                    Value::String("b".into()),
+                    Value::Int(99)
+                ])
+                .unwrap()
+            ),
+            "b b b"
+        );
+    }
+
+    #[test]
+    fn string_replace_n_rejects_negative_count() {
+        let err = builtin_string_replace_n(&[
+            Value::String("a".into()),
+            Value::String("a".into()),
+            Value::String("b".into()),
+            Value::Int(-1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_replace_n_rejects_empty_needle() {
+        let err = builtin_string_replace_n(&[
+            Value::String("hi".into()),
+            Value::String("".into()),
+            Value::String("X".into()),
+            Value::Int(1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_replace_n_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_replace_n(&[
+                Value::Int(1),
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::Int(1)
+            ])
+            .unwrap_err()
+            .contains("expected (string, string, string, int)")
+        );
+        assert!(
+            builtin_string_replace_n(&[
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into())
+            ])
+            .unwrap_err()
+            .contains("expected 4 arguments")
         );
     }
 
