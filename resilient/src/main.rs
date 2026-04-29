@@ -8271,6 +8271,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-451: insert / remove element at index; returns a new array.
     ("array_insert_at", builtin_array_insert_at),
     ("array_remove_at", builtin_array_remove_at),
+    // RES-452: replace element at index; returns a new array.
+    ("array_set_at", builtin_array_set_at),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9824,6 +9826,33 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-452: `array_set_at(arr, i, x)` — replace element at index `i`
+/// with `x`. `i` must be in [0, len). Input is not mutated.
+fn builtin_array_set_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(i), x] => {
+            let len = items.len();
+            if *i < 0 || (*i as usize) >= len {
+                return Err(format!(
+                    "array_set_at: index out of bounds (i={}, len={})",
+                    i, len
+                ));
+            }
+            let mut out = items.clone();
+            out[*i as usize] = x.clone();
+            Ok(Value::Array(out))
+        }
+        [a, b, _] => Err(format!(
+            "array_set_at: expected (array, int, _), got ({}, {}, _)",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_set_at: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -27934,6 +27963,77 @@ mod tests {
             builtin_array_remove_at(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-452: array_set_at ----------
+
+    #[test]
+    fn array_set_at_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_set_at(&[int_array(&[1, 2, 3]), Value::Int(1), Value::Int(99)])
+                    .unwrap()
+            ),
+            vec![1, 99, 3]
+        );
+    }
+
+    #[test]
+    fn array_set_at_first_and_last() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_set_at(&[int_array(&[1, 2, 3]), Value::Int(0), Value::Int(0)])
+                    .unwrap()
+            ),
+            vec![0, 2, 3]
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_set_at(&[int_array(&[1, 2, 3]), Value::Int(2), Value::Int(0)])
+                    .unwrap()
+            ),
+            vec![1, 2, 0]
+        );
+    }
+
+    #[test]
+    fn array_set_at_out_of_bounds() {
+        assert!(
+            builtin_array_set_at(&[int_array(&[1]), Value::Int(99), Value::Int(0)])
+                .unwrap_err()
+                .contains("out of bounds")
+        );
+        assert!(
+            builtin_array_set_at(&[int_array(&[1]), Value::Int(-1), Value::Int(0)])
+                .unwrap_err()
+                .contains("out of bounds")
+        );
+        assert!(
+            builtin_array_set_at(&[Value::Array(vec![]), Value::Int(0), Value::Int(0)])
+                .unwrap_err()
+                .contains("out of bounds")
+        );
+    }
+
+    #[test]
+    fn array_set_at_does_not_mutate_input() {
+        let input = int_array(&[1, 2, 3]);
+        let _ = builtin_array_set_at(&[input.clone(), Value::Int(0), Value::Int(99)]).unwrap();
+        assert_eq!(extract_int_array(input), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn array_set_at_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_set_at(&[Value::Int(1), Value::Int(0), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (array, int, _)")
+        );
+        assert!(
+            builtin_array_set_at(&[int_array(&[1]), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 

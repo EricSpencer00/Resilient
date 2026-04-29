@@ -1,0 +1,5 @@
+[99, 2, 3]
+[1, 99, 3]
+[1, 2, 99]
+["a", "BANG", "c"]
+Program executed successfully
