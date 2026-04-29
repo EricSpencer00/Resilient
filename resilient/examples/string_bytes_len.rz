@@ -1,0 +1,13 @@
+// RES-463 demo: string_bytes_len returns the UTF-8 byte length.
+
+fn main() {
+    println(string_bytes_len("hello"));
+    // "café" has 4 chars but 5 bytes (é is 2 bytes).
+    println(len("café"));
+    println(string_bytes_len("café"));
+    // Emoji is 4 bytes.
+    println(string_bytes_len("😀"));
+    println(string_bytes_len(""));
+}
+
+main();
