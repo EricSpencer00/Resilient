@@ -28,6 +28,10 @@ This document is a human-facing summary grouped by category.
 | `min(a, b)` | (number, number) → number | int↔float coercion |
 | `max(a, b)` | (number, number) → number | int↔float coercion |
 | `clamp(x, lo, hi)` | (number, number, number) → number | restrict to `[lo, hi]`; type-preserving for Int triples, promoted to Float otherwise; runtime error if `lo > hi` |
+| `sign(x)` | number → number | RES-410: -1/0/+1 of int or float; NaN passes through |
+| `gcd(a, b)` | (int, int) → int | RES-415: Euclidean algorithm on absolute values; gcd(0,0)=0 |
+| `lcm(a, b)` | (int, int) → int | RES-415: lcm(0, _) = 0 by convention |
+| `is_nan(x)` `is_inf(x)` `is_finite(x)` | number → bool | RES-411: IEEE 754 float predicates; ints flow through as finite |
 | `sqrt(x)` | number → float | NaN on negative input |
 | `pow(a, b)` | (number, number) → float | `a^b` |
 | `floor(x)` | number → float | toward -∞ |
@@ -70,6 +74,17 @@ This document is a human-facing summary grouped by category.
 | `char_at(s, i)` | (string, int) → Result<String, String> | single-char string at Unicode-scalar index `i`; `Err` on out-of-range or negative |
 | `pad_left(s, n, c)` | (string, int, string) → string | left-pad with single char `c` until char-length ≥ `n`; multi-char or empty `c` is a hard error |
 | `pad_right(s, n, c)` | (string, int, string) → string | right-pad; same validation as `pad_left` |
+| `string_pad_left(s, n, c)` `string_pad_right(s, n, c)` | (string, int, string) → string | RES-429: aliases for `pad_left`/`pad_right` with explicit string-namespace prefix |
+| `string_repeat(s, n)` | (string, int) → string | RES-413: alias for `repeat` |
+| `string_reverse(s)` | string → string | RES-412: reverse by Unicode scalar |
+| `string_chars(s)` | string → array of string | RES-433: split into single-char strings (one per scalar) |
+| `string_lines(s)` | string → array of string | RES-434: split on LF/CRLF; trailing newline is not an empty element |
+| `string_count(s, sub)` | (string, string) → int | RES-436: non-overlapping occurrence count; empty needle is a typed error |
+| `index_of(s, sub)` | (string, string) → int | RES-414: first byte index, or -1; empty needle returns 0 |
+| `trim_start(s)` `trim_end(s)` | string → string | RES-438: one-sided Unicode whitespace trimmers |
+| `chr(n)` | int → string | RES-419: single-char string for Unicode scalar; surrogate / out-of-range errors |
+| `ord(s)` | string → int | RES-419: Unicode scalar of single-character string |
+| `to_string(x)` | scalar → string | RES-425: explicit conversion (Int / Float / Bool / String pass-through) |
 
 ### Notes on RES-339 parsing builtins
 
@@ -113,6 +128,25 @@ match r {
 | `push(arr, x)` | (array, T) → array | returns a new array |
 | `pop(arr)` | array → array | runtime error on empty |
 | `slice(arr, start, end)` | (array, int, int) → array | half-open `[start, end)` |
+| `array_reverse(arr)` | array → array | RES-412: new array with elements reversed; clones |
+| `array_concat(a, b)` | (array, array) → array | RES-420: returns a + b; heterogeneous element types allowed |
+| `array_take(arr, n)` `array_drop(arr, n)` | (array, int) → array | RES-421: first n / skip first n; clamped at len |
+| `array_split_at(arr, n)` | (array, int) → (array, array) | RES-439: bisect into `(first n, rest)` tuple |
+| `array_chunk(arr, n)` | (array, int) → array of array | RES-435: fixed-size chunks; last may be short; n > 0 |
+| `array_flatten(arr)` | array of array → array | RES-423: concatenate inner arrays one level |
+| `array_join(arr, sep)` | (array, string) → string | RES-424: join string elements with separator |
+| `array_intersperse(arr, x)` | (array, T) → array | RES-437: insert x between adjacent elements |
+| `array_zip(a, b)` | (array, array) → array of tuple | RES-430: pair as 2-tuples; truncate to shorter |
+| `array_range(start, end)` | (int, int) → array of int | RES-431: half-open integer range; capped at 1B |
+| `array_repeat(elem, n)` | (T, int) → array | RES-432: array of n clones of elem; capped at 1B |
+| `array_first(arr)` `array_last(arr)` | array → T | RES-428: endpoint accessors; empty array errors |
+| `array_min(arr)` `array_max(arr)` | array of int → int | RES-417: min/max over int array; empty errors |
+| `array_sum(arr)` `array_product(arr)` | array of int → int | RES-416: identity 0 / 1 for empty |
+| `array_sort(arr)` | array of int → array of int | RES-422: ascending sort; new array, input unchanged |
+| `array_unique(arr)` | array → array | RES-426: first-occurrence dedupe; non-scalar elements error |
+| `array_contains(arr, x)` | (array, T) → bool | RES-418: scalar value-equality (Int↔Float coerce) |
+| `array_index_of(arr, x)` | (array, T) → int | RES-418: first matching index, or -1 |
+| `array_count(arr, x)` | (array, T) → int | RES-427: number of matching elements |
 
 ### Maps
 
@@ -159,6 +193,14 @@ the same immutable-value semantics (each mutation returns a new map).
 | `bytes_len(b)` | bytes → int | byte count |
 | `bytes_slice(b, start, end)` | (bytes, int, int) → bytes | half-open range |
 | `byte_at(b, i)` | (bytes, int) → int | byte at index |
+
+## Bitwise (RES-440)
+
+| Name | Signature | Notes |
+|---|---|---|
+| `bit_and(a, b)` `bit_or(a, b)` `bit_xor(a, b)` | (int, int) → int | bitwise binary ops on i64 |
+| `bit_not(a)` | int → int | one's complement |
+| `bit_shl(a, n)` `bit_shr(a, n)` | (int, int) → int | shift amount must be 0..=63; arithmetic right shift |
 
 ## Live blocks (RES-138, RES-141)
 
