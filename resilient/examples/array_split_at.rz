@@ -1,0 +1,11 @@
+// RES-439 demo: array_split_at bisects at an index.
+
+fn main() {
+    println(array_split_at([1, 2, 3, 4, 5], 2));
+    println(array_split_at([1, 2, 3], 0));
+    println(array_split_at([1, 2, 3], 3));
+    println(array_split_at([1, 2], 99));
+    println(array_split_at([], 0));
+}
+
+main();

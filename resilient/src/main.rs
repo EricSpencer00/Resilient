@@ -8284,6 +8284,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-438: one-sided whitespace trimmers.
     ("trim_start", builtin_trim_start),
     ("trim_end", builtin_trim_end),
+    // RES-439: bisect array at index — returns (first n, rest) tuple.
+    ("array_split_at", builtin_array_split_at),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9218,6 +9220,35 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-439: `array_split_at(arr, n)` — bisect at index `n`. Returns
+/// `(first n, rest)`. `n` is clamped to `[0, len]` if too large; a
+/// negative `n` is a typed error.
+fn builtin_array_split_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_split_at: index must be non-negative, got {}",
+                    n
+                ));
+            }
+            let split = (*n as usize).min(items.len());
+            Ok(Value::Tuple(vec![
+                Value::Array(items[..split].to_vec()),
+                Value::Array(items[split..].to_vec()),
+            ]))
+        }
+        [a, b] => Err(format!(
+            "array_split_at: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_split_at: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -26538,6 +26569,99 @@ mod tests {
             builtin_trim_end(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-439: array_split_at ----------
+
+    fn extract_split_pair(v: Value) -> (Vec<i64>, Vec<i64>) {
+        match v {
+            Value::Tuple(parts) if parts.len() == 2 => {
+                let to_ints = |part: &Value| -> Vec<i64> {
+                    match part {
+                        Value::Array(items) => items
+                            .iter()
+                            .map(|v| match v {
+                                Value::Int(n) => *n,
+                                _ => panic!("non-int in split half"),
+                            })
+                            .collect(),
+                        _ => panic!("expected Array in tuple"),
+                    }
+                };
+                (to_ints(&parts[0]), to_ints(&parts[1]))
+            }
+            other => panic!("expected 2-tuple, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_split_at_basic() {
+        assert_eq!(
+            extract_split_pair(
+                builtin_array_split_at(&[int_array(&[1, 2, 3, 4, 5]), Value::Int(2)]).unwrap()
+            ),
+            (vec![1, 2], vec![3, 4, 5])
+        );
+    }
+
+    #[test]
+    fn array_split_at_zero_returns_empty_first() {
+        assert_eq!(
+            extract_split_pair(
+                builtin_array_split_at(&[int_array(&[1, 2, 3]), Value::Int(0)]).unwrap()
+            ),
+            (vec![], vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn array_split_at_n_equal_to_len() {
+        assert_eq!(
+            extract_split_pair(
+                builtin_array_split_at(&[int_array(&[1, 2, 3]), Value::Int(3)]).unwrap()
+            ),
+            (vec![1, 2, 3], vec![])
+        );
+    }
+
+    #[test]
+    fn array_split_at_n_larger_than_len_clamps() {
+        assert_eq!(
+            extract_split_pair(
+                builtin_array_split_at(&[int_array(&[1, 2]), Value::Int(99)]).unwrap()
+            ),
+            (vec![1, 2], vec![])
+        );
+    }
+
+    #[test]
+    fn array_split_at_empty_input() {
+        assert_eq!(
+            extract_split_pair(
+                builtin_array_split_at(&[Value::Array(vec![]), Value::Int(0)]).unwrap()
+            ),
+            (vec![], vec![])
+        );
+    }
+
+    #[test]
+    fn array_split_at_rejects_negative_n() {
+        let err = builtin_array_split_at(&[int_array(&[1]), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_split_at_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_split_at(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (array, int)")
+        );
+        assert!(
+            builtin_array_split_at(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 

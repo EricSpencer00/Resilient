@@ -1184,6 +1184,8 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-439: bisect array at index → tuple.
+        env.set("array_split_at".to_string(), fn_any_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -4090,6 +4092,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-438: one-sided trimmers.
         "trim_start",
         "trim_end",
+        // RES-439: array_split_at.
+        "array_split_at",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
