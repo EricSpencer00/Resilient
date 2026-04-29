@@ -8331,6 +8331,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-479: is_empty / is_blank string predicates.
     ("is_empty", builtin_is_empty),
     ("is_blank", builtin_is_blank),
+    // RES-480: replace only the first occurrence.
+    ("string_replace_first", builtin_string_replace_first),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9884,6 +9886,27 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-480: `string_replace_first(s, from, to)` — replace only the
+/// first occurrence of `from` in `s`. Empty `from` is a typed error.
+fn builtin_string_replace_first(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(from), Value::String(to)] => {
+            if from.is_empty() {
+                return Err("string_replace_first: needle must not be empty".to_string());
+            }
+            Ok(Value::String(s.replacen(from.as_str(), to.as_str(), 1)))
+        }
+        [a, b, c] => Err(format!(
+            "string_replace_first: expected (string, string, string), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "string_replace_first: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -30858,6 +30881,82 @@ mod tests {
             builtin_is_blank(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-480: string_replace_first ----------
+
+    #[test]
+    fn string_replace_first_only_first() {
+        assert_eq!(
+            extract_string(
+                builtin_string_replace_first(&[
+                    Value::String("the the the".into()),
+                    Value::String("the".into()),
+                    Value::String("X".into())
+                ])
+                .unwrap()
+            ),
+            "X the the"
+        );
+    }
+
+    #[test]
+    fn string_replace_first_no_match_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_string_replace_first(&[
+                    Value::String("hello".into()),
+                    Value::String("xyz".into()),
+                    Value::String("abc".into())
+                ])
+                .unwrap()
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn string_replace_first_empty_string_unchanged() {
+        assert_eq!(
+            extract_string(
+                builtin_string_replace_first(&[
+                    Value::String("".into()),
+                    Value::String("a".into()),
+                    Value::String("b".into())
+                ])
+                .unwrap()
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn string_replace_first_rejects_empty_needle() {
+        let err = builtin_string_replace_first(&[
+            Value::String("hello".into()),
+            Value::String("".into()),
+            Value::String("X".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_replace_first_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_replace_first(&[
+                Value::Int(1),
+                Value::String("a".into()),
+                Value::String("b".into())
+            ])
+            .unwrap_err()
+            .contains("expected (string, string, string)")
+        );
+        assert!(
+            builtin_string_replace_first(&[Value::String("a".into()), Value::String("b".into())])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 

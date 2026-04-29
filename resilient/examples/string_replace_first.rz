@@ -1,0 +1,9 @@
+// RES-480 demo: string_replace_first replaces only the first occurrence.
+
+fn main() {
+    println(string_replace_first("the the the", "the", "X"));
+    println(string_replace_first("foobar baz foo", "foo", "QUX"));
+    println(string_replace_first("hello", "xyz", "abc"));
+}
+
+main();
