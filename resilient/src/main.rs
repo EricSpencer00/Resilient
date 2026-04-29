@@ -8296,6 +8296,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_indent", builtin_string_indent),
     // RES-462: adjacent pairs as tuples.
     ("array_pairs", builtin_array_pairs),
+    // RES-463: UTF-8 byte length of a string.
+    ("string_bytes_len", builtin_string_bytes_len),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9849,6 +9851,20 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-463: `string_bytes_len(s)` — UTF-8 byte length of `s`.
+/// Complements `len(s)`, which counts Unicode scalars. Useful for
+/// serialization or buffer sizing.
+fn builtin_string_bytes_len(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Int(s.len() as i64)),
+        [other] => Err(format!("string_bytes_len: expected string, got {}", other)),
+        _ => Err(format!(
+            "string_bytes_len: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29165,6 +29181,56 @@ mod tests {
         );
         assert!(
             builtin_array_pairs(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-463: string_bytes_len ----------
+
+    #[test]
+    fn string_bytes_len_ascii_matches_char_count() {
+        assert_int(
+            builtin_string_bytes_len(&[Value::String("hello".into())]).unwrap(),
+            5,
+            "ascii",
+        );
+    }
+
+    #[test]
+    fn string_bytes_len_multibyte_differs_from_char_count() {
+        // "café" is 4 chars but 5 UTF-8 bytes (é = 0xC3 0xA9).
+        assert_int(
+            builtin_string_bytes_len(&[Value::String("café".into())]).unwrap(),
+            5,
+            "café bytes",
+        );
+        // Emoji are 4 bytes each.
+        assert_int(
+            builtin_string_bytes_len(&[Value::String("😀".into())]).unwrap(),
+            4,
+            "emoji bytes",
+        );
+    }
+
+    #[test]
+    fn string_bytes_len_empty_returns_zero() {
+        assert_int(
+            builtin_string_bytes_len(&[Value::String("".into())]).unwrap(),
+            0,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn string_bytes_len_rejects_non_string_and_arity() {
+        assert!(
+            builtin_string_bytes_len(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_string_bytes_len(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
