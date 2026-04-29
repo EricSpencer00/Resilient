@@ -1,0 +1,19 @@
+// RES-360: Live block with closed-form recovery (PASS)
+// Live block recovery using only safe, model-expressible operations:
+// pure assignments, arithmetic, and assert/assume statements.
+
+fn safe_recover(int count) -> int {
+    live {
+        let x = count + 1;
+        assert(x > count);
+        assume(x < 1000000);
+        return x;
+    }
+}
+
+fn main() {
+    let result = safe_recover(5);
+    println(result);
+}
+
+main();

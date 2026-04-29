@@ -1728,6 +1728,7 @@ impl TypeChecker {
                 // Merge conflicts: keep ALL calls from both sides.
                 crate::try_catch::check(program, source_path)?;
                 crate::verifier_liveness::check(program, source_path)?;
+                crate::recovery_checker::check(program, source_path)?;
                 crate::bounds_check::check_array_bounds(program, source_path)?;
                 crate::loop_invariants::check(program, source_path)?;
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
