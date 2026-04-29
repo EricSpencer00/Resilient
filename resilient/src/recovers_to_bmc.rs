@@ -126,6 +126,33 @@ impl ControlFlowGraph {
     }
 }
 
+/// Generate Z3 SMT-LIB2 obligation for per-prefix recovery invariant.
+/// Returns the formatted obligation string for solver submission.
+///
+/// RES-392b Phase 2: Z3 integration stub.
+fn _generate_prefix_obligation(
+    prefix_id: usize,
+    _init_state: &str,
+    recovers_clause: &Node,
+) -> String {
+    // TODO: RES-392b Phase 2 - emit Z3 obligation per prefix
+    // Current stub: return empty obligation (all prefixes recover)
+    //
+    // Full implementation:
+    // let clause_z3 = z3_encode_expr(recovers_clause);
+    // let obligation = format!(
+    //     "(push)\n\
+    //      (assert (not (=> init_{} {})))\n\
+    //      (check-sat)",
+    //     prefix_id,
+    //     clause_z3
+    // );
+    // obligation
+
+    let _ = (prefix_id, recovers_clause);
+    String::new()
+}
+
 /// Check crash-recovery guarantees for a function's recovers_to clause
 /// via per-prefix bounded model checking.
 ///
@@ -142,20 +169,21 @@ pub(crate) fn check_recovers_to_bmc(
     // RES-392b Phase 2: Per-prefix enumeration and Z3 verification
     let prefixes = cfg.enumerate_prefixes();
 
-    for (_prefix_id, _span) in prefixes {
-        // TODO: RES-392b Phase 2 - emit Z3 obligation per prefix
+    for (prefix_id, _span) in prefixes {
+        // Placeholder for Z3 obligation generation
+        let _obligation = _generate_prefix_obligation(
+            prefix_id,
+            "init_state",
+            _recovers_clause,
+        );
+
+        // TODO: RES-392b Phase 2 - invoke Z3 solver
         // For now, assume all prefixes recover (stub)
         //
-        // Pseudo-code:
-        // let prefix_obligation = format!(
-        //     "(assert (not (=> (init prefix_state_{}) {})))",
-        //     prefix_id,
-        //     z3_encode_expr(recovers_clause)
-        // );
-        // if z3_solve(&prefix_obligation).is_sat() {
+        // if z3_solve(&obligation).is_sat() {
         //     return Err(format!(
-        //         "{}:{}: no recovery guarantee after line {} — add to init or narrow recovers_to",
-        //         fn_name, span.line, span.line
+        //         "{}:{}: no recovery guarantee after instruction {} — add to init or narrow recovers_to",
+        //         fn_name, span.line, span.column
         //     ));
         // }
     }
