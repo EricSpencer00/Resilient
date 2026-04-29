@@ -1,0 +1,10 @@
+// RES-423 demo: array_flatten concatenates inner arrays one level.
+
+fn main() {
+    println(array_flatten([[1, 2], [3], [4, 5, 6]]));
+    println(array_flatten([]));
+    println(array_flatten([[], [], [7]]));
+    println(array_flatten([["a", "b"], ["c"]]));
+}
+
+main();
