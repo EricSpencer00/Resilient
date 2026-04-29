@@ -1185,6 +1185,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-454: Unicode-scalar substring.
+        env.set(
+            "string_substring".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int, Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4186,6 +4194,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_set_at",
         // RES-453: string_at.
         "string_at",
+        // RES-454: string_substring.
+        "string_substring",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.

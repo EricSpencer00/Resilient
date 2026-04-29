@@ -1,0 +1,6 @@
+hello
+world
+afé
+abc
+
+Program executed successfully
