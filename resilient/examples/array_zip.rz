@@ -1,0 +1,13 @@
+// RES-430 demo: array_zip pairs elements as tuples; truncates to shorter.
+
+fn main() {
+    println(array_zip([1, 2, 3], [10, 20, 30]));
+    // Truncates to shorter input.
+    println(array_zip([1, 2, 3, 4, 5], [10, 20]));
+    // Empty input → empty result.
+    println(array_zip([], [1, 2]));
+    // Mixed types per side.
+    println(array_zip([1, 2], ["alpha", "beta"]));
+}
+
+main();

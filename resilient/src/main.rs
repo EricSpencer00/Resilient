@@ -8265,6 +8265,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-429: pad a string to a Unicode-scalar width.
     ("string_pad_left", builtin_string_pad_left),
     ("string_pad_right", builtin_string_pad_right),
+    // RES-430: pair elements as tuples; truncate to shorter array.
+    ("array_zip", builtin_array_zip),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9199,6 +9201,29 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-430: `array_zip(a, b)` — pair elements as 2-tuples up to the
+/// length of the shorter input. Heterogeneous element types preserved.
+fn builtin_array_zip(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            let n = a.len().min(b.len());
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                out.push(Value::Tuple(vec![a[i].clone(), b[i].clone()]));
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_zip: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_zip: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -25639,6 +25664,101 @@ mod tests {
             builtin_string_pad_right(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-430: array_zip ----------
+
+    fn extract_tuples(v: Value) -> Vec<(Value, Value)> {
+        match v {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|t| match t {
+                    Value::Tuple(xs) if xs.len() == 2 => (xs[0].clone(), xs[1].clone()),
+                    other => panic!("expected 2-tuple, got {:?}", other),
+                })
+                .collect(),
+            _ => panic!("expected Array"),
+        }
+    }
+
+    #[test]
+    fn array_zip_pairs_elements() {
+        let pairs = extract_tuples(
+            builtin_array_zip(&[int_array(&[1, 2, 3]), int_array(&[10, 20, 30])]).unwrap(),
+        );
+        assert_eq!(pairs.len(), 3);
+        for (i, (a, b)) in pairs.iter().enumerate() {
+            match (a, b) {
+                (Value::Int(x), Value::Int(y)) => {
+                    assert_eq!(*x, (i + 1) as i64);
+                    assert_eq!(*y, (i + 1) as i64 * 10);
+                }
+                _ => panic!("non-int in tuple"),
+            }
+        }
+    }
+
+    #[test]
+    fn array_zip_truncates_to_shorter() {
+        let pairs = extract_tuples(
+            builtin_array_zip(&[int_array(&[1, 2, 3, 4, 5]), int_array(&[10, 20])]).unwrap(),
+        );
+        assert_eq!(pairs.len(), 2);
+        let pairs = extract_tuples(
+            builtin_array_zip(&[int_array(&[1]), int_array(&[10, 20, 30])]).unwrap(),
+        );
+        assert_eq!(pairs.len(), 1);
+    }
+
+    #[test]
+    fn array_zip_empty_inputs_return_empty() {
+        let pairs =
+            extract_tuples(builtin_array_zip(&[Value::Array(vec![]), int_array(&[1, 2])]).unwrap());
+        assert!(pairs.is_empty());
+        let pairs =
+            extract_tuples(builtin_array_zip(&[int_array(&[1, 2]), Value::Array(vec![])]).unwrap());
+        assert!(pairs.is_empty());
+        let pairs = extract_tuples(
+            builtin_array_zip(&[Value::Array(vec![]), Value::Array(vec![])]).unwrap(),
+        );
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn array_zip_heterogeneous_types() {
+        // First array: Int. Second: String.
+        let result = builtin_array_zip(&[
+            Value::Array(vec![Value::Int(1), Value::Int(2)]),
+            Value::Array(vec![Value::String("a".into()), Value::String("b".into())]),
+        ])
+        .unwrap();
+        match result {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    Value::Tuple(xs) if xs.len() == 2 => match (&xs[0], &xs[1]) {
+                        (Value::Int(1), Value::String(s)) => assert_eq!(s, "a"),
+                        other => panic!("unexpected first tuple: {:?}", other),
+                    },
+                    other => panic!("expected 2-tuple, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_zip_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_zip(&[Value::Int(1), Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_zip(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
