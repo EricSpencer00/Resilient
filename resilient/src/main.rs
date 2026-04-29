@@ -8247,6 +8247,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-421: take/drop first n elements.
     ("array_take", builtin_array_take),
     ("array_drop", builtin_array_drop),
+    // RES-422: ascending sort over an integer array.
+    ("array_sort", builtin_array_sort),
     // RES-413: repeat a string n times.
     ("string_repeat", builtin_string_repeat),
     // RES-414: first byte index of substring, or -1 if not found.
@@ -9181,6 +9183,34 @@ fn builtin_array_product(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_product: expected array, got {}", other)),
         _ => Err(format!(
             "array_product: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-422: `array_sort(arr)` — returns a new integer array sorted
+/// ascending. Non-int elements raise a typed error. Empty array → empty.
+fn builtin_array_sort(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => nums.push(*n),
+                    other => {
+                        return Err(format!(
+                            "array_sort: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            nums.sort();
+            Ok(Value::Array(nums.into_iter().map(Value::Int).collect()))
+        }
+        [other] => Err(format!("array_sort: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_sort: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -24704,6 +24734,67 @@ mod tests {
             builtin_array_drop(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-422: array_sort ----------
+
+    #[test]
+    fn array_sort_orders_ascending() {
+        assert_eq!(
+            extract_int_array(builtin_array_sort(&[int_array(&[3, 1, 4, 1, 5, 9, 2, 6])]).unwrap()),
+            vec![1, 1, 2, 3, 4, 5, 6, 9]
+        );
+    }
+
+    #[test]
+    fn array_sort_handles_negatives_and_dupes() {
+        assert_eq!(
+            extract_int_array(builtin_array_sort(&[int_array(&[-3, 0, 5, -1, 0])]).unwrap()),
+            vec![-3, -1, 0, 0, 5]
+        );
+    }
+
+    #[test]
+    fn array_sort_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(builtin_array_sort(&[Value::Array(vec![])]).unwrap()),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_sort_single_element() {
+        assert_eq!(
+            extract_int_array(builtin_array_sort(&[int_array(&[42])]).unwrap()),
+            vec![42]
+        );
+    }
+
+    #[test]
+    fn array_sort_does_not_mutate_input() {
+        // Sort returns a new array; the input order is preserved.
+        let input = int_array(&[3, 1, 2]);
+        let _sorted = builtin_array_sort(std::slice::from_ref(&input)).unwrap();
+        assert_eq!(extract_int_array(input), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn array_sort_rejects_non_int_and_non_array() {
+        assert!(
+            builtin_array_sort(&[Value::Array(vec![Value::Int(1), Value::Float(2.0)])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_sort(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_sort(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 

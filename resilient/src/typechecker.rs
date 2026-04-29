@@ -1105,6 +1105,8 @@ impl TypeChecker {
         // RES-421: take/drop first n.
         env.set("array_take".to_string(), fn_any_any_to_any());
         env.set("array_drop".to_string(), fn_any_any_to_any());
+        // RES-422: integer sort ascending.
+        env.set("array_sort".to_string(), fn_any_to_any());
         // RES-413: repeat a string n times.
         env.set(
             "string_repeat".to_string(),
@@ -3974,6 +3976,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-421: take/drop.
         "array_take",
         "array_drop",
+        // RES-422: integer sort.
+        "array_sort",
         // RES-413: repeat a string.
         "string_repeat",
         // RES-414: substring search.
