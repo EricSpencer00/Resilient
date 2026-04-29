@@ -1,0 +1,14 @@
+// RES-461 demo: string_indent prefixes every line with n spaces.
+
+fn main() {
+    println(string_indent("a\nb\nc", 2));
+    println("---");
+    println(string_indent("foo", 4));
+    println("---");
+    println(string_indent("a\nb\n", 2));
+    println("---");
+    println(string_indent("", 4));
+    println("---");
+}
+
+main();
