@@ -8304,6 +8304,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("int_to_base", builtin_int_to_base),
     // RES-466: remove the first element matching x.
     ("array_remove", builtin_array_remove),
+    // RES-467: remove every element matching x.
+    ("array_remove_all", builtin_array_remove_all),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9857,6 +9859,34 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-467: `array_remove_all(arr, x)` — remove every element matching
+/// `x` under scalar value-equality. Returns a clone if x is absent.
+fn builtin_array_remove_all(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            let mut out = Vec::with_capacity(items.len());
+            for v in items {
+                match array_search_eq(v, needle) {
+                    Some(true) => continue,
+                    Some(false) => out.push(v.clone()),
+                    None => {
+                        return Err(format!(
+                            "array_remove_all: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, _] => Err(format!("array_remove_all: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_remove_all: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29689,6 +29719,75 @@ mod tests {
         );
         assert!(
             builtin_array_remove(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-467: array_remove_all ----------
+
+    #[test]
+    fn array_remove_all_drops_every_match() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove_all(&[int_array(&[1, 2, 1, 3, 1]), Value::Int(1)]).unwrap()
+            ),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn array_remove_all_no_match_returns_clone() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove_all(&[int_array(&[1, 2, 3]), Value::Int(99)]).unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_remove_all_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove_all(&[Value::Array(vec![]), Value::Int(1)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_remove_all_complete_removal_returns_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_remove_all(&[int_array(&[5, 5, 5]), Value::Int(5)]).unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_remove_all_does_not_mutate_input() {
+        let input = int_array(&[1, 2, 1, 3]);
+        let _ = builtin_array_remove_all(&[input.clone(), Value::Int(1)]).unwrap();
+        assert_eq!(extract_int_array(input), vec![1, 2, 1, 3]);
+    }
+
+    #[test]
+    fn array_remove_all_rejects_non_scalar_and_non_array_and_arity() {
+        let err = builtin_array_remove_all(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+        assert!(
+            builtin_array_remove_all(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_remove_all(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
