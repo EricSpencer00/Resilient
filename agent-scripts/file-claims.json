@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-411-isnan-isinf",
-      "claimed_at": "2026-04-29T20:46:32Z"
+      "branch": "res-412-reverse",
+      "claimed_at": "2026-04-29T20:52:46Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-411-isnan-isinf",
-      "claimed_at": "2026-04-29T20:46:32Z"
+      "branch": "res-412-reverse",
+      "claimed_at": "2026-04-29T20:52:46Z"
     }
   }
 }

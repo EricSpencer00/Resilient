@@ -1,0 +1,14 @@
+// RES-412 demo: string_reverse and array_reverse.
+
+fn main() {
+    println(string_reverse("hello"));
+    println(string_reverse(""));
+    println(string_reverse("a"));
+
+    let xs = [1, 2, 3, 4, 5];
+    let ys = array_reverse(xs);
+    println(ys);
+    println(array_reverse([]));
+}
+
+main();

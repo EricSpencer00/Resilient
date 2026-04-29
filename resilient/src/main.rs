@@ -8224,6 +8224,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("contains", builtin_contains),
     ("to_upper", builtin_to_upper),
     ("to_lower", builtin_to_lower),
+    // RES-412: reverse a string (Unicode-aware) or an array (clones elements).
+    ("string_reverse", builtin_string_reverse),
+    ("array_reverse", builtin_array_reverse),
     // RES-145: string manipulation expansion.
     ("replace", builtin_replace),
     ("format", builtin_format),
@@ -9045,6 +9048,36 @@ fn builtin_to_lower(args: &[Value]) -> RResult<Value> {
         [Value::String(s)] => Ok(Value::String(s.to_ascii_lowercase())),
         [other] => Err(format!("to_lower: expected string, got {}", other)),
         _ => Err(format!("to_lower: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-412: `string_reverse(s)` — returns a new string with characters
+/// reversed at the Unicode-scalar (`char`) level. Empty input returns "".
+fn builtin_string_reverse(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::String(s.chars().rev().collect())),
+        [other] => Err(format!("string_reverse: expected string, got {}", other)),
+        _ => Err(format!(
+            "string_reverse: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-412: `array_reverse(arr)` — returns a new array with elements
+/// in reversed order. Elements are cloned; the input is not mutated.
+fn builtin_array_reverse(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut reversed = items.clone();
+            reversed.reverse();
+            Ok(Value::Array(reversed))
+        }
+        [other] => Err(format!("array_reverse: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_reverse: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -23433,6 +23466,92 @@ mod tests {
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
+    }
+
+    // ---------- RES-412: string_reverse / array_reverse ----------
+
+    #[test]
+    fn string_reverse_reverses_chars() {
+        match builtin_string_reverse(&[Value::String("abc".into())]).unwrap() {
+            Value::String(s) => assert_eq!(s, "cba"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_reverse_handles_empty() {
+        match builtin_string_reverse(&[Value::String("".into())]).unwrap() {
+            Value::String(s) => assert_eq!(s, ""),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_reverse_is_unicode_aware() {
+        // Multi-byte chars (é = 2 bytes in UTF-8) reverse as single units.
+        match builtin_string_reverse(&[Value::String("café".into())]).unwrap() {
+            Value::String(s) => assert_eq!(s, "éfac"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_reverse_rejects_non_string() {
+        let err = builtin_string_reverse(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("string_reverse:"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_reverse_rejects_wrong_arity() {
+        let err = builtin_string_reverse(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_reverse_reverses_elements() {
+        match builtin_array_reverse(&[Value::Array(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+        ])])
+        .unwrap()
+        {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 3);
+                match (&items[0], &items[1], &items[2]) {
+                    (Value::Int(3), Value::Int(2), Value::Int(1)) => {}
+                    _ => panic!("expected [3,2,1], got {:?}", items),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_reverse_handles_empty_and_single() {
+        match builtin_array_reverse(&[Value::Array(vec![])]).unwrap() {
+            Value::Array(items) => assert!(items.is_empty(), "expected []"),
+            other => panic!("expected Array, got {:?}", other),
+        }
+        match builtin_array_reverse(&[Value::Array(vec![Value::Int(7)])]).unwrap() {
+            Value::Array(items) => match items.as_slice() {
+                [Value::Int(7)] => {}
+                _ => panic!("expected [7], got {:?}", items),
+            },
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_reverse_rejects_non_array() {
+        let err = builtin_array_reverse(&[Value::String("oops".into())]).unwrap_err();
+        assert!(err.contains("array_reverse:"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_reverse_rejects_wrong_arity() {
+        let err = builtin_array_reverse(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "got: {}", err);
     }
 
     // ---------- RES-034: nested index assignment ----------
