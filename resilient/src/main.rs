@@ -184,6 +184,11 @@ mod string_interp;
 // `tuples.rs`; main.rs only adds the Node / Value variants and routes
 // through to the helpers.
 mod tuples;
+// RES-409: streaming file I/O — `file_open`, `file_read_chunk`,
+// `file_seek`, `file_close`, `file_write_chunk`. All builtins and the
+// thread-local handle registry live here; main.rs just registers
+// them in the BUILTINS table.
+mod file_io;
 // RES-324: `mod name { ... }` inline namespace blocks. All namespace
 // logic (eval and static check) lives in this module; the only core-
 // file changes are Token::Mod, Node::ModuleDecl, and the dispatch lines.
@@ -8135,6 +8140,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // no builtins table and stays no_std-clean.
     ("file_read", builtin_file_read),
     ("file_write", builtin_file_write),
+    // RES-409: streaming file I/O — open / read_chunk / seek /
+    // write_chunk / close. Memory-bounded reads finally possible.
+    ("file_open", file_io::builtin_file_open),
+    ("file_read_chunk", file_io::builtin_file_read_chunk),
+    ("file_write_chunk", file_io::builtin_file_write_chunk),
+    ("file_seek", file_io::builtin_file_seek),
+    ("file_close", file_io::builtin_file_close),
     // RES-151: read-only env-var accessor, std-only.
     ("env", builtin_env),
     // RES-148: Map builtins.

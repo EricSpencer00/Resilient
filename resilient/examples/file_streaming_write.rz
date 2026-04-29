@@ -1,0 +1,18 @@
+// RES-409: streaming write — file_open(w) + file_write_chunk + close,
+// then read back the file to verify the bytes round-tripped.
+fn main() {
+    let path = "/tmp/resilient-res409-write.txt";
+
+    let f = unwrap(file_open(path, "w"));
+    let n = unwrap(file_write_chunk(f, b"hello "));
+    println(n);
+    let m = unwrap(file_write_chunk(f, b"world"));
+    println(m);
+    file_close(f);
+
+    // Read back via the existing whole-file reader.
+    let contents = file_read(path);
+    println(contents);
+}
+
+main();

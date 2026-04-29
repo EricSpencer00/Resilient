@@ -1,0 +1,6 @@
+b"abc"
+b"def"
+0
+b"abcde"
+true
+Program executed successfully
