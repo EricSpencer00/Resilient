@@ -8300,6 +8300,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_bytes_len", builtin_string_bytes_len),
     // RES-464: parse int with explicit radix.
     ("parse_int_base", builtin_parse_int_base),
+    // RES-465: render int with explicit radix.
+    ("int_to_base", builtin_int_to_base),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9853,6 +9855,50 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-465: `int_to_base(n, base)` — render `n` as a string in the
+/// given `base` (2..=36). Negative numbers get a leading `-`. Bases
+/// outside 2..=36 are a typed error.
+fn builtin_int_to_base(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(base)] => {
+            if !(2..=36).contains(base) {
+                return Err(format!("int_to_base: base must be 2..=36, got {}", base));
+            }
+            let radix = *base as u32;
+            let (negative, abs_val) = if *n < 0 {
+                (true, n.unsigned_abs())
+            } else {
+                (false, *n as u64)
+            };
+            let mut digits: Vec<char> = Vec::new();
+            let mut x = abs_val;
+            if x == 0 {
+                digits.push('0');
+            }
+            while x > 0 {
+                let d = (x % radix as u64) as u32;
+                let ch = char::from_digit(d, radix).expect("digit in range");
+                digits.push(ch);
+                x /= radix as u64;
+            }
+            digits.reverse();
+            let mut s: String = digits.into_iter().collect();
+            if negative {
+                s.insert(0, '-');
+            }
+            Ok(Value::String(s))
+        }
+        [a, b] => Err(format!(
+            "int_to_base: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "int_to_base: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29405,6 +29451,106 @@ mod tests {
         );
         assert!(
             builtin_parse_int_base(&[Value::String("0".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-465: int_to_base ----------
+
+    #[test]
+    fn int_to_base_decimal() {
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(42), Value::Int(10)]).unwrap()),
+            "42"
+        );
+    }
+
+    #[test]
+    fn int_to_base_hex_lower() {
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(255), Value::Int(16)]).unwrap()),
+            "ff"
+        );
+    }
+
+    #[test]
+    fn int_to_base_binary() {
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(10), Value::Int(2)]).unwrap()),
+            "1010"
+        );
+    }
+
+    #[test]
+    fn int_to_base_zero() {
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(0), Value::Int(2)]).unwrap()),
+            "0"
+        );
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(0), Value::Int(36)]).unwrap()),
+            "0"
+        );
+    }
+
+    #[test]
+    fn int_to_base_negative_gets_minus() {
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(-42), Value::Int(16)]).unwrap()),
+            "-2a"
+        );
+        assert_eq!(
+            extract_string(builtin_int_to_base(&[Value::Int(-15), Value::Int(2)]).unwrap()),
+            "-1111"
+        );
+    }
+
+    #[test]
+    fn int_to_base_round_trips_with_parse() {
+        // For each base, render then parse should give back the input.
+        for n in [-1234i64, -1, 0, 1, 42, 1000000] {
+            for base in [2i64, 8, 10, 16, 36] {
+                let s = extract_string(
+                    builtin_int_to_base(&[Value::Int(n), Value::Int(base)]).unwrap(),
+                );
+                let parsed =
+                    builtin_parse_int_base(&[Value::String(s.clone()), Value::Int(base)]).unwrap();
+                assert_eq!(
+                    extract_result_ok_int(parsed),
+                    n,
+                    "round trip failed: n={}, base={}, rendered={:?}",
+                    n,
+                    base,
+                    s
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn int_to_base_rejects_invalid_radix() {
+        assert!(
+            builtin_int_to_base(&[Value::Int(0), Value::Int(1)])
+                .unwrap_err()
+                .contains("base must be 2..=36")
+        );
+        assert!(
+            builtin_int_to_base(&[Value::Int(0), Value::Int(37)])
+                .unwrap_err()
+                .contains("base must be 2..=36")
+        );
+    }
+
+    #[test]
+    fn int_to_base_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_int_to_base(&[Value::String("1".into()), Value::Int(10)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_int_to_base(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

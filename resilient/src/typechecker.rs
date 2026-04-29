@@ -1250,6 +1250,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Result),
             },
         );
+        // RES-465: render int in given radix → String.
+        env.set(
+            "int_to_base".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4276,6 +4284,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_bytes_len",
         // RES-464: parse_int_base.
         "parse_int_base",
+        // RES-465: int_to_base.
+        "int_to_base",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
