@@ -492,6 +492,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // RES-290: trait declarations have no expression bodies, so
         // they introduce no free variables.
         Node::TraitDecl { .. } => {}
+        // RES-400 PR 1: enum declarations are pure data (variant names
+        // only at this stage); no free variables either.
+        Node::EnumDecl { .. } => {}
     }
 }
 

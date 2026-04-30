@@ -232,6 +232,25 @@ impl Formatter {
                 self.write(&format!("type {} = {};", name, target));
                 self.newline();
             }
+            // RES-400 PR 1: re-emit a payload-less enum declaration.
+            // PR 2 will extend this with payload kinds (named-field
+            // and tuple-style); the format follows Rust convention so
+            // upstream IDE tooling can reuse syntax-highlighting.
+            Node::EnumDecl { name, variants, .. } => {
+                self.write(&format!("enum {} {{", name));
+                self.newline();
+                self.indent();
+                for (i, v) in variants.iter().enumerate() {
+                    self.write(&v.name);
+                    if i + 1 < variants.len() {
+                        self.write(",");
+                    }
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             Node::RegionDecl { name, .. } => {
                 self.write(&format!("region {};", name));
                 self.newline();
@@ -1089,6 +1108,7 @@ impl Formatter {
             | Node::ModuleDecl { .. }
             | Node::SupervisorDecl { .. }
             | Node::TraitDecl { .. }
+            | Node::EnumDecl { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
