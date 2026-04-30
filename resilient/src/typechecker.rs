@@ -1039,6 +1039,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-535: split with a maximum number-of-splits limit.
+        env.set(
+            "string_split_n".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String, Type::Int],
+                return_type: Box::new(Type::Array),
+            },
+        );
         env.set(
             "trim".to_string(),
             Type::Function {
@@ -4602,6 +4610,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "pop",
         "slice",
         "split",
+        // RES-535: split with a maximum number-of-splits limit.
+        "string_split_n",
         "trim",
         "contains",
         "to_upper",
