@@ -8525,6 +8525,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("parse_int", builtin_parse_int),
     // RES-529: non-erroring parse with fallback default.
     ("parse_int_or", builtin_parse_int_or),
+    // RES-532: non-erroring float parse with fallback default.
+    ("parse_float_or", builtin_parse_float_or),
     ("parse_float", builtin_parse_float),
     ("char_at", builtin_char_at),
     ("pad_left", builtin_pad_left),
@@ -13147,6 +13149,26 @@ fn builtin_parse_int_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "parse_int_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-532: `parse_float_or(s, default)` — non-erroring float parse.
+/// Returns the parsed float or `default` if `s` is not a valid
+/// float. Trims surrounding whitespace, matching `parse_float`
+/// (RES-339). Pairs with `parse_float` (which returns a Result).
+fn builtin_parse_float_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Float(default)] => {
+            Ok(Value::Float(s.trim().parse::<f64>().unwrap_or(*default)))
+        }
+        [a, b] => Err(format!(
+            "parse_float_or: expected (string, float), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "parse_float_or: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -25312,6 +25334,55 @@ mod tests {
         );
         assert!(
             builtin_parse_int_or(&[Value::String("42".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-532: parse_float_or ----------
+
+    fn pfof(s: &str, default: f64) -> f64 {
+        match builtin_parse_float_or(&[Value::String(s.into()), Value::Float(default)]).unwrap() {
+            Value::Float(n) => n,
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_float_or_valid_inputs() {
+        assert!((pfof("1.5", 0.0) - 1.5).abs() < 1e-12);
+        assert!((pfof("-2.5", 0.0) + 2.5).abs() < 1e-12);
+        // Integer literal accepted by f64::from_str.
+        assert!((pfof("42", 0.0) - 42.0).abs() < 1e-12);
+        // Whitespace stripped.
+        assert!((pfof(" 1.5 ", 0.0) - 1.5).abs() < 1e-12);
+        assert_eq!(pfof("0", 99.0), 0.0);
+    }
+
+    #[test]
+    fn parse_float_or_invalid_returns_default() {
+        for s in &["", "abc", "12abc", "  ", "1.2.3"] {
+            assert_eq!(pfof(s, -1.0), -1.0, "s={:?}", s);
+        }
+    }
+
+    #[test]
+    fn parse_float_or_special_values_succeed() {
+        // Rust's f64::from_str accepts these.
+        assert!(pfof("inf", 0.0).is_infinite());
+        assert!(pfof("-inf", 0.0).is_infinite());
+        assert!(pfof("nan", 0.0).is_nan());
+    }
+
+    #[test]
+    fn parse_float_or_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_parse_float_or(&[Value::Int(1), Value::Float(0.0)])
+                .unwrap_err()
+                .contains("expected (string, float)")
+        );
+        assert!(
+            builtin_parse_float_or(&[Value::String("3.14".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
