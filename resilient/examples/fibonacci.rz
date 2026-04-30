@@ -1,0 +1,14 @@
+// RES-569 demo: fibonacci returns the n-th Fibonacci number.
+// fib(92) = 7540113804746346429 is the largest that fits i64;
+// fib(93) overflows and surfaces as a typed error.
+
+fn main() {
+    println(fibonacci(0));
+    println(fibonacci(1));
+    println(fibonacci(10));
+    println(fibonacci(20));
+    println(fibonacci(50));
+    println(fibonacci(92));
+}
+
+main();

@@ -1,0 +1,7 @@
+0
+1
+55
+6765
+12586269025
+7540113804746346429
+Program executed successfully
