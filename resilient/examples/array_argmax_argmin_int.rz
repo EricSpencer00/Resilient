@@ -1,0 +1,12 @@
+// RES-503 demo: array_argmax_int / array_argmin_int return the index
+// of the max / min element. First occurrence wins on ties.
+
+fn main() {
+    let xs = [3, 1, 4, 1, 5, 9, 2, 6];
+    println(array_argmax_int(xs));
+    println(array_argmin_int(xs));
+    println(array_argmax_int([2, 2, 2]));
+    println(array_argmin_int([-10, 0, 10]));
+}
+
+main();

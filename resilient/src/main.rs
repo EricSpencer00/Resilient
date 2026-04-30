@@ -8267,6 +8267,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-417: min/max over an integer array. Empty array errors.
     ("array_min", builtin_array_min),
     ("array_max", builtin_array_max),
+    // RES-503: index of max / min element (first-occurrence on ties).
+    ("array_argmax_int", builtin_array_argmax_int),
+    ("array_argmin_int", builtin_array_argmin_int),
     // RES-418: element search over an array.
     ("array_contains", builtin_array_contains),
     ("array_index_of", builtin_array_index_of),
@@ -12041,6 +12044,93 @@ fn builtin_array_max(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_max: expected array, got {}", other)),
         _ => Err(format!(
             "array_max: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-503: `array_argmax_int(arr)` — index of the first occurrence
+/// of the maximum element in a non-empty integer array. Empty array
+/// errors. Distinct from `array_max` (which returns the value) and
+/// `array_index_of` (which searches for a known value).
+fn builtin_array_argmax_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_argmax_int: empty array has no argmax".to_string());
+            }
+            let mut best_val: Option<i64> = None;
+            let mut best_idx: usize = 0;
+            for (i, v) in items.iter().enumerate() {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_argmax_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                match best_val {
+                    None => {
+                        best_val = Some(n);
+                        best_idx = i;
+                    }
+                    Some(cur) if n > cur => {
+                        best_val = Some(n);
+                        best_idx = i;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Value::Int(best_idx as i64))
+        }
+        [other] => Err(format!("array_argmax_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_argmax_int: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-503: `array_argmin_int(arr)` — index of the first occurrence
+/// of the minimum element in a non-empty integer array. Empty array
+/// errors. Symmetric to `array_argmax_int`.
+fn builtin_array_argmin_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_argmin_int: empty array has no argmin".to_string());
+            }
+            let mut best_val: Option<i64> = None;
+            let mut best_idx: usize = 0;
+            for (i, v) in items.iter().enumerate() {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_argmin_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                match best_val {
+                    None => {
+                        best_val = Some(n);
+                        best_idx = i;
+                    }
+                    Some(cur) if n < cur => {
+                        best_val = Some(n);
+                        best_idx = i;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Value::Int(best_idx as i64))
+        }
+        [other] => Err(format!("array_argmin_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_argmin_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -26961,6 +27051,92 @@ mod tests {
         );
         assert!(
             builtin_array_max(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-503: array_argmax_int / array_argmin_int ----------
+
+    #[test]
+    fn array_argmax_int_basic() {
+        assert_int(
+            builtin_array_argmax_int(&[int_array(&[3, 1, 4, 1, 5, 9, 2, 6])]).unwrap(),
+            5,
+            "argmax",
+        );
+        assert_int(
+            builtin_array_argmax_int(&[int_array(&[5])]).unwrap(),
+            0,
+            "single",
+        );
+        assert_int(
+            builtin_array_argmax_int(&[int_array(&[-10, -5, -3])]).unwrap(),
+            2,
+            "all negative",
+        );
+    }
+
+    #[test]
+    fn array_argmax_int_first_occurrence_on_ties() {
+        assert_int(
+            builtin_array_argmax_int(&[int_array(&[2, 2, 2])]).unwrap(),
+            0,
+            "ties → first",
+        );
+        assert_int(
+            builtin_array_argmax_int(&[int_array(&[1, 5, 3, 5, 2])]).unwrap(),
+            1,
+            "ties at 5 → first 5",
+        );
+    }
+
+    #[test]
+    fn array_argmin_int_basic() {
+        assert_int(
+            builtin_array_argmin_int(&[int_array(&[3, 1, 4, 1, 5, 9, 2, 6])]).unwrap(),
+            1,
+            "argmin",
+        );
+        assert_int(
+            builtin_array_argmin_int(&[int_array(&[-10, 0, 10])]).unwrap(),
+            0,
+            "negative",
+        );
+    }
+
+    #[test]
+    fn array_argmin_int_first_occurrence_on_ties() {
+        assert_int(
+            builtin_array_argmin_int(&[int_array(&[5, 1, 3, 1, 2])]).unwrap(),
+            1,
+            "ties at 1 → first",
+        );
+    }
+
+    #[test]
+    fn array_argmax_argmin_int_empty_errors() {
+        assert!(
+            builtin_array_argmax_int(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("empty array")
+        );
+        assert!(
+            builtin_array_argmin_int(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("empty array")
+        );
+    }
+
+    #[test]
+    fn array_argmax_argmin_int_reject_non_int_and_arity() {
+        assert!(
+            builtin_array_argmax_int(&[Value::Array(vec![Value::Int(1), Value::Float(2.0)])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_argmin_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
