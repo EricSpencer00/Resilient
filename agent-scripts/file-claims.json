@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-497-string-join-lines",
-      "claimed_at": "2026-04-30T01:06:52Z"
+      "branch": "res-498-string-unwords",
+      "claimed_at": "2026-04-30T01:10:12Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-497-string-join-lines",
-      "claimed_at": "2026-04-30T01:06:52Z"
+      "branch": "res-498-string-unwords",
+      "claimed_at": "2026-04-30T01:10:12Z"
     }
   }
 }

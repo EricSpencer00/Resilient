@@ -1,0 +1,5 @@
+the quick brown fox
+solo
+0
+hello world
+Program executed successfully

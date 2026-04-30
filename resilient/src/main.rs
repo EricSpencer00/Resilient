@@ -8409,6 +8409,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_words", builtin_string_words),
     // RES-497: join string array with newline separator.
     ("string_join_lines", builtin_string_join_lines),
+    // RES-498: join string array with single-space separator.
+    ("string_unwords", builtin_string_unwords),
     // RES-435: split array into fixed-size chunks (last may be short).
     ("array_chunk", builtin_array_chunk),
     // RES-436: non-overlapping substring count.
@@ -9789,7 +9791,7 @@ fn builtin_string_words(args: &[Value]) -> RResult<Value> {
 
 /// RES-497: `string_join_lines(arr)` — join an array of strings with
 /// `\n` between elements. Empty array → empty string. Pairs with
-/// `string_split_lines` (RES-498) and `string_lines` (RES-434).
+/// `string_lines` (RES-434).
 fn builtin_string_join_lines(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
@@ -9810,6 +9812,36 @@ fn builtin_string_join_lines(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("string_join_lines: expected array, got {}", other)),
         _ => Err(format!(
             "string_join_lines: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-498: `string_unwords(arr)` — join an array of strings with a
+/// single ASCII space between elements. Natural inverse of
+/// `string_words` (RES-496); the round-trip
+/// `string_unwords(string_words(s))` produces a normalised version
+/// of `s` with whitespace runs collapsed and ends trimmed.
+fn builtin_string_unwords(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut parts: Vec<&str> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::String(s) => parts.push(s.as_str()),
+                    other => {
+                        return Err(format!(
+                            "string_unwords: array element must be string, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::String(parts.join(" ")))
+        }
+        [other] => Err(format!("string_unwords: expected array, got {}", other)),
+        _ => Err(format!(
+            "string_unwords: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -28253,6 +28285,59 @@ mod tests {
         );
         assert!(
             builtin_string_join_lines(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-498: string_unwords ----------
+
+    fn unwords_str(items: Vec<Value>) -> String {
+        match builtin_string_unwords(&[Value::Array(items)]).unwrap() {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_unwords_basic() {
+        assert_eq!(unwords_str(vec![s("a"), s("b"), s("c")]), "a b c");
+        assert_eq!(unwords_str(vec![s("hello")]), "hello");
+        assert_eq!(unwords_str(vec![]), "");
+    }
+
+    #[test]
+    fn string_unwords_round_trip_with_string_words_normalises() {
+        // string_words eats whitespace runs; string_unwords reinserts
+        // single spaces — the composition normalises a string.
+        let messy = "  foo\t bar\n\nbaz   ";
+        let words = builtin_string_words(&[Value::String(messy.into())]).unwrap();
+        let Value::Array(items) = words else { panic!() };
+        let normalised = unwords_str(items);
+        assert_eq!(normalised, "foo bar baz");
+    }
+
+    #[test]
+    fn string_unwords_preserves_internal_empty_strings() {
+        // An array containing empty strings yields adjacent spaces:
+        // ["a", "", "b"] → "a  b" (empty between two spaces).
+        assert_eq!(unwords_str(vec![s("a"), s(""), s("b")]), "a  b");
+    }
+
+    #[test]
+    fn string_unwords_rejects_non_array_and_non_string_elements() {
+        assert!(
+            builtin_string_unwords(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_string_unwords(&[Value::Array(vec![Value::Int(7)])])
+                .unwrap_err()
+                .contains("element must be string")
+        );
+        assert!(
+            builtin_string_unwords(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
