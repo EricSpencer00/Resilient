@@ -8303,6 +8303,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_cummax_int", builtin_array_cummax_int),
     // RES-561: running min.
     ("array_cummin_int", builtin_array_cummin_int),
+    // RES-562: running product.
+    ("array_cumprod_int", builtin_array_cumprod_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13553,6 +13555,50 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-562: `array_cumprod_int(arr)` — running product
+/// `[a[0], a[0]*a[1], …]`. Empty returns empty. i128 multiply with
+/// per-step i64 fit-check; overflow surfaces as a typed error.
+fn builtin_array_cumprod_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut acc: i128 = 1;
+            let mut started = false;
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        acc = if started {
+                            acc * (*n as i128)
+                        } else {
+                            started = true;
+                            *n as i128
+                        };
+                        let cur = i64::try_from(acc).map_err(|_| {
+                            format!(
+                                "array_cumprod_int: prefix product {} does not fit in i64",
+                                acc
+                            )
+                        })?;
+                        out.push(Value::Int(cur));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_cumprod_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_cumprod_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_cumprod_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -30530,6 +30576,79 @@ mod tests {
         );
         assert!(
             builtin_array_cummin_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-562: array_cumprod_int ----------
+
+    fn cumprod(xs: &[i64]) -> Vec<i64> {
+        match builtin_array_cumprod_int(&[int_array(xs)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_cumprod_int_basic() {
+        assert_eq!(cumprod(&[1, 2, 3, 4]), vec![1, 2, 6, 24]);
+        assert_eq!(cumprod(&[5]), vec![5]);
+        assert_eq!(cumprod(&[2, 0, 5]), vec![2, 0, 0]);
+    }
+
+    #[test]
+    fn array_cumprod_int_empty_returns_empty() {
+        assert_eq!(cumprod(&[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_cumprod_int_handles_signs() {
+        assert_eq!(cumprod(&[-1, -2, -3]), vec![-1, 2, -6]);
+        assert_eq!(cumprod(&[2, -3, 4]), vec![2, -6, -24]);
+    }
+
+    #[test]
+    fn array_cumprod_int_overflow_surfaced() {
+        let err = builtin_array_cumprod_int(&[int_array(&[i64::MAX, 2])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Single i64::MAX still fits.
+        assert_eq!(cumprod(&[i64::MAX]), vec![i64::MAX]);
+    }
+
+    #[test]
+    fn array_cumprod_int_last_element_equals_array_product() {
+        for arr in [vec![1, 2, 3], vec![2, 3, 5], vec![42], vec![5, 0, 7]] {
+            let cp = cumprod(&arr);
+            let last = *cp.last().unwrap();
+            let p = match builtin_array_product(&[int_array(&arr)]).unwrap() {
+                Value::Int(n) => n,
+                _ => panic!(),
+            };
+            assert_eq!(last, p, "mismatch for {:?}", arr);
+        }
+    }
+
+    #[test]
+    fn array_cumprod_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_cumprod_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_cumprod_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_cumprod_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

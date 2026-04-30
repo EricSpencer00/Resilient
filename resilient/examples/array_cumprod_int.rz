@@ -1,0 +1,13 @@
+// RES-562 demo: array_cumprod_int returns the running product
+// [a[0], a[0]*a[1], …]. Empty returns empty. Rounds out the
+// cumulative quartet (sum / max / min / product).
+
+fn main() {
+    println(array_cumprod_int([1, 2, 3, 4]));
+    println(array_cumprod_int([2, 0, 5]));
+    println(array_cumprod_int([-1, -2, -3]));
+    println(array_cumprod_int([5]));
+    println(array_cumprod_int([]));
+}
+
+main();
