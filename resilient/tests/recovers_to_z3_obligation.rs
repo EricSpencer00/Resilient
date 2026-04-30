@@ -93,7 +93,7 @@ fn recovers_to_unhandled_destructive_is_rejected() {
     // `fails` non-empty, no handler, and the recovery invariant is
     // NOT entailed by the requires — Z3 cannot prove it, so the
     // typechecker rejects the program.
-    let output = typecheck("recovers_to_unhandled_destructive.res");
+    let output = typecheck("recovers_to_unhandled_destructive.rz");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let combined = format!("{}{}", stdout, stderr);

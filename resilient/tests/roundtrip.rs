@@ -23,7 +23,7 @@ fn tmp_file(tag: &str, body: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path =
-        std::env::temp_dir().join(format!("res_199_{}_{}_{}.res", tag, std::process::id(), n));
+        std::env::temp_dir().join(format!("res_199_{}_{}_{}.rz", tag, std::process::id(), n));
     std::fs::write(&path, body).expect("write scratch file");
     path
 }

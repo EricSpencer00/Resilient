@@ -283,7 +283,7 @@ Golden files live alongside their test inputs in `resilient/examples/`:
 
 ```
 resilient/examples/
-├── feature_name.res          # Input source
+├── feature_name.rz          # Input source
 └── feature_name.expected.txt # Expected output
 ```
 
