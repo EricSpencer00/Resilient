@@ -3944,6 +3944,57 @@ impl Parser {
                 // typed representation.
                 Some(format!("[{}; {}]", elem, len))
             }
+            // RES-403: function-type annotation
+            // `fn(T1, T2, ...) -> R`. Encoded into the single-string
+            // type slot as `fn(T1, T2) -> R`. The typechecker accepts
+            // any callable for now (Value::Function already exists);
+            // future work narrows this to verify parameter / return
+            // arities at the call site.
+            Token::Function => {
+                self.next_token(); // skip `fn`
+                if self.current_token != Token::LeftParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected '(' after `fn` in type annotation {}, found {}",
+                        ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `(`
+                let mut params: Vec<String> = Vec::new();
+                while self.current_token != Token::RightParen && self.current_token != Token::Eof {
+                    let p = self.parse_type_annotation(ctx)?;
+                    params.push(p);
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    } else if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ',' or ')' in `fn(...)` type annotation {}, found {}",
+                            ctx, tok
+                        ));
+                        return None;
+                    }
+                }
+                if self.current_token != Token::RightParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ')' to close `fn(...)` type annotation {}, found {}",
+                        ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `)`
+                // Optional `-> Ret`. Bare `fn(...)` (no return) is
+                // equivalent to `fn(...) -> void`.
+                let ret = if self.current_token == Token::Arrow {
+                    self.next_token(); // skip `->`
+                    self.parse_type_annotation(ctx)?
+                } else {
+                    "void".to_string()
+                };
+                Some(format!("fn({}) -> {}", params.join(", "), ret))
+            }
             _ => {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected type name {}, found {}", ctx, tok));

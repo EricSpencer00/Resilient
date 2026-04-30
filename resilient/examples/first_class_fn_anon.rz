@@ -1,0 +1,20 @@
+// RES-403: first-class function values — anonymous-literal test.
+//
+// Demonstrates the third acceptance criterion: anonymous function
+// literals can be passed inline to a higher-order function.
+
+fn apply(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+fn main() -> int {
+    let triple = fn(int x) -> int { return x * 3; };
+    println(apply(triple, 7));
+
+    let square = fn(int x) -> int { return x * x; };
+    println(apply(square, 9));
+
+    return 0;
+}
+
+main();
