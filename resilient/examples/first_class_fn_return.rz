@@ -1,0 +1,25 @@
+// RES-403: first-class function values — return-from-fn test.
+//
+// `pick` returns one of two functions based on a flag; the caller
+// stores it in a `let` and invokes it through the binding.
+
+fn double(int x) -> int { return x * 2; }
+fn negate(int x) -> int { return 0 - x; }
+
+fn pick(bool want_double) -> fn(int) -> int {
+    if want_double {
+        return double;
+    } else {
+        return negate;
+    }
+}
+
+fn main() -> int {
+    let f = pick(true);
+    let g = pick(false);
+    println(f(7));
+    println(g(7));
+    return 0;
+}
+
+main();

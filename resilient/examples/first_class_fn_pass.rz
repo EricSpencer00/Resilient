@@ -1,0 +1,21 @@
+// RES-403: first-class function values — pass-as-arg test.
+//
+// `apply` takes a `fn(int) -> int` and an int, returns the result of
+// calling the function on the int. The named function `double` is
+// passed by reference.
+
+fn double(int x) -> int {
+    return x * 2;
+}
+
+fn apply(fn(int) -> int f, int x) -> int {
+    return f(x);
+}
+
+fn main() -> int {
+    println(apply(double, 5));
+    println(apply(double, 21));
+    return 0;
+}
+
+main();
