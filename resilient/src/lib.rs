@@ -17894,11 +17894,19 @@ impl Interpreter {
             // RES-290: trait declarations carry no runtime payload — the
             // typechecker validates them; here we just produce Void.
             Node::TraitDecl { .. } => Ok(Value::Void),
-            // RES-400 PR 1: enum declarations are parsed and validated
-            // but the interpreter doesn't act on them yet. PR 5 wires
-            // up constructor expressions and match-arm evaluation;
-            // until then, an enum decl is a no-op at runtime.
-            Node::EnumDecl { .. } => Ok(Value::Void),
+            // RES-400 PR 3: enum declarations register each variant
+            // under the qualified key `EnumName::VariantName` in the
+            // current scope. Payload-less variants resolve to a
+            // string-tag value (`"Color::Red"`); payload-carrying
+            // variants need constructor-call evaluation that lands
+            // in PR 4.
+            Node::EnumDecl { name, variants, .. } => {
+                for v in variants {
+                    let key = format!("{}::{}", name, v.name);
+                    self.env.set(key.clone(), Value::String(key));
+                }
+                Ok(Value::Void)
+            }
             // RES-406: unsafe block — at runtime it's identical to a
             // regular block. The capability gate is enforced by the
             // typechecker / unsafe_check pass before evaluation.

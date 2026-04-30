@@ -1,0 +1,28 @@
+// RES-400 PR 3: payload-less variant constructors.
+//
+// `Color::Red` is a constructor expression that resolves to a
+// tagged value at runtime. The interpreter binds each variant
+// under the qualified key `EnumName::VariantName` when an `enum`
+// declaration is evaluated; the constructor expression looks up
+// that key. Payload-carrying constructors (`Shape::Circle { r:
+// 1.0 }`) need call-style evaluation that lands in PR 4.
+
+enum Color { Red, Green, Blue }
+enum Direction { North, South, East, West }
+
+fn main() -> int {
+    let c = Color::Red;
+    println(c);
+
+    let d = Direction::North;
+    println(d);
+
+    // Variants from different enums coexist without collision —
+    // they're keyed by full path.
+    let c2 = Color::Blue;
+    println(c2);
+
+    return 0;
+}
+
+main();

@@ -1,0 +1,4 @@
+Color::Red
+Direction::North
+Color::Blue
+Program executed successfully
