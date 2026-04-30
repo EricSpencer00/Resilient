@@ -8278,6 +8278,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("ord", builtin_ord),
     // RES-505: parse single char to base-36 digit value.
     ("char_to_digit", builtin_char_to_digit),
+    // RES-513: int 0..=35 → base-36 digit char.
+    ("digit_to_char", builtin_digit_to_char),
     // RES-420: concatenate two arrays.
     ("array_concat", builtin_array_concat),
     // RES-421: take/drop first n elements.
@@ -12132,6 +12134,33 @@ fn builtin_char_to_digit(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("char_to_digit: expected string, got {}", other)),
         _ => Err(format!(
             "char_to_digit: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-513: `digit_to_char(n)` — inverse of `char_to_digit` (RES-505).
+/// Maps an integer in `0..=35` to its lowercase base-36 digit
+/// character. Errors on values outside that range. Backed by
+/// `char::from_digit(.., 36)`.
+fn builtin_digit_to_char(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if !(0..=35).contains(n) {
+                return Err(format!(
+                    "digit_to_char: argument must be in 0..=35, got {}",
+                    n
+                ));
+            }
+            // `n` is in 0..=35, so the cast to u32 and from_digit
+            // both succeed.
+            let c =
+                char::from_digit(*n as u32, 36).expect("0..=35 in base 36 always has a digit char");
+            Ok(Value::String(c.to_string()))
+        }
+        [other] => Err(format!("digit_to_char: expected int, got {}", other)),
+        _ => Err(format!(
+            "digit_to_char: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -27630,6 +27659,65 @@ mod tests {
         );
         assert!(
             builtin_char_to_digit(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-513: digit_to_char ----------
+
+    fn dtc(n: i64) -> String {
+        match builtin_digit_to_char(&[Value::Int(n)]).unwrap() {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn digit_to_char_decimal() {
+        for d in 0..=9 {
+            assert_eq!(dtc(d as i64), d.to_string());
+        }
+    }
+
+    #[test]
+    fn digit_to_char_letters_lowercase() {
+        // 10 → 'a', 35 → 'z'.
+        assert_eq!(dtc(10), "a");
+        assert_eq!(dtc(15), "f");
+        assert_eq!(dtc(35), "z");
+    }
+
+    #[test]
+    fn digit_to_char_round_trip() {
+        // char_to_digit(digit_to_char(n)) == n for n in 0..=35.
+        for n in 0..=35i64 {
+            let s = dtc(n);
+            let back = match builtin_char_to_digit(&[Value::String(s.clone())]).unwrap() {
+                Value::Int(m) => m,
+                other => panic!("expected Int, got {:?}", other),
+            };
+            assert_eq!(back, n, "round-trip n={} via {:?}", n, s);
+        }
+    }
+
+    #[test]
+    fn digit_to_char_rejects_out_of_range() {
+        for n in &[-1i64, 36, 100, i64::MIN, i64::MAX] {
+            let err = builtin_digit_to_char(&[Value::Int(*n)]).unwrap_err();
+            assert!(err.contains("0..=35"), "n={}: got {}", n, err);
+        }
+    }
+
+    #[test]
+    fn digit_to_char_rejects_non_int_and_arity() {
+        assert!(
+            builtin_digit_to_char(&[Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_digit_to_char(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
