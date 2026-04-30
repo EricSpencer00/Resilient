@@ -8431,6 +8431,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_trailing_zeros", builtin_bit_trailing_zeros),
     // RES-491: integer floor sqrt.
     ("int_sqrt", builtin_int_sqrt),
+    // RES-492: floor log base 2.
+    ("int_log2", builtin_int_log2),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9518,6 +9520,22 @@ fn builtin_int_sqrt(args: &[Value]) -> RResult<Value> {
         }
         [other] => Err(format!("int_sqrt: expected int, got {}", other)),
         _ => Err(format!("int_sqrt: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-492: `int_log2(n)` — floor base-2 logarithm. Equivalent to the
+/// position of the highest set bit; rejects `n <= 0` (log undefined).
+/// Backed by `i64::ilog2`.
+fn builtin_int_log2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n <= 0 {
+                return Err(format!("int_log2: argument must be positive, got {}", n));
+            }
+            Ok(Value::Int(n.ilog2() as i64))
+        }
+        [other] => Err(format!("int_log2: expected int, got {}", other)),
+        _ => Err(format!("int_log2: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -28727,6 +28745,57 @@ mod tests {
         );
         assert!(
             builtin_int_sqrt(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-492: int_log2 ----------
+
+    #[test]
+    fn int_log2_basic() {
+        assert_int(builtin_int_log2(&[Value::Int(1)]).unwrap(), 0, "1");
+        assert_int(builtin_int_log2(&[Value::Int(2)]).unwrap(), 1, "2");
+        assert_int(builtin_int_log2(&[Value::Int(4)]).unwrap(), 2, "4");
+        assert_int(builtin_int_log2(&[Value::Int(8)]).unwrap(), 3, "8");
+        assert_int(builtin_int_log2(&[Value::Int(255)]).unwrap(), 7, "255");
+        assert_int(builtin_int_log2(&[Value::Int(256)]).unwrap(), 8, "256");
+    }
+
+    #[test]
+    fn int_log2_powers_of_two() {
+        for shift in 0..63 {
+            let n: i64 = 1 << shift;
+            assert_int(builtin_int_log2(&[Value::Int(n)]).unwrap(), shift, "pow2");
+        }
+    }
+
+    #[test]
+    fn int_log2_handles_max() {
+        assert_int(
+            builtin_int_log2(&[Value::Int(i64::MAX)]).unwrap(),
+            62,
+            "MAX",
+        );
+    }
+
+    #[test]
+    fn int_log2_rejects_zero_and_negative() {
+        let err = builtin_int_log2(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("positive"), "got: {}", err);
+        let err = builtin_int_log2(&[Value::Int(-5)]).unwrap_err();
+        assert!(err.contains("positive"), "got: {}", err);
+    }
+
+    #[test]
+    fn int_log2_rejects_non_int_and_arity() {
+        assert!(
+            builtin_int_log2(&[Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_int_log2(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
