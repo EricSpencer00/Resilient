@@ -1,6 +1,6 @@
 ---
 title: Compare
-nav_order: 16
+nav_order: 6
 has_children: true
 permalink: /compare
 description: "How Resilient compares to Rust embedded, Ada/SPARK, and MISRA C for safety-critical embedded systems."

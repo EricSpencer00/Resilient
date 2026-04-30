@@ -1,6 +1,7 @@
 ---
 title: Concurrency and Real-Time Scheduling
-nav_order: 10
+parent: Design Philosophy
+nav_order: 3
 permalink: /concurrency
 ---
 

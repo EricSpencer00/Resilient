@@ -1,6 +1,7 @@
 ---
 title: Performance
-nav_order: 6
+parent: Design Philosophy
+nav_order: 5
 permalink: /performance
 ---
 

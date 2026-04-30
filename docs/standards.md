@@ -1,6 +1,6 @@
 ---
 title: Standards
-nav_order: 17
+nav_order: 7
 has_children: true
 permalink: /standards
 description: "How Resilient maps to safety standards: DO-178C avionics, ISO 26262 automotive, IEC 62304 medical devices, IEC 61508 industrial."

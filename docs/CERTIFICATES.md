@@ -1,6 +1,7 @@
 ---
 title: Certificate Manifest Schema v1
-nav_order: 12
+parent: Standards
+nav_order: 2
 permalink: /certificates
 ---
 

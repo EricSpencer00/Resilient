@@ -1,6 +1,8 @@
 ---
 title: Live Block Semantics
 layout: default
+parent: Design Philosophy
+nav_order: 4
 ---
 
 # Live Block Semantics (RES-210)

@@ -1,6 +1,7 @@
 ---
 title: Editor Integration (LSP)
-nav_order: 7
+parent: Language Reference
+nav_order: 3
 permalink: /lsp
 ---
 

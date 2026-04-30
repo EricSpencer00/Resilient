@@ -1,6 +1,7 @@
 ---
 title: Certification and Safety Standards
-nav_order: 11
+parent: Standards
+nav_order: 1
 permalink: /certification
 ---
 

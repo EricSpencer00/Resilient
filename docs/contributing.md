@@ -1,6 +1,7 @@
 ---
 title: Contributing
-nav_order: 13
+parent: Community & Open Source
+nav_order: 1
 permalink: /contributing
 ---
 

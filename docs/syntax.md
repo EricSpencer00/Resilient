@@ -1,6 +1,7 @@
 ---
 title: Syntax Reference
-nav_order: 5
+parent: Language Reference
+nav_order: 1
 permalink: /syntax
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: Language Reference
-nav_order: 6
+nav_order: 4
+has_children: true
 permalink: /language-reference
 ---
 

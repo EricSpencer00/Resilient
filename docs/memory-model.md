@@ -1,6 +1,7 @@
 ---
 title: Memory Model
-nav_order: 9
+parent: Design Philosophy
+nav_order: 1
 permalink: /memory-model
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: no_std Runtime
-nav_order: 8
+parent: Design Philosophy
+nav_order: 2
 permalink: /no-std
 ---
 
