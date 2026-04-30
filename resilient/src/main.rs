@@ -8405,6 +8405,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_chars", builtin_string_chars),
     // RES-434: split string into lines (LF, CRLF, no trailing empty).
     ("string_lines", builtin_string_lines),
+    // RES-496: split string on Unicode whitespace.
+    ("string_words", builtin_string_words),
     // RES-435: split array into fixed-size chunks (last may be short).
     ("array_chunk", builtin_array_chunk),
     // RES-436: non-overlapping substring count.
@@ -9758,6 +9760,26 @@ fn builtin_string_lines(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("string_lines: expected string, got {}", other)),
         _ => Err(format!(
             "string_lines: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-496: `string_words(s)` — split `s` on Unicode whitespace.
+/// Empty / whitespace-only input produces an empty array; consecutive
+/// whitespace runs collapse into a single separator. Backed by
+/// `str::split_whitespace`, which is Unicode-aware (handles tabs,
+/// newlines, NBSP, ideographic space, etc.).
+fn builtin_string_words(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => Ok(Value::Array(
+            s.split_whitespace()
+                .map(|w| Value::String(w.to_string()))
+                .collect(),
+        )),
+        [other] => Err(format!("string_words: expected string, got {}", other)),
+        _ => Err(format!(
+            "string_words: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -28088,6 +28110,66 @@ mod tests {
         );
         assert!(
             builtin_string_lines(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-496: string_words ----------
+
+    #[test]
+    fn string_words_basic() {
+        assert_eq!(
+            extract_strings(builtin_string_words(&[Value::String("hello world".into())]).unwrap()),
+            vec!["hello", "world"]
+        );
+    }
+
+    #[test]
+    fn string_words_empty_returns_empty() {
+        assert_eq!(
+            extract_strings(builtin_string_words(&[Value::String("".into())]).unwrap()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn string_words_collapses_whitespace_runs() {
+        assert_eq!(
+            extract_strings(
+                builtin_string_words(&[Value::String("  foo   bar  ".into())]).unwrap()
+            ),
+            vec!["foo", "bar"]
+        );
+    }
+
+    #[test]
+    fn string_words_handles_tabs_and_newlines() {
+        assert_eq!(
+            extract_strings(
+                builtin_string_words(&[Value::String("\tfoo\n\nbar\r\nbaz".into())]).unwrap()
+            ),
+            vec!["foo", "bar", "baz"]
+        );
+    }
+
+    #[test]
+    fn string_words_whitespace_only_input_is_empty() {
+        assert_eq!(
+            extract_strings(builtin_string_words(&[Value::String("  \t\n  ".into())]).unwrap()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn string_words_rejects_non_string_and_arity() {
+        assert!(
+            builtin_string_words(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_string_words(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
