@@ -8420,6 +8420,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_zip", builtin_array_zip),
     // RES-431: generate [start, start+1, ..., end-1].
     ("array_range", builtin_array_range),
+    // RES-522: generate [0, 1, ..., len(arr)-1] for the given array.
+    ("array_indices", builtin_array_indices),
     // RES-432: array of n copies of elem.
     ("array_repeat", builtin_array_repeat),
     // RES-433: split string into single-character strings.
@@ -10293,6 +10295,23 @@ fn builtin_array_repeat(args: &[Value]) -> RResult<Value> {
         [_, b] => Err(format!("array_repeat: expected count to be int, got {}", b)),
         _ => Err(format!(
             "array_repeat: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-522: `array_indices(arr)` — array of valid indices
+/// `[0, 1, ..., len(arr)-1]`. Equivalent to `array_range(0, len(arr))`,
+/// but doesn't require the user to thread `len(arr)` through.
+/// Useful for index-based iteration and parallel-array traversal.
+fn builtin_array_indices(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => Ok(Value::Array(
+            (0..items.len() as i64).map(Value::Int).collect(),
+        )),
+        [other] => Err(format!("array_indices: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_indices: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29108,6 +29127,72 @@ mod tests {
             builtin_array_range(&[Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-522: array_indices ----------
+
+    fn indices(items: Vec<Value>) -> Vec<i64> {
+        match builtin_array_indices(&[Value::Array(items)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_indices_basic() {
+        assert_eq!(
+            indices(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
+            vec![0, 1, 2]
+        );
+        assert_eq!(indices(vec![Value::Bool(true)]), vec![0]);
+    }
+
+    #[test]
+    fn array_indices_empty_returns_empty() {
+        assert_eq!(indices(vec![]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_indices_heterogeneous_elements() {
+        // Only the length matters; element types are irrelevant.
+        assert_eq!(
+            indices(vec![
+                Value::Int(1),
+                Value::String("two".into()),
+                Value::Bool(false),
+                Value::Float(4.0),
+            ]),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn array_indices_length_matches_input() {
+        for n in [0usize, 1, 5, 10, 50] {
+            let input: Vec<Value> = (0..n).map(|i| Value::Int(i as i64)).collect();
+            let out = indices(input);
+            assert_eq!(out.len(), n, "length mismatch for n={}", n);
+        }
+    }
+
+    #[test]
+    fn array_indices_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_indices(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_indices(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
