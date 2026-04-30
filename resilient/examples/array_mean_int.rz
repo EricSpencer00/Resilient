@@ -1,0 +1,12 @@
+// RES-549 demo: array_mean_int returns the integer mean of an
+// integer array, truncating toward zero. Empty array errors.
+
+fn main() {
+    println(array_mean_int([1, 2, 3, 4, 5]));
+    println(array_mean_int([10]));
+    println(array_mean_int([1, 2, 3, 4]));
+    println(array_mean_int([-1, -2, -3, -4]));
+    println(array_mean_int([-3, -2, 5]));
+}
+
+main();

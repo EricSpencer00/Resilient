@@ -8277,6 +8277,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-543: empty-safe min/max with caller-supplied default.
     ("array_max_or", builtin_array_max_or),
     ("array_min_or", builtin_array_min_or),
+    // RES-549: integer mean (truncating toward zero).
+    ("array_mean_int", builtin_array_mean_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13527,6 +13529,42 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-549: `array_mean_int(arr)` — integer mean of a non-empty
+/// integer array, truncating toward zero. Uses an i128 accumulator
+/// to absorb the sum without overflow on large i64 inputs. Empty
+/// array errors (matches `array_min` / `array_max` policy).
+fn builtin_array_mean_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_mean_int: empty array has no mean".to_string());
+            }
+            let mut sum: i128 = 0;
+            for v in items {
+                match v {
+                    Value::Int(n) => sum += *n as i128,
+                    other => {
+                        return Err(format!(
+                            "array_mean_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            let len = items.len() as i128;
+            let mean = sum / len; // i128 division truncates toward zero.
+            i64::try_from(mean)
+                .map(Value::Int)
+                .map_err(|_| format!("array_mean_int: mean {} does not fit in i64", mean))
+        }
+        [other] => Err(format!("array_mean_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_mean_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29088,6 +29126,72 @@ mod tests {
             builtin_array_min_or(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-549: array_mean_int ----------
+
+    fn mean(xs: &[i64]) -> i64 {
+        match builtin_array_mean_int(&[int_array(xs)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_mean_int_basic() {
+        assert_eq!(mean(&[1, 2, 3, 4, 5]), 3); // exact
+        assert_eq!(mean(&[10]), 10); // single element
+        assert_eq!(mean(&[1, 2, 3, 4]), 2); // 10/4 = 2.5 → truncates to 2
+    }
+
+    #[test]
+    fn array_mean_int_truncates_toward_zero_both_signs() {
+        // (-1 + -2 + -3) / 3 = -6/3 = -2 (exact)
+        assert_eq!(mean(&[-1, -2, -3]), -2);
+        // (-1 + -2 + -3 + -4) / 4 = -10/4 = -2 (truncates toward zero, NOT toward -inf)
+        assert_eq!(mean(&[-1, -2, -3, -4]), -2);
+        // (1 + 2 + 3 + 4) / 4 = 10/4 = 2 (truncates toward zero from 2.5)
+        assert_eq!(mean(&[1, 2, 3, 4]), 2);
+        // Mixed signs: (-3 + -2 + 5) / 3 = 0/3 = 0
+        assert_eq!(mean(&[-3, -2, 5]), 0);
+    }
+
+    #[test]
+    fn array_mean_int_handles_large_sums_via_i128() {
+        // i64::MAX repeated would overflow i64 sum but fits in i128.
+        let huge = i64::MAX;
+        assert_eq!(mean(&[huge, huge, huge]), huge);
+        let tiny = i64::MIN;
+        // (i64::MIN + i64::MIN) / 2 = i64::MIN — still fits.
+        assert_eq!(mean(&[tiny, tiny]), tiny);
+    }
+
+    #[test]
+    fn array_mean_int_empty_errors() {
+        let err = builtin_array_mean_int(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_mean_int_rejects_non_int_elements() {
+        let err =
+            builtin_array_mean_int(&[Value::Array(vec![Value::Int(1), Value::String("x".into())])])
+                .unwrap_err();
+        assert!(err.contains("all int elements"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_mean_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_mean_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_mean_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
