@@ -1338,6 +1338,14 @@ impl TypeChecker {
         // RES-484: named-predicate filter / partition on int arrays.
         env.set("array_filter_int".to_string(), arr_str_to_arr.clone());
         env.set("array_partition_int".to_string(), arr_str_to_arr);
+        // RES-500: named-predicate any-element on int arrays.
+        env.set(
+            "array_any_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::String],
+                return_type: Box::new(Type::Bool),
+            },
+        );
         // RES-485: |a - b|.
         env.set(
             "abs_diff".to_string(),
@@ -4513,6 +4521,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_drop_while_int",
         // RES-484: filter / partition int.
         "array_filter_int",
+        // RES-500: named-predicate any.
+        "array_any_int",
         "array_partition_int",
         // RES-485: abs_diff.
         "abs_diff",

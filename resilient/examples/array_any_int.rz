@@ -1,0 +1,12 @@
+// RES-500 demo: array_any_int tests whether any integer element
+// satisfies a named predicate (positive/negative/zero/nonzero/even/odd).
+
+fn main() {
+    println(array_any_int([1, 2, 3], "negative"));
+    println(array_any_int([1, -2, 3], "negative"));
+    println(array_any_int([2, 4, 6], "odd"));
+    println(array_any_int([2, 4, 5], "odd"));
+    println(array_any_int([], "positive"));
+}
+
+main();
