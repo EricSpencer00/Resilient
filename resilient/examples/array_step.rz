@@ -1,0 +1,12 @@
+// RES-514 demo: array_step picks every nth element.
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5, 6, 7, 8];
+    println(array_step(xs, 1));
+    println(array_step(xs, 2));
+    println(array_step(xs, 3));
+    println(array_step(xs, 99));
+    println(len(array_step([], 2)));
+}
+
+main();

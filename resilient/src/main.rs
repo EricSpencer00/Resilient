@@ -8285,6 +8285,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-421: take/drop first n elements.
     ("array_take", builtin_array_take),
     ("array_drop", builtin_array_drop),
+    // RES-514: pick every nth element.
+    ("array_step", builtin_array_step),
     // RES-422: ascending sort over an integer array.
     ("array_sort", builtin_array_sort),
     // RES-443: descending sort.
@@ -12021,6 +12023,29 @@ fn builtin_array_take(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_take: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-514: `array_step(arr, n)` — pick every `n`th element starting
+/// at index 0. Useful for downsampling and decimation. `n` must be
+/// positive.
+fn builtin_array_step(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n <= 0 {
+                return Err(format!("array_step: step must be positive, got {}", n));
+            }
+            let step = *n as usize;
+            Ok(Value::Array(items.iter().step_by(step).cloned().collect()))
+        }
+        [a, b] => Err(format!(
+            "array_step: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_step: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -27876,6 +27901,65 @@ mod tests {
         );
         assert!(
             builtin_array_drop(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-514: array_step ----------
+
+    fn step_int(items: &[i64], n: i64) -> Vec<i64> {
+        match builtin_array_step(&[int_array(items), Value::Int(n)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_step_basic() {
+        assert_eq!(step_int(&[1, 2, 3, 4, 5, 6], 2), vec![1, 3, 5]);
+        assert_eq!(step_int(&[1, 2, 3, 4, 5, 6], 3), vec![1, 4]);
+        assert_eq!(step_int(&[1, 2, 3, 4, 5, 6], 1), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn array_step_step_larger_than_len_keeps_first() {
+        assert_eq!(step_int(&[1, 2, 3], 7), vec![1]);
+    }
+
+    #[test]
+    fn array_step_empty_input_is_empty() {
+        assert_eq!(step_int(&[], 2), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_step_singleton_is_singleton() {
+        assert_eq!(step_int(&[42], 5), vec![42]);
+    }
+
+    #[test]
+    fn array_step_rejects_zero_or_negative() {
+        let err = builtin_array_step(&[int_array(&[1]), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("positive"), "got: {}", err);
+        let err = builtin_array_step(&[int_array(&[1]), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("positive"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_step_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_step(&[Value::Int(5), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (array, int)")
+        );
+        assert!(
+            builtin_array_step(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
