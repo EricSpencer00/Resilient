@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-538-bit-set-byte",
-      "claimed_at": "2026-04-30T03:14:45Z"
+      "branch": "res-539-array-indices-where",
+      "claimed_at": "2026-04-30T03:18:14Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-538-bit-set-byte",
-      "claimed_at": "2026-04-30T03:14:45Z"
+      "branch": "res-539-array-indices-where",
+      "claimed_at": "2026-04-30T03:18:14Z"
     }
   }
 }

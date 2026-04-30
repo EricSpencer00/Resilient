@@ -1447,6 +1447,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-539: indices of int elements matching named predicate.
+        env.set(
+            "array_indices_where".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::String],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-485: |a - b|.
         env.set(
             "abs_diff".to_string(),
@@ -4779,6 +4787,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_all_int",
         // RES-530: named-predicate count.
         "array_count_int",
+        // RES-539: indices of int elements matching named predicate.
+        "array_indices_where",
         "array_partition_int",
         // RES-485: abs_diff.
         "abs_diff",

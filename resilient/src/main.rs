@@ -8408,6 +8408,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_all_int", builtin_array_all_int),
     // RES-530: named-predicate count on int arrays.
     ("array_count_int", builtin_array_count_int),
+    // RES-539: indices of int elements matching named predicate.
+    ("array_indices_where", builtin_array_indices_where),
     // RES-485: |a - b|.
     ("abs_diff", builtin_abs_diff),
     // RES-486: (quotient, remainder) tuple.
@@ -11159,6 +11161,42 @@ fn builtin_array_count_int(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_count_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-539: `array_indices_where(arr, pred)` — return indices of int
+/// elements satisfying the named predicate. Distinct from
+/// `array_filter_int` (RES-484), which returns the values; this
+/// returns positions. Useful for masks and downstream lookups.
+fn builtin_array_indices_where(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_indices_where", kind)?;
+            let mut out: Vec<Value> = Vec::new();
+            for (i, v) in items.iter().enumerate() {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_indices_where: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if pred(n) {
+                    out.push(Value::Int(i as i64));
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_indices_where: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_indices_where: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -36705,6 +36743,90 @@ mod tests {
         );
         assert!(
             builtin_array_count_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-539: array_indices_where ----------
+
+    fn indices_where(items: &[i64], pred: &str) -> Vec<i64> {
+        match builtin_array_indices_where(&[int_array(items), Value::String(pred.into())]).unwrap()
+        {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_indices_where_basic() {
+        assert_eq!(indices_where(&[1, -2, 3, -4, 5], "negative"), vec![1, 3]);
+        assert_eq!(indices_where(&[1, -2, 3, -4, 5], "positive"), vec![0, 2, 4]);
+        assert_eq!(indices_where(&[1, 2, 3, 4], "even"), vec![1, 3]);
+        assert_eq!(indices_where(&[0, 0, 1, 0], "zero"), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn array_indices_where_empty_or_no_match() {
+        assert_eq!(indices_where(&[], "positive"), Vec::<i64>::new());
+        assert_eq!(indices_where(&[1, 2, 3], "negative"), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_indices_where_length_matches_count_int() {
+        // Identity: len(array_indices_where(arr, k)) == array_count_int(arr, k).
+        for items in [
+            vec![1, 2, 3, -1, -2],
+            vec![],
+            vec![0, 0, 0, 1, -1],
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        ] {
+            for kind in ["positive", "negative", "zero", "even", "odd"] {
+                let idxs = indices_where(&items, kind);
+                let count =
+                    match builtin_array_count_int(&[int_array(&items), Value::String(kind.into())])
+                        .unwrap()
+                    {
+                        Value::Int(n) => n as usize,
+                        _ => panic!(),
+                    };
+                assert_eq!(idxs.len(), count, "items={:?} kind={}", items, kind);
+            }
+        }
+    }
+
+    #[test]
+    fn array_indices_where_indices_are_sorted_ascending() {
+        // Indices come out in input order, which is naturally
+        // ascending for the simple-iteration implementation.
+        let result = indices_where(&[10, 20, 30, 40, 50], "even");
+        for w in result.windows(2) {
+            assert!(w[0] < w[1], "expected ascending: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn array_indices_where_unknown_predicate_errors() {
+        let err = builtin_array_indices_where(&[int_array(&[1]), Value::String("xyz".into())])
+            .unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_indices_where_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_indices_where(&[Value::Int(1), Value::String("positive".into())])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_indices_where(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

@@ -1,0 +1,11 @@
+// RES-539 demo: array_indices_where returns the indices of int
+// elements matching a named predicate.
+
+fn main() {
+    println(array_indices_where([1, -2, 3, -4, 5], "negative"));
+    println(array_indices_where([1, 2, 3, 4, 5, 6], "even"));
+    println(array_indices_where([0, 0, 1, 0, 1], "zero"));
+    println(array_indices_where([], "positive"));
+}
+
+main();
