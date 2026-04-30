@@ -1,0 +1,34 @@
+// RES-408: existential quantifier over array contents.
+//
+// `exists i in 0..len(a): a[i] == k` is the natural witness
+// shape for a "linear search succeeded" claim. Companion to the
+// sorted-invariant example; together they exercise both forall
+// and exists over array indices with the body referencing `a[i]`.
+//
+// Runtime semantics: short-circuits on the first true witness
+// (returns true when found, false otherwise). Z3 lowering to
+// array theory is tracked in #371.
+
+fn main(int dummy) -> int {
+    let a = [10, 20, 30, 40, 50];
+    let k = 30;
+
+    // The existence claim — "k is somewhere in a" — is just a
+    // direct call to the existential quantifier over a's indices.
+    // At runtime, the quantifier short-circuits on the first true
+    // witness; verification at compile time is tracked in #371.
+    assert(exists i in 0..len(a): a[i] == k);
+    println("contains");
+
+    let absent = 99;
+    let found = exists i in 0..len(a): a[i] == absent;
+    if found {
+        println("error: 99 should not be in a");
+    } else {
+        println("absent");
+    }
+
+    return 0;
+}
+
+main(0);
