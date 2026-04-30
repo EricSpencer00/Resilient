@@ -1,20 +1,8 @@
 {
   "claims": {
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-408-z3-array-theory",
-      "claimed_at": "2026-04-30T18:53:48Z"
-    },
-    "resilient/src/quantifiers.rs": {
-      "branch": "res-408-z3-array-theory",
-      "claimed_at": "2026-04-30T18:53:48Z"
-    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-400-sum-types-pr5",
-      "claimed_at": "2026-04-30T19:46:21Z"
-    },
-    "resilient/src/sum_types.rs": {
-      "branch": "res-400-sum-types-pr5",
-      "claimed_at": "2026-04-30T19:46:21Z"
+      "branch": "res-402-element-enforcement",
+      "claimed_at": "2026-04-30T19:52:56Z"
     }
   }
 }
