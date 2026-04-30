@@ -8283,6 +8283,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_median_int", builtin_array_median_int),
     // RES-551: integer mode (most-common; smallest on ties).
     ("array_mode_int", builtin_array_mode_int),
+    // RES-552: peak-to-peak range (max − min) of an int array.
+    ("array_range_int", builtin_array_range_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13533,6 +13535,50 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-552: `array_range_int(arr)` — peak-to-peak range (`max - min`)
+/// of a non-empty integer array, in one pass. Subtraction uses `i128`
+/// so the difference between `i64::MIN` and `i64::MAX` does not
+/// overflow; returns a typed error if the result somehow doesn't fit
+/// i64 (only possible if `array_max - array_min > i64::MAX`).
+fn builtin_array_range_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_range_int: empty array has no range".to_string());
+            }
+            let mut min_v: i64 = i64::MAX;
+            let mut max_v: i64 = i64::MIN;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        if *n < min_v {
+                            min_v = *n;
+                        }
+                        if *n > max_v {
+                            max_v = *n;
+                        }
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_range_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            let diff = (max_v as i128) - (min_v as i128);
+            i64::try_from(diff)
+                .map(Value::Int)
+                .map_err(|_| format!("array_range_int: range {} does not fit in i64", diff))
+        }
+        [other] => Err(format!("array_range_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_range_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29459,6 +29505,65 @@ mod tests {
         );
         assert!(
             builtin_array_mode_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-552: array_range_int ----------
+
+    fn range_pp(xs: &[i64]) -> i64 {
+        match builtin_array_range_int(&[int_array(xs)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_range_int_basic() {
+        assert_eq!(range_pp(&[1, 2, 3, 4, 5]), 4);
+        assert_eq!(range_pp(&[5, 1, 3]), 4);
+        assert_eq!(range_pp(&[-3, 5, 1]), 8);
+    }
+
+    #[test]
+    fn array_range_int_zero_for_constant_or_singleton() {
+        assert_eq!(range_pp(&[7, 7, 7]), 0);
+        assert_eq!(range_pp(&[42]), 0);
+        assert_eq!(range_pp(&[0]), 0);
+    }
+
+    #[test]
+    fn array_range_int_handles_extremes_via_i128() {
+        // i64::MAX - i64::MIN overflows i64 — must error cleanly, not panic.
+        let err = builtin_array_range_int(&[int_array(&[i64::MIN, i64::MAX])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Half-extreme: i64::MAX - 0 fits.
+        assert_eq!(range_pp(&[0, i64::MAX]), i64::MAX);
+        // Negative extreme that fits: -1 - i64::MIN = i64::MAX (exact).
+        assert_eq!(range_pp(&[i64::MIN, -1]), i64::MAX);
+    }
+
+    #[test]
+    fn array_range_int_empty_errors() {
+        let err = builtin_array_range_int(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_range_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_range_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_range_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_range_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
