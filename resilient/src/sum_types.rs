@@ -640,6 +640,86 @@ mod tests {
     }
 
     #[test]
+    fn typecheck_rejects_non_exhaustive_match() {
+        // PR 5 of RES-400: missing variant `Color::Green` is rejected
+        // by the typechecker with a diagnostic naming the missing
+        // variant.
+        let mut tc = crate::typechecker::TypeChecker::new();
+        let prog = crate::parse(
+            r#"
+            enum Color { Red, Green, Blue }
+            fn name(Color c) -> string {
+                return match c {
+                    Color::Red => "r",
+                    Color::Blue => "b",
+                };
+            }
+            "#,
+        )
+        .0;
+        let res = tc.check_program(&prog);
+        let err = res.expect_err("expected non-exhaustive match error");
+        assert!(
+            err.contains("Non-exhaustive match on enum `Color`"),
+            "wrong error: {}",
+            err
+        );
+        assert!(
+            err.contains("Color::Green"),
+            "error must name missing variant: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_exhaustive_match() {
+        // PR 5 of RES-400: a match covering every variant typechecks
+        // cleanly.
+        let mut tc = crate::typechecker::TypeChecker::new();
+        let prog = crate::parse(
+            r#"
+            enum Color { Red, Green, Blue }
+            fn name(Color c) -> string {
+                return match c {
+                    Color::Red => "r",
+                    Color::Green => "g",
+                    Color::Blue => "b",
+                };
+            }
+            "#,
+        )
+        .0;
+        assert!(
+            tc.check_program(&prog).is_ok(),
+            "expected exhaustive match to pass"
+        );
+    }
+
+    #[test]
+    fn typecheck_accepts_wildcard_arm_in_enum_match() {
+        // A wildcard arm is a default — it covers every missing
+        // variant, so the match remains exhaustive even without an
+        // arm per variant.
+        let mut tc = crate::typechecker::TypeChecker::new();
+        let prog = crate::parse(
+            r#"
+            enum Color { Red, Green, Blue }
+            fn name(Color c) -> string {
+                return match c {
+                    Color::Red => "r",
+                    _ => "other",
+                };
+            }
+            "#,
+        )
+        .0;
+        assert!(
+            tc.check_program(&prog).is_ok(),
+            "wildcard arm should cover the rest"
+        );
+    }
+
+    #[test]
     fn match_qualified_payload_less_pattern() {
         let (_, errs) = crate::parse(
             r#"
