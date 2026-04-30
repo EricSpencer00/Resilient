@@ -19,6 +19,14 @@ gate — if it passes, the change ships. Build it accordingly: write
 tests that prove the change is correct, lint clean, and let CI close
 the loop.
 
+**Be ambitious.** "Complex," "needs-design," and "blocked" are routing
+hints, not stop signs. Most complex tickets decompose into 3–5 shippable
+PRs once you start sketching. If the first PR you land is "scaffold the
+new module + smoke test," that's progress — keep going. The default
+posture is to *attempt* every open ticket; only fall back to single-line
+stdlib additions when the design space genuinely needs human input
+(see "Hard stops" below for the narrow list).
+
 ---
 
 ## What is this repo?
@@ -72,8 +80,19 @@ The path from picking a ticket to a merged commit is fully automated
 once CI is green. There is no maintainer review step — **green CI is
 the merge.** Your job is to make CI green.
 
-1. **Pick a ticket.** Prefer issues tagged `agent-ready`. Avoid `complex`,
-   `blocked`, and `needs-design` unless explicitly asked.
+1. **Pick a ticket.** Any open ticket is fair game — including ones
+   tagged `complex`, `needs-design`, or `blocked`. The label tells you
+   the *shape* of the work, not whether to attempt it:
+   - `agent-ready` — single-PR, single-session. Default starting point.
+   - `complex` — multi-PR scope. Break it into a sequence of shippable
+     increments (see "Tackling complex tickets" below) and start with
+     the first one.
+   - `needs-design` — open design questions. Make the call yourself,
+     write it up in the PR body, and ship. If the maintainer disagrees
+     they'll revert or follow-up; that's cheaper than blocking.
+   - `blocked` — has a stated prerequisite. Read the prereq; if you
+     can also unblock it in a sibling PR, do that first. Otherwise
+     pick a different ticket.
 2. **Pre-dispatch overlap check.** Before creating your branch:
    ```bash
    agent-scripts/check-overlaps.sh resilient/src/main.rs resilient/src/typechecker.rs resilient/src/lexer_logos.rs
@@ -180,11 +199,60 @@ the 3-line extension blocks — conflicts that are always safe to resolve by kee
 
 ---
 
+## Tackling complex tickets
+
+Most "complex" tickets are not actually complex — they're just *large*.
+The trick is to land work incrementally so each PR is a single coherent
+story that CI can validate, and the next PR starts from a green baseline
+instead of a half-built scaffold.
+
+### Decomposition heuristics
+
+| Ticket shape | Typical decomposition |
+|---|---|
+| Refactor (e.g., bin → lib split, file move, visibility audit) | (1) move/rename with `pub use` shims so nothing visible changes; (2) tighten visibility / migrate callers; (3) delete shims. Each step ships independently. |
+| New language feature (sum types, generics, polymorphic Array) | (1) lexer + parser + AST node, accepting only the trivial case; (2) typechecker integration; (3) interpreter / VM / JIT codegen, one backend per PR; (4) Z3 mapping if applicable. Tests grow alongside. |
+| New runtime primitive (actor, MMIO, interrupt) | (1) data model + `no_std` types; (2) host-side test harness; (3) embedded smoke test on Cortex-M; (4) docs + example. |
+| Cross-cutting design lock-in (TLA+ V2 questions, semantic decisions) | (1) write the decision into a docs page with the alternatives considered; (2) follow up with code that enforces it. The doc PR alone unblocks downstream work. |
+
+### When you decompose
+
+- Open the **first** PR with a body that lists the planned next PRs.
+  This is the design surface — anyone who disagrees can comment before
+  you've sunk effort into PR #2.
+- Each subsequent PR references the predecessor (`Built on #N`) so the
+  chain is auditable in `gh pr list`.
+- It's fine to leave a feature behind a `#[cfg(feature = "experimental_X")]`
+  gate while landing the pieces. Strip the gate in the final PR.
+- Don't let "I haven't finished the whole ticket" stop you from merging
+  the parts that *are* finished. Each green PR is value; the ticket
+  closes when the last PR lands.
+
+### When the design genuinely needs the maintainer
+
+Surface a *specific* question with a *specific* recommendation in the PR
+body, not a vague "what should I do?" If the maintainer doesn't answer
+within a session, ship your recommendation and let revert-if-wrong be
+the disagreement protocol. The goal is a moving frontier, not perfect
+upfront alignment.
+
+---
+
 ## Agent autonomy — full discretion
 
 You can ship without asking on any of these:
 
-- Claim open GitHub Issues and implement them end-to-end.
+- Claim open GitHub Issues and implement them end-to-end — including
+  ones tagged `complex`, `needs-design`, or `blocked`.
+- Decompose a single ticket into multiple PRs (and open the chain
+  yourself) when the work is too large for one diff.
+- Land scaffolding / refactors / `pub use` shims that don't fully
+  finish a ticket, as long as each PR ships a coherent green story.
+- Open a "sibling" PR to unblock a prerequisite ticket so your main
+  ticket stops being blocked.
+- Refactor `main.rs` (35k+ lines) — including extracting modules,
+  changing visibility, splitting the binary into a `[lib]` + `[[bin]]`,
+  and rewriting whole subsystems — as long as tests stay green.
 - Add new source files, tests, and `.expected.txt` golden sidecars.
 - Fix compiler warnings and clippy lints anywhere in the codebase.
 - Add or expand documentation (README, docs/, SYNTAX.md, LSP.md).
@@ -372,13 +440,20 @@ re-apply it.
 
 ## What not to do
 
-- Do not create planning documents or analysis files — work from conversation
-  context and ticket bodies.
+- Do not create scratch planning files in the repo — keep design notes
+  in the PR body or in `docs/` if they're durable. (For complex tickets,
+  a design section in the PR body is *expected*, not a plan-doc.)
 - Do not add comments that explain what code does — use well-named
   identifiers. Only add a comment when the *why* is non-obvious.
 - Do not add error handling for impossible cases — trust internal invariants.
-- Do not introduce backwards-compatibility shims for removed code.
-- Do not half-implement a feature and leave a `TODO` — either finish it or
-  scope it to a follow-up ticket.
+- Do not introduce backwards-compatibility shims for removed code,
+  *except* during multi-PR refactors where a `pub use` shim keeps the
+  intermediate PRs green. Strip it in the final PR.
+- Do not half-implement a feature and leave an unscoped `TODO`. Either
+  finish it, or open a follow-up ticket and reference it from the
+  `TODO(RES-NNN)` comment.
 - Do not wait on a human review that is not coming. Green CI is the
   merge — make CI green.
+- Do not pre-emptively decline a ticket because it looks hard. Sketch
+  the decomposition first; most "hard" tickets become "five medium PRs"
+  once you do.
