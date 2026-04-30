@@ -1168,6 +1168,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-556: per-element absolute value.
+        env.set(
+            "array_abs_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4783,6 +4791,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_clamp_int",
         // RES-555: per-element sign (-1/0/1).
         "array_signum_int",
+        // RES-556: per-element absolute value.
+        "array_abs_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",

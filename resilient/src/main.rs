@@ -8291,6 +8291,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_clamp_int", builtin_array_clamp_int),
     // RES-555: per-element sign (-1 / 0 / 1).
     ("array_signum_int", builtin_array_signum_int),
+    // RES-556: per-element absolute value.
+    ("array_abs_int", builtin_array_abs_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13541,6 +13543,40 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-556: `array_abs_int(arr)` — return a new array where each
+/// element is `|x|`. `|i64::MIN|` does not fit i64, so a present
+/// `i64::MIN` element is a typed error (fail-loud rather than
+/// silently wrapping).
+fn builtin_array_abs_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => match n.checked_abs() {
+                        Some(a) => out.push(Value::Int(a)),
+                        None => {
+                            return Err(format!("array_abs_int: |{}| does not fit in i64", n));
+                        }
+                    },
+                    other => {
+                        return Err(format!(
+                            "array_abs_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_abs_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_abs_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29876,6 +29912,69 @@ mod tests {
         );
         assert!(
             builtin_array_signum_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-556: array_abs_int ----------
+
+    fn abs_arr(xs: &[i64]) -> Vec<i64> {
+        match builtin_array_abs_int(&[int_array(xs)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_abs_int_basic() {
+        assert_eq!(abs_arr(&[-3, 0, 5, -1, -100]), vec![3, 0, 5, 1, 100]);
+        assert_eq!(abs_arr(&[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(abs_arr(&[0]), vec![0]);
+    }
+
+    #[test]
+    fn array_abs_int_empty_returns_empty() {
+        assert_eq!(abs_arr(&[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_abs_int_handles_extremes_except_min() {
+        assert_eq!(
+            abs_arr(&[i64::MAX, -(i64::MAX), 0]),
+            vec![i64::MAX, i64::MAX, 0]
+        );
+    }
+
+    #[test]
+    fn array_abs_int_rejects_i64_min() {
+        let err = builtin_array_abs_int(&[int_array(&[i64::MIN])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Only one bad element is enough — order doesn't matter.
+        let err = builtin_array_abs_int(&[int_array(&[1, 2, i64::MIN, 3])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_abs_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_abs_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_abs_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_abs_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
