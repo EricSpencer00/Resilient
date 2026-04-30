@@ -1334,7 +1334,10 @@ impl TypeChecker {
             return_type: Box::new(Type::Any),
         };
         env.set("array_take_while_int".to_string(), arr_str_to_arr.clone());
-        env.set("array_drop_while_int".to_string(), arr_str_to_arr);
+        env.set("array_drop_while_int".to_string(), arr_str_to_arr.clone());
+        // RES-484: named-predicate filter / partition on int arrays.
+        env.set("array_filter_int".to_string(), arr_str_to_arr.clone());
+        env.set("array_partition_int".to_string(), arr_str_to_arr);
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4402,6 +4405,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-483: take/drop while int.
         "array_take_while_int",
         "array_drop_while_int",
+        // RES-484: filter / partition int.
+        "array_filter_int",
+        "array_partition_int",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
