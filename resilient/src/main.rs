@@ -8346,6 +8346,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_partition_int", builtin_array_partition_int),
     // RES-485: |a - b|.
     ("abs_diff", builtin_abs_diff),
+    // RES-486: (quotient, remainder) tuple.
+    ("divmod", builtin_divmod),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9901,6 +9903,24 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
             "array_flatten: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-486: `divmod(a, b)` — truncated `(a / b, a % b)` tuple.
+/// `b == 0` is a typed error. Composes with tuple destructuring.
+fn builtin_divmod(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("divmod: division by zero".to_string());
+            }
+            Ok(Value::Tuple(vec![
+                Value::Int(a.wrapping_div(*b)),
+                Value::Int(a.wrapping_rem(*b)),
+            ]))
+        }
+        [a, b] => Err(format!("divmod: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("divmod: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -31678,6 +31698,74 @@ mod tests {
         );
         assert!(
             builtin_abs_diff(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-486: divmod ----------
+
+    fn extract_int_pair(v: Value) -> (i64, i64) {
+        match v {
+            Value::Tuple(parts) if parts.len() == 2 => match (&parts[0], &parts[1]) {
+                (Value::Int(q), Value::Int(r)) => (*q, *r),
+                other => panic!("expected (Int, Int), got {:?}", other),
+            },
+            other => panic!("expected 2-tuple, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn divmod_basic() {
+        assert_eq!(
+            extract_int_pair(builtin_divmod(&[Value::Int(17), Value::Int(5)]).unwrap()),
+            (3, 2)
+        );
+    }
+
+    #[test]
+    fn divmod_negatives_truncated() {
+        assert_eq!(
+            extract_int_pair(builtin_divmod(&[Value::Int(-17), Value::Int(5)]).unwrap()),
+            (-3, -2)
+        );
+        assert_eq!(
+            extract_int_pair(builtin_divmod(&[Value::Int(17), Value::Int(-5)]).unwrap()),
+            (-3, 2)
+        );
+    }
+
+    #[test]
+    fn divmod_exact_division() {
+        assert_eq!(
+            extract_int_pair(builtin_divmod(&[Value::Int(20), Value::Int(4)]).unwrap()),
+            (5, 0)
+        );
+    }
+
+    #[test]
+    fn divmod_zero_dividend() {
+        assert_eq!(
+            extract_int_pair(builtin_divmod(&[Value::Int(0), Value::Int(7)]).unwrap()),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn divmod_zero_divisor_errors() {
+        let err = builtin_divmod(&[Value::Int(1), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("division by zero"), "got: {}", err);
+    }
+
+    #[test]
+    fn divmod_rejects_non_int_and_arity() {
+        assert!(
+            builtin_divmod(&[Value::Float(1.0), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_divmod(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

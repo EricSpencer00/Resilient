@@ -1346,6 +1346,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-486: (quotient, remainder) tuple.
+        env.set(
+            "divmod".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Any),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4418,6 +4426,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_partition_int",
         // RES-485: abs_diff.
         "abs_diff",
+        // RES-486: divmod.
+        "divmod",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
