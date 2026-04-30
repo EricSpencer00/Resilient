@@ -8295,6 +8295,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_abs_int", builtin_array_abs_int),
     // RES-557: dot product of two equal-length int arrays.
     ("array_dot_int", builtin_array_dot_int),
+    // RES-558: sum of squares (Σ x²) of an int array.
+    ("array_sum_squares_int", builtin_array_sum_squares_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13545,6 +13547,43 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-558: `array_sum_squares_int(arr)` — `Σ x²` over an integer
+/// array. Equivalent to `array_dot_int(arr, arr)` but a dedicated
+/// single-arg form is cleaner for variance / RSS callers. i128
+/// multiply + accumulate; i64 fit-check on the total.
+fn builtin_array_sum_squares_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut sum: i128 = 0;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        let x = *n as i128;
+                        sum += x * x;
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_sum_squares_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            i64::try_from(sum)
+                .map(Value::Int)
+                .map_err(|_| format!("array_sum_squares_int: sum {} does not fit in i64", sum))
+        }
+        [other] => Err(format!(
+            "array_sum_squares_int: expected array, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "array_sum_squares_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -30096,6 +30135,75 @@ mod tests {
             builtin_array_dot_int(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-558: array_sum_squares_int ----------
+
+    fn ssq(xs: &[i64]) -> i64 {
+        match builtin_array_sum_squares_int(&[int_array(xs)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_sum_squares_int_basic() {
+        assert_eq!(ssq(&[1, 2, 3]), 14);
+        assert_eq!(ssq(&[3, 4]), 25); // pythag
+        assert_eq!(ssq(&[10]), 100);
+    }
+
+    #[test]
+    fn array_sum_squares_int_empty_returns_zero() {
+        assert_eq!(ssq(&[]), 0);
+    }
+
+    #[test]
+    fn array_sum_squares_int_handles_negatives() {
+        // x² = (-x)² so sign cancels.
+        assert_eq!(ssq(&[-2, -3]), 13);
+        assert_eq!(ssq(&[-1, 0, 1]), 2);
+    }
+
+    #[test]
+    fn array_sum_squares_int_overflow_surfaced() {
+        // i64::MAX² overflows i64.
+        let err = builtin_array_sum_squares_int(&[int_array(&[i64::MAX])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // (i64::MIN)² = (i64::MAX+1)² also overflows.
+        let err = builtin_array_sum_squares_int(&[int_array(&[i64::MIN])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Non-extreme values stay safe.
+        assert_eq!(ssq(&[1_000_000, 1_000_000]), 2 * 1_000_000_000_000_i64);
+    }
+
+    #[test]
+    fn array_sum_squares_int_matches_dot_with_self() {
+        // sum_squares(arr) == dot(arr, arr) for non-overflowing inputs.
+        for arr in [vec![1, 2, 3, 4, 5], vec![-3, 7, -1, 0, 4], vec![]] {
+            let s = ssq(&arr);
+            let d = dot(&arr, &arr);
+            assert_eq!(s, d, "mismatch for {:?}", arr);
+        }
+    }
+
+    #[test]
+    fn array_sum_squares_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_sum_squares_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_sum_squares_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_sum_squares_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
