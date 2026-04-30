@@ -1,0 +1,10 @@
+// RES-486 demo: divmod returns (quotient, remainder).
+
+fn main() {
+    println(divmod(17, 5));
+    println(divmod(-17, 5));
+    println(divmod(20, 4));
+    println(divmod(0, 7));
+}
+
+main();
