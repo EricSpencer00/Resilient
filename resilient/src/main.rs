@@ -8442,6 +8442,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_chunk", builtin_array_chunk),
     // RES-436: non-overlapping substring count.
     ("string_count", builtin_string_count),
+    // RES-523: count occurrences of a single character.
+    ("string_count_char", builtin_string_count_char),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
     // RES-516: alternate elements from two arrays.
@@ -10051,6 +10053,40 @@ fn builtin_string_count(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_count: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-523: `string_count_char(s, c)` — count occurrences of the
+/// single Unicode scalar `c` in `s`. `c` must be exactly one
+/// character; empty or multi-char inputs error. Distinct from
+/// `string_count(s, sub)` (RES-436), which accepts multi-char
+/// substrings — this is a more direct (and Unicode-aware) primitive
+/// for the common single-character case.
+fn builtin_string_count_char(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(c)] => {
+            let mut iter = c.chars();
+            let needle = iter
+                .next()
+                .ok_or_else(|| "string_count_char: empty char argument".to_string())?;
+            if iter.next().is_some() {
+                return Err(format!(
+                    "string_count_char: expected single character, got {} chars",
+                    c.chars().count()
+                ));
+            }
+            Ok(Value::Int(
+                s.chars().filter(|ch| *ch == needle).count() as i64
+            ))
+        }
+        [a, b] => Err(format!(
+            "string_count_char: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_count_char: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29823,6 +29859,63 @@ mod tests {
         );
         assert!(
             builtin_string_count(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-523: string_count_char ----------
+
+    fn count_char(s: &str, c: &str) -> i64 {
+        match builtin_string_count_char(&[Value::String(s.into()), Value::String(c.into())])
+            .unwrap()
+        {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_count_char_basic() {
+        assert_eq!(count_char("hello", "l"), 2);
+        assert_eq!(count_char("hello", "x"), 0);
+        assert_eq!(count_char("aaa", "a"), 3);
+        assert_eq!(count_char("", "x"), 0);
+        assert_eq!(count_char("h", "h"), 1);
+    }
+
+    #[test]
+    fn string_count_char_unicode_aware() {
+        // 'é' is a 2-byte scalar; counting chars not bytes.
+        assert_eq!(count_char("héllo", "é"), 1);
+        assert_eq!(count_char("naïve naïveté", "ï"), 2);
+        // Ideograph: a single char.
+        assert_eq!(count_char("日本語日本", "本"), 2);
+    }
+
+    #[test]
+    fn string_count_char_rejects_empty_or_multichar_needle() {
+        assert!(
+            builtin_string_count_char(&[Value::String("hi".into()), Value::String("".into())])
+                .unwrap_err()
+                .contains("empty")
+        );
+        assert!(
+            builtin_string_count_char(&[Value::String("hi".into()), Value::String("hi".into())])
+                .unwrap_err()
+                .contains("single character")
+        );
+    }
+
+    #[test]
+    fn string_count_char_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_count_char(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_count_char(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

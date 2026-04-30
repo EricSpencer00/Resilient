@@ -1,0 +1,10 @@
+// RES-523 demo: string_count_char counts a single Unicode scalar.
+
+fn main() {
+    println(string_count_char("hello", "l"));
+    println(string_count_char("hello", "x"));
+    println(string_count_char("aaaaa", "a"));
+    println(string_count_char("héllo naïve", "é"));
+}
+
+main();
