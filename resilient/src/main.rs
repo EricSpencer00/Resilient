@@ -8278,6 +8278,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-418: element search over an array.
     ("array_contains", builtin_array_contains),
     ("array_index_of", builtin_array_index_of),
+    // RES-541: set-like operations on arrays.
+    ("array_intersect", builtin_array_intersect),
+    ("array_diff", builtin_array_diff),
     // RES-419: Unicode-scalar ↔ single-char string conversions.
     ("chr", builtin_chr),
     ("ord", builtin_ord),
@@ -13092,6 +13095,74 @@ fn builtin_array_contains(args: &[Value]) -> RResult<Value> {
         [a, _] => Err(format!("array_contains: expected array, got {}", a)),
         _ => Err(format!(
             "array_contains: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-541: shared "is this value present in `set`?" check used by
+/// `array_intersect` and `array_diff`. Errors with `name`-prefixed
+/// messages on non-comparable elements.
+fn array_member_of(name: &str, v: &Value, set: &[Value]) -> RResult<bool> {
+    for s in set {
+        match array_search_eq(v, s) {
+            Some(true) => return Ok(true),
+            Some(false) => {}
+            None => {
+                return Err(format!(
+                    "{}: element types not comparable ({} vs {})",
+                    name, v, s
+                ));
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// RES-541: `array_intersect(a, b)` — elements of `a` that also
+/// appear in `b`. Preserves order and duplicates from `a`. Uses
+/// scalar value-equality (`array_search_eq`).
+fn builtin_array_intersect(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            let mut out: Vec<Value> = Vec::new();
+            for v in a {
+                if array_member_of("array_intersect", v, b)? {
+                    out.push(v.clone());
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_intersect: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_intersect: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-541: `array_diff(a, b)` — elements of `a` not in `b`.
+/// Preserves order and duplicates from `a`.
+fn builtin_array_diff(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            let mut out: Vec<Value> = Vec::new();
+            for v in a {
+                if !array_member_of("array_diff", v, b)? {
+                    out.push(v.clone());
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_diff: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_diff: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28791,6 +28862,100 @@ mod tests {
         );
         assert!(
             builtin_array_index_of(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-541: array_intersect / array_diff ----------
+
+    fn intersect_int(a: &[i64], b: &[i64]) -> Vec<i64> {
+        match builtin_array_intersect(&[int_array(a), int_array(b)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    fn diff_int(a: &[i64], b: &[i64]) -> Vec<i64> {
+        match builtin_array_diff(&[int_array(a), int_array(b)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_intersect_basic() {
+        assert_eq!(intersect_int(&[1, 2, 3], &[2, 3, 4]), vec![2, 3]);
+        assert_eq!(intersect_int(&[1, 2], &[3, 4]), Vec::<i64>::new());
+        assert_eq!(intersect_int(&[], &[1, 2]), Vec::<i64>::new());
+        assert_eq!(intersect_int(&[1, 2, 3], &[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_intersect_preserves_dupes_from_a() {
+        // Duplicates from `a` are kept; duplicates in `b` are
+        // ignored (membership-based set semantics on b).
+        assert_eq!(
+            intersect_int(&[1, 1, 2, 2, 3, 3], &[1, 2]),
+            vec![1, 1, 2, 2]
+        );
+    }
+
+    #[test]
+    fn array_intersect_preserves_a_order() {
+        assert_eq!(intersect_int(&[5, 3, 1, 4, 2], &[1, 2, 3]), vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn array_diff_basic() {
+        assert_eq!(diff_int(&[1, 2, 3], &[2, 3, 4]), vec![1]);
+        assert_eq!(diff_int(&[1, 2, 3], &[]), vec![1, 2, 3]);
+        assert_eq!(diff_int(&[], &[1, 2]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_diff_preserves_dupes_from_a() {
+        assert_eq!(diff_int(&[1, 1, 2, 2, 3], &[1]), vec![2, 2, 3]);
+        assert_eq!(diff_int(&[1, 1, 2, 2], &[2]), vec![1, 1]);
+    }
+
+    #[test]
+    fn array_intersect_diff_partition_a() {
+        // For any (a, b): array_intersect(a, b) and array_diff(a, b)
+        // partition `a` — intersect ∪ diff == a (after sort/dedup
+        // both back to multiset of a).
+        let a = vec![1, 2, 2, 3, 3, 3, 4];
+        let b = vec![2, 4];
+        let inter = intersect_int(&a, &b);
+        let diffr = diff_int(&a, &b);
+        let mut combined: Vec<i64> = inter.into_iter().chain(diffr).collect();
+        combined.sort();
+        let mut a_sorted = a.clone();
+        a_sorted.sort();
+        assert_eq!(combined, a_sorted);
+    }
+
+    #[test]
+    fn array_intersect_diff_reject_non_array_and_arity() {
+        assert!(
+            builtin_array_intersect(&[Value::Int(1), Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_diff(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

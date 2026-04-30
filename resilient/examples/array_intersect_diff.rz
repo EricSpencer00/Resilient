@@ -1,0 +1,12 @@
+// RES-541 demo: array_intersect and array_diff — set-like ops
+// preserving order and duplicates from the first array.
+
+fn main() {
+    println(array_intersect([1, 2, 3], [2, 3, 4]));
+    println(array_diff([1, 2, 3], [2, 3, 4]));
+    println(array_intersect([1, 1, 2, 2, 3], [1, 2]));
+    println(array_diff([1, 1, 2, 2, 3], [1]));
+    println(array_intersect([], [1, 2]));
+}
+
+main();
