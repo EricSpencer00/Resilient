@@ -1414,6 +1414,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-498: join string array with single space.
+        env.set(
+            "string_unwords".to_string(),
+            Type::Function {
+                params: vec![Type::Array],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-435: split array into fixed-size chunks.
         env.set("array_chunk".to_string(), fn_any_any_to_any());
         // RES-436: non-overlapping substring count.
@@ -4532,6 +4540,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_words",
         // RES-497: join string array with newline.
         "string_join_lines",
+        // RES-498: join string array with single space.
+        "string_unwords",
         // RES-435: array_chunk.
         "array_chunk",
         // RES-436: string_count.

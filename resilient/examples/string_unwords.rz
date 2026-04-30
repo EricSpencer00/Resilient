@@ -1,0 +1,11 @@
+// RES-498 demo: string_unwords joins an array of strings with single spaces.
+
+fn main() {
+    println(string_unwords(["the", "quick", "brown", "fox"]));
+    println(string_unwords(["solo"]));
+    println(len(string_unwords([])));
+    let words = string_words("  hello   world  ");
+    println(string_unwords(words));
+}
+
+main();
