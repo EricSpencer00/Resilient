@@ -8293,6 +8293,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_signum_int", builtin_array_signum_int),
     // RES-556: per-element absolute value.
     ("array_abs_int", builtin_array_abs_int),
+    // RES-557: dot product of two equal-length int arrays.
+    ("array_dot_int", builtin_array_dot_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13543,6 +13545,59 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-557: `array_dot_int(a, b)` — dot product of two equal-length
+/// integer arrays: `Σ a[i] * b[i]`. Uses i128 throughout (multiply
+/// and accumulate) so individual products and the running sum
+/// cannot overflow; the only place overflow surfaces is the final
+/// i64 fit-check on the total. Differing lengths is a typed error.
+/// Empty + empty returns 0 (identity).
+fn builtin_array_dot_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            if a.len() != b.len() {
+                return Err(format!(
+                    "array_dot_int: length mismatch: {} vs {}",
+                    a.len(),
+                    b.len()
+                ));
+            }
+            let mut sum: i128 = 0;
+            for (i, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
+                let an = match av {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_dot_int: expected all int elements (lhs[{}]), got {}",
+                            i, other
+                        ));
+                    }
+                };
+                let bn = match bv {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_dot_int: expected all int elements (rhs[{}]), got {}",
+                            i, other
+                        ));
+                    }
+                };
+                sum += (an as i128) * (bn as i128);
+            }
+            i64::try_from(sum)
+                .map(Value::Int)
+                .map_err(|_| format!("array_dot_int: dot product {} does not fit in i64", sum))
+        }
+        [a, b] => Err(format!(
+            "array_dot_int: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_dot_int: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29977,6 +30032,70 @@ mod tests {
             builtin_array_abs_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-557: array_dot_int ----------
+
+    fn dot(a: &[i64], b: &[i64]) -> i64 {
+        match builtin_array_dot_int(&[int_array(a), int_array(b)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_dot_int_basic() {
+        assert_eq!(dot(&[1, 2, 3], &[4, 5, 6]), 32);
+        assert_eq!(dot(&[1, 0, 0], &[1, 2, 3]), 1);
+        assert_eq!(dot(&[2, 3], &[2, 3]), 13); // squared norm
+    }
+
+    #[test]
+    fn array_dot_int_empty_returns_zero() {
+        assert_eq!(dot(&[], &[]), 0);
+    }
+
+    #[test]
+    fn array_dot_int_handles_negatives() {
+        assert_eq!(dot(&[-1, -2, -3], &[1, 2, 3]), -14);
+        assert_eq!(dot(&[-1, -2, -3], &[-1, -2, -3]), 14);
+    }
+
+    #[test]
+    fn array_dot_int_uses_i128_for_overflow() {
+        // i64::MAX * 1 fits but i64::MAX * 2 in i64 would overflow.
+        // 2 * i64::MAX = i64::MAX << 1 doesn't fit i64 → error.
+        let err = builtin_array_dot_int(&[int_array(&[i64::MAX, i64::MAX]), int_array(&[1, 1])])
+            .unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Single i64::MAX * 1 still fits.
+        assert_eq!(dot(&[i64::MAX], &[1]), i64::MAX);
+    }
+
+    #[test]
+    fn array_dot_int_length_mismatch_errors() {
+        let err = builtin_array_dot_int(&[int_array(&[1, 2]), int_array(&[3, 4, 5])]).unwrap_err();
+        assert!(err.contains("length mismatch"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_dot_int_rejects_non_int_and_arity() {
+        let err = builtin_array_dot_int(&[
+            Value::Array(vec![Value::Int(1), Value::String("x".into())]),
+            int_array(&[1, 2]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("all int elements"), "got: {}", err);
+        assert!(
+            builtin_array_dot_int(&[Value::Int(1), int_array(&[1])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_dot_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
