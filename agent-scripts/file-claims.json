@@ -7,6 +7,17 @@
     "resilient/src/sum_types.rs": {
       "branch": "res-400-sum-types-pr6",
       "claimed_at": "2026-04-30T23:17:45Z"
+    "SYNTAX.md": {
+      "branch": "res-406-docs",
+      "claimed_at": "2026-04-30T23:30:04Z"
+    },
+    "STABILITY.md": {
+      "branch": "res-406-docs",
+      "claimed_at": "2026-04-30T23:30:04Z"
+    },
+    "docs/no-std.md": {
+      "branch": "res-406-docs",
+      "claimed_at": "2026-04-30T23:30:04Z"
     }
   }
 }
