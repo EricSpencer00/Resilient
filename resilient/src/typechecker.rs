@@ -1483,6 +1483,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-566: array of bytes → Result<String, String>.
+        env.set(
+            "string_from_bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
         // RES-464: parse int with explicit radix → Result<Int, String>.
         env.set(
             "parse_int_base".to_string(),
@@ -4970,6 +4978,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_byte_at",
         // RES-565: string_to_bytes.
         "string_to_bytes",
+        // RES-566: string_from_bytes.
+        "string_from_bytes",
         // RES-464: parse_int_base.
         "parse_int_base",
         // RES-465: int_to_base.
