@@ -1422,6 +1422,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-499: take first n Unicode scalars.
+        env.set(
+            "string_take".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-435: split array into fixed-size chunks.
         env.set("array_chunk".to_string(), fn_any_any_to_any());
         // RES-436: non-overlapping substring count.
@@ -4542,6 +4550,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_join_lines",
         // RES-498: join string array with single space.
         "string_unwords",
+        // RES-499: take first n Unicode scalars.
+        "string_take",
         // RES-435: array_chunk.
         "array_chunk",
         // RES-436: string_count.
