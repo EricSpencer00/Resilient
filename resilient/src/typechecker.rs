@@ -1054,6 +1054,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-545: split on the last occurrence of the separator.
+        env.set(
+            "string_split_last".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Array),
+            },
+        );
         env.set(
             "trim".to_string(),
             Type::Function {
@@ -4663,6 +4671,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "split",
         // RES-535: split with a maximum number-of-splits limit.
         "string_split_n",
+        // RES-545: split on the last occurrence of the separator.
+        "string_split_last",
         "trim",
         "contains",
         "to_upper",

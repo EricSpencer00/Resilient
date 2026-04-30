@@ -8259,6 +8259,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("split", builtin_split),
     // RES-535: split with a maximum number-of-splits limit.
     ("string_split_n", builtin_string_split_n),
+    // RES-545: split on the last occurrence of the separator.
+    ("string_split_last", builtin_string_split_last),
     ("trim", builtin_trim),
     ("contains", builtin_contains),
     ("to_upper", builtin_to_upper),
@@ -9354,6 +9356,37 @@ fn builtin_string_split_n(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_split_n: expected 3 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-545: `string_split_last(s, sep)` — split `s` on the **last**
+/// occurrence of `sep`, returning a 2-element array
+/// `[before, after]`. If `sep` does not appear, returns `[s]`.
+/// Useful for splitting paths on the last "/" or filenames on the
+/// last ".". Counterpart to `string_split_n(s, sep, 1)` (RES-535)
+/// which splits on the first occurrence.
+fn builtin_string_split_last(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sep)] => {
+            if sep.is_empty() {
+                return Err("string_split_last: separator must not be empty".to_string());
+            }
+            match s.rfind(sep.as_str()) {
+                Some(idx) => Ok(Value::Array(vec![
+                    Value::String(s[..idx].to_string()),
+                    Value::String(s[idx + sep.len()..].to_string()),
+                ])),
+                None => Ok(Value::Array(vec![Value::String(s.clone())])),
+            }
+        }
+        [a, b] => Err(format!(
+            "string_split_last: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_split_last: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -26022,6 +26055,74 @@ mod tests {
             builtin_string_split_n(&[Value::String("a".into()), Value::String(",".into())])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-545: string_split_last ----------
+
+    fn split_last(s: &str, sep: &str) -> Vec<String> {
+        match builtin_string_split_last(&[Value::String(s.into()), Value::String(sep.into())])
+            .unwrap()
+        {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(s) => s,
+                    other => panic!("expected String, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_split_last_basic() {
+        assert_eq!(split_last("a,b,c,d", ","), vec!["a,b,c", "d"]);
+        assert_eq!(split_last("foo/bar/baz", "/"), vec!["foo/bar", "baz"]);
+        assert_eq!(split_last("file.tar.gz", "."), vec!["file.tar", "gz"]);
+    }
+
+    #[test]
+    fn string_split_last_no_separator_returns_singleton() {
+        assert_eq!(split_last("abc", "x"), vec!["abc"]);
+        assert_eq!(split_last("", "x"), vec![""]);
+    }
+
+    #[test]
+    fn string_split_last_separator_at_edges() {
+        // Trailing separator: empty after.
+        assert_eq!(split_last("a,b,", ","), vec!["a,b", ""]);
+        // Leading-only separator: empty before.
+        assert_eq!(split_last(",a", ","), vec!["", "a"]);
+        // Just the separator: both empty.
+        assert_eq!(split_last(",", ","), vec!["", ""]);
+    }
+
+    #[test]
+    fn string_split_last_multichar_separator() {
+        assert_eq!(split_last("aa--bb--cc", "--"), vec!["aa--bb", "cc"]);
+        assert_eq!(split_last("nope", "--"), vec!["nope"]);
+    }
+
+    #[test]
+    fn string_split_last_rejects_empty_separator() {
+        let err =
+            builtin_string_split_last(&[Value::String("abc".into()), Value::String("".into())])
+                .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_split_last_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_split_last(&[Value::Int(1), Value::String(",".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_split_last(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
