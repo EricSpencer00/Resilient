@@ -1,0 +1,11 @@
+// RES-506 demo: string_drop returns s with the first n Unicode scalars removed.
+// Pairs with string_take: string_take(s, n) + string_drop(s, n) == s.
+
+fn main() {
+    println(string_drop("hello, world!", 7));
+    println(string_drop("hello", 100));
+    println(string_drop("héllo", 2));
+    println(len(string_drop("hello", 5)));
+}
+
+main();

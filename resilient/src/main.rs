@@ -8426,6 +8426,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_unwords", builtin_string_unwords),
     // RES-499: take first n Unicode scalars.
     ("string_take", builtin_string_take),
+    // RES-506: drop first n Unicode scalars.
+    ("string_drop", builtin_string_drop),
     // RES-435: split array into fixed-size chunks (last may be short).
     ("array_chunk", builtin_array_chunk),
     // RES-436: non-overlapping substring count.
@@ -9893,6 +9895,39 @@ fn builtin_string_take(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_take: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-506: `string_drop(s, n)` — return `s` with its first `n`
+/// Unicode scalars removed. `n` past the char count clamps to the
+/// empty string. Negative `n` errors. The round-trip
+/// `string_take(s, n) + string_drop(s, n) == s` holds for any
+/// `0 <= n <= len(s)`. Counts chars, not bytes.
+fn builtin_string_drop(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "string_drop: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            let drop = *n as usize;
+            let start_byte = s
+                .char_indices()
+                .nth(drop)
+                .map(|(b, _)| b)
+                .unwrap_or(s.len());
+            Ok(Value::String(s[start_byte..].to_string()))
+        }
+        [a, b] => Err(format!(
+            "string_drop: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_drop: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28870,6 +28905,73 @@ mod tests {
         );
         assert!(
             builtin_string_take(&[Value::String("x".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-506: string_drop ----------
+
+    fn drop_str(s: &str, n: i64) -> String {
+        match builtin_string_drop(&[Value::String(s.into()), Value::Int(n)]).unwrap() {
+            Value::String(out) => out,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_drop_basic() {
+        assert_eq!(drop_str("hello", 0), "hello");
+        assert_eq!(drop_str("hello", 1), "ello");
+        assert_eq!(drop_str("hello", 3), "lo");
+        assert_eq!(drop_str("hello", 5), "");
+    }
+
+    #[test]
+    fn string_drop_clamps_past_end() {
+        assert_eq!(drop_str("hello", 100), "");
+        assert_eq!(drop_str("", 5), "");
+    }
+
+    #[test]
+    fn string_drop_unicode_aware() {
+        assert_eq!(drop_str("héllo", 2), "llo");
+        assert_eq!(drop_str("日本語", 1), "本語");
+        assert_eq!(drop_str("日本語", 2), "語");
+        assert_eq!(drop_str("日本語", 3), "");
+    }
+
+    #[test]
+    fn string_take_drop_round_trip() {
+        // string_take(s, n) + string_drop(s, n) == s for valid n.
+        let s = "hello, 世界! 🌍";
+        for n in 0..=s.chars().count() {
+            let head = match builtin_string_take(&[Value::String(s.into()), Value::Int(n as i64)])
+                .unwrap()
+            {
+                Value::String(t) => t,
+                _ => panic!(),
+            };
+            let tail = drop_str(s, n as i64);
+            assert_eq!(format!("{}{}", head, tail), s, "n={}", n);
+        }
+    }
+
+    #[test]
+    fn string_drop_rejects_negative_count() {
+        let err = builtin_string_drop(&[Value::String("foo".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_drop_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_drop(&[Value::Int(5), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_string_drop(&[Value::String("x".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
