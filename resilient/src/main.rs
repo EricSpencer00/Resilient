@@ -8285,6 +8285,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_mode_int", builtin_array_mode_int),
     // RES-552: peak-to-peak range (max − min) of an int array.
     ("array_range_int", builtin_array_range_int),
+    // RES-553: consecutive pairwise differences arr[i+1] - arr[i].
+    ("array_diff_consec_int", builtin_array_diff_consec_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13535,6 +13537,53 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-553: `array_diff_consec_int(arr)` — array of n−1 pairwise
+/// differences `arr[i+1] - arr[i]`. Empty/singleton input returns an
+/// empty array (not an error) — the result length is naturally
+/// `max(0, n - 1)`. Subtraction uses i128 with a bounds-check back
+/// to i64 so overflow surfaces cleanly.
+fn builtin_array_diff_consec_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.len() < 2 {
+                return Ok(Value::Array(Vec::new()));
+            }
+            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => nums.push(*n),
+                    other => {
+                        return Err(format!(
+                            "array_diff_consec_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            let mut diffs: Vec<Value> = Vec::with_capacity(nums.len() - 1);
+            for w in nums.windows(2) {
+                let d = (w[1] as i128) - (w[0] as i128);
+                let d_i64 = i64::try_from(d).map_err(|_| {
+                    format!(
+                        "array_diff_consec_int: difference {} does not fit in i64",
+                        d
+                    )
+                })?;
+                diffs.push(Value::Int(d_i64));
+            }
+            Ok(Value::Array(diffs))
+        }
+        [other] => Err(format!(
+            "array_diff_consec_int: expected array, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "array_diff_consec_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29564,6 +29613,71 @@ mod tests {
         );
         assert!(
             builtin_array_range_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-553: array_diff_consec_int ----------
+
+    fn diff_consec(xs: &[i64]) -> Vec<i64> {
+        match builtin_array_diff_consec_int(&[int_array(xs)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_diff_consec_int_basic() {
+        assert_eq!(diff_consec(&[1, 3, 6, 10]), vec![2, 3, 4]);
+        assert_eq!(diff_consec(&[5, 5, 5]), vec![0, 0]);
+        assert_eq!(diff_consec(&[10, 7, 3, 0]), vec![-3, -4, -3]);
+    }
+
+    #[test]
+    fn array_diff_consec_int_empty_or_singleton_returns_empty() {
+        assert_eq!(diff_consec(&[]), Vec::<i64>::new());
+        assert_eq!(diff_consec(&[42]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_diff_consec_int_handles_mixed_signs() {
+        assert_eq!(diff_consec(&[-5, 0, 5, -10]), vec![5, 5, -15]);
+    }
+
+    #[test]
+    fn array_diff_consec_int_overflow_surfaced() {
+        // i64::MAX - i64::MIN doesn't fit i64.
+        let err = builtin_array_diff_consec_int(&[int_array(&[i64::MIN, i64::MAX])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Without crossing the boundary, big-but-fits is fine.
+        assert_eq!(diff_consec(&[0, i64::MAX]), vec![i64::MAX]);
+        assert_eq!(diff_consec(&[i64::MIN, -1]), vec![i64::MAX]);
+    }
+
+    #[test]
+    fn array_diff_consec_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_diff_consec_int(&[Value::Array(vec![
+                Value::Int(1),
+                Value::String("a".into())
+            ])])
+            .unwrap_err()
+            .contains("all int elements")
+        );
+        assert!(
+            builtin_array_diff_consec_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_diff_consec_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
