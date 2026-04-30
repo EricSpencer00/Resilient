@@ -53,13 +53,28 @@ h1, h2, h3, h4, h5, h6,
   }
 }
 
+// Code-block highlight wrapper: a left accent bar without per-line
+// background tint. Just-the-docs renders fenced code as
+// `<div class="highlight"><pre><code>...<span>line</span><br>...</code></pre></div>`,
+// so a flat background on `.highlight` covers the whole block.
 .highlight {
   border-left: 3px solid $rl-purple;
+  background-color: rgba($rl-purple, 0.04);
+  border-radius: 0 4px 4px 0;
 }
 
+// Inline `code` only — keep the faint purple wash on `code text` in
+// prose, but don't double-paint inside `pre` blocks (which would
+// give every line its own background and make the block look striped).
 code {
   color: #4a32a8;
   background-color: rgba($rl-purple, 0.06);
+}
+
+pre code,
+.highlight code {
+  background-color: transparent !important;
+  color: inherit;
 }
 
 hr {
@@ -77,14 +92,20 @@ hr {
 
 .rl-hero {
   display: flex;
-  gap: 2rem;
+  gap: 1.5rem;
   align-items: flex-start;
   margin: -0.5rem 0 3rem;
-  padding: 2.5rem;
+  padding: 2rem 2rem 2rem 2.5rem;
   background: linear-gradient(145deg, #0e0b1e 0%, #1c1438 55%, #0e0b1e 100%);
   border-radius: 12px;
   position: relative;
   overflow: hidden;
+  box-sizing: border-box;
+  // Cap the hero's content width so the right-pane code frame
+  // never extends past the printable area on a typical viewport.
+  // Without this, the frame's last column was getting visually
+  // clipped at the rounded corner on a 1280–1440px window.
+  max-width: 100%;
 
   &::before {
     content: '';
@@ -104,7 +125,11 @@ hr {
 }
 
 .rl-hero__left {
-  flex: 0 0 40%;
+  // Allow the left pane to shrink with the viewport instead of
+  // pinning at 40% — that way the right-pane code frame keeps
+  // breathing room rather than being squeezed into the hero's
+  // right edge.
+  flex: 0 1 38%;
   min-width: 0;
   position: relative;
   z-index: 1;
@@ -113,6 +138,9 @@ hr {
 .rl-hero__right {
   flex: 1 1 auto;
   min-width: 0;
+  // Belt-and-braces against the code frame leaking past the hero's
+  // right padding.
+  max-width: 100%;
   position: relative;
   z-index: 1;
 }
