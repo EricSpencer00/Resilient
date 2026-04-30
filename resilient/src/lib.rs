@@ -35,6 +35,11 @@ mod lsp_server;
 pub mod output_sink;
 mod peephole;
 mod span;
+// RES-400: sum-type declarations. PR 1 lands the parser scaffold for
+// payload-less variants. Subsequent PRs extend with payloads,
+// constructor expressions, exhaustive `match`, and the typechecker
+// integration.
+mod sum_types;
 mod typechecker;
 #[cfg(feature = "z3")]
 mod verifier_z3;
@@ -390,6 +395,11 @@ enum Token {
     Supervisor,
     /// RES-290: `trait Name { fn sig(...); ... }` — trait declaration keyword.
     Trait,
+    /// RES-400: `enum Name { Variant1, Variant2 { f: T }, ... }` — sum-type
+    /// declaration keyword. Initial parser support is for payload-less
+    /// variants only; payload variants and exhaustive `match` follow in
+    /// later PRs.
+    Enum,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -527,6 +537,7 @@ impl Token {
             Token::Newtype => "`newtype`".to_string(),
             Token::Supervisor => "`supervisor`".to_string(),
             Token::Trait => "`trait`".to_string(),
+            Token::Enum => "`enum`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -984,6 +995,7 @@ impl Lexer {
                         "newtype" => Token::Newtype,
                         "supervisor" => Token::Supervisor,
                         "trait" => Token::Trait,
+                        "enum" => Token::Enum,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2183,6 +2195,38 @@ enum Node {
         value: Box<Node>,
         span: span::Span,
     },
+    /// RES-400: sum-type declaration. PR 1 covers the parser scaffold
+    /// for payload-less variants only:
+    ///
+    /// ```rz
+    /// enum Color { Red, Green, Blue }
+    /// ```
+    ///
+    /// Subsequent PRs add named-field payloads, exhaustive `match`,
+    /// and constructor expressions (`Color::Red`). At this stage the
+    /// node is parsed and validated but the typechecker / interpreter
+    /// don't act on it yet — registering the type comes in PR 2.
+    EnumDecl {
+        name: String,
+        variants: Vec<EnumVariant>,
+        span: span::Span,
+    },
+}
+
+/// RES-400 PR 1: a single variant inside an `enum` declaration.
+///
+/// PR 1 only supports payload-less variants (`Red`, `Green`, ...).
+/// Future PRs will extend this struct with payload kinds (named fields
+/// like `Circle { r: Float }`, tuple-style `Pair(Int, Int)`).
+#[derive(Debug, Clone)]
+pub(crate) struct EnumVariant {
+    pub name: String,
+    /// Source span of the variant name. Unused in PR 1 — the
+    /// typechecker / exhaustiveness check (PR 4) will read it for
+    /// "missing variant" diagnostics that point back at the original
+    /// declaration site.
+    #[allow(dead_code)]
+    pub span: span::Span,
 }
 
 /// RES-386/RES-390: one `receive <name>()` handler inside an `actor` block.
@@ -2470,6 +2514,7 @@ impl Parser {
             Token::Try => Some(crate::try_catch::parse(self)),
             Token::Supervisor => Some(crate::supervisor::parse(self)),
             Token::Trait => Some(crate::traits::parse(self)),
+            Token::Enum => Some(crate::sum_types::parse_enum_decl(self)),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -17601,6 +17646,11 @@ impl Interpreter {
             // RES-290: trait declarations carry no runtime payload — the
             // typechecker validates them; here we just produce Void.
             Node::TraitDecl { .. } => Ok(Value::Void),
+            // RES-400 PR 1: enum declarations are parsed and validated
+            // but the interpreter doesn't act on them yet. PR 5 wires
+            // up constructor expressions and match-arm evaluation;
+            // until then, an enum decl is a no-op at runtime.
+            Node::EnumDecl { .. } => Ok(Value::Void),
         }
     }
 

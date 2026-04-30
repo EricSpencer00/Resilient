@@ -4397,6 +4397,12 @@ impl TypeChecker {
             // RES-290: trait declarations carry only signatures and are
             // validated by `crate::traits::check`; nothing to do here.
             Node::TraitDecl { .. } => Ok(Type::Void),
+            // RES-400 PR 1: enum declarations are accepted by the
+            // typechecker as Void today. PR 2 will extend `Type` with
+            // a `SumType { name, variants }` representation, register
+            // it under `name`, and validate that every variant payload
+            // resolves; for now we just acknowledge the node.
+            Node::EnumDecl { .. } => Ok(Type::Void),
         }
     }
 
