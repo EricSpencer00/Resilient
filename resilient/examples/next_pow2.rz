@@ -1,0 +1,11 @@
+// RES-494 demo: next_pow2 returns the smallest power of two >= n.
+
+fn main() {
+    println(next_pow2(0));
+    println(next_pow2(1));
+    println(next_pow2(5));
+    println(next_pow2(8));
+    println(next_pow2(1025));
+}
+
+main();

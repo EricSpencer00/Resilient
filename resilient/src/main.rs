@@ -8435,6 +8435,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("int_log2", builtin_int_log2),
     // RES-493: power-of-two predicate.
     ("is_pow2", builtin_is_pow2),
+    // RES-494: round up to next power of two.
+    ("next_pow2", builtin_next_pow2),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9550,6 +9552,47 @@ fn builtin_is_pow2(args: &[Value]) -> RResult<Value> {
         [Value::Int(n)] => Ok(Value::Bool(*n > 0 && (n & (n - 1)) == 0)),
         [other] => Err(format!("is_pow2: expected int, got {}", other)),
         _ => Err(format!("is_pow2: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-494: `next_pow2(n)` — smallest power of two `>= n`. Inputs
+/// `<= 1` round up to 1 (the smallest positive power of two).
+/// Negatives error (no defined power of two below 1). Inputs that
+/// would round up beyond `i64::MAX` (i.e. `n > 2^62`) error rather
+/// than overflowing.
+fn builtin_next_pow2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "next_pow2: argument must be non-negative, got {}",
+                    n
+                ));
+            }
+            // 0 and 1 both round to 1.
+            if *n <= 1 {
+                return Ok(Value::Int(1));
+            }
+            // For n > 2^62 the next power of two would be 2^63, which
+            // does not fit in i64. Error rather than wrap.
+            const MAX_OK: i64 = 1i64 << 62;
+            if *n > MAX_OK {
+                return Err(format!(
+                    "next_pow2: argument {} exceeds i64::MAX_POW2 (2^62)",
+                    n
+                ));
+            }
+            // Standard bit trick: 64 - lz(n-1) is the number of bits
+            // needed to represent n-1, hence the exponent of the next
+            // power of two.
+            let exp = 64 - (n - 1).leading_zeros();
+            Ok(Value::Int(1i64 << exp))
+        }
+        [other] => Err(format!("next_pow2: expected int, got {}", other)),
+        _ => Err(format!(
+            "next_pow2: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -28866,6 +28909,66 @@ mod tests {
         );
         assert!(
             builtin_is_pow2(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-494: next_pow2 ----------
+
+    #[test]
+    fn next_pow2_basic() {
+        assert_int(builtin_next_pow2(&[Value::Int(0)]).unwrap(), 1, "0");
+        assert_int(builtin_next_pow2(&[Value::Int(1)]).unwrap(), 1, "1");
+        assert_int(builtin_next_pow2(&[Value::Int(2)]).unwrap(), 2, "2");
+        assert_int(builtin_next_pow2(&[Value::Int(3)]).unwrap(), 4, "3");
+        assert_int(builtin_next_pow2(&[Value::Int(5)]).unwrap(), 8, "5");
+        assert_int(builtin_next_pow2(&[Value::Int(9)]).unwrap(), 16, "9");
+        assert_int(
+            builtin_next_pow2(&[Value::Int(1024)]).unwrap(),
+            1024,
+            "1024",
+        );
+        assert_int(
+            builtin_next_pow2(&[Value::Int(1025)]).unwrap(),
+            2048,
+            "1025",
+        );
+    }
+
+    #[test]
+    fn next_pow2_already_power_of_two_is_identity() {
+        for shift in 0..62 {
+            let n: i64 = 1 << shift;
+            assert_int(builtin_next_pow2(&[Value::Int(n)]).unwrap(), n, "pow2");
+        }
+    }
+
+    #[test]
+    fn next_pow2_rejects_negative() {
+        let err = builtin_next_pow2(&[Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn next_pow2_handles_2_to_62_boundary() {
+        // 2^62 itself is OK (already a power of two).
+        let max = 1i64 << 62;
+        assert_int(builtin_next_pow2(&[Value::Int(max)]).unwrap(), max, "2^62");
+        // 2^62 + 1 would round to 2^63 which overflows i64 — error.
+        let err = builtin_next_pow2(&[Value::Int(max + 1)]).unwrap_err();
+        assert!(err.contains("exceeds"), "got: {}", err);
+    }
+
+    #[test]
+    fn next_pow2_rejects_non_int_and_arity() {
+        assert!(
+            builtin_next_pow2(&[Value::Float(8.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_next_pow2(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
