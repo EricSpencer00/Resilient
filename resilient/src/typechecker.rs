@@ -1144,6 +1144,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-553: consecutive pairwise differences.
+        env.set(
+            "array_diff_consec_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4753,6 +4761,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_mode_int",
         // RES-552: peak-to-peak range (max − min).
         "array_range_int",
+        // RES-553: consecutive pairwise differences.
+        "array_diff_consec_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",
