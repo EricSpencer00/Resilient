@@ -1487,6 +1487,8 @@ impl TypeChecker {
         );
         // RES-430: pair elements as tuples; truncate to shorter array.
         env.set("array_zip".to_string(), fn_any_any_to_any());
+        // RES-531: split an array of 2-tuples into two parallel arrays.
+        env.set("array_unzip".to_string(), fn_any_to_any());
         // RES-431: integer range [start, end).
         env.set("array_range".to_string(), fn_any_any_to_any());
         // RES-522: indices of an array as a new array.
@@ -4748,6 +4750,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_pad_right",
         // RES-430: array_zip.
         "array_zip",
+        // RES-531: split an array of 2-tuples into two parallel arrays.
+        "array_unzip",
         // RES-431: array_range.
         "array_range",
         // RES-522: indices of an array.
