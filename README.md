@@ -12,10 +12,11 @@
 [![Docs](https://img.shields.io/badge/docs-ericspencer.us%2FResilient-2d1f60.svg?style=flat-square)](https://ericspencer.us/Resilient/)
 
 [**📖 Docs**](https://ericspencer.us/Resilient/) &nbsp;·&nbsp;
-[**🚀 Get Started**](https://ericspencer00.github.io/Resilient/getting-started) &nbsp;·&nbsp;
-[**🧭 Philosophy**](https://ericspencer00.github.io/Resilient/philosophy) &nbsp;·&nbsp;
-[**⚡ Performance**](https://ericspencer00.github.io/Resilient/performance) &nbsp;·&nbsp;
-[**🧠 Memory Model**](https://ericspencer00.github.io/Resilient/memory-model) &nbsp;·&nbsp;
+[**🛝 Playground**](https://ericspencer.us/Resilient/playground/) &nbsp;·&nbsp;
+[**🚀 Get Started**](https://ericspencer.us/Resilient/getting-started) &nbsp;·&nbsp;
+[**🧭 Philosophy**](https://ericspencer.us/Resilient/philosophy) &nbsp;·&nbsp;
+[**⚡ Performance**](https://ericspencer.us/Resilient/performance) &nbsp;·&nbsp;
+[**🧠 Memory Model**](https://ericspencer.us/Resilient/memory-model) &nbsp;·&nbsp;
 [**🩺 Examples**](https://github.com/EricSpencer00/Resilient-examples) &nbsp;·&nbsp;
 [**🤝 Contributing**](CONTRIBUTING.md)
 
@@ -41,7 +42,7 @@ In short: the LLM is a *client* of the type system, not the prover.
 - **[EXPRESSIBLE_INVALID_STATES.md](docs/EXPRESSIBLE_INVALID_STATES.md)** —
   the public registry of what Resilient *cannot yet* prevent
   structurally, with a closing ticket per gap.
-- **[formal-verification-limitations.md](docs/formal-verification-limitations.md)** —
+- **[VERIFICATION_LIMITS.md](docs/VERIFICATION_LIMITS.md)** —
   RES-202: where verification's guarantees end and real-world
   uncertainty begins.
 
@@ -78,7 +79,7 @@ SMT-LIB2 certificates, signed manifests, `static-only` heap
 enforcement, ASCII-only identifiers, deterministic execution)
 that map directly to specific objectives in each standard and
 reduce the evidence burden on the integrator. See the
-[Certification and Safety Standards](https://ericspencer00.github.io/Resilient/certification)
+[Certification and Safety Standards](https://ericspencer.us/Resilient/certification)
 page for the concrete objective-by-objective mapping and the
 honest list of gaps.
 
@@ -670,7 +671,7 @@ rz fmt --in-place src/main.rz         # overwrite
 The formatter refuses to touch input with parse errors (exits 1).
 It is a structural round-trip — comments are not preserved today;
 only run it on code you're willing to re-attach comments to by
-hand. See [Tooling Reference](https://ericspencer00.github.io/Resilient/tooling#formatter)
+hand. See [Tooling Reference](https://ericspencer.us/Resilient/tooling#formatter)
 for the full contract.
 
 ### REPL Commands
