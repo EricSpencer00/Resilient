@@ -1,0 +1,10 @@
+// RES-489 demo: bit_leading_zeros counts zero bits at the high end of n.
+
+fn main() {
+    println(bit_leading_zeros(0));
+    println(bit_leading_zeros(1));
+    println(bit_leading_zeros(255));
+    println(bit_leading_zeros(-1));
+}
+
+main();
