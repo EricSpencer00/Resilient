@@ -36,7 +36,7 @@ search:
 
 # Header links in the top right.
 aux_links:
-  "🛝 Playground":
+  "Playground":
     - "https://ericspencer.us/Resilient/playground/"
   "GitHub":
     - "https://github.com/EricSpencer00/Resilient"
