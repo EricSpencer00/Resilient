@@ -8214,6 +8214,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("factorial", builtin_factorial),
     // RES-568: binomial coefficient C(n, k).
     ("binomial", builtin_binomial),
+    // RES-569: n-th Fibonacci number with overflow detection.
+    ("fibonacci", builtin_fibonacci),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -15223,6 +15225,43 @@ fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
         a as i64
     })?;
     Ok(Value::Int(result))
+}
+
+/// RES-569: `fibonacci(n)` — n-th Fibonacci number. Iterative i64
+/// loop with `checked_add`; `fib(92)` is the largest i64-fitting
+/// value, `fib(93)` overflows and surfaces as a typed error.
+/// Negative `n` errors. The loop only computes the next sum when
+/// the result is still needed — at `n = 92`, we skip the final
+/// `fib(93)` computation that would have overflowed.
+fn builtin_fibonacci(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "fibonacci: argument must be non-negative, got {}",
+                    n
+                ));
+            }
+            if *n == 0 {
+                return Ok(Value::Int(0));
+            }
+            let mut prev: i64 = 0;
+            let mut cur: i64 = 1;
+            for _ in 1..*n {
+                let next = prev
+                    .checked_add(cur)
+                    .ok_or_else(|| format!("fibonacci: fib({}) does not fit in i64", n))?;
+                prev = cur;
+                cur = next;
+            }
+            Ok(Value::Int(cur))
+        }
+        [other] => Err(format!("fibonacci: expected int, got {}", other)),
+        _ => Err(format!(
+            "fibonacci: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-568: `binomial(n, k)` — `C(n, k) = n! / (k! · (n−k)!)`.
@@ -29774,6 +29813,66 @@ mod tests {
             builtin_binomial(&[Value::Int(5)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-569: fibonacci ----------
+
+    fn fib(n: i64) -> i64 {
+        match builtin_fibonacci(&[Value::Int(n)]).unwrap() {
+            Value::Int(r) => r,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fibonacci_small_cases() {
+        assert_eq!(fib(0), 0);
+        assert_eq!(fib(1), 1);
+        assert_eq!(fib(2), 1);
+        assert_eq!(fib(3), 2);
+        assert_eq!(fib(10), 55);
+        assert_eq!(fib(20), 6765);
+    }
+
+    #[test]
+    fn fibonacci_largest_fitting_is_92() {
+        assert_eq!(fib(92), 7540113804746346429_i64);
+    }
+
+    #[test]
+    fn fibonacci_overflow_at_93() {
+        let err = builtin_fibonacci(&[Value::Int(93)]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        let err = builtin_fibonacci(&[Value::Int(1000)]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+    }
+
+    #[test]
+    fn fibonacci_negative_errors() {
+        let err = builtin_fibonacci(&[Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn fibonacci_recurrence_relation() {
+        // f(n) = f(n-1) + f(n-2)
+        for n in 2..=20 {
+            assert_eq!(fib(n), fib(n - 1) + fib(n - 2), "n={}", n);
+        }
+    }
+
+    #[test]
+    fn fibonacci_rejects_non_int_and_arity() {
+        assert!(
+            builtin_fibonacci(&[Value::Float(5.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_fibonacci(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
