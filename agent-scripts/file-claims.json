@@ -1,8 +1,12 @@
 {
   "claims": {
-    "docs": {
-      "branch": "res-508-simplify-docs-nav",
-      "claimed_at": "2026-04-30T01:47:28Z"
+    "resilient/src/main.rs": {
+      "branch": "res-511-bit-manipulation",
+      "claimed_at": "2026-04-30T01:54:53Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-511-bit-manipulation",
+      "claimed_at": "2026-04-30T01:54:53Z"
     }
   }
 }

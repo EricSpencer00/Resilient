@@ -1,0 +1,7 @@
+true
+false
+32
+247
+1
+0
+Program executed successfully
