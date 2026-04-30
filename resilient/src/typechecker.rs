@@ -1152,6 +1152,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-554: per-element clamp to [lo, hi].
+        env.set(
+            "array_clamp_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::Int],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4763,6 +4771,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_range_int",
         // RES-553: consecutive pairwise differences.
         "array_diff_consec_int",
+        // RES-554: per-element clamp.
+        "array_clamp_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",

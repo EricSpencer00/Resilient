@@ -1,0 +1,11 @@
+// RES-554 demo: array_clamp_int returns a new array with each
+// element clamped to [lo, hi]. lo > hi is a typed error.
+
+fn main() {
+    println(array_clamp_int([1, 5, 9, -3, 100], 0, 10));
+    println(array_clamp_int([], 0, 5));
+    println(array_clamp_int([1, 2, 3, -10, 100], 5, 5));
+    println(array_clamp_int([-100, -50, 0, 50, 100], -10, 10));
+}
+
+main();
