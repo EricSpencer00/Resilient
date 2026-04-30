@@ -83,6 +83,9 @@ mod diag;
 // Standalone from the compiler pipeline; lives here so the single
 // `resilient` binary carries it alongside the runtime.
 mod pkg_init;
+// RES-342: `resilient pkg publish` — manifest read, tarball synth,
+// auth resolution. Companion to pkg_init.
+mod pkg_publish;
 // RES-194: Ed25519 signatures on RES-071 verification certificates.
 // Pure algorithm + mini-PEM codec; consumed from main() when
 // `--sign-cert <path>` is passed and from the `verify-cert`
@@ -20506,9 +20509,87 @@ fn dispatch_pkg_subcommand(args: &[String]) -> Option<i32> {
                 }
             }
         }
+        Some("publish") => {
+            // RES-342: `pkg publish [--dry-run]`.
+            let mut dry_run = false;
+            let mut i = 3;
+            while i < args.len() {
+                let a = &args[i];
+                if a == "--help" || a == "-h" {
+                    print_pkg_publish_help();
+                    return Some(0);
+                } else if a == "--dry-run" {
+                    dry_run = true;
+                } else {
+                    eprintln!("Error: unknown flag `{}` to `pkg publish`", a);
+                    return Some(2);
+                }
+                i += 1;
+            }
+            // No registry endpoint is committed yet; require --dry-run
+            // until one lands. The check fires before any I/O so we
+            // don't waste cycles building a tarball we'd refuse to
+            // upload.
+            if !dry_run {
+                eprintln!(
+                    "Error: {}",
+                    pkg_publish::PkgPublishError::RegistryNotConfigured
+                );
+                return Some(2);
+            }
+            let cwd = match env::current_dir() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Error: could not read current directory: {}", e);
+                    return Some(2);
+                }
+            };
+            let Some(manifest_path) = pkg_init::find_manifest_upwards(&cwd) else {
+                eprintln!(
+                    "Error: {}",
+                    pkg_publish::PkgPublishError::ManifestNotFound { searched_from: cwd }
+                );
+                return Some(2);
+            };
+            let project_root = manifest_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or(cwd);
+            let manifest = match pkg_publish::read_publish_manifest(&manifest_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return Some(2);
+                }
+            };
+            let files = match pkg_publish::collect_publishable_files(&project_root) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return Some(2);
+                }
+            };
+            let tarball = match pkg_publish::make_tarball(&project_root, &manifest, &files) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    return Some(2);
+                }
+            };
+            let auth = pkg_publish::resolve_auth();
+            let stdout = io::stdout();
+            let mut h = stdout.lock();
+            if let Err(e) =
+                pkg_publish::print_publish_summary(&mut h, &manifest, &files, tarball.len(), &auth)
+            {
+                eprintln!("Error writing summary: {}", e);
+                return Some(2);
+            }
+            Some(0)
+        }
         Some(other) => {
             eprintln!(
-                "Error: unknown pkg subcommand `{}`. Known: init. \
+                "Error: unknown pkg subcommand `{}`. Known: init, publish. \
                  Run `rz pkg --help` for usage.",
                 other
             );
@@ -20535,10 +20616,11 @@ fn print_pkg_help() {
              rz pkg <subcommand> [options]\n\
          \n\
          SUBCOMMANDS:\n    \
-             init    Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
-             help    Show this message\n\
+             init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
+             publish  (RES-342) Package the current project for upload to a registry\n    \
+             help     Show this message\n\
          \n\
-         Run `rz pkg init --help` for subcommand-specific options."
+         Run `rz pkg <subcommand> --help` for subcommand-specific options."
     );
 }
 
@@ -20554,8 +20636,9 @@ fn print_pkg_help_to_stderr() {
              rz pkg <subcommand> [options]\n\
          \n\
          SUBCOMMANDS:\n    \
-             init    Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
-             help    Show this message\n\
+             init     Scaffold a new project (resilient.toml + src/main.rs + .gitignore)\n    \
+             publish  Package the current project for upload to a registry\n    \
+             help     Show this message\n\
          \n\
          Error: `rz pkg` requires a subcommand."
     );
@@ -20574,6 +20657,33 @@ fn print_pkg_init_help() {
          Creates `<name>/resilient.toml`, `<name>/src/main.rs`, and\n\
          `<name>/.gitignore`. Refuses to overwrite an existing manifest\n\
          or scaffold into a non-empty directory."
+    );
+}
+
+/// RES-342: `resilient pkg publish --help`.
+fn print_pkg_publish_help() {
+    println!(
+        "rz pkg publish — package the current project for upload to a registry\n\
+         \n\
+         USAGE:\n    \
+             rz pkg publish --dry-run\n\
+         \n\
+         FLAGS:\n    \
+             --dry-run   Required today — print what would be published\n    \
+                         instead of uploading. The registry endpoint is\n    \
+                         not yet committed; an actual POST is deferred.\n\
+         \n\
+         AUTH:\n    \
+             RESILIENT_TOKEN env var (preferred for CI), or\n    \
+             token = \"…\" line in ~/.resilient/credentials.toml\n\
+         \n\
+         WHAT IT DOES:\n    \
+             1. Walks up to find the nearest resilient.toml.\n    \
+             2. Reads [package].name / version / description / entry.\n    \
+             3. Collects source files honoring .gitignore and skipping hidden paths.\n    \
+             4. Builds a deterministic USTAR tarball in memory.\n    \
+             5. Resolves the auth token (without printing it).\n    \
+             6. Prints a human-readable summary."
     );
 }
 
