@@ -8320,6 +8320,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_ends_with", builtin_array_ends_with),
     // RES-446: all byte indices of substring occurrences.
     ("string_find_all", builtin_string_find_all),
+    // RES-546: first byte index of substring, -1 if missing.
+    ("string_find", builtin_string_find),
     // RES-447: i64 boundary constants as zero-arg functions.
     ("int_min", builtin_int_min),
     ("int_max", builtin_int_max),
@@ -12657,6 +12659,33 @@ fn builtin_int_max(args: &[Value]) -> RResult<Value> {
         return Err(format!("int_max: expected 0 arguments, got {}", args.len()));
     }
     Ok(Value::Int(i64::MAX))
+}
+
+/// RES-546: `string_find(s, sub)` — first byte index of `sub` in
+/// `s`, or `-1` if not found. Empty needle is a typed error.
+/// Companion to `string_find_all` (RES-446) and `string_find_char`
+/// (RES-524). Sentinel matches the `array_index_of` family.
+fn builtin_string_find(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sub)] => {
+            if sub.is_empty() {
+                return Err("string_find: needle must not be empty".to_string());
+            }
+            let idx = match s.find(sub.as_str()) {
+                Some(i) => i as i64,
+                None => -1,
+            };
+            Ok(Value::Int(idx))
+        }
+        [a, b] => Err(format!(
+            "string_find: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_find: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-446: `string_find_all(s, sub)` — array of byte indices for
@@ -34032,6 +34061,64 @@ mod tests {
         );
         assert!(
             builtin_string_find_all(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-546: string_find ----------
+
+    fn find_idx(s: &str, sub: &str) -> i64 {
+        match builtin_string_find(&[Value::String(s.into()), Value::String(sub.into())]).unwrap() {
+            Value::Int(i) => i,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_find_basic() {
+        assert_eq!(find_idx("hello", "ll"), 2);
+        assert_eq!(find_idx("hello", "h"), 0);
+        assert_eq!(find_idx("hello", "o"), 4);
+        assert_eq!(find_idx("ababab", "ab"), 0);
+    }
+
+    #[test]
+    fn string_find_returns_minus_one_when_missing() {
+        assert_eq!(find_idx("hello", "xyz"), -1);
+        assert_eq!(find_idx("", "x"), -1);
+        assert_eq!(find_idx("short", "longerneedle"), -1);
+    }
+
+    #[test]
+    fn string_find_returns_byte_index_for_multibyte() {
+        // "é" is 2 bytes (0xC3 0xA9), so "llo" starts at byte 3 in "héllo".
+        assert_eq!(find_idx("héllo", "llo"), 3);
+        assert_eq!(find_idx("héllo", "é"), 1);
+    }
+
+    #[test]
+    fn string_find_first_occurrence_only() {
+        assert_eq!(find_idx("aaaa", "aa"), 0);
+        assert_eq!(find_idx("the the the", "the"), 0);
+    }
+
+    #[test]
+    fn string_find_rejects_empty_needle() {
+        let err = builtin_string_find(&[Value::String("hello".into()), Value::String("".into())])
+            .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_find_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_find(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_find(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
