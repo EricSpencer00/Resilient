@@ -8299,6 +8299,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_sum_squares_int", builtin_array_sum_squares_int),
     // RES-559: running prefix sum.
     ("array_cumsum_int", builtin_array_cumsum_int),
+    // RES-560: running max.
+    ("array_cummax_int", builtin_array_cummax_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13549,6 +13551,42 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-560: `array_cummax_int(arr)` — running maximum.
+/// `[a[0], max(a[0],a[1]), max(a[0..2]), …]`. Empty returns empty.
+/// Useful for monotonic envelopes, hi-water marks, online stats.
+fn builtin_array_cummax_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut acc: Option<i64> = None;
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        let cur = match acc {
+                            Some(prev) => prev.max(*n),
+                            None => *n,
+                        };
+                        acc = Some(cur);
+                        out.push(Value::Int(cur));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_cummax_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_cummax_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_cummax_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -30310,6 +30348,79 @@ mod tests {
         );
         assert!(
             builtin_array_cumsum_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-560: array_cummax_int ----------
+
+    fn cummax(xs: &[i64]) -> Vec<i64> {
+        match builtin_array_cummax_int(&[int_array(xs)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_cummax_int_basic() {
+        assert_eq!(
+            cummax(&[3, 1, 4, 1, 5, 9, 2, 6]),
+            vec![3, 3, 4, 4, 5, 9, 9, 9]
+        );
+        assert_eq!(cummax(&[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(cummax(&[5, 4, 3]), vec![5, 5, 5]);
+    }
+
+    #[test]
+    fn array_cummax_int_empty_or_single() {
+        assert_eq!(cummax(&[]), Vec::<i64>::new());
+        assert_eq!(cummax(&[42]), vec![42]);
+        assert_eq!(cummax(&[i64::MIN]), vec![i64::MIN]);
+    }
+
+    #[test]
+    fn array_cummax_int_handles_negatives_and_extremes() {
+        assert_eq!(cummax(&[-5, -3, -10, -1]), vec![-5, -3, -3, -1]);
+        assert_eq!(
+            cummax(&[i64::MIN, 0, i64::MAX, -1]),
+            vec![i64::MIN, 0, i64::MAX, i64::MAX]
+        );
+    }
+
+    #[test]
+    fn array_cummax_int_last_element_equals_array_max() {
+        for arr in [vec![3, 1, 4], vec![-1, -2, -3], vec![42], vec![1, 5, 2, 5]] {
+            let cm = cummax(&arr);
+            let last_cm = *cm.last().unwrap();
+            let m = match builtin_array_max(&[int_array(&arr)]).unwrap() {
+                Value::Int(n) => n,
+                _ => panic!(),
+            };
+            assert_eq!(last_cm, m, "mismatch for {:?}", arr);
+        }
+    }
+
+    #[test]
+    fn array_cummax_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_cummax_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_cummax_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_cummax_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
