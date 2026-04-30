@@ -1,0 +1,8 @@
+one
+two
+three
+---
+just one
+---
+0
+Program executed successfully
