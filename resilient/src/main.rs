@@ -8341,6 +8341,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-483: named-predicate take/drop on int arrays.
     ("array_take_while_int", builtin_array_take_while_int),
     ("array_drop_while_int", builtin_array_drop_while_int),
+    // RES-484: named-predicate filter / partition on int arrays.
+    ("array_filter_int", builtin_array_filter_int),
+    ("array_partition_int", builtin_array_partition_int),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9894,6 +9897,77 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-484: `array_filter_int(arr, pred)` — keep only elements
+/// satisfying the named int predicate.
+fn builtin_array_filter_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_filter_int", kind)?;
+            let mut out = Vec::new();
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_filter_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if pred(n) {
+                    out.push(Value::Int(n));
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_filter_int: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_filter_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-484: `array_partition_int(arr, pred)` — return (matching,
+/// non-matching) tuple. Composes with tuple destructuring.
+fn builtin_array_partition_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_partition_int", kind)?;
+            let mut yes = Vec::new();
+            let mut no = Vec::new();
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_partition_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if pred(n) {
+                    yes.push(Value::Int(n));
+                } else {
+                    no.push(Value::Int(n));
+                }
+            }
+            Ok(Value::Tuple(vec![Value::Array(yes), Value::Array(no)]))
+        }
+        [a, b] => Err(format!(
+            "array_partition_int: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_partition_int: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -31416,6 +31490,103 @@ mod tests {
         );
         assert!(
             builtin_array_drop_while_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-484: array_filter_int / array_partition_int ----------
+
+    #[test]
+    fn array_filter_int_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_filter_int(&[
+                    int_array(&[1, -2, 3, -4, 5]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            vec![1, 3, 5]
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_filter_int(&[
+                    int_array(&[1, 2, 3, 4, 5, 6]),
+                    Value::String("even".into())
+                ])
+                .unwrap()
+            ),
+            vec![2, 4, 6]
+        );
+    }
+
+    #[test]
+    fn array_partition_int_basic() {
+        let result = builtin_array_partition_int(&[
+            int_array(&[1, -2, 3, -4, 5]),
+            Value::String("positive".into()),
+        ])
+        .unwrap();
+        match result {
+            Value::Tuple(parts) if parts.len() == 2 => {
+                let yes = match &parts[0] {
+                    Value::Array(items) => items
+                        .iter()
+                        .map(|v| match v {
+                            Value::Int(n) => *n,
+                            _ => panic!("non-int"),
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => panic!("expected array"),
+                };
+                let no = match &parts[1] {
+                    Value::Array(items) => items
+                        .iter()
+                        .map(|v| match v {
+                            Value::Int(n) => *n,
+                            _ => panic!("non-int"),
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => panic!("expected array"),
+                };
+                assert_eq!(yes, vec![1, 3, 5]);
+                assert_eq!(no, vec![-2, -4]);
+            }
+            other => panic!("expected 2-tuple, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_filter_int_empty_returns_empty() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_filter_int(&[Value::Array(vec![]), Value::String("positive".into())])
+                    .unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_filter_partition_int_reject_unknown_predicate() {
+        let err =
+            builtin_array_filter_int(&[int_array(&[1]), Value::String("xyz".into())]).unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+        let err = builtin_array_partition_int(&[int_array(&[1]), Value::String("xyz".into())])
+            .unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_filter_partition_int_reject_wrong_types_and_arity() {
+        assert!(
+            builtin_array_filter_int(&[Value::Int(1), Value::String("positive".into())])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_partition_int(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
