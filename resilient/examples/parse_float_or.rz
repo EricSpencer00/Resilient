@@ -1,0 +1,11 @@
+// RES-532 demo: parse_float_or returns the parsed float or a fallback.
+
+fn main() {
+    println(parse_float_or("3.14", 0.0));
+    println(parse_float_or("-2.5", 0.0));
+    println(parse_float_or("not a num", -1.0));
+    println(parse_float_or("", 0.0));
+    println(parse_float_or("42", 0.0));
+}
+
+main();
