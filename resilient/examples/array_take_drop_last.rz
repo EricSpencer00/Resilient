@@ -1,0 +1,13 @@
+// RES-537 demo: array_take_last / array_drop_last keep or remove
+// trailing elements. Round-trip: drop_last + take_last == arr.
+
+fn main() {
+    let xs = [1, 2, 3, 4, 5];
+    println(array_take_last(xs, 2));
+    println(array_drop_last(xs, 2));
+    println(array_take_last(xs, 100));
+    println(array_drop_last(xs, 100));
+    println(array_take_last([], 3));
+}
+
+main();

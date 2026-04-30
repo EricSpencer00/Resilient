@@ -8292,6 +8292,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-421: take/drop first n elements.
     ("array_take", builtin_array_take),
     ("array_drop", builtin_array_drop),
+    // RES-537: take/drop trailing n elements.
+    ("array_take_last", builtin_array_take_last),
+    ("array_drop_last", builtin_array_drop_last),
     // RES-514: pick every nth element.
     ("array_step", builtin_array_step),
     // RES-422: ascending sort over an integer array.
@@ -12745,6 +12748,62 @@ fn builtin_array_drop(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_drop: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-537: `array_take_last(arr, n)` — last `n` elements of `arr`.
+/// `n >= len` clamps to the full array. Negative `n` errors.
+/// Counterpart to `array_take` (RES-421).
+fn builtin_array_take_last(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_take_last: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            let take = (*n as usize).min(items.len());
+            let start = items.len() - take;
+            Ok(Value::Array(items[start..].to_vec()))
+        }
+        [a, b] => Err(format!(
+            "array_take_last: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_take_last: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-537: `array_drop_last(arr, n)` — `arr` with the last `n`
+/// elements removed. `n >= len` returns empty. Negative `n` errors.
+/// The round-trip
+/// `array_drop_last(arr, n) + array_take_last(arr, n) == arr`
+/// holds for any `0 <= n <= len(arr)`.
+fn builtin_array_drop_last(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "array_drop_last: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            let drop = (*n as usize).min(items.len());
+            let end = items.len() - drop;
+            Ok(Value::Array(items[..end].to_vec()))
+        }
+        [a, b] => Err(format!(
+            "array_drop_last: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_drop_last: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29064,6 +29123,84 @@ mod tests {
         );
         assert!(
             builtin_array_drop(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-537: array_take_last / array_drop_last ----------
+
+    fn take_last_int(items: &[i64], n: i64) -> Vec<i64> {
+        match builtin_array_take_last(&[int_array(items), Value::Int(n)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    fn drop_last_int(items: &[i64], n: i64) -> Vec<i64> {
+        match builtin_array_drop_last(&[int_array(items), Value::Int(n)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_take_last_basic() {
+        assert_eq!(take_last_int(&[1, 2, 3, 4, 5], 0), Vec::<i64>::new());
+        assert_eq!(take_last_int(&[1, 2, 3, 4, 5], 2), vec![4, 5]);
+        assert_eq!(take_last_int(&[1, 2, 3, 4, 5], 5), vec![1, 2, 3, 4, 5]);
+        assert_eq!(take_last_int(&[1, 2, 3, 4, 5], 100), vec![1, 2, 3, 4, 5]);
+        assert_eq!(take_last_int(&[1], 1), vec![1]);
+        assert_eq!(take_last_int(&[], 5), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_drop_last_basic() {
+        assert_eq!(drop_last_int(&[1, 2, 3, 4, 5], 0), vec![1, 2, 3, 4, 5]);
+        assert_eq!(drop_last_int(&[1, 2, 3, 4, 5], 2), vec![1, 2, 3]);
+        assert_eq!(drop_last_int(&[1, 2, 3, 4, 5], 5), Vec::<i64>::new());
+        assert_eq!(drop_last_int(&[1, 2, 3, 4, 5], 100), Vec::<i64>::new());
+        assert_eq!(drop_last_int(&[], 3), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_take_drop_last_round_trip() {
+        // drop_last(arr, n) + take_last(arr, n) == arr for valid n.
+        let xs = [1, 2, 3, 4, 5, 6, 7, 8];
+        for n in 0..=xs.len() as i64 {
+            let head = drop_last_int(&xs, n);
+            let tail = take_last_int(&xs, n);
+            let combined: Vec<i64> = head.into_iter().chain(tail).collect();
+            assert_eq!(combined, xs, "n={}", n);
+        }
+    }
+
+    #[test]
+    fn array_take_drop_last_reject_negative_and_arity() {
+        assert!(
+            builtin_array_take_last(&[int_array(&[1]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+        assert!(
+            builtin_array_drop_last(&[int_array(&[1]), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+        assert!(
+            builtin_array_take_last(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
