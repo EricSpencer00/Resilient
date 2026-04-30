@@ -1082,6 +1082,21 @@ impl TypeChecker {
         // RES-417: array min/max.
         env.set("array_min".to_string(), fn_any_to_any());
         env.set("array_max".to_string(), fn_any_to_any());
+        // RES-503: index of max/min element.
+        env.set(
+            "array_argmax_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "array_argmin_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-418: element search.
         env.set("array_contains".to_string(), fn_any_any_to_any());
         env.set("array_index_of".to_string(), fn_any_any_to_any());
@@ -4432,6 +4447,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-417: array min/max.
         "array_min",
         "array_max",
+        // RES-503: index of max/min int element.
+        "array_argmax_int",
+        "array_argmin_int",
         // RES-418: array search.
         "array_contains",
         "array_index_of",

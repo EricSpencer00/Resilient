@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-502-array-scan-int",
-      "claimed_at": "2026-04-30T01:25:40Z"
+      "branch": "res-503-array-argmax-argmin-int",
+      "claimed_at": "2026-04-30T01:30:16Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-502-array-scan-int",
-      "claimed_at": "2026-04-30T01:25:40Z"
+      "branch": "res-503-array-argmax-argmin-int",
+      "claimed_at": "2026-04-30T01:30:16Z"
     }
   }
 }
