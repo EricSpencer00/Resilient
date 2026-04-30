@@ -8423,6 +8423,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_not", builtin_bit_not),
     ("bit_shl", builtin_bit_shl),
     ("bit_shr", builtin_bit_shr),
+    // RES-488: population count (Hamming weight).
+    ("bit_count", builtin_bit_count),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9444,6 +9446,21 @@ fn builtin_bit_shr(args: &[Value]) -> RResult<Value> {
         }
         [a, b] => Err(format!("bit_shr: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!("bit_shr: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-488: `bit_count(n)` — population count (Hamming weight) of `n`'s
+/// twos-complement i64 representation. `bit_count(-1)` is 64 because
+/// every bit is set. Backed by `i64::count_ones`, which lowers to
+/// POPCNT / CNT on hardware that supports it.
+fn builtin_bit_count(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => Ok(Value::Int(n.count_ones() as i64)),
+        [other] => Err(format!("bit_count: expected int, got {}", other)),
+        _ => Err(format!(
+            "bit_count: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -28421,6 +28438,59 @@ mod tests {
         );
         assert!(
             builtin_bit_not(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-488: bit_count (popcount) ----------
+
+    #[test]
+    fn bit_count_basic() {
+        assert_int(builtin_bit_count(&[Value::Int(0)]).unwrap(), 0, "0");
+        assert_int(builtin_bit_count(&[Value::Int(1)]).unwrap(), 1, "1");
+        assert_int(builtin_bit_count(&[Value::Int(0b111)]).unwrap(), 3, "0b111");
+        assert_int(builtin_bit_count(&[Value::Int(0xFF)]).unwrap(), 8, "0xFF");
+    }
+
+    #[test]
+    fn bit_count_powers_of_two_have_one_bit() {
+        for shift in 0..63 {
+            let n: i64 = 1 << shift;
+            assert_int(builtin_bit_count(&[Value::Int(n)]).unwrap(), 1, "pow2");
+        }
+    }
+
+    #[test]
+    fn bit_count_negative_one_is_64() {
+        // Twos-complement i64: -1 has every bit set.
+        assert_int(builtin_bit_count(&[Value::Int(-1)]).unwrap(), 64, "-1");
+    }
+
+    #[test]
+    fn bit_count_int_min_is_one() {
+        // i64::MIN is just the sign bit.
+        assert_int(
+            builtin_bit_count(&[Value::Int(i64::MIN)]).unwrap(),
+            1,
+            "MIN",
+        );
+    }
+
+    #[test]
+    fn bit_count_rejects_non_int_and_arity() {
+        assert!(
+            builtin_bit_count(&[Value::Float(1.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_bit_count(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+        assert!(
+            builtin_bit_count(&[Value::Int(1), Value::Int(2)])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
