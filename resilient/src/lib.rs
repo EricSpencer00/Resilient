@@ -29701,18 +29701,27 @@ mod tests {
         // params that recursively calls itself used to fail with
         // "Identifier not found: <fn name>" because the captured env
         // didn't include the function's own re-bound version.
-        let src = r#"
-            fn fib(int n) {
-                if n < 2 { return n; }
-                return fib(n - 1) + fib(n - 2);
-            }
-            let r = fib(10);
-        "#;
-        let (p, errors) = parse(src);
-        assert!(errors.is_empty(), "{:?}", errors);
-        let mut interp = Interpreter::new();
-        interp.eval(&p).unwrap();
-        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(55)));
+        // Run in a thread with an enlarged stack because the debug
+        // interpreter is deeply recursive and macOS's default 512 KiB
+        // test stack overflows on fib(10).
+        let handle = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let src = r#"
+                    fn fib(int n) {
+                        if n < 2 { return n; }
+                        return fib(n - 1) + fib(n - 2);
+                    }
+                    let r = fib(10);
+                "#;
+                let (p, errors) = parse(src);
+                assert!(errors.is_empty(), "{:?}", errors);
+                let mut interp = Interpreter::new();
+                interp.eval(&p).unwrap();
+                assert!(matches!(interp.env.get("r").unwrap(), Value::Int(55)));
+            })
+            .expect("thread spawn failed");
+        handle.join().expect("thread panicked");
     }
 
     #[test]
