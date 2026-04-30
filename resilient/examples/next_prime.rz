@@ -1,0 +1,13 @@
+// RES-571 demo: next_prime returns the smallest prime > n. Falls
+// to 2 for any n < 2 (so works on 0, negatives, etc.).
+
+fn main() {
+    println(next_prime(0));
+    println(next_prime(1));
+    println(next_prime(2));
+    println(next_prime(10));
+    println(next_prime(100));
+    println(next_prime(-1));
+}
+
+main();
