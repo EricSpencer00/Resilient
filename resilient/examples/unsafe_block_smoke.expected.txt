@@ -1,0 +1,2 @@
+unsafe block parses; volatile intrinsics are reachable
+Program executed successfully

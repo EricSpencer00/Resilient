@@ -232,6 +232,12 @@ impl Formatter {
                 self.write(&format!("type {} = {};", name, target));
                 self.newline();
             }
+            // RES-406: re-emit `unsafe { ... }`. The body is a regular
+            // block; we just prepend the keyword.
+            Node::UnsafeBlock { body, .. } => {
+                self.write("unsafe ");
+                self.fmt_stmt(body);
+            }
             // RES-400 PR 1: re-emit a payload-less enum declaration.
             // PR 2 will extend this with payload kinds (named-field
             // and tuple-style); the format follows Rust convention so
@@ -1109,6 +1115,7 @@ impl Formatter {
             | Node::SupervisorDecl { .. }
             | Node::TraitDecl { .. }
             | Node::EnumDecl { .. }
+            | Node::UnsafeBlock { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
