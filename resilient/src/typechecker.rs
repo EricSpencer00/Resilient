@@ -1346,6 +1346,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-501: named-predicate every-element on int arrays.
+        env.set(
+            "array_all_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::String],
+                return_type: Box::new(Type::Bool),
+            },
+        );
         // RES-485: |a - b|.
         env.set(
             "abs_diff".to_string(),
@@ -4523,6 +4531,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_filter_int",
         // RES-500: named-predicate any.
         "array_any_int",
+        // RES-501: named-predicate every.
+        "array_all_int",
         "array_partition_int",
         // RES-485: abs_diff.
         "abs_diff",

@@ -8377,6 +8377,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_partition_int", builtin_array_partition_int),
     // RES-500: named-predicate any/some on int arrays.
     ("array_any_int", builtin_array_any_int),
+    // RES-501: named-predicate all/every on int arrays.
+    ("array_all_int", builtin_array_all_int),
     // RES-485: |a - b|.
     ("abs_diff", builtin_abs_diff),
     // RES-486: (quotient, remainder) tuple.
@@ -10333,6 +10335,41 @@ fn builtin_array_any_int(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_any_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-501: `array_all_int(arr, pred)` — true iff every element of an
+/// integer array satisfies the named predicate. Empty array → true
+/// (vacuous). Pairs with `array_any_int` (RES-500). Short-circuits
+/// on the first non-matching element.
+fn builtin_array_all_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_all_int", kind)?;
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_all_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if !pred(n) {
+                    return Ok(Value::Bool(false));
+                }
+            }
+            Ok(Value::Bool(true))
+        }
+        [a, b] => Err(format!(
+            "array_all_int: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_all_int: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -32721,6 +32758,65 @@ mod tests {
         );
         assert!(
             builtin_array_any_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-501: array_all_int ----------
+
+    fn all_int(items: &[i64], pred: &str) -> bool {
+        match builtin_array_all_int(&[int_array(items), Value::String(pred.into())]).unwrap() {
+            Value::Bool(b) => b,
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_all_int_basic() {
+        assert!(all_int(&[2, 4, 6], "even"));
+        assert!(!all_int(&[2, 3, 6], "even"));
+        assert!(all_int(&[5, 10, 15], "positive"));
+        assert!(!all_int(&[5, -10, 15], "positive"));
+        assert!(all_int(&[1, 3, 5], "odd"));
+    }
+
+    #[test]
+    fn array_all_int_empty_is_vacuously_true() {
+        assert!(all_int(&[], "positive"));
+        assert!(all_int(&[], "negative"));
+        assert!(all_int(&[], "even"));
+    }
+
+    #[test]
+    fn array_all_int_short_circuits_on_first_non_match() {
+        // The trailing string element wouldn't be reached because the
+        // first int already fails the predicate, so the error path
+        // should NOT fire.
+        let result = builtin_array_all_int(&[
+            Value::Array(vec![Value::Int(-1), Value::String("oops".into())]),
+            Value::String("positive".into()),
+        ])
+        .unwrap();
+        assert_bool(result, false, "short-circuit on -1 vs positive");
+    }
+
+    #[test]
+    fn array_all_int_unknown_predicate_errors() {
+        let err =
+            builtin_array_all_int(&[int_array(&[1]), Value::String("xyz".into())]).unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_all_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_all_int(&[Value::Int(1), Value::String("positive".into())])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_all_int(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
