@@ -1136,6 +1136,8 @@ impl TypeChecker {
         // RES-421: take/drop first n.
         env.set("array_take".to_string(), fn_any_any_to_any());
         env.set("array_drop".to_string(), fn_any_any_to_any());
+        // RES-514: pick every nth element.
+        env.set("array_step".to_string(), fn_any_any_to_any());
         // RES-422: integer sort ascending.
         env.set("array_sort".to_string(), fn_any_to_any());
         // RES-443: integer sort descending.
@@ -4514,6 +4516,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-421: take/drop.
         "array_take",
         "array_drop",
+        // RES-514: pick every nth element.
+        "array_step",
         // RES-422: integer sort.
         "array_sort",
         // RES-443: descending sort.
