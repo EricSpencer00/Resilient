@@ -1,0 +1,7 @@
+104
+111
+-1
+195
+169
+-1
+Program executed successfully

@@ -1467,6 +1467,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-564: byte at index, -1 if out of range.
+        env.set(
+            "string_byte_at".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-464: parse int with explicit radix → Result<Int, String>.
         env.set(
             "parse_int_base".to_string(),
@@ -4950,6 +4958,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_pairs",
         // RES-463: string_bytes_len.
         "string_bytes_len",
+        // RES-564: string_byte_at.
+        "string_byte_at",
         // RES-464: parse_int_base.
         "parse_int_base",
         // RES-465: int_to_base.
