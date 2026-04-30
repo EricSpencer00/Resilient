@@ -8282,6 +8282,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("digit_to_char", builtin_digit_to_char),
     // RES-420: concatenate two arrays.
     ("array_concat", builtin_array_concat),
+    // RES-515: three-way concatenation.
+    ("array_concat3", builtin_array_concat3),
     // RES-421: take/drop first n elements.
     ("array_take", builtin_array_take),
     ("array_drop", builtin_array_drop),
@@ -12068,6 +12070,29 @@ fn builtin_array_drop(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_drop: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-515: `array_concat3(a, b, c)` — three-way concatenation.
+/// Convenience over nested `array_concat`. Heterogeneous element
+/// types allowed; each argument must be an array.
+fn builtin_array_concat3(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b), Value::Array(c)] => {
+            let mut out = Vec::with_capacity(a.len() + b.len() + c.len());
+            out.extend_from_slice(a);
+            out.extend_from_slice(b);
+            out.extend_from_slice(c);
+            Ok(Value::Array(out))
+        }
+        [a, b, c] => Err(format!(
+            "array_concat3: expected (array, array, array), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_concat3: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -27808,6 +27833,65 @@ mod tests {
             builtin_array_concat(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-515: array_concat3 ----------
+
+    fn concat3_int(a: &[i64], b: &[i64], c: &[i64]) -> Vec<i64> {
+        match builtin_array_concat3(&[int_array(a), int_array(b), int_array(c)]).unwrap() {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_concat3_basic() {
+        assert_eq!(concat3_int(&[1, 2], &[3], &[4, 5]), vec![1, 2, 3, 4, 5]);
+        assert_eq!(concat3_int(&[], &[], &[]), Vec::<i64>::new());
+        assert_eq!(concat3_int(&[1], &[], &[2]), vec![1, 2]);
+    }
+
+    #[test]
+    fn array_concat3_associativity_with_pair_concat() {
+        // array_concat3(a, b, c) == array_concat(array_concat(a, b), c).
+        let a = int_array(&[1, 2]);
+        let b = int_array(&[3, 4]);
+        let c = int_array(&[5, 6]);
+        let three = builtin_array_concat3(&[a.clone(), b.clone(), c.clone()]).unwrap();
+        let pair = builtin_array_concat(&[a, b]).unwrap();
+        let nested = builtin_array_concat(&[pair, c]).unwrap();
+        match (three, nested) {
+            (Value::Array(t), Value::Array(n)) => {
+                let to_int = |v: &Value| match v {
+                    Value::Int(n) => *n,
+                    _ => panic!(),
+                };
+                let t: Vec<i64> = t.iter().map(to_int).collect();
+                let n: Vec<i64> = n.iter().map(to_int).collect();
+                assert_eq!(t, n);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn array_concat3_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_concat3(&[Value::Int(1), Value::Array(vec![]), Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected (array, array, array)")
+        );
+        assert!(
+            builtin_array_concat3(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 

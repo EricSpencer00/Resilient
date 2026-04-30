@@ -1,0 +1,9 @@
+// RES-515 demo: array_concat3 joins three arrays in order.
+
+fn main() {
+    println(array_concat3([1, 2], [3], [4, 5]));
+    println(array_concat3([], [42], []));
+    println(len(array_concat3([], [], [])));
+}
+
+main();
