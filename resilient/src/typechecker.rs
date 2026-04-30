@@ -1293,6 +1293,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-502: running-fold (intermediate accumulators).
+        env.set(
+            "array_scan_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::String],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-477: one-sided char-set trimmers.
         let str_str_to_str_b = Type::Function {
             params: vec![Type::String, Type::String],
@@ -4509,6 +4517,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_ne",
         // RES-475: array_fold_int.
         "array_fold_int",
+        // RES-502: running-fold over int arrays.
+        "array_scan_int",
         // RES-477: one-sided char-set trimmers.
         "trim_start_chars",
         "trim_end_chars",

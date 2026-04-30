@@ -8354,6 +8354,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_ne", builtin_array_ne),
     // RES-475: fixed-op integer fold with explicit init.
     ("array_fold_int", builtin_array_fold_int),
+    // RES-502: running-fold (intermediate accumulators).
+    ("array_scan_int", builtin_array_scan_int),
     // RES-477: one-sided char-set trimmers.
     ("trim_start_chars", builtin_trim_start_chars),
     ("trim_end_chars", builtin_trim_end_chars),
@@ -10656,6 +10658,54 @@ fn builtin_trim_end_chars(args: &[Value]) -> RResult<Value> {
     trim_side_chars("trim_end_chars", args, |s, pred| {
         s.trim_end_matches(pred).to_string()
     })
+}
+
+/// RES-502: `array_scan_int(arr, init, op)` — running fold over an
+/// integer array. Mirrors `array_fold_int` (RES-475) but emits every
+/// intermediate accumulator instead of only the final value. Result
+/// length equals input length; the `init` seed is consumed in the
+/// first step but not emitted. Op is one of "sum", "product", "min",
+/// "max" (matching `array_fold_int`).
+fn builtin_array_scan_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(init), Value::String(op)] => {
+            let mut acc = *init;
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_scan_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                acc = match op.as_str() {
+                    "sum" => acc.wrapping_add(n),
+                    "product" => acc.wrapping_mul(n),
+                    "min" => acc.min(n),
+                    "max" => acc.max(n),
+                    other => {
+                        return Err(format!(
+                            "array_scan_int: unknown op {:?}; expected sum/product/min/max",
+                            other
+                        ));
+                    }
+                };
+                out.push(Value::Int(acc));
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b, c] => Err(format!(
+            "array_scan_int: expected (array, int, string), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_scan_int: expected 3 arguments, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-475: `array_fold_int(arr, init, op)` — fold with named binary
@@ -32047,6 +32097,83 @@ mod tests {
             builtin_array_fold_int(&[int_array(&[1]), Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-502: array_scan_int ----------
+
+    fn scan_int(items: &[i64], init: i64, op: &str) -> Vec<i64> {
+        match builtin_array_scan_int(&[
+            int_array(items),
+            Value::Int(init),
+            Value::String(op.into()),
+        ])
+        .unwrap()
+        {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_scan_int_running_sum() {
+        assert_eq!(scan_int(&[1, 2, 3], 0, "sum"), vec![1, 3, 6]);
+        assert_eq!(scan_int(&[1, 2, 3, 4], 10, "sum"), vec![11, 13, 16, 20]);
+        assert_eq!(scan_int(&[5], 0, "sum"), vec![5]);
+    }
+
+    #[test]
+    fn array_scan_int_running_product() {
+        assert_eq!(scan_int(&[1, 2, 3], 1, "product"), vec![1, 2, 6]);
+        assert_eq!(scan_int(&[2, 3, 4], 1, "product"), vec![2, 6, 24]);
+    }
+
+    #[test]
+    fn array_scan_int_running_min_max() {
+        assert_eq!(scan_int(&[5, 3, 1, 4], i64::MAX, "min"), vec![5, 3, 1, 1]);
+        assert_eq!(scan_int(&[1, 5, 3, 7], i64::MIN, "max"), vec![1, 5, 5, 7]);
+    }
+
+    #[test]
+    fn array_scan_int_empty_input_is_empty() {
+        assert_eq!(scan_int(&[], 42, "sum"), Vec::<i64>::new());
+        assert_eq!(scan_int(&[], 0, "max"), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_scan_int_rejects_unknown_op() {
+        let err =
+            builtin_array_scan_int(&[int_array(&[1]), Value::Int(0), Value::String("xor".into())])
+                .unwrap_err();
+        assert!(err.contains("unknown op"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_scan_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_scan_int(&[Value::Int(1), Value::Int(0), Value::String("sum".into())])
+                .unwrap_err()
+                .contains("expected (array, int, string)")
+        );
+        assert!(
+            builtin_array_scan_int(&[int_array(&[1]), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
+        assert!(
+            builtin_array_scan_int(&[
+                Value::Array(vec![Value::Int(1), Value::Float(2.0)]),
+                Value::Int(0),
+                Value::String("sum".into()),
+            ])
+            .unwrap_err()
+            .contains("all int elements")
         );
     }
 
