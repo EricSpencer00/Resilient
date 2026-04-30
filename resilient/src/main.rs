@@ -8429,6 +8429,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_leading_zeros", builtin_bit_leading_zeros),
     // RES-490: count trailing zero bits.
     ("bit_trailing_zeros", builtin_bit_trailing_zeros),
+    // RES-491: integer floor sqrt.
+    ("int_sqrt", builtin_int_sqrt),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9496,6 +9498,26 @@ fn builtin_bit_trailing_zeros(args: &[Value]) -> RResult<Value> {
             "bit_trailing_zeros: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-491: `int_sqrt(n)` — integer floor square root. Rejects
+/// negative inputs (mathematically undefined over integers; the
+/// `f64`-based `sqrt(x)` builtin already covers the float domain).
+/// Backed by `i64::isqrt`.
+fn builtin_int_sqrt(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "int_sqrt: argument must be non-negative, got {}",
+                    n
+                ));
+            }
+            Ok(Value::Int(n.isqrt()))
+        }
+        [other] => Err(format!("int_sqrt: expected int, got {}", other)),
+        _ => Err(format!("int_sqrt: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -28656,6 +28678,55 @@ mod tests {
         );
         assert!(
             builtin_bit_trailing_zeros(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-491: int_sqrt ----------
+
+    #[test]
+    fn int_sqrt_basic() {
+        assert_int(builtin_int_sqrt(&[Value::Int(0)]).unwrap(), 0, "0");
+        assert_int(builtin_int_sqrt(&[Value::Int(1)]).unwrap(), 1, "1");
+        assert_int(builtin_int_sqrt(&[Value::Int(4)]).unwrap(), 2, "4");
+        assert_int(builtin_int_sqrt(&[Value::Int(9)]).unwrap(), 3, "9");
+        assert_int(builtin_int_sqrt(&[Value::Int(100)]).unwrap(), 10, "100");
+    }
+
+    #[test]
+    fn int_sqrt_floors_non_squares() {
+        assert_int(builtin_int_sqrt(&[Value::Int(2)]).unwrap(), 1, "2");
+        assert_int(builtin_int_sqrt(&[Value::Int(8)]).unwrap(), 2, "8");
+        assert_int(builtin_int_sqrt(&[Value::Int(15)]).unwrap(), 3, "15");
+        assert_int(builtin_int_sqrt(&[Value::Int(99)]).unwrap(), 9, "99");
+    }
+
+    #[test]
+    fn int_sqrt_handles_max() {
+        // floor(sqrt(i64::MAX)) == 3_037_000_499
+        assert_int(
+            builtin_int_sqrt(&[Value::Int(i64::MAX)]).unwrap(),
+            3_037_000_499,
+            "MAX",
+        );
+    }
+
+    #[test]
+    fn int_sqrt_rejects_negative() {
+        let err = builtin_int_sqrt(&[Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn int_sqrt_rejects_non_int_and_arity() {
+        assert!(
+            builtin_int_sqrt(&[Value::Float(4.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_int_sqrt(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
