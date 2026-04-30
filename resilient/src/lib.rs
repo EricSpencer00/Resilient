@@ -3919,7 +3919,43 @@ impl Parser {
             Token::Identifier(t) => {
                 let ty = t.clone();
                 self.next_token(); // advance past the identifier
-                Some(ty)
+                // RES-402: parameterised type `Name<T1, T2, ...>`.
+                // Encoded into the single-string slot as
+                // `Name<T1, T2>`. Recognises Array<T>, Option<T>,
+                // Result<T, E>, and any user-defined nominal type
+                // wrapping. The element types are kept verbatim;
+                // future work enforces homogeneity at construction
+                // sites.
+                if self.current_token == Token::Less {
+                    self.next_token(); // consume `<`
+                    let mut params: Vec<String> = Vec::new();
+                    while self.current_token != Token::Greater && self.current_token != Token::Eof {
+                        let p = self.parse_type_annotation(ctx)?;
+                        params.push(p);
+                        if self.current_token == Token::Comma {
+                            self.next_token();
+                        } else if self.current_token != Token::Greater {
+                            let tok = self.current_token.clone();
+                            self.record_error(format!(
+                                "Expected ',' or '>' inside `{}<...>` {}, found {}",
+                                ty, ctx, tok
+                            ));
+                            return None;
+                        }
+                    }
+                    if self.current_token != Token::Greater {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected '>' to close `{}<...>` {}, found {}",
+                            ty, ctx, tok
+                        ));
+                        return None;
+                    }
+                    self.next_token(); // consume `>`
+                    Some(format!("{}<{}>", ty, params.join(", ")))
+                } else {
+                    Some(ty)
+                }
             }
             Token::LeftBracket => {
                 // `[T; N]` — fixed-size array type.

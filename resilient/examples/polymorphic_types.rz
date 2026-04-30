@@ -1,0 +1,33 @@
+// RES-402: polymorphic Array<T>, Option<T>, Result<T, E> element
+// types in type annotations.
+//
+// The parser accepts the parameterised type syntax in any
+// type-annotation slot (parameters, returns, let-bindings, struct
+// fields). Element types are encoded into the single-string type
+// slot as `Array<int>`, `Option<string>`, `Result<int, string>`.
+//
+// Note: V1 of this PR ships the parser surface; full element-type
+// enforcement at construction sites (rejecting `[1, "two"]` as a
+// mixed-type literal) is deferred to a follow-up that depends on
+// the HM walker landing.
+
+fn first_int(Array<int> xs) -> int {
+    return xs[0];
+}
+
+fn first_string(Array<string> xs) -> string {
+    return xs[0];
+}
+
+fn unwrap_or(Option<int> opt, int fallback) -> int {
+    return fallback;
+}
+
+fn main() -> int {
+    println(first_int([1, 2, 3]));
+    println(first_string(["alpha", "beta"]));
+    println(unwrap_or(None, 99));
+    return 0;
+}
+
+main();
