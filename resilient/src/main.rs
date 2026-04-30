@@ -8396,6 +8396,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_pairs", builtin_array_pairs),
     // RES-463: UTF-8 byte length of a string.
     ("string_bytes_len", builtin_string_bytes_len),
+    // RES-564: byte at index (-1 if out of range).
+    ("string_byte_at", builtin_string_byte_at),
     // RES-464: parse int with explicit radix.
     ("parse_int_base", builtin_parse_int_base),
     // RES-465: render int with explicit radix.
@@ -12141,6 +12143,34 @@ fn builtin_parse_int_base(args: &[Value]) -> RResult<Value> {
 }
 
 /// RES-463: `string_bytes_len(s)` — UTF-8 byte length of `s`.
+/// RES-564: `string_byte_at(s, i)` — raw byte at byte index `i`, or
+/// `-1` if out of range. Negative `i` is a typed error. Useful for
+/// byte-level inspection (UTF-8 lead bytes, control chars) without
+/// allocating a substring.
+fn builtin_string_byte_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(idx)] => {
+            if *idx < 0 {
+                return Err(format!(
+                    "string_byte_at: index must be non-negative, got {}",
+                    idx
+                ));
+            }
+            let i = *idx as usize;
+            let byte = s.as_bytes().get(i).copied();
+            Ok(Value::Int(byte.map_or(-1, |b| b as i64)))
+        }
+        [a, b] => Err(format!(
+            "string_byte_at: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_byte_at: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
 /// Complements `len(s)`, which counts Unicode scalars. Useful for
 /// serialization or buffer sizing.
 fn builtin_string_bytes_len(args: &[Value]) -> RResult<Value> {
@@ -37275,6 +37305,59 @@ mod tests {
             builtin_string_bytes_len(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-564: string_byte_at ----------
+
+    fn byte_at(s: &str, i: i64) -> i64 {
+        match builtin_string_byte_at(&[Value::String(s.into()), Value::Int(i)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_byte_at_basic_ascii() {
+        assert_eq!(byte_at("hello", 0), b'h' as i64);
+        assert_eq!(byte_at("hello", 4), b'o' as i64);
+        assert_eq!(byte_at("A", 0), 65);
+    }
+
+    #[test]
+    fn string_byte_at_multibyte() {
+        // "é" = 0xC3 0xA9 in UTF-8.
+        assert_eq!(byte_at("héllo", 0), b'h' as i64);
+        assert_eq!(byte_at("héllo", 1), 0xC3);
+        assert_eq!(byte_at("héllo", 2), 0xA9);
+        assert_eq!(byte_at("héllo", 3), b'l' as i64);
+    }
+
+    #[test]
+    fn string_byte_at_out_of_range_returns_minus_one() {
+        assert_eq!(byte_at("hello", 5), -1);
+        assert_eq!(byte_at("hello", 99), -1);
+        assert_eq!(byte_at("", 0), -1);
+    }
+
+    #[test]
+    fn string_byte_at_rejects_negative_index() {
+        let err =
+            builtin_string_byte_at(&[Value::String("hi".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_byte_at_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_byte_at(&[Value::Int(1), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_string_byte_at(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 

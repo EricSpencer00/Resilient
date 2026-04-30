@@ -1,0 +1,13 @@
+// RES-564 demo: string_byte_at returns the raw UTF-8 byte at byte
+// index i, or -1 if out of range. Negative i is a typed error.
+
+fn main() {
+    println(string_byte_at("hello", 0));
+    println(string_byte_at("hello", 4));
+    println(string_byte_at("hello", 5));
+    println(string_byte_at("héllo", 1));
+    println(string_byte_at("héllo", 2));
+    println(string_byte_at("", 0));
+}
+
+main();
