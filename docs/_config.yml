@@ -34,8 +34,10 @@ search:
   rel_url: true
   button: false
 
-# Repo header link in the top right.
+# Header links in the top right.
 aux_links:
+  "🛝 Playground":
+    - "https://ericspencer.us/Resilient/playground/"
   "GitHub":
     - "https://github.com/EricSpencer00/Resilient"
 aux_links_new_tab: true

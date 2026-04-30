@@ -158,6 +158,7 @@ Resilient is MIT-licensed. Contributions from humans and AI agents are equally w
 
 ## Where next?
 
+- **Try in your browser, no install** → [🛝 Playground ↗](https://ericspencer.us/Resilient/playground/)
 - **New here?** → [Getting Started](getting-started)
 - **Mission-critical example projects** → [Resilient-examples ↗](https://github.com/EricSpencer00/Resilient-examples) (pacemaker, infusion pump, ABS, traffic-light interlock, reactor monitor, CAN parser)
 - **Learn the syntax** → [Syntax Reference](syntax)
