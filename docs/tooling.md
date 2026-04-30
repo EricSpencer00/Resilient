@@ -1,6 +1,7 @@
 ---
 title: Tooling Reference
-nav_order: 12
+parent: Language Reference
+nav_order: 4
 permalink: /tooling
 ---
 

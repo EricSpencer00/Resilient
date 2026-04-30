@@ -1,12 +1,8 @@
 {
   "claims": {
-    ".github/workflows/docs.yml": {
-      "branch": "res-507-combine-docs-playground-deploy",
-      "claimed_at": "2026-04-30T01:43:59Z"
-    },
-    ".github/workflows/playground.yml": {
-      "branch": "res-507-combine-docs-playground-deploy",
-      "claimed_at": "2026-04-30T01:43:59Z"
+    "docs": {
+      "branch": "res-508-simplify-docs-nav",
+      "claimed_at": "2026-04-30T01:47:28Z"
     }
   }
 }

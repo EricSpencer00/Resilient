@@ -1,7 +1,8 @@
 ---
 layout: default
 title: Foreign Function Interface
-nav_order: 15
+parent: Language Reference
+nav_order: 2
 ---
 
 # Foreign Function Interface

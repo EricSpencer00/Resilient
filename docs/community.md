@@ -1,6 +1,7 @@
 ---
 title: Community & Open Source
-nav_order: 14
+nav_order: 8
+has_children: true
 permalink: /community
 ---
 
