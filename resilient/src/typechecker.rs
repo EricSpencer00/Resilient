@@ -942,6 +942,14 @@ impl TypeChecker {
         };
         env.set("gcd_array".to_string(), arr_to_int.clone());
         env.set("lcm_array".to_string(), arr_to_int);
+        // RES-567: factorial with overflow detection.
+        env.set(
+            "factorial".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         env.set("pow".to_string(), fn_any_any_to_any());
         // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
         // promoted to Float if any arg is Float. Signed as
@@ -4810,6 +4818,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-536: gcd / lcm reduction over an integer array.
         "gcd_array",
         "lcm_array",
+        // RES-567: factorial with overflow detection.
+        "factorial",
         // RES-411: float predicates.
         "is_nan",
         "is_inf",

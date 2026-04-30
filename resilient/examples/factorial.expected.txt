@@ -1,0 +1,6 @@
+1
+1
+120
+3628800
+2432902008176640000
+Program executed successfully

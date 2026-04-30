@@ -8210,6 +8210,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-536: gcd / lcm reduction over an integer array.
     ("gcd_array", builtin_gcd_array),
     ("lcm_array", builtin_lcm_array),
+    // RES-567: factorial with overflow detection.
+    ("factorial", builtin_factorial),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -15219,6 +15221,35 @@ fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
         a as i64
     })?;
     Ok(Value::Int(result))
+}
+
+/// RES-567: `factorial(n)` — i64 factorial with overflow detection.
+/// `factorial(20)` is the largest that fits i64; 21! overflows and
+/// surfaces as a typed error rather than wrapping. Negative `n`
+/// errors. Empty product (`0!`) is 1 by convention.
+fn builtin_factorial(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "factorial: argument must be non-negative, got {}",
+                    n
+                ));
+            }
+            let mut acc: i64 = 1;
+            for k in 2..=*n {
+                acc = acc
+                    .checked_mul(k)
+                    .ok_or_else(|| format!("factorial: {}! does not fit in i64", n))?;
+            }
+            Ok(Value::Int(acc))
+        }
+        [other] => Err(format!("factorial: expected int, got {}", other)),
+        _ => Err(format!(
+            "factorial: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-536: `lcm_array(arr)` — lcm over an integer array.
@@ -29577,6 +29608,58 @@ mod tests {
         );
         assert!(
             builtin_gcd_array(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-567: factorial ----------
+
+    fn fact(n: i64) -> i64 {
+        match builtin_factorial(&[Value::Int(n)]).unwrap() {
+            Value::Int(r) => r,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn factorial_small_cases() {
+        assert_eq!(fact(0), 1);
+        assert_eq!(fact(1), 1);
+        assert_eq!(fact(2), 2);
+        assert_eq!(fact(5), 120);
+        assert_eq!(fact(10), 3628800);
+    }
+
+    #[test]
+    fn factorial_largest_fitting_is_20() {
+        assert_eq!(fact(20), 2_432_902_008_176_640_000_i64);
+    }
+
+    #[test]
+    fn factorial_overflow_at_21() {
+        let err = builtin_factorial(&[Value::Int(21)]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Even larger n still errors cleanly.
+        let err = builtin_factorial(&[Value::Int(100)]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+    }
+
+    #[test]
+    fn factorial_negative_errors() {
+        let err = builtin_factorial(&[Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn factorial_rejects_non_int_and_arity() {
+        assert!(
+            builtin_factorial(&[Value::Float(5.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_factorial(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
