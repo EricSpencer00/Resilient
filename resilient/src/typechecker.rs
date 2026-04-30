@@ -1122,6 +1122,8 @@ impl TypeChecker {
         // RES-418: element search.
         env.set("array_contains".to_string(), fn_any_any_to_any());
         env.set("array_index_of".to_string(), fn_any_any_to_any());
+        // RES-544: every index where element equals x.
+        env.set("array_index_of_all".to_string(), fn_any_any_to_any());
         // RES-541: set-like operations on arrays.
         env.set("array_intersect".to_string(), fn_any_any_to_any());
         env.set("array_diff".to_string(), fn_any_any_to_any());
@@ -4683,6 +4685,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-418: array search.
         "array_contains",
         "array_index_of",
+        // RES-544: every index where element equals x.
+        "array_index_of_all",
         // RES-541: set-like operations on arrays.
         "array_intersect",
         "array_diff",

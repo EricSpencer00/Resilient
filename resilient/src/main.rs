@@ -8281,6 +8281,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-418: element search over an array.
     ("array_contains", builtin_array_contains),
     ("array_index_of", builtin_array_index_of),
+    // RES-544: every index where element equals x.
+    ("array_index_of_all", builtin_array_index_of_all),
     // RES-541: set-like operations on arrays.
     ("array_intersect", builtin_array_intersect),
     ("array_diff", builtin_array_diff),
@@ -13221,6 +13223,36 @@ fn builtin_array_index_of(args: &[Value]) -> RResult<Value> {
         [a, _] => Err(format!("array_index_of: expected array, got {}", a)),
         _ => Err(format!(
             "array_index_of: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-544: `array_index_of_all(arr, x)` — every index where the
+/// element equals `x` under scalar value-equality. Distinct from
+/// `array_index_of` (which returns just the first occurrence).
+/// Empty array → empty result; absent needle → empty result.
+fn builtin_array_index_of_all(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), needle] => {
+            let mut out: Vec<Value> = Vec::new();
+            for (i, v) in items.iter().enumerate() {
+                match array_search_eq(v, needle) {
+                    Some(true) => out.push(Value::Int(i as i64)),
+                    Some(false) => {}
+                    None => {
+                        return Err(format!(
+                            "array_index_of_all: element types not comparable ({} vs {})",
+                            v, needle
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, _] => Err(format!("array_index_of_all: expected array, got {}", a)),
+        _ => Err(format!(
+            "array_index_of_all: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29140,6 +29172,101 @@ mod tests {
         );
         assert!(
             builtin_array_diff(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-544: array_index_of_all ----------
+
+    fn index_of_all_int(items: &[i64], needle: i64) -> Vec<i64> {
+        match builtin_array_index_of_all(&[int_array(items), Value::Int(needle)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_index_of_all_basic() {
+        assert_eq!(index_of_all_int(&[1, 5, 2, 5, 3], 5), vec![1, 3]);
+        assert_eq!(index_of_all_int(&[5, 5, 5, 5], 5), vec![0, 1, 2, 3]);
+        assert_eq!(index_of_all_int(&[1, 2, 3], 5), Vec::<i64>::new());
+        assert_eq!(index_of_all_int(&[], 5), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_index_of_all_works_on_strings() {
+        match builtin_array_index_of_all(&[
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("a".into()),
+            ]),
+            Value::String("a".into()),
+        ])
+        .unwrap()
+        {
+            Value::Array(out) => {
+                let idxs: Vec<i64> = out
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        _ => panic!(),
+                    })
+                    .collect();
+                assert_eq!(idxs, vec![0, 2]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_index_of_all_length_matches_array_count() {
+        // Identity: len(array_index_of_all(arr, x)) == array_count(arr, x).
+        for items in [
+            vec![1, 5, 2, 5, 3],
+            vec![5, 5, 5, 5],
+            vec![1, 2, 3],
+            vec![],
+            vec![0, 0, 1, 0, 1],
+        ] {
+            for needle in [0, 1, 2, 5, 7] {
+                let idxs = index_of_all_int(&items, needle);
+                let count =
+                    match builtin_array_count(&[int_array(&items), Value::Int(needle)]).unwrap() {
+                        Value::Int(n) => n as usize,
+                        _ => panic!(),
+                    };
+                assert_eq!(idxs.len(), count, "items={:?} needle={}", items, needle);
+            }
+        }
+    }
+
+    #[test]
+    fn array_index_of_all_rejects_non_comparable_elements() {
+        let err = builtin_array_index_of_all(&[
+            Value::Array(vec![Value::Array(vec![Value::Int(1)])]),
+            Value::Array(vec![Value::Int(1)]),
+        ])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_index_of_all_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_index_of_all(&[Value::Int(1), Value::Int(5)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_index_of_all(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
