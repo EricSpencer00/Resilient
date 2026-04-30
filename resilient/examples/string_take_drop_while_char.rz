@@ -1,0 +1,13 @@
+// RES-525 demo: take/drop the longest prefix of chars matching a
+// named predicate (alpha/digit/alnum/space). Round-trip identity:
+// take_while(s, k) + drop_while(s, k) == s.
+
+fn main() {
+    println(string_take_while_char("123abc", "digit"));
+    println(string_drop_while_char("123abc", "digit"));
+    println(string_take_while_char("abc123", "alpha"));
+    println(string_drop_while_char("abc123", "alpha"));
+    println(string_take_while_char("   hello", "space"));
+}
+
+main();

@@ -8446,6 +8446,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_count_char", builtin_string_count_char),
     // RES-524: char-index of a single character (-1 if absent).
     ("string_find_char", builtin_string_find_char),
+    // RES-525: named-predicate prefix slicing on strings.
+    ("string_take_while_char", builtin_string_take_while_char),
+    ("string_drop_while_char", builtin_string_drop_while_char),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
     // RES-516: alternate elements from two arrays.
@@ -10126,6 +10129,73 @@ fn builtin_string_find_char(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_find_char: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-525: shared dispatch for `string_take_while_char` /
+/// `string_drop_while_char`. Mirrors `int_predicate_kind` (RES-483)
+/// for the int-array slicers.
+fn char_predicate_kind(name: &str, kind: &str) -> RResult<fn(char) -> bool> {
+    match kind {
+        "alpha" => Ok((|c: char| c.is_ascii_alphabetic()) as fn(char) -> bool),
+        "digit" => Ok((|c: char| c.is_ascii_digit()) as fn(char) -> bool),
+        "alnum" => Ok((|c: char| c.is_ascii_alphanumeric()) as fn(char) -> bool),
+        "space" => Ok((|c: char| c.is_whitespace()) as fn(char) -> bool),
+        other => Err(format!(
+            "{}: unknown predicate {:?}; expected alpha/digit/alnum/space",
+            name, other
+        )),
+    }
+}
+
+/// RES-525: `string_take_while_char(s, kind)` — return the longest
+/// prefix of `s` where every character satisfies the named
+/// predicate. Mirrors `array_take_while_int` (RES-483) for strings.
+fn builtin_string_take_while_char(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(kind)] => {
+            let pred = char_predicate_kind("string_take_while_char", kind)?;
+            let end_byte = s
+                .char_indices()
+                .find(|(_, c)| !pred(*c))
+                .map(|(b, _)| b)
+                .unwrap_or(s.len());
+            Ok(Value::String(s[..end_byte].to_string()))
+        }
+        [a, b] => Err(format!(
+            "string_take_while_char: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_take_while_char: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-525: `string_drop_while_char(s, kind)` — return `s` with the
+/// longest prefix-of-matching-chars removed. Counterpart to
+/// `string_take_while_char`. The round-trip
+/// `take_while + drop_while == s` is a defining property.
+fn builtin_string_drop_while_char(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(kind)] => {
+            let pred = char_predicate_kind("string_drop_while_char", kind)?;
+            let start_byte = s
+                .char_indices()
+                .find(|(_, c)| !pred(*c))
+                .map(|(b, _)| b)
+                .unwrap_or(s.len());
+            Ok(Value::String(s[start_byte..].to_string()))
+        }
+        [a, b] => Err(format!(
+            "string_drop_while_char: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_drop_while_char: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -30015,6 +30085,104 @@ mod tests {
         );
         assert!(
             builtin_string_find_char(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-525: string_take_while_char / string_drop_while_char ----------
+
+    fn take_while(s: &str, kind: &str) -> String {
+        match builtin_string_take_while_char(&[Value::String(s.into()), Value::String(kind.into())])
+            .unwrap()
+        {
+            Value::String(out) => out,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    fn drop_while(s: &str, kind: &str) -> String {
+        match builtin_string_drop_while_char(&[Value::String(s.into()), Value::String(kind.into())])
+            .unwrap()
+        {
+            Value::String(out) => out,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_take_while_char_basic() {
+        assert_eq!(take_while("123abc", "digit"), "123");
+        assert_eq!(take_while("abc123", "alpha"), "abc");
+        assert_eq!(take_while("   hello", "space"), "   ");
+        assert_eq!(take_while("ab12cd", "alnum"), "ab12cd");
+        assert_eq!(take_while("", "alpha"), "");
+        assert_eq!(take_while("abc", "alpha"), "abc");
+    }
+
+    #[test]
+    fn string_take_while_char_no_match_returns_empty() {
+        assert_eq!(take_while("abc", "digit"), "");
+        assert_eq!(take_while("123", "alpha"), "");
+        assert_eq!(take_while("hello", "space"), "");
+    }
+
+    #[test]
+    fn string_drop_while_char_basic() {
+        assert_eq!(drop_while("123abc", "digit"), "abc");
+        assert_eq!(drop_while("abc", "alpha"), "");
+        assert_eq!(drop_while("abc123", "digit"), "abc123");
+        assert_eq!(drop_while("   hello", "space"), "hello");
+        assert_eq!(drop_while("", "digit"), "");
+    }
+
+    #[test]
+    fn string_take_drop_while_char_round_trip() {
+        // take_while + drop_while == original.
+        for s in ["", "abc", "123abc", "abc123", "   ws end", "héllo"] {
+            for kind in ["alpha", "digit", "alnum", "space"] {
+                let head = take_while(s, kind);
+                let tail = drop_while(s, kind);
+                assert_eq!(format!("{}{}", head, tail), s, "s={:?} kind={}", s, kind);
+            }
+        }
+    }
+
+    #[test]
+    fn string_take_drop_while_char_unicode_aware() {
+        // 'é' is non-ASCII — fails the ASCII alpha predicate.
+        assert_eq!(take_while("héllo", "alpha"), "h");
+        assert_eq!(drop_while("héllo", "alpha"), "éllo");
+        // Whitespace works for any Unicode whitespace; an ideographic
+        // space matches just like ASCII space.
+        assert_eq!(take_while("\u{3000}foo", "space"), "\u{3000}");
+    }
+
+    #[test]
+    fn string_take_drop_while_char_rejects_unknown_predicate() {
+        let err = builtin_string_take_while_char(&[
+            Value::String("abc".into()),
+            Value::String("xyz".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+        let err = builtin_string_drop_while_char(&[
+            Value::String("abc".into()),
+            Value::String("xyz".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_take_drop_while_char_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_take_while_char(&[Value::Int(1), Value::String("alpha".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_drop_while_char(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
