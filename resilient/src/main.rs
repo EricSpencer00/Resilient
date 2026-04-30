@@ -8437,6 +8437,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("is_pow2", builtin_is_pow2),
     // RES-494: round up to next power of two.
     ("next_pow2", builtin_next_pow2),
+    // RES-495: lowercase hex string (sign-prefixed for negatives).
+    ("int_to_hex", builtin_int_to_hex),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9552,6 +9554,26 @@ fn builtin_is_pow2(args: &[Value]) -> RResult<Value> {
         [Value::Int(n)] => Ok(Value::Bool(*n > 0 && (n & (n - 1)) == 0)),
         [other] => Err(format!("is_pow2: expected int, got {}", other)),
         _ => Err(format!("is_pow2: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-495: `int_to_hex(n)` — format `n` as a lowercase hex string,
+/// sign-prefixing negatives. No `0x` prefix (consistent with the
+/// existing `int_to_base` builtin). Shorthand for
+/// `int_to_base(n, 16)`.
+fn builtin_int_to_hex(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            let abs = n.unsigned_abs();
+            let body = format!("{:x}", abs);
+            let s = if *n < 0 { format!("-{}", body) } else { body };
+            Ok(Value::String(s))
+        }
+        [other] => Err(format!("int_to_hex: expected int, got {}", other)),
+        _ => Err(format!(
+            "int_to_hex: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -28969,6 +28991,54 @@ mod tests {
         );
         assert!(
             builtin_next_pow2(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-495: int_to_hex ----------
+
+    fn int_to_hex_str(n: i64) -> String {
+        match builtin_int_to_hex(&[Value::Int(n)]).unwrap() {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_to_hex_basic() {
+        assert_eq!(int_to_hex_str(0), "0");
+        assert_eq!(int_to_hex_str(1), "1");
+        assert_eq!(int_to_hex_str(15), "f");
+        assert_eq!(int_to_hex_str(16), "10");
+        assert_eq!(int_to_hex_str(255), "ff");
+        assert_eq!(int_to_hex_str(256), "100");
+        assert_eq!(int_to_hex_str(0xDEAD_BEEF), "deadbeef");
+    }
+
+    #[test]
+    fn int_to_hex_negatives_sign_prefix() {
+        assert_eq!(int_to_hex_str(-1), "-1");
+        assert_eq!(int_to_hex_str(-255), "-ff");
+        assert_eq!(int_to_hex_str(-4096), "-1000");
+    }
+
+    #[test]
+    fn int_to_hex_handles_min_and_max() {
+        assert_eq!(int_to_hex_str(i64::MAX), "7fffffffffffffff");
+        // i64::MIN: unsigned_abs() == 2^63 → 8000000000000000.
+        assert_eq!(int_to_hex_str(i64::MIN), "-8000000000000000");
+    }
+
+    #[test]
+    fn int_to_hex_rejects_non_int_and_arity() {
+        assert!(
+            builtin_int_to_hex(&[Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_int_to_hex(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

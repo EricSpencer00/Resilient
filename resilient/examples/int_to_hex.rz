@@ -1,0 +1,11 @@
+// RES-495 demo: int_to_hex returns lowercase hex with sign prefix for negatives.
+
+fn main() {
+    println(int_to_hex(0));
+    println(int_to_hex(255));
+    println(int_to_hex(256));
+    println(int_to_hex(-1));
+    println(int_to_hex(-4096));
+}
+
+main();
