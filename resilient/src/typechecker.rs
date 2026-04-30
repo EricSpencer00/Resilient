@@ -2498,7 +2498,42 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
-            enum_decls: HashMap::new(),
+            enum_decls: {
+                let mut m: std::collections::HashMap<String, Vec<crate::EnumVariant>> =
+                    std::collections::HashMap::new();
+                let s = crate::span::Span::default();
+                m.insert(
+                    "Option".to_string(),
+                    vec![
+                        crate::EnumVariant {
+                            name: "Some".to_string(),
+                            span: s,
+                            payload: crate::EnumPayload::None,
+                        },
+                        crate::EnumVariant {
+                            name: "None".to_string(),
+                            span: s,
+                            payload: crate::EnumPayload::None,
+                        },
+                    ],
+                );
+                m.insert(
+                    "Result".to_string(),
+                    vec![
+                        crate::EnumVariant {
+                            name: "Ok".to_string(),
+                            span: s,
+                            payload: crate::EnumPayload::None,
+                        },
+                        crate::EnumVariant {
+                            name: "Err".to_string(),
+                            span: s,
+                            payload: crate::EnumPayload::None,
+                        },
+                    ],
+                );
+                m
+            },
             type_aliases: HashMap::new(),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
@@ -3721,6 +3756,31 @@ impl TypeChecker {
                                 return Err(format!(
                                     "Non-exhaustive match on struct `{}`: add `{} {{ .. }}`, `_`, or an identifier arm that covers every field",
                                     sname, sname
+                                ));
+                            }
+                        }
+                        Type::Result => {
+                            let covered: HashSet<&str> = arms
+                                .iter()
+                                .filter(|(_, g, _)| g.is_none())
+                                .filter_map(|(p, _, _)| match p {
+                                    Pattern::EnumVariant { variant_name, .. } => {
+                                        Some(variant_name.as_str())
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            if !covered.contains("Ok") || !covered.contains("Err") {
+                                let mut missing = Vec::new();
+                                if !covered.contains("Ok") {
+                                    missing.push("Result::Ok");
+                                }
+                                if !covered.contains("Err") {
+                                    missing.push("Result::Err");
+                                }
+                                return Err(format!(
+                                    "Non-exhaustive match on enum `Result`: missing variants: {}",
+                                    missing.join(", ")
                                 ));
                             }
                         }
