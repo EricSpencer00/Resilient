@@ -1,0 +1,13 @@
+// RES-545 demo: string_split_last splits on the LAST occurrence of
+// the separator, returning [before, after]. Useful for paths
+// (split on last "/") and filenames (split on last ".").
+
+fn main() {
+    println(string_split_last("foo/bar/baz", "/"));
+    println(string_split_last("file.tar.gz", "."));
+    println(string_split_last("a,b,c,d", ","));
+    println(string_split_last("noseparator", ","));
+    println(string_split_last(",", ","));
+}
+
+main();

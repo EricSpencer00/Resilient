@@ -1,0 +1,6 @@
+["foo/bar", "baz"]
+["file.tar", "gz"]
+["a,b,c", "d"]
+["noseparator"]
+["", ""]
+Program executed successfully
