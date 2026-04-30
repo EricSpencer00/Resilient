@@ -8469,6 +8469,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("int_sqrt", builtin_int_sqrt),
     // RES-517: integer exponentiation.
     ("pow_int", builtin_pow_int),
+    // RES-518: integer division with explicit rounding mode.
+    ("ceil_div", builtin_ceil_div),
+    ("floor_div", builtin_floor_div),
     // RES-492: floor log base 2.
     ("int_log2", builtin_int_log2),
     // RES-493: power-of-two predicate.
@@ -9651,6 +9654,62 @@ fn builtin_pow_int(args: &[Value]) -> RResult<Value> {
         }
         [a, b] => Err(format!("pow_int: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!("pow_int: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-518: `ceil_div(a, b)` — integer division rounded toward
+/// positive infinity. Mathematically correct for negative dividends
+/// (the default `/` truncates toward zero, which gives a wrong
+/// answer when the dividend is negative and the remainder is
+/// non-zero). Errors on `b == 0`. `i64::MIN / -1` wraps to
+/// `i64::MIN` (consistent with `wrapping_div`).
+fn builtin_ceil_div(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("ceil_div: division by zero".to_string());
+            }
+            let q = a.wrapping_div(*b);
+            let r = a.wrapping_rem(*b);
+            // Add 1 when the remainder is non-zero and shares the
+            // sign of the divisor (truncated result is strictly
+            // less than the true quotient).
+            let adjust = i64::from(r != 0 && (r ^ b) >= 0);
+            Ok(Value::Int(q.wrapping_add(adjust)))
+        }
+        [a, b] => Err(format!("ceil_div: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "ceil_div: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-518: `floor_div(a, b)` — integer division rounded toward
+/// negative infinity. Mathematically correct for negative dividends.
+/// Errors on `b == 0`. `i64::MIN / -1` wraps to `i64::MIN`.
+fn builtin_floor_div(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("floor_div: division by zero".to_string());
+            }
+            let q = a.wrapping_div(*b);
+            let r = a.wrapping_rem(*b);
+            // Subtract 1 when the remainder is non-zero and has the
+            // opposite sign of the divisor (truncated result is
+            // strictly greater than the true quotient).
+            let adjust = i64::from(r != 0 && (r ^ b) < 0);
+            Ok(Value::Int(q.wrapping_sub(adjust)))
+        }
+        [a, b] => Err(format!(
+            "floor_div: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "floor_div: expected 2 arguments, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -30432,6 +30491,102 @@ mod tests {
         );
         assert!(
             builtin_pow_int(&[Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-518: ceil_div / floor_div ----------
+
+    fn cd(a: i64, b: i64) -> i64 {
+        match builtin_ceil_div(&[Value::Int(a), Value::Int(b)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    fn fd(a: i64, b: i64) -> i64 {
+        match builtin_floor_div(&[Value::Int(a), Value::Int(b)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ceil_div_basic() {
+        assert_eq!(cd(7, 3), 3);
+        assert_eq!(cd(6, 3), 2);
+        assert_eq!(cd(0, 5), 0);
+        assert_eq!(cd(1, 5), 1);
+    }
+
+    #[test]
+    fn ceil_div_handles_negatives() {
+        // ceil(-7/3) = -2 (NOT -3 like truncating)
+        assert_eq!(cd(-7, 3), -2);
+        // ceil(7/-3) = -2
+        assert_eq!(cd(7, -3), -2);
+        // ceil(-7/-3) = 3
+        assert_eq!(cd(-7, -3), 3);
+    }
+
+    #[test]
+    fn floor_div_basic() {
+        assert_eq!(fd(7, 3), 2);
+        assert_eq!(fd(6, 3), 2);
+        assert_eq!(fd(0, 5), 0);
+        assert_eq!(fd(1, 5), 0);
+    }
+
+    #[test]
+    fn floor_div_handles_negatives() {
+        // floor(-7/3) = -3 (NOT -2 like truncating)
+        assert_eq!(fd(-7, 3), -3);
+        // floor(7/-3) = -3
+        assert_eq!(fd(7, -3), -3);
+        // floor(-7/-3) = 2
+        assert_eq!(fd(-7, -3), 2);
+    }
+
+    #[test]
+    fn ceil_floor_div_match_on_exact_divisions() {
+        for a in [-12, -6, 0, 6, 12, 24] {
+            for b in [-3, -2, 1, 2, 3] {
+                if a % b == 0 {
+                    assert_eq!(cd(a, b), fd(a, b), "exact a={} b={}", a, b);
+                    assert_eq!(cd(a, b), a / b, "exact matches division");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ceil_floor_div_relationship() {
+        // For non-zero remainder: ceil_div(a, b) - floor_div(a, b) == 1.
+        for a in [7, -7] {
+            for b in [3, -3] {
+                assert_eq!(cd(a, b) - fd(a, b), 1, "a={} b={}", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn ceil_floor_div_reject_zero_divisor() {
+        let err = builtin_ceil_div(&[Value::Int(7), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("division by zero"), "got: {}", err);
+        let err = builtin_floor_div(&[Value::Int(7), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("division by zero"), "got: {}", err);
+    }
+
+    #[test]
+    fn ceil_floor_div_reject_wrong_types_and_arity() {
+        assert!(
+            builtin_ceil_div(&[Value::Float(7.0), Value::Int(3)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_floor_div(&[Value::Int(7)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

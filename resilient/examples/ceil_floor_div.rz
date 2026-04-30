@@ -1,0 +1,14 @@
+// RES-518 demo: ceil_div / floor_div round-trip integer division.
+// The default `/` truncates toward zero; ceil_div / floor_div round
+// mathematically correctly for negative dividends.
+
+fn main() {
+    println(ceil_div(7, 3));
+    println(floor_div(7, 3));
+    println(ceil_div(-7, 3));
+    println(floor_div(-7, 3));
+    println(ceil_div(6, 3));
+    println(floor_div(6, 3));
+}
+
+main();
