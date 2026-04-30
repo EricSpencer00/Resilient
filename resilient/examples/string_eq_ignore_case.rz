@@ -1,0 +1,11 @@
+// RES-527 demo: string_eq_ignore_case is ASCII case-insensitive.
+
+fn main() {
+    println(string_eq_ignore_case("hello", "HELLO"));
+    println(string_eq_ignore_case("Content-Type", "content-type"));
+    println(string_eq_ignore_case("hello", "world"));
+    println(string_eq_ignore_case("foo", "foobar"));
+    println(string_eq_ignore_case("héllo", "HÉLLO"));
+}
+
+main();
