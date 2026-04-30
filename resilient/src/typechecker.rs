@@ -1205,6 +1205,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-547: last byte index of substring, -1 if missing.
+        env.set(
+            "string_rfind".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-447: i64 boundary constants — zero-arg → Int.
         env.set(
             "int_min".to_string(),
@@ -4740,6 +4748,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_find_all",
         // RES-546: first byte index of substring, -1 if missing.
         "string_find",
+        // RES-547: last byte index of substring, -1 if missing.
+        "string_rfind",
         // RES-447: int_min / int_max.
         "int_min",
         "int_max",

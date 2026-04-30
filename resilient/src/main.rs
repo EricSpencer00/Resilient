@@ -8322,6 +8322,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_find_all", builtin_string_find_all),
     // RES-546: first byte index of substring, -1 if missing.
     ("string_find", builtin_string_find),
+    // RES-547: last byte index of substring, -1 if missing.
+    ("string_rfind", builtin_string_rfind),
     // RES-447: i64 boundary constants as zero-arg functions.
     ("int_min", builtin_int_min),
     ("int_max", builtin_int_max),
@@ -12659,6 +12661,32 @@ fn builtin_int_max(args: &[Value]) -> RResult<Value> {
         return Err(format!("int_max: expected 0 arguments, got {}", args.len()));
     }
     Ok(Value::Int(i64::MAX))
+}
+
+/// RES-547: `string_rfind(s, sub)` — last byte index of `sub` in
+/// `s`, or `-1` if not found. Empty needle is a typed error.
+/// Companion to `string_find` (RES-546). Mirrors `str::rfind`.
+fn builtin_string_rfind(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sub)] => {
+            if sub.is_empty() {
+                return Err("string_rfind: needle must not be empty".to_string());
+            }
+            let idx = match s.rfind(sub.as_str()) {
+                Some(i) => i as i64,
+                None => -1,
+            };
+            Ok(Value::Int(idx))
+        }
+        [a, b] => Err(format!(
+            "string_rfind: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_rfind: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-546: `string_find(s, sub)` — first byte index of `sub` in
@@ -34119,6 +34147,66 @@ mod tests {
         );
         assert!(
             builtin_string_find(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-547: string_rfind ----------
+
+    fn rfind_idx(s: &str, sub: &str) -> i64 {
+        match builtin_string_rfind(&[Value::String(s.into()), Value::String(sub.into())]).unwrap() {
+            Value::Int(i) => i,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_rfind_basic() {
+        assert_eq!(rfind_idx("the the the", "the"), 8);
+        assert_eq!(rfind_idx("ababab", "ab"), 4);
+        assert_eq!(rfind_idx("hello", "h"), 0);
+        assert_eq!(rfind_idx("hello", "o"), 4);
+    }
+
+    #[test]
+    fn string_rfind_returns_minus_one_when_missing() {
+        assert_eq!(rfind_idx("hello", "xyz"), -1);
+        assert_eq!(rfind_idx("", "x"), -1);
+        assert_eq!(rfind_idx("short", "longerneedle"), -1);
+    }
+
+    #[test]
+    fn string_rfind_returns_byte_index_for_multibyte() {
+        // "é" = 2 bytes. "héllohéllo" — last "héllo" starts at byte 6.
+        assert_eq!(rfind_idx("héllohéllo", "héllo"), 6);
+        // "é" appears at byte 1 and byte 7 — rfind returns 7.
+        assert_eq!(rfind_idx("héllohéllo", "é"), 7);
+    }
+
+    #[test]
+    fn string_rfind_single_occurrence_matches_find() {
+        // For a single occurrence, rfind == find.
+        assert_eq!(rfind_idx("abcdef", "cd"), 2);
+        assert_eq!(find_idx("abcdef", "cd"), 2);
+    }
+
+    #[test]
+    fn string_rfind_rejects_empty_needle() {
+        let err = builtin_string_rfind(&[Value::String("hello".into()), Value::String("".into())])
+            .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_rfind_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_rfind(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_rfind(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

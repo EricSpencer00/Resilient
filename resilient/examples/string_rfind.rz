@@ -1,0 +1,12 @@
+// RES-547 demo: string_rfind returns the LAST byte index of the
+// substring, or -1 if missing. Companion to string_find (RES-546).
+
+fn main() {
+    println(string_rfind("the the the", "the"));
+    println(string_rfind("foo/bar/baz.tar.gz", "."));
+    println(string_rfind("hello", "xyz"));
+    println(string_rfind("ababab", "ab"));
+    println(string_rfind("héllohéllo", "héllo"));
+}
+
+main();
