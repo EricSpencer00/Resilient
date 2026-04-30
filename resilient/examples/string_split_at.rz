@@ -1,0 +1,13 @@
+// RES-548 demo: string_split_at splits a string at a byte index
+// into [before, after]. Pairs with string_find / string_rfind for
+// "find a marker, split there" patterns.
+
+fn main() {
+    println(string_split_at("hello", 0));
+    println(string_split_at("hello", 2));
+    println(string_split_at("hello", 5));
+    println(string_split_at("héllo", 3));
+    println(string_split_at("", 0));
+}
+
+main();

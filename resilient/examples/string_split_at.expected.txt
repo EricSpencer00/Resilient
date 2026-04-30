@@ -1,0 +1,6 @@
+["", "hello"]
+["he", "llo"]
+["hello", ""]
+["hé", "llo"]
+["", ""]
+Program executed successfully

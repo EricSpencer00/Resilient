@@ -1213,6 +1213,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-548: split string at byte index → [before, after].
+        env.set(
+            "string_split_at".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-447: i64 boundary constants — zero-arg → Int.
         env.set(
             "int_min".to_string(),
@@ -4750,6 +4758,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_find",
         // RES-547: last byte index of substring, -1 if missing.
         "string_rfind",
+        // RES-548: split at byte index.
+        "string_split_at",
         // RES-447: int_min / int_max.
         "int_min",
         "int_max",
