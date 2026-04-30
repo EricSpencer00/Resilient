@@ -1,12 +1,12 @@
 {
   "claims": {
-    "resilient/src/main.rs": {
-      "branch": "res-506-string-drop",
-      "claimed_at": "2026-04-30T01:38:45Z"
+    ".github/workflows/docs.yml": {
+      "branch": "res-507-combine-docs-playground-deploy",
+      "claimed_at": "2026-04-30T01:43:59Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-506-string-drop",
-      "claimed_at": "2026-04-30T01:38:45Z"
+    ".github/workflows/playground.yml": {
+      "branch": "res-507-combine-docs-playground-deploy",
+      "claimed_at": "2026-04-30T01:43:59Z"
     }
   }
 }

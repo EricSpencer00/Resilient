@@ -13,6 +13,7 @@ permalink: /
     <p class="rl-hero__sub">A compiled language where failure is a first-class concern. Contracts are proven at compile time, hardware faults self-heal, and the same code runs on a dev laptop or a bare-metal Cortex-M4.</p>
     <div class="rl-hero__actions">
       <a href="{{ '/getting-started' | relative_url }}" class="rl-btn rl-btn--primary">Get started →</a>
+      <a href="{{ '/playground/' | relative_url }}" class="rl-btn rl-btn--secondary">Try the playground ↗</a>
       <a href="https://github.com/EricSpencer00/Resilient" class="rl-btn rl-btn--secondary" target="_blank">GitHub ↗</a>
     </div>
     <div class="rl-hero__badges">

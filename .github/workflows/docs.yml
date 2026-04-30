@@ -1,10 +1,27 @@
-name: Deploy Docs
+name: Deploy Site
+
+# RES-507: single-source GitHub Pages deploy. Builds the Jekyll docs
+# site and the WASM playground in one job, then uploads them as a
+# combined artifact. The docs land at the repo Pages root
+# (`/Resilient/`); the playground lives at `/Resilient/playground/`.
+#
+# Before RES-507 this workflow and `playground.yml` both called
+# `actions/deploy-pages@v4` against the same `concurrency: pages`
+# group, so the most recent push won and silently overwrote the
+# other site. `playground.yml` no longer deploys; it stays as a
+# PR-only build/size-budget check.
 
 on:
   push:
     branches: [main]
+    # Trigger on either docs or playground source changes — both
+    # land in the same artifact now, so either delta requires a
+    # redeploy.
     paths:
       - "docs/**"
+      - "playground/**"
+      - "resilient/examples/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -39,6 +56,40 @@ jobs:
         run: bundle exec jekyll build --source docs --destination _site --baseurl "/Resilient"
         env:
           JEKYLL_ENV: production
+
+      - name: Install Rust toolchain (with wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          fi
+
+      - name: Cache cargo (playground)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            playground/target
+          key: ${{ runner.os }}-playground-${{ hashFiles('playground/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-playground-
+
+      - name: Build playground (WASM)
+        run: bash playground/build.sh --check-size
+
+      - name: Mount playground at /playground
+        # Copy the playground bundle into _site/playground/ so it
+        # ships alongside the docs at the same Pages URL. Trailing
+        # slashes are intentional — `cp -R src/. dst/` copies the
+        # contents of `src` into `dst` rather than nesting `src`.
+        run: |
+          mkdir -p _site/playground
+          cp -R playground/dist/. _site/playground/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
