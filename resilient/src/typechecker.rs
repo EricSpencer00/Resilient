@@ -966,6 +966,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-570: trial-division primality test.
+        env.set(
+            "is_prime".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Bool),
+            },
+        );
         env.set("pow".to_string(), fn_any_any_to_any());
         // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
         // promoted to Float if any arg is Float. Signed as
@@ -4840,6 +4848,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "binomial",
         // RES-569: n-th Fibonacci with overflow detection.
         "fibonacci",
+        // RES-570: trial-division primality test.
+        "is_prime",
         // RES-411: float predicates.
         "is_nan",
         "is_inf",

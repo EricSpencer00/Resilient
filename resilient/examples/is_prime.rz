@@ -1,0 +1,15 @@
+// RES-570 demo: is_prime returns true if n is prime, false
+// otherwise. Trial division with the 2,3,6k±1 wheel.
+
+fn main() {
+    println(is_prime(2));
+    println(is_prime(3));
+    println(is_prime(4));
+    println(is_prime(13));
+    println(is_prime(0));
+    println(is_prime(1));
+    println(is_prime(-7));
+    println(is_prime(1000003));
+}
+
+main();

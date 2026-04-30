@@ -8216,6 +8216,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("binomial", builtin_binomial),
     // RES-569: n-th Fibonacci number with overflow detection.
     ("fibonacci", builtin_fibonacci),
+    // RES-570: trial-division primality test.
+    ("is_prime", builtin_is_prime),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -15225,6 +15227,41 @@ fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
         a as i64
     })?;
     Ok(Value::Int(result))
+}
+
+/// RES-570: `is_prime(n)` — trial-division primality test using the
+/// 2,3,6k±1 wheel. Negative / 0 / 1 are not prime. Suitable for
+/// stdlib use up to ~10¹² (roughly 10⁶ trial divisors); for crypto-
+/// scale inputs use a probabilistic test (Miller-Rabin) — out of
+/// scope for this builtin.
+fn builtin_is_prime(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n < 2 {
+                return Ok(Value::Bool(false));
+            }
+            if *n < 4 {
+                return Ok(Value::Bool(true)); // 2, 3
+            }
+            if *n % 2 == 0 || *n % 3 == 0 {
+                return Ok(Value::Bool(false));
+            }
+            // 6k±1 wheel: test 5, 7, 11, 13, 17, 19, ...
+            let mut i: i64 = 5;
+            while let Some(sq) = i.checked_mul(i) {
+                if sq > *n {
+                    break;
+                }
+                if *n % i == 0 || *n % (i + 2) == 0 {
+                    return Ok(Value::Bool(false));
+                }
+                i += 6;
+            }
+            Ok(Value::Bool(true))
+        }
+        [other] => Err(format!("is_prime: expected int, got {}", other)),
+        _ => Err(format!("is_prime: expected 1 argument, got {}", args.len())),
+    }
 }
 
 /// RES-569: `fibonacci(n)` — n-th Fibonacci number. Iterative i64
@@ -29871,6 +29908,69 @@ mod tests {
         );
         assert!(
             builtin_fibonacci(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-570: is_prime ----------
+
+    fn is_prime(n: i64) -> bool {
+        match builtin_is_prime(&[Value::Int(n)]).unwrap() {
+            Value::Bool(b) => b,
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn is_prime_small_primes() {
+        for p in [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43] {
+            assert!(is_prime(p), "{} should be prime", p);
+        }
+    }
+
+    #[test]
+    fn is_prime_small_composites() {
+        for c in [4, 6, 8, 9, 10, 12, 14, 15, 16, 18, 20, 21, 22, 24, 25] {
+            assert!(!is_prime(c), "{} should be composite", c);
+        }
+    }
+
+    #[test]
+    fn is_prime_edge_cases() {
+        assert!(!is_prime(0));
+        assert!(!is_prime(1));
+        assert!(!is_prime(-7));
+        assert!(!is_prime(i64::MIN));
+        assert!(is_prime(2));
+    }
+
+    #[test]
+    fn is_prime_larger_values() {
+        // Larger primes from known tables.
+        assert!(is_prime(1_000_003));
+        assert!(is_prime(982_451_653)); // 50_000_000th prime
+        // Composite that has only large factors so trial division
+        // actually iterates a lot.
+        assert!(!is_prime(1_000_003 * 1_000_033)); // both prime, product clearly composite
+    }
+
+    #[test]
+    fn is_prime_matches_pi_30() {
+        // π(30) = 10 (count of primes ≤ 30 is 10).
+        let count = (2..=30).filter(|&n| is_prime(n)).count();
+        assert_eq!(count, 10);
+    }
+
+    #[test]
+    fn is_prime_rejects_non_int_and_arity() {
+        assert!(
+            builtin_is_prime(&[Value::Float(7.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_is_prime(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
