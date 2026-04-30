@@ -1112,6 +1112,14 @@ impl TypeChecker {
         };
         env.set("array_max_or".to_string(), arr_int_to_int.clone());
         env.set("array_min_or".to_string(), arr_int_to_int);
+        // RES-549: integer mean (truncating toward zero).
+        env.set(
+            "array_mean_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4713,6 +4721,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-543: empty-safe min/max with fallback default.
         "array_max_or",
         "array_min_or",
+        // RES-549: integer mean (truncating toward zero).
+        "array_mean_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",
