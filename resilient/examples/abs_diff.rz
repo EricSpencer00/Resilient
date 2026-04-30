@@ -1,0 +1,11 @@
+// RES-485 demo: abs_diff returns |a - b|.
+
+fn main() {
+    println(abs_diff(10, 3));
+    println(abs_diff(3, 10));
+    println(abs_diff(-5, 5));
+    println(abs_diff(-3, -10));
+    println(abs_diff(42, 42));
+}
+
+main();
