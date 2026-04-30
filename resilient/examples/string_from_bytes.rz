@@ -1,0 +1,13 @@
+// RES-566 demo: string_from_bytes converts an array of bytes
+// (each 0..=255) to a Result<String, String>, validating UTF-8.
+// Round-trips with string_to_bytes (RES-565).
+
+fn main() {
+    println(string_from_bytes([104, 101, 108, 108, 111]));
+    println(string_from_bytes([]));
+    println(string_from_bytes([104, 195, 169, 108, 108, 111]));
+    // 0xFF (255) is never a valid UTF-8 lead byte.
+    println(string_from_bytes([255, 254]));
+}
+
+main();

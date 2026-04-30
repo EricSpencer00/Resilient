@@ -1,0 +1,5 @@
+Ok("hello")
+Ok("")
+Ok("héllo")
+Err("string_from_bytes: invalid UTF-8 at byte 0")
+Program executed successfully

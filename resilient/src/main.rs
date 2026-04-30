@@ -8400,6 +8400,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_byte_at", builtin_string_byte_at),
     // RES-565: string → array of UTF-8 bytes.
     ("string_to_bytes", builtin_string_to_bytes),
+    // RES-566: array of bytes → Result<String, String> (UTF-8 validated).
+    ("string_from_bytes", builtin_string_from_bytes),
     // RES-464: parse int with explicit radix.
     ("parse_int_base", builtin_parse_int_base),
     // RES-465: render int with explicit radix.
@@ -12145,6 +12147,57 @@ fn builtin_parse_int_base(args: &[Value]) -> RResult<Value> {
 }
 
 /// RES-463: `string_bytes_len(s)` — UTF-8 byte length of `s`.
+/// RES-566: `string_from_bytes(arr)` — convert an array of byte
+/// integers (each `0..=255`) into a string, returning
+/// `Result<String, String>`. Returns `Err(...)` if the bytes are
+/// not valid UTF-8. Non-int elements / out-of-range bytes / wrong
+/// arity surface as the runtime's typed error (not the Result).
+/// Round-trips with `string_to_bytes` (RES-565).
+fn builtin_string_from_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut bytes: Vec<u8> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        if !(0..=255).contains(n) {
+                            return Err(format!(
+                                "string_from_bytes: byte {} out of range [0, 255]",
+                                n
+                            ));
+                        }
+                        bytes.push(*n as u8);
+                    }
+                    other => {
+                        return Err(format!(
+                            "string_from_bytes: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            match String::from_utf8(bytes) {
+                Ok(s) => Ok(Value::Result {
+                    ok: true,
+                    payload: Box::new(Value::String(s)),
+                }),
+                Err(e) => Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String(format!(
+                        "string_from_bytes: invalid UTF-8 at byte {}",
+                        e.utf8_error().valid_up_to()
+                    ))),
+                }),
+            }
+        }
+        [other] => Err(format!("string_from_bytes: expected array, got {}", other)),
+        _ => Err(format!(
+            "string_from_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 /// RES-565: `string_to_bytes(s)` — array of i64s `0..=255` holding
 /// the raw UTF-8 bytes of `s`. Companion to `string_byte_at`
 /// (RES-564) when you want the whole byte buffer at once.
@@ -37434,6 +37487,88 @@ mod tests {
         );
         assert!(
             builtin_string_to_bytes(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-566: string_from_bytes ----------
+
+    fn from_bytes_ok(xs: &[i64]) -> String {
+        let arr = int_array(xs);
+        match builtin_string_from_bytes(&[arr]).unwrap() {
+            Value::Result { ok: true, payload } => match *payload {
+                Value::String(s) => s,
+                other => panic!("expected String, got {:?}", other),
+            },
+            other => panic!("expected Ok result, got {:?}", other),
+        }
+    }
+
+    fn from_bytes_err(xs: &[i64]) -> String {
+        let arr = int_array(xs);
+        match builtin_string_from_bytes(&[arr]).unwrap() {
+            Value::Result { ok: false, payload } => match *payload {
+                Value::String(s) => s,
+                other => panic!("expected String, got {:?}", other),
+            },
+            other => panic!("expected Err result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_from_bytes_basic_ascii() {
+        assert_eq!(from_bytes_ok(&[104, 101, 108, 108, 111]), "hello");
+        assert_eq!(from_bytes_ok(&[65]), "A");
+    }
+
+    #[test]
+    fn string_from_bytes_empty_returns_empty_string() {
+        assert_eq!(from_bytes_ok(&[]), "");
+    }
+
+    #[test]
+    fn string_from_bytes_round_trips_with_string_to_bytes() {
+        for s in ["", "hi", "héllo", "日本語", "π"] {
+            let bytes = to_bytes(s);
+            let restored = from_bytes_ok(&bytes);
+            assert_eq!(restored, s, "round trip failed for {:?}", s);
+        }
+    }
+
+    #[test]
+    fn string_from_bytes_invalid_utf8_returns_err_result() {
+        // 0xFF is never a valid UTF-8 lead byte.
+        let msg = from_bytes_err(&[0xFF, 0xFE]);
+        assert!(msg.contains("invalid UTF-8"), "got: {}", msg);
+        // A lone continuation byte is invalid.
+        let msg = from_bytes_err(&[0x80]);
+        assert!(msg.contains("invalid UTF-8"), "got: {}", msg);
+    }
+
+    #[test]
+    fn string_from_bytes_rejects_out_of_range_byte() {
+        let err = builtin_string_from_bytes(&[int_array(&[104, 256])]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {}", err);
+        let err = builtin_string_from_bytes(&[int_array(&[-1])]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_from_bytes_rejects_non_int_and_arity() {
+        let err = builtin_string_from_bytes(&[Value::Array(vec![
+            Value::Int(65),
+            Value::String("x".into()),
+        ])])
+        .unwrap_err();
+        assert!(err.contains("all int elements"), "got: {}", err);
+        assert!(
+            builtin_string_from_bytes(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_string_from_bytes(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
