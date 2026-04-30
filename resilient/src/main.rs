@@ -8287,6 +8287,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_range_int", builtin_array_range_int),
     // RES-553: consecutive pairwise differences arr[i+1] - arr[i].
     ("array_diff_consec_int", builtin_array_diff_consec_int),
+    // RES-554: per-element clamp to [lo, hi].
+    ("array_clamp_int", builtin_array_clamp_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13537,6 +13539,43 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-554: `array_clamp_int(arr, lo, hi)` — return a new array
+/// where each element is clamped to `[lo, hi]`. `lo > hi` is a typed
+/// error (matches `i64::clamp`'s panic semantic, surfaced cleanly).
+fn builtin_array_clamp_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(lo), Value::Int(hi)] => {
+            if lo > hi {
+                return Err(format!(
+                    "array_clamp_int: lo ({}) must not exceed hi ({})",
+                    lo, hi
+                ));
+            }
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => out.push(Value::Int((*n).clamp(*lo, *hi))),
+                    other => {
+                        return Err(format!(
+                            "array_clamp_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b, c] => Err(format!(
+            "array_clamp_int: expected (array, int, int), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_clamp_int: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -29680,6 +29719,80 @@ mod tests {
             builtin_array_diff_consec_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-554: array_clamp_int ----------
+
+    fn clamp_arr(xs: &[i64], lo: i64, hi: i64) -> Vec<i64> {
+        match builtin_array_clamp_int(&[int_array(xs), Value::Int(lo), Value::Int(hi)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_clamp_int_basic() {
+        assert_eq!(clamp_arr(&[1, 5, 9, -3, 100], 0, 10), vec![1, 5, 9, 0, 10]);
+        assert_eq!(clamp_arr(&[3], 1, 10), vec![3]);
+    }
+
+    #[test]
+    fn array_clamp_int_empty_returns_empty() {
+        assert_eq!(clamp_arr(&[], -5, 5), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_clamp_int_lo_eq_hi_pins_all() {
+        assert_eq!(clamp_arr(&[1, 2, 3, -10, 100], 5, 5), vec![5, 5, 5, 5, 5]);
+    }
+
+    #[test]
+    fn array_clamp_int_lo_gt_hi_errors() {
+        let err = builtin_array_clamp_int(&[int_array(&[1, 2, 3]), Value::Int(5), Value::Int(1)])
+            .unwrap_err();
+        assert!(err.contains("must not exceed"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_clamp_int_negatives_and_extremes() {
+        assert_eq!(
+            clamp_arr(&[-100, -50, 0, 50, 100], -10, 10),
+            vec![-10, -10, 0, 10, 10]
+        );
+        // Clamp to the full i64 range — should be a no-op.
+        assert_eq!(
+            clamp_arr(&[i64::MIN, 0, i64::MAX], i64::MIN, i64::MAX),
+            vec![i64::MIN, 0, i64::MAX]
+        );
+    }
+
+    #[test]
+    fn array_clamp_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_clamp_int(&[
+                Value::Array(vec![Value::String("a".into())]),
+                Value::Int(0),
+                Value::Int(10)
+            ])
+            .unwrap_err()
+            .contains("all int elements")
+        );
+        assert!(
+            builtin_array_clamp_int(&[Value::Int(1), Value::Int(0), Value::Int(10)])
+                .unwrap_err()
+                .contains("expected (array, int, int)")
+        );
+        assert!(
+            builtin_array_clamp_int(&[Value::Int(1), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
