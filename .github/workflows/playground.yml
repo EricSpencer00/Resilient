@@ -1,39 +1,28 @@
-# RES-368: build and deploy the WASM playground to GitHub Pages.
+# RES-368 (RES-507 update): build the WASM playground as a PR-only
+# size check. Deploy is owned by `docs.yml`, which builds Jekyll
+# docs and the playground in one job and uploads both as a single
+# Pages artifact at `/Resilient/` and `/Resilient/playground/`
+# respectively.
 #
-# Runs on every push to main that touches the playground source or
-# the bundled examples; runs on pull-request as a build-and-size
-# check (no deploy). The deploy target is the repo's Pages site at
-# https://ericspencer00.github.io/Resilient/ — playground lives at
-# /playground/ underneath.
+# Before RES-507 this workflow also called `actions/deploy-pages@v4`
+# against the same `concurrency: pages` group as `docs.yml`, so the
+# most recent push silently overwrote the other site. Keeping a
+# build-only check here means PRs that touch the WASM crate still
+# get the size budget enforced before merge, without racing the
+# main deploy.
 
 name: playground
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "playground/**"
-      - "resilient/examples/**"
-      - ".github/workflows/playground.yml"
   pull_request:
     paths:
       - "playground/**"
       - "resilient/examples/**"
       - ".github/workflows/playground.yml"
+  workflow_dispatch:
 
-# `pages` writes; `id-token: write` is required for the official
-# `actions/deploy-pages@v4` flow.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-# Serialize deploys: a queued push and an in-flight push both
-# targeting `main` should not race. Cancel the in-flight if a newer
-# one arrives.
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -66,20 +55,3 @@ jobs:
       - name: build playground (release, size-checked)
         run: |
           bash playground/build.sh --check-size
-
-      - name: upload artifact
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: playground/dist
-
-  deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
