@@ -25,7 +25,7 @@ checker* with the *invariant author*. Resilient separates the two.
 │  Outside the trust boundary (untrusted)                      │
 │                                                              │
 │   ┌───────────┐   writes    ┌────────────────────────────┐   │
-│   │    LLM    │ ──────────► │   .res / .rz source code   │   │
+│   │    LLM    │ ──────────► │   .rz / .rz source code   │   │
 │   └───────────┘             └────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
                               │

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # RES-323: snapshot-based test driver for the self-hosted lexer.
 #
-# For every `self-host/lexer_tests/*.rz` input, runs `lexer.res`
+# For every `self-host/lexer_tests/*.rz` input, runs `lexer.rz`
 # with `SELF_HOST_INPUT` pointing at the input, strips the
 # interpreter's seed/footer noise, and diffs the result against the
 # committed `*.expected.txt` snapshot.
@@ -23,7 +23,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 TESTS_DIR="self-host/lexer_tests"
-LEXER_SRC="self-host/lexer.res"
+LEXER_SRC="self-host/lexer.rz"
 
 if [[ ! -d "$TESTS_DIR" ]]; then
     echo "error: test directory $TESTS_DIR not found" >&2

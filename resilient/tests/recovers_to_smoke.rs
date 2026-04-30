@@ -7,12 +7,12 @@
 //!      clause, so the binary runs cleanly and prints the body's
 //!      output.
 //!
-//!   2. `examples/recovers_to_fail.res` — the body returns a value
+//!   2. `examples/recovers_to_fail.rz` — the body returns a value
 //!      that falsifies the recovery invariant at runtime. The
 //!      driver surfaces a `Contract violation` diagnostic that
 //!      mentions `recovers_to` and includes the counterexample.
 //!
-//! The `.res` extension on the failing example is intentional: the
+//! The `.rz` extension on the failing example is intentional: the
 //! broader `examples_golden` harness only walks `*.rz` files, so
 //! the rejecting example won't be miscategorised as a passing
 //! program whose stdout should be compared against an
@@ -62,7 +62,7 @@ fn recovers_to_final_state_satisfied_accepts() {
 
 #[test]
 fn recovers_to_final_state_violated_rejects() {
-    let ex = examples_dir().join("recovers_to_fail.res");
+    let ex = examples_dir().join("recovers_to_fail.rz");
     assert!(ex.exists(), "missing example: {}", ex.display());
 
     let output = Command::new(bin())

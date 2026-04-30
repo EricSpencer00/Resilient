@@ -4,7 +4,7 @@
 # Produces a self-contained `playground/dist/` directory:
 #   - index.html, style.css, main.js (copied from `playground/web/`)
 #   - pkg/ (wasm-bindgen output from `wasm-pack`)
-#   - examples.json (manifest of `resilient/examples/*.rz` and *.res
+#   - examples.json (manifest of `resilient/examples/*.rz` and *.rz
 #     files, baked at build time so the page does not need a server-
 #     side examples endpoint)
 #
@@ -63,7 +63,7 @@ out_path = sys.argv[2]
 examples_dir = os.path.join(repo_root, "resilient", "examples")
 items = []
 for name in sorted(os.listdir(examples_dir)):
-    if not (name.endswith(".rz") or name.endswith(".res")):
+    if not (name.endswith(".rz") or name.endswith(".rz")):
         continue
     path = os.path.join(examples_dir, name)
     try:
