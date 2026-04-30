@@ -2216,19 +2216,54 @@ enum Node {
     },
 }
 
-/// RES-400 PR 1: a single variant inside an `enum` declaration.
+/// RES-400 PR 2: a single variant inside an `enum` declaration.
 ///
-/// PR 1 only supports payload-less variants (`Red`, `Green`, ...).
-/// Future PRs will extend this struct with payload kinds (named fields
-/// like `Circle { r: Float }`, tuple-style `Pair(Int, Int)`).
+/// PR 1 introduced payload-less variants (`Red`, `Green`, ...).
+/// PR 2 (this) extends with payload kinds — named-field structs
+/// (`Circle { r: float }`) and tuple-style positional payloads
+/// (`Pair(int, int)`). The shape is captured in `payload`, with
+/// `EnumPayload::None` covering the payload-less case so existing
+/// callers don't need to special-case.
 #[derive(Debug, Clone)]
 pub(crate) struct EnumVariant {
     pub name: String,
-    /// Source span of the variant name. Unused in PR 1 — the
-    /// typechecker / exhaustiveness check (PR 4) will read it for
-    /// "missing variant" diagnostics that point back at the original
-    /// declaration site.
+    /// Source span of the variant name. Read by the exhaustiveness
+    /// check (PR 4) for "missing variant" diagnostics that point
+    /// back at the declaration site.
     #[allow(dead_code)]
+    pub span: span::Span,
+    /// Payload shape — `None` for payload-less variants
+    /// (`Red`), `Named` for `{ field: Type, ... }`, `Tuple` for
+    /// `(Type, Type, ...)`. Read by PR 3+ when constructor
+    /// expressions and pattern matching land.
+    #[allow(dead_code)]
+    pub payload: EnumPayload,
+}
+
+/// RES-400 PR 2: payload shape of an enum variant.
+///
+/// Each field's type is stored as a string (matching the rest of
+/// the AST's "single-string type" convention used by parameter
+/// declarations and `newtype` bases). The typechecker resolves the
+/// string against the type environment when the variant is
+/// registered.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum EnumPayload {
+    /// `Red` — no payload.
+    None,
+    /// `Circle { r: float, label: string }` — named fields.
+    Named(Vec<EnumField>),
+    /// `Pair(int, int)` — positional types.
+    Tuple(Vec<String>),
+}
+
+/// One named field inside `EnumPayload::Named`.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct EnumField {
+    pub name: String,
+    pub ty: String,
     pub span: span::Span,
 }
 

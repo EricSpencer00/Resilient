@@ -61,7 +61,7 @@
 //!   `Token::Enum => Some(crate::sum_types::parse_enum_decl(self))`
 //!   in the top-level item-parsing loop.
 
-use crate::{EnumVariant, Node, Parser, Token};
+use crate::{EnumField, EnumPayload, EnumVariant, Node, Parser, Token};
 use std::collections::HashSet;
 
 /// Parse an `enum Name { Variant1, Variant2, ... }` declaration.
@@ -125,23 +125,14 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
                 let v_span = parser.span_at_current();
                 parser.next_token(); // consume variant name
 
-                // PR 1: payload-less variants only. Anything that looks
-                // like the start of a payload (`{` for named fields,
-                // `(` for tuple-style) is rejected here with a
-                // forward-pointing diagnostic so PR 2 has an obvious
-                // place to extend.
-                if parser.current_token == Token::LeftBrace
-                    || parser.current_token == Token::LeftParen
-                {
-                    let tok = parser.current_token.clone();
-                    parser.record_error(format!(
-                        "Variant payloads are not yet supported (tracked by RES-400 PR 2). \
-                         Variant '{}::{}' has unexpected '{}' after the variant name.",
-                        name, v_name, tok
-                    ));
-                    // Recovery: skip to the next ',' or '}'.
-                    skip_to_variant_separator(parser);
-                }
+                // PR 2: parse the optional payload. `{ … }` for
+                // named-field, `( … )` for tuple-style, otherwise
+                // `EnumPayload::None`.
+                let payload = match &parser.current_token {
+                    Token::LeftBrace => parse_named_payload(parser, &name, &v_name),
+                    Token::LeftParen => parse_tuple_payload(parser, &name, &v_name),
+                    _ => EnumPayload::None,
+                };
 
                 if !seen.insert(v_name.clone()) {
                     parser
@@ -150,6 +141,7 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
                     variants.push(EnumVariant {
                         name: v_name,
                         span: v_span,
+                        payload,
                     });
                 }
 
@@ -190,6 +182,7 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
 /// outer loop can resume parsing later variants. Consumes the `,` if
 /// present so the next iteration starts on the variant after the
 /// malformed one.
+#[allow(dead_code)]
 fn skip_to_variant_separator(parser: &mut Parser) {
     while parser.current_token != Token::Comma
         && parser.current_token != Token::RightBrace
@@ -199,6 +192,156 @@ fn skip_to_variant_separator(parser: &mut Parser) {
     }
     if parser.current_token == Token::Comma {
         parser.next_token();
+    }
+}
+
+/// RES-400 PR 2: parse a named-field payload `{ field: Type, field: Type }`.
+///
+/// Called when the variant-name dispatch sees `Token::LeftBrace`.
+/// Consumes from the `{` through (and including) the closing `}`.
+/// Errors are reported via `parser.record_error` with file:line:col;
+/// recovery skips to the next `,` or `}` so the rest of the enum
+/// continues parsing.
+fn parse_named_payload(parser: &mut Parser, enum_name: &str, variant_name: &str) -> EnumPayload {
+    parser.next_token(); // consume '{'
+    let mut fields: Vec<EnumField> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    loop {
+        match &parser.current_token {
+            Token::RightBrace => {
+                parser.next_token(); // consume '}'
+                return EnumPayload::Named(fields);
+            }
+            Token::Eof => {
+                parser.record_error(format!(
+                    "Unexpected end of input inside payload for '{}::{}' — expected '}}'",
+                    enum_name, variant_name
+                ));
+                return EnumPayload::Named(fields);
+            }
+            Token::Identifier(field_name) => {
+                let f_name = field_name.clone();
+                let f_span = parser.span_at_current();
+                parser.next_token(); // consume field name
+                if parser.current_token != Token::Colon {
+                    let tok = parser.current_token.clone();
+                    parser.record_error(format!(
+                        "Expected ':' after field name '{}::{}.{}', found {}",
+                        enum_name, variant_name, f_name, tok
+                    ));
+                    skip_to_payload_separator(parser, Token::RightBrace);
+                    continue;
+                }
+                parser.next_token(); // consume ':'
+                let ty = match parse_payload_type(parser) {
+                    Some(t) => t,
+                    None => {
+                        parser.record_error(format!(
+                            "Expected type after ':' in field '{}::{}.{}'",
+                            enum_name, variant_name, f_name
+                        ));
+                        skip_to_payload_separator(parser, Token::RightBrace);
+                        continue;
+                    }
+                };
+                if !seen.insert(f_name.clone()) {
+                    parser.record_error(format!(
+                        "Duplicate field '{}' in variant '{}::{}'",
+                        f_name, enum_name, variant_name
+                    ));
+                } else {
+                    fields.push(EnumField {
+                        name: f_name,
+                        ty,
+                        span: f_span,
+                    });
+                }
+                if parser.current_token == Token::Comma {
+                    parser.next_token();
+                }
+            }
+            other => {
+                let tok = other.clone();
+                parser.record_error(format!(
+                    "Expected field name in payload for '{}::{}', found {}",
+                    enum_name, variant_name, tok
+                ));
+                parser.next_token();
+            }
+        }
+    }
+}
+
+/// RES-400 PR 2: parse a tuple-style payload `( Type, Type, … )`.
+///
+/// Called when the variant-name dispatch sees `Token::LeftParen`.
+/// Consumes from the `(` through (and including) the closing `)`.
+fn parse_tuple_payload(parser: &mut Parser, enum_name: &str, variant_name: &str) -> EnumPayload {
+    parser.next_token(); // consume '('
+    let mut tys: Vec<String> = Vec::new();
+    loop {
+        match &parser.current_token {
+            Token::RightParen => {
+                parser.next_token(); // consume ')'
+                return EnumPayload::Tuple(tys);
+            }
+            Token::Eof => {
+                parser.record_error(format!(
+                    "Unexpected end of input inside payload for '{}::{}' — expected ')'",
+                    enum_name, variant_name
+                ));
+                return EnumPayload::Tuple(tys);
+            }
+            _ => {
+                let ty = match parse_payload_type(parser) {
+                    Some(t) => t,
+                    None => {
+                        let tok = parser.current_token.clone();
+                        parser.record_error(format!(
+                            "Expected type in payload for '{}::{}', found {}",
+                            enum_name, variant_name, tok
+                        ));
+                        skip_to_payload_separator(parser, Token::RightParen);
+                        continue;
+                    }
+                };
+                tys.push(ty);
+                if parser.current_token == Token::Comma {
+                    parser.next_token();
+                }
+            }
+        }
+    }
+}
+
+/// Recovery helper for malformed payloads: advance until the next
+/// `,` or the supplied closing token (or EOF). Consumes the `,` if
+/// present so the next field/type starts cleanly.
+fn skip_to_payload_separator(parser: &mut Parser, close: Token) {
+    while parser.current_token != Token::Comma
+        && parser.current_token != close
+        && parser.current_token != Token::Eof
+    {
+        parser.next_token();
+    }
+    if parser.current_token == Token::Comma {
+        parser.next_token();
+    }
+}
+
+/// Parse a single type reference for use in a variant payload.
+/// Accepts an identifier (covers primitives like `int`/`float`/
+/// `string` and user-defined names). Returns the type name as a
+/// string per the AST's "single-string type" convention; `None` if
+/// the current token isn't a type name.
+fn parse_payload_type(parser: &mut Parser) -> Option<String> {
+    match &parser.current_token {
+        Token::Identifier(n) => {
+            let name = n.clone();
+            parser.next_token();
+            Some(name)
+        }
+        _ => None,
     }
 }
 
@@ -307,15 +450,106 @@ mod tests {
     }
 
     #[test]
-    fn payload_variant_is_a_pr2_pending_error() {
-        // Payload variants will land in PR 2; the parser produces a
-        // forward-pointing error today so anyone trying the syntax
-        // gets a clear "not yet" message instead of a confusing
-        // shape-mismatch.
-        let (_, errs) = parse("enum Shape { Circle { r: float } }");
+    fn parses_named_field_payload() {
+        let (program, errs) =
+            parse("enum Shape { Circle { r: float }, Rect { w: float, h: float } }");
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        let decls = super::extract_enum_decls(&program);
+        let v = match decls[0] {
+            crate::Node::EnumDecl { variants, .. } => variants,
+            _ => panic!(),
+        };
+        assert_eq!(v.len(), 2);
+        match &v[0].payload {
+            crate::EnumPayload::Named(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "r");
+                assert_eq!(fields[0].ty, "float");
+            }
+            other => panic!("expected Named payload, got {:?}", other),
+        }
+        match &v[1].payload {
+            crate::EnumPayload::Named(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "w");
+                assert_eq!(fields[0].ty, "float");
+                assert_eq!(fields[1].name, "h");
+                assert_eq!(fields[1].ty, "float");
+            }
+            other => panic!("expected Named payload, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_tuple_payload() {
+        let (program, errs) = parse("enum Pair { Just(int), Both(int, int) }");
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        let decls = super::extract_enum_decls(&program);
+        let v = match decls[0] {
+            crate::Node::EnumDecl { variants, .. } => variants,
+            _ => panic!(),
+        };
+        match &v[0].payload {
+            crate::EnumPayload::Tuple(tys) => {
+                assert_eq!(tys, &vec!["int".to_string()]);
+            }
+            other => panic!("expected Tuple payload, got {:?}", other),
+        }
+        match &v[1].payload {
+            crate::EnumPayload::Tuple(tys) => {
+                assert_eq!(tys, &vec!["int".to_string(), "int".to_string()]);
+            }
+            other => panic!("expected Tuple payload, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn payload_less_variants_carry_none_payload() {
+        let (program, errs) = parse("enum Color { Red, Green, Blue }");
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        let decls = super::extract_enum_decls(&program);
+        let v = match decls[0] {
+            crate::Node::EnumDecl { variants, .. } => variants,
+            _ => panic!(),
+        };
+        for variant in v {
+            match &variant.payload {
+                crate::EnumPayload::None => {}
+                other => panic!("expected None payload, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_payload_kinds_in_one_enum() {
+        let (program, errs) = parse("enum Shape { Empty, Point(int, int), Circle { r: float } }");
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        let decls = super::extract_enum_decls(&program);
+        let v = match decls[0] {
+            crate::Node::EnumDecl { variants, .. } => variants,
+            _ => panic!(),
+        };
+        assert!(matches!(v[0].payload, crate::EnumPayload::None));
+        assert!(matches!(v[1].payload, crate::EnumPayload::Tuple(_)));
+        assert!(matches!(v[2].payload, crate::EnumPayload::Named(_)));
+    }
+
+    #[test]
+    fn duplicate_field_in_named_payload_is_an_error() {
+        let (_, errs) = parse("enum Bad { Var { x: int, x: int } }");
         assert!(
-            errs.iter().any(|e| e.contains("RES-400 PR 2")),
-            "expected PR 2 deferral message, got: {:?}",
+            errs.iter().any(|e| e.contains("Duplicate field")),
+            "expected duplicate-field error, got: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn missing_colon_in_named_field_is_an_error() {
+        let (_, errs) = parse("enum Bad { Var { x int } }");
+        assert!(
+            errs.iter().any(|e| e.contains("Expected ':'")),
+            "expected colon error, got: {:?}",
             errs
         );
     }
