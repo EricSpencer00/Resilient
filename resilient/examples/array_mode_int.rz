@@ -1,0 +1,12 @@
+// RES-551 demo: array_mode_int returns the most-common integer.
+// Tie-broken by smallest value. Empty array errors.
+
+fn main() {
+    println(array_mode_int([1, 2, 2, 3, 3, 3]));
+    println(array_mode_int([1, 2, 2, 3, 3]));
+    println(array_mode_int([5, 5, 5, 1, 2]));
+    println(array_mode_int([7]));
+    println(array_mode_int([-5, -5, -5, -3, -3]));
+}
+
+main();
