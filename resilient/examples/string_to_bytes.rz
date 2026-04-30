@@ -1,0 +1,12 @@
+// RES-565 demo: string_to_bytes returns the UTF-8 byte buffer of a
+// string as an integer array (each element 0..=255). Companion to
+// string_byte_at (RES-564).
+
+fn main() {
+    println(string_to_bytes("hello"));
+    println(string_to_bytes(""));
+    println(string_to_bytes("héllo"));
+    println(string_to_bytes("A"));
+}
+
+main();
