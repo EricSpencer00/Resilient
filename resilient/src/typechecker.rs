@@ -1133,6 +1133,14 @@ impl TypeChecker {
         );
         // RES-420: concatenate two arrays.
         env.set("array_concat".to_string(), fn_any_any_to_any());
+        // RES-515: three-way concatenation.
+        env.set(
+            "array_concat3".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any, Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-421: take/drop first n.
         env.set("array_take".to_string(), fn_any_any_to_any());
         env.set("array_drop".to_string(), fn_any_any_to_any());
@@ -4513,6 +4521,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "digit_to_char",
         // RES-420: array_concat.
         "array_concat",
+        // RES-515: three-way concatenation.
+        "array_concat3",
         // RES-421: take/drop.
         "array_take",
         "array_drop",
