@@ -1,0 +1,10 @@
+// RES-484 demo: array_filter_int / array_partition_int with named predicates.
+
+fn main() {
+    println(array_filter_int([1, -2, 3, -4, 5], "positive"));
+    println(array_filter_int([1, 2, 3, 4, 5, 6], "even"));
+    // partition returns (matching, non-matching).
+    println(array_partition_int([1, -2, 3, -4, 5], "positive"));
+}
+
+main();
