@@ -1120,6 +1120,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-550: integer median (truncating mean for even len).
+        env.set(
+            "array_median_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4723,6 +4731,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_min_or",
         // RES-549: integer mean (truncating toward zero).
         "array_mean_int",
+        // RES-550: integer median.
+        "array_median_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",
