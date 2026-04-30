@@ -8396,6 +8396,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_any_int", builtin_array_any_int),
     // RES-501: named-predicate all/every on int arrays.
     ("array_all_int", builtin_array_all_int),
+    // RES-530: named-predicate count on int arrays.
+    ("array_count_int", builtin_array_count_int),
     // RES-485: |a - b|.
     ("abs_diff", builtin_abs_diff),
     // RES-486: (quotient, remainder) tuple.
@@ -10967,6 +10969,42 @@ fn builtin_array_all_int(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_all_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-530: `array_count_int(arr, pred)` — count integer elements
+/// satisfying the named predicate. Equivalent to
+/// `len(array_filter_int(arr, pred))` but without materialising the
+/// filtered array. Joins the RES-483 named-predicate family.
+fn builtin_array_count_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_count_int", kind)?;
+            let mut count: i64 = 0;
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_count_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if pred(n) {
+                    count += 1;
+                }
+            }
+            Ok(Value::Int(count))
+        }
+        [a, b] => Err(format!(
+            "array_count_int: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_count_int: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -35577,6 +35615,78 @@ mod tests {
         );
         assert!(
             builtin_array_all_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-530: array_count_int ----------
+
+    fn count_int(items: &[i64], pred: &str) -> i64 {
+        match builtin_array_count_int(&[int_array(items), Value::String(pred.into())]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_count_int_basic() {
+        assert_eq!(count_int(&[1, -2, 3, -4, 5], "negative"), 2);
+        assert_eq!(count_int(&[1, -2, 3, -4, 5], "positive"), 3);
+        assert_eq!(count_int(&[1, 2, 3, 4], "even"), 2);
+        assert_eq!(count_int(&[1, 2, 3, 4], "odd"), 2);
+        assert_eq!(count_int(&[0, 1, 0, 2, 0], "zero"), 3);
+        assert_eq!(count_int(&[0, 1, 0, 2, 0], "nonzero"), 2);
+    }
+
+    #[test]
+    fn array_count_int_empty_is_zero() {
+        for kind in ["positive", "negative", "zero", "nonzero", "even", "odd"] {
+            assert_eq!(count_int(&[], kind), 0, "kind={}", kind);
+        }
+    }
+
+    #[test]
+    fn array_count_int_matches_filter_length() {
+        // Identity: array_count_int(arr, k) == len(array_filter_int(arr, k)).
+        for items in [
+            vec![1, 2, 3],
+            vec![-5, 0, 5],
+            vec![],
+            vec![100, 200, -300, 0, 0, 7],
+        ] {
+            for kind in ["positive", "negative", "zero", "even"] {
+                let cnt = count_int(&items, kind);
+                let filtered = match builtin_array_filter_int(&[
+                    int_array(&items),
+                    Value::String(kind.into()),
+                ])
+                .unwrap()
+                {
+                    Value::Array(out) => out.len() as i64,
+                    _ => panic!(),
+                };
+                assert_eq!(cnt, filtered, "items={:?} kind={}", items, kind);
+            }
+        }
+    }
+
+    #[test]
+    fn array_count_int_unknown_predicate_errors() {
+        let err =
+            builtin_array_count_int(&[int_array(&[1]), Value::String("xyz".into())]).unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_count_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_count_int(&[Value::Int(1), Value::String("positive".into())])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_count_int(&[int_array(&[1])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
