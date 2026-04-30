@@ -1200,6 +1200,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-560: running max.
+        env.set(
+            "array_cummax_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4823,6 +4831,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_sum_squares_int",
         // RES-559: running prefix sum.
         "array_cumsum_int",
+        // RES-560: running max.
+        "array_cummax_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",

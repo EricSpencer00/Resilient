@@ -1,0 +1,12 @@
+// RES-560 demo: array_cummax_int returns the running maximum.
+// Useful for monotonic envelopes and hi-water marks.
+
+fn main() {
+    println(array_cummax_int([3, 1, 4, 1, 5, 9, 2, 6]));
+    println(array_cummax_int([1, 2, 3]));
+    println(array_cummax_int([5, 4, 3]));
+    println(array_cummax_int([42]));
+    println(array_cummax_int([]));
+}
+
+main();
