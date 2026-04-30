@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-492-int-log2",
-      "claimed_at": "2026-04-30T00:54:48Z"
+      "branch": "res-493-is-pow2",
+      "claimed_at": "2026-04-30T00:56:58Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-492-int-log2",
-      "claimed_at": "2026-04-30T00:54:48Z"
+      "branch": "res-493-is-pow2",
+      "claimed_at": "2026-04-30T00:56:58Z"
     }
   }
 }
