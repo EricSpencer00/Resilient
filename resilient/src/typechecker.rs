@@ -1115,6 +1115,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-505: parse single char to base-36 digit.
+        env.set(
+            "char_to_digit".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-420: concatenate two arrays.
         env.set("array_concat".to_string(), fn_any_any_to_any());
         // RES-421: take/drop first n.
@@ -4458,6 +4466,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-419: char-code conversions.
         "chr",
         "ord",
+        // RES-505: parse single char to base-36 digit.
+        "char_to_digit",
         // RES-420: array_concat.
         "array_concat",
         // RES-421: take/drop.
