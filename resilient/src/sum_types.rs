@@ -110,7 +110,11 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
     loop {
         match &parser.current_token {
             Token::RightBrace => {
-                parser.next_token(); // consume '}'
+                // Leave the closing `}` on `current_token` so the
+                // outer statement-loop's bookkeeping (which expects
+                // a declaration to terminate on its closing brace,
+                // not one token past) remains correct. Matches
+                // `parse_struct_decl_with_attrs`'s convention.
                 break;
             }
             Token::Eof => {
