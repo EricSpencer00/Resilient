@@ -1,0 +1,12 @@
+// RES-493 demo: is_pow2 returns true iff n is a positive power of two.
+
+fn main() {
+    println(is_pow2(0));
+    println(is_pow2(1));
+    println(is_pow2(8));
+    println(is_pow2(15));
+    println(is_pow2(16));
+    println(is_pow2(-1));
+}
+
+main();

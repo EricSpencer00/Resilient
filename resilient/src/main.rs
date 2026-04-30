@@ -8433,6 +8433,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("int_sqrt", builtin_int_sqrt),
     // RES-492: floor log base 2.
     ("int_log2", builtin_int_log2),
+    // RES-493: power-of-two predicate.
+    ("is_pow2", builtin_is_pow2),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9536,6 +9538,18 @@ fn builtin_int_log2(args: &[Value]) -> RResult<Value> {
         }
         [other] => Err(format!("int_log2: expected int, got {}", other)),
         _ => Err(format!("int_log2: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-493: `is_pow2(n)` — true iff `n` is a positive power of two.
+/// Zero and negatives return false. Standard `n & (n-1) == 0` trick;
+/// the `n > 0` guard short-circuits the underflow on `n == 0` and the
+/// negative-domain irrelevance.
+fn builtin_is_pow2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => Ok(Value::Bool(*n > 0 && (n & (n - 1)) == 0)),
+        [other] => Err(format!("is_pow2: expected int, got {}", other)),
+        _ => Err(format!("is_pow2: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -28796,6 +28810,62 @@ mod tests {
         );
         assert!(
             builtin_int_log2(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-493: is_pow2 ----------
+
+    #[test]
+    fn is_pow2_basic() {
+        assert_bool(builtin_is_pow2(&[Value::Int(0)]).unwrap(), false, "0");
+        assert_bool(builtin_is_pow2(&[Value::Int(1)]).unwrap(), true, "1");
+        assert_bool(builtin_is_pow2(&[Value::Int(2)]).unwrap(), true, "2");
+        assert_bool(builtin_is_pow2(&[Value::Int(3)]).unwrap(), false, "3");
+        assert_bool(builtin_is_pow2(&[Value::Int(8)]).unwrap(), true, "8");
+        assert_bool(builtin_is_pow2(&[Value::Int(255)]).unwrap(), false, "255");
+        assert_bool(builtin_is_pow2(&[Value::Int(256)]).unwrap(), true, "256");
+    }
+
+    #[test]
+    fn is_pow2_negatives_and_min_are_false() {
+        assert_bool(builtin_is_pow2(&[Value::Int(-1)]).unwrap(), false, "-1");
+        assert_bool(builtin_is_pow2(&[Value::Int(-2)]).unwrap(), false, "-2");
+        assert_bool(
+            builtin_is_pow2(&[Value::Int(i64::MIN)]).unwrap(),
+            false,
+            "MIN",
+        );
+    }
+
+    #[test]
+    fn is_pow2_powers_of_two_are_true() {
+        for shift in 0..63 {
+            let n: i64 = 1 << shift;
+            assert_bool(builtin_is_pow2(&[Value::Int(n)]).unwrap(), true, "pow2");
+        }
+    }
+
+    #[test]
+    fn is_pow2_max_is_false() {
+        // i64::MAX = 2^63 - 1 — has 63 set bits, not a power of two.
+        assert_bool(
+            builtin_is_pow2(&[Value::Int(i64::MAX)]).unwrap(),
+            false,
+            "MAX",
+        );
+    }
+
+    #[test]
+    fn is_pow2_rejects_non_int_and_arity() {
+        assert!(
+            builtin_is_pow2(&[Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_is_pow2(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
