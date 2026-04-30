@@ -1,0 +1,31 @@
+// RES-193: effect polymorphism for higher-order functions
+// (best-effort).
+//
+// The `-e->` arrow records that `apply`'s effect set is
+// determined by `f`'s effect set. The typechecker accepts the
+// syntax today; full unification (so `apply(pure_fn, ...)`
+// classifies as pure and `apply(io_fn, ...)` classifies as IO)
+// lands when the HM-walker prereq chain is in place.
+//
+// What this example proves: the parser accepts the `-e->` arrow
+// in both fn-type annotations (parameter types) and fn return
+// types, and the program runs correctly.
+
+fn double(int x) -> int { return x * 2; }
+
+fn apply(fn(int) -e-> int f, int x) -e-> int {
+    return f(x);
+}
+
+fn main() -> int {
+    println(apply(double, 5));
+    println(apply(double, 21));
+
+    // Anonymous fn with -e-> arrow in its signature.
+    let triple = fn(int x) -e-> int { return x * 3; };
+    println(apply(triple, 7));
+
+    return 0;
+}
+
+main();

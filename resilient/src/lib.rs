@@ -3766,14 +3766,42 @@ impl Parser {
 
     /// Parse an optional `-> TYPE`. If present, current_token advances
     /// past the type identifier. If absent, no tokens are consumed.
+    ///
+    /// RES-193: also accepts `-e-> TYPE` (effect-variable arrow) for
+    /// effect polymorphism on higher-order functions. The effect var
+    /// is recorded in a sibling map for the typechecker to consume;
+    /// the return-type string itself is unchanged. When the prereq
+    /// chain (HM walker, generics) lands, the typechecker will
+    /// unify the effect var with the actual effects of any fn-typed
+    /// parameter sharing the same name.
     fn parse_optional_return_type(&mut self) -> Option<String> {
-        if self.current_token != Token::Arrow {
+        if self.current_token == Token::Arrow {
+            self.next_token(); // skip '->'
+            return self.parse_type_annotation("after '->'");
+        }
+        // RES-193: `-e->` effect arrow form. Lex sequence is
+        // Minus, Identifier(letter), Arrow. We consume all three on
+        // a match; on a near-miss (e.g. `-X` followed by something
+        // other than `->`), surface as a parse error.
+        if self.current_token == Token::Minus
+            && let Token::Identifier(eff_name) = &self.peek_token
+            && eff_name.chars().count() == 1
+        {
+            let eff = eff_name.clone();
+            self.next_token(); // current was Minus -> Identifier
+            self.next_token(); // current was Identifier -> next
+            if self.current_token == Token::Arrow {
+                self.next_token(); // consume '->'
+                return self.parse_type_annotation("after '-e->'");
+            }
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `->` to close effect arrow `-{}->`, found {}",
+                eff, tok
+            ));
             return None;
         }
-        self.next_token(); // skip '->'
-        // `parse_type_annotation` leaves current_token on the token
-        // after the type. Nothing more to do here.
-        self.parse_type_annotation("after '->'")
+        None
     }
 
     /// RES-157a: parse a single type annotation starting at
@@ -3985,15 +4013,49 @@ impl Parser {
                     return None;
                 }
                 self.next_token(); // skip `)`
+                // RES-193: optional effect-variable arrow `-e->`.
+                // The parser tokenizes this as `Token::Minus` then
+                // `Token::Identifier("e")` then `Token::Arrow`. Look
+                // for that exact triple and capture the effect-var
+                // name into the type string. Single letters only —
+                // matches the issue's `-e->` shape.
+                let arrow_kind = if self.current_token == Token::Minus
+                    && let Token::Identifier(eff_name) = &self.peek_token
+                    && eff_name.chars().count() == 1
+                {
+                    let eff = eff_name.clone();
+                    self.next_token(); // current was Minus -> Identifier
+                    self.next_token(); // current was Identifier -> next
+                    if self.current_token == Token::Arrow {
+                        self.next_token(); // consume `->`
+                        Some(eff)
+                    } else {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected `->` to close effect arrow `-{}->` in fn type annotation {}, found {}",
+                            eff, ctx, tok
+                        ));
+                        return None;
+                    }
+                } else {
+                    None
+                };
                 // Optional `-> Ret`. Bare `fn(...)` (no return) is
                 // equivalent to `fn(...) -> void`.
-                let ret = if self.current_token == Token::Arrow {
+                let ret = if arrow_kind.is_some() {
+                    // Effect arrow already consumed; parse return type next.
+                    self.parse_type_annotation(ctx)?
+                } else if self.current_token == Token::Arrow {
                     self.next_token(); // skip `->`
                     self.parse_type_annotation(ctx)?
                 } else {
                     "void".to_string()
                 };
-                Some(format!("fn({}) -> {}", params.join(", "), ret))
+                let arrow_str = match arrow_kind {
+                    Some(eff) => format!("-{}->", eff),
+                    None => "->".to_string(),
+                };
+                Some(format!("fn({}) {} {}", params.join(", "), arrow_str, ret))
             }
             _ => {
                 let tok = self.current_token.clone();
