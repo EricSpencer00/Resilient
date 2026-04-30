@@ -1,0 +1,6 @@
+0
+101
+11111111
+-1
+-101
+Program executed successfully

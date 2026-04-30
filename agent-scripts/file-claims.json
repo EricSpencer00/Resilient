@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-511-bit-manipulation",
-      "claimed_at": "2026-04-30T01:54:53Z"
+      "branch": "res-512-int-to-bin",
+      "claimed_at": "2026-04-30T01:57:37Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-511-bit-manipulation",
-      "claimed_at": "2026-04-30T01:54:53Z"
+      "branch": "res-512-int-to-bin",
+      "claimed_at": "2026-04-30T01:57:37Z"
     }
   }
 }
