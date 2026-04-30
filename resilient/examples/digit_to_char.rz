@@ -1,0 +1,12 @@
+// RES-513 demo: digit_to_char converts an int 0..=35 to its
+// base-36 digit character (lowercase for letters).
+
+fn main() {
+    println(digit_to_char(0));
+    println(digit_to_char(9));
+    println(digit_to_char(10));
+    println(digit_to_char(15));
+    println(digit_to_char(35));
+}
+
+main();

@@ -1,0 +1,6 @@
+0
+9
+a
+f
+z
+Program executed successfully
