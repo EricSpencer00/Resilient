@@ -1506,6 +1506,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-495: int → lowercase hex string.
+        env.set(
+            "int_to_hex".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-442: last byte index of substring.
         env.set(
             "last_index_of".to_string(),
@@ -4542,6 +4550,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "is_pow2",
         // RES-494: round up to next power of two.
         "next_pow2",
+        // RES-495: int → lowercase hex string.
+        "int_to_hex",
         // RES-442: last_index_of.
         "last_index_of",
         // RES-413: repeat a string.
