@@ -8272,6 +8272,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-417: min/max over an integer array. Empty array errors.
     ("array_min", builtin_array_min),
     ("array_max", builtin_array_max),
+    // RES-543: empty-safe min/max with caller-supplied default.
+    ("array_max_or", builtin_array_max_or),
+    ("array_min_or", builtin_array_min_or),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13283,6 +13286,79 @@ fn builtin_array_max(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_max: expected array, got {}", other)),
         _ => Err(format!(
             "array_max: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-543: `array_max_or(arr, default)` — like `array_max` but
+/// returns `default` for an empty array instead of erroring.
+/// Mirrors the empty-safe pattern of `array_get_or` (RES-528) and
+/// `parse_int_or` (RES-529).
+fn builtin_array_max_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(default)] => {
+            if items.is_empty() {
+                return Ok(Value::Int(*default));
+            }
+            let mut best: Option<i64> = None;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        best = Some(best.map_or(*n, |cur| cur.max(*n)));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_max_or: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(best.unwrap()))
+        }
+        [a, b] => Err(format!(
+            "array_max_or: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_max_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-543: `array_min_or(arr, default)` — like `array_min` but
+/// returns `default` for an empty array. Symmetric to
+/// `array_max_or`.
+fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(default)] => {
+            if items.is_empty() {
+                return Ok(Value::Int(*default));
+            }
+            let mut best: Option<i64> = None;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        best = Some(best.map_or(*n, |cur| cur.min(*n)));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_min_or: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(best.unwrap()))
+        }
+        [a, b] => Err(format!(
+            "array_min_or: expected (array, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_min_or: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28696,6 +28772,86 @@ mod tests {
             builtin_array_max(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-543: array_max_or / array_min_or ----------
+
+    fn max_or(items: &[i64], default: i64) -> i64 {
+        match builtin_array_max_or(&[int_array(items), Value::Int(default)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    fn min_or(items: &[i64], default: i64) -> i64 {
+        match builtin_array_min_or(&[int_array(items), Value::Int(default)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_max_or_basic() {
+        assert_eq!(max_or(&[3, 1, 4, 1, 5, 9, 2, 6], -1), 9);
+        assert_eq!(max_or(&[5], 99), 5);
+        assert_eq!(max_or(&[-10, -5, -3], 0), -3);
+    }
+
+    #[test]
+    fn array_max_or_empty_returns_default() {
+        assert_eq!(max_or(&[], -1), -1);
+        assert_eq!(max_or(&[], 0), 0);
+        assert_eq!(max_or(&[], i64::MIN), i64::MIN);
+        assert_eq!(max_or(&[], i64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn array_min_or_basic() {
+        assert_eq!(min_or(&[3, 1, 4, 1, 5, 9, 2, 6], -1), 1);
+        assert_eq!(min_or(&[5], 99), 5);
+        assert_eq!(min_or(&[-10, -5, -3], 0), -10);
+    }
+
+    #[test]
+    fn array_min_or_empty_returns_default() {
+        assert_eq!(min_or(&[], 999), 999);
+        assert_eq!(min_or(&[], 0), 0);
+        assert_eq!(min_or(&[], i64::MIN), i64::MIN);
+    }
+
+    #[test]
+    fn array_min_max_or_match_array_min_max_when_non_empty() {
+        // For non-empty arrays, array_max_or / array_min_or should
+        // match array_max / array_min and ignore the default.
+        for items in [vec![1, 2, 3], vec![-5, 0, 5], vec![42], vec![1, 1, 1]] {
+            let max_v = match builtin_array_max(&[int_array(&items)]).unwrap() {
+                Value::Int(n) => n,
+                _ => panic!(),
+            };
+            let min_v = match builtin_array_min(&[int_array(&items)]).unwrap() {
+                Value::Int(n) => n,
+                _ => panic!(),
+            };
+            assert_eq!(max_or(&items, 999), max_v, "items={:?}", items);
+            assert_eq!(min_or(&items, 999), min_v, "items={:?}", items);
+        }
+    }
+
+    #[test]
+    fn array_min_max_or_reject_non_int_and_arity() {
+        assert!(
+            builtin_array_max_or(&[
+                Value::Array(vec![Value::String("a".into())]),
+                Value::Int(-1)
+            ])
+            .unwrap_err()
+            .contains("all int elements")
+        );
+        assert!(
+            builtin_array_min_or(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
