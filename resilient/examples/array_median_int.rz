@@ -1,0 +1,13 @@
+// RES-550 demo: array_median_int returns the median of a non-empty
+// integer array. For odd lengths, the exact middle element. For
+// even lengths, the truncating-toward-zero mean of the two middles.
+
+fn main() {
+    println(array_median_int([3, 1, 4, 1, 5, 9, 2, 6]));
+    println(array_median_int([1, 2, 3]));
+    println(array_median_int([1, 2, 3, 4]));
+    println(array_median_int([5]));
+    println(array_median_int([-2, -1, 1, 2]));
+}
+
+main();

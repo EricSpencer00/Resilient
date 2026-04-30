@@ -8279,6 +8279,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_min_or", builtin_array_min_or),
     // RES-549: integer mean (truncating toward zero).
     ("array_mean_int", builtin_array_mean_int),
+    // RES-550: integer median (sorts a clone; truncating mean for even len).
+    ("array_median_int", builtin_array_median_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13529,6 +13531,50 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-550: `array_median_int(arr)` — median of a non-empty integer
+/// array. Sorts a clone (does not mutate the input). For odd lengths,
+/// returns the middle value of the sorted clone. For even lengths,
+/// returns the truncating-toward-zero mean of the two middles via
+/// i128 to avoid overflow. Matches `array_mean_int` rounding for the
+/// even case so callers get one consistent rounding rule across both.
+fn builtin_array_median_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_median_int: empty array has no median".to_string());
+            }
+            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => nums.push(*n),
+                    other => {
+                        return Err(format!(
+                            "array_median_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            nums.sort_unstable();
+            let len = nums.len();
+            let mid = len / 2;
+            let median = if len.is_multiple_of(2) {
+                let lo = nums[mid - 1] as i128;
+                let hi = nums[mid] as i128;
+                ((lo + hi) / 2) as i64
+            } else {
+                nums[mid]
+            };
+            Ok(Value::Int(median))
+        }
+        [other] => Err(format!("array_median_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_median_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29190,6 +29236,89 @@ mod tests {
         );
         assert!(
             builtin_array_mean_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-550: array_median_int ----------
+
+    fn median(xs: &[i64]) -> i64 {
+        match builtin_array_median_int(&[int_array(xs)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_median_int_odd_length_returns_middle() {
+        assert_eq!(median(&[1, 2, 3]), 2);
+        assert_eq!(median(&[5]), 5);
+        assert_eq!(median(&[3, 1, 2]), 2); // input not sorted; median of {1,2,3}=2
+        assert_eq!(median(&[7, 7, 7, 7, 7]), 7);
+    }
+
+    #[test]
+    fn array_median_int_even_length_truncating_mean_of_middles() {
+        // sorted [1,2,3,4] → middles 2,3 → (2+3)/2 = 2 (trunc).
+        assert_eq!(median(&[4, 1, 3, 2]), 2);
+        // sorted [-2,-1,1,2] → middles -1,1 → (−1+1)/2 = 0.
+        assert_eq!(median(&[-2, -1, 1, 2]), 0);
+        // sorted [1,2,3,4,5,6] → middles 3,4 → 3.
+        assert_eq!(median(&[6, 5, 4, 3, 2, 1]), 3);
+    }
+
+    #[test]
+    fn array_median_int_uses_i128_for_overflow_safety() {
+        // (i64::MAX + i64::MAX) would overflow i64 sum, but i128 absorbs.
+        let m = i64::MAX;
+        assert_eq!(median(&[m, m]), m);
+        let n = i64::MIN;
+        assert_eq!(median(&[n, n]), n);
+        // Mixed extreme: (i64::MIN + i64::MAX) / 2 = -1/2 truncates to 0 in i128.
+        assert_eq!(median(&[i64::MIN, i64::MAX]), 0);
+    }
+
+    #[test]
+    fn array_median_int_does_not_mutate_input() {
+        let arg = Value::Array(vec![Value::Int(3), Value::Int(1), Value::Int(2)]);
+        let _ = builtin_array_median_int(std::slice::from_ref(&arg)).unwrap();
+        // Re-extract and confirm element order unchanged.
+        match arg {
+            Value::Array(after) => {
+                let ints: Vec<i64> = after
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        _ => panic!(),
+                    })
+                    .collect();
+                assert_eq!(ints, vec![3, 1, 2]);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn array_median_int_empty_errors() {
+        let err = builtin_array_median_int(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_median_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_median_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_median_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_median_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
