@@ -172,6 +172,20 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
         // pattern binds; `None` introduces nothing.
         Pattern::Some(inner) => pattern_bindings(inner.as_ref()),
         Pattern::None => Vec::new(),
+        // RES-400: enum-variant pattern bindings.
+        // None: no payload, no bindings.
+        // Named: each declared field carries a sub-pattern; recurse.
+        // Tuple: each positional sub-pattern; recurse.
+        Pattern::EnumVariant { payload, .. } => match payload {
+            crate::EnumPatternPayload::None => Vec::new(),
+            crate::EnumPatternPayload::Named(fields) => fields
+                .iter()
+                .flat_map(|(_, sub)| pattern_bindings(sub.as_ref()))
+                .collect(),
+            crate::EnumPatternPayload::Tuple(subs) => {
+                subs.iter().flat_map(pattern_bindings).collect()
+            }
+        },
     }
 }
 
@@ -196,6 +210,10 @@ fn pattern_is_default(p: &Pattern) -> bool {
         }
         // RES-375: `Some(_)` / `None` are not defaults by themselves.
         Pattern::Some(_) | Pattern::None => false,
+        // RES-400: an enum-variant pattern is *not* a default — it
+        // matches only one variant. Exhaustiveness over enums is
+        // handled by enumerating variants in a future PR.
+        Pattern::EnumVariant { .. } => false,
     }
 }
 
@@ -249,6 +267,8 @@ fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: 
         }
         // RES-375: Option patterns don't match struct-nominal types.
         Pattern::Some(_) | Pattern::None => false,
+        // RES-400: enum-variant patterns don't match struct-nominal types.
+        Pattern::EnumVariant { .. } => false,
     }
 }
 
@@ -2827,6 +2847,29 @@ impl TypeChecker {
             // `None` introduces no bindings.
             Pattern::Some(inner) => self.match_pattern_binding_types(inner.as_ref(), &Type::Any),
             Pattern::None => Ok(vec![]),
+            // RES-400: enum-variant pattern. The dynamic typechecker
+            // doesn't track variant payload types yet, so bound names
+            // are typed as `Any` — the runtime evaluator validates the
+            // shape match. Future PRs will plug payload types in.
+            Pattern::EnumVariant { payload, .. } => match payload {
+                crate::EnumPatternPayload::None => Ok(vec![]),
+                crate::EnumPatternPayload::Named(fields) => {
+                    let mut out = Vec::new();
+                    for (_, sub) in fields {
+                        let sub_bt = self.match_pattern_binding_types(sub.as_ref(), &Type::Any)?;
+                        out.extend(sub_bt);
+                    }
+                    Ok(out)
+                }
+                crate::EnumPatternPayload::Tuple(subs) => {
+                    let mut out = Vec::new();
+                    for sub in subs {
+                        let sub_bt = self.match_pattern_binding_types(sub, &Type::Any)?;
+                        out.extend(sub_bt);
+                    }
+                    Ok(out)
+                }
+            },
         }
     }
 

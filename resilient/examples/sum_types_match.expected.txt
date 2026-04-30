@@ -1,0 +1,9 @@
+12
+16
+15
+red
+green
+blue
+7
+7
+Program executed successfully

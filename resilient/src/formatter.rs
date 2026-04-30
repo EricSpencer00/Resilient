@@ -1201,6 +1201,47 @@ impl Formatter {
                 self.write(")");
             }
             Pattern::None => self.write("None"),
+            // RES-400: enum-variant pattern. Three shapes — None /
+            // Named / Tuple — render with their respective punctuation.
+            Pattern::EnumVariant {
+                type_name,
+                variant_name,
+                payload,
+            } => {
+                if let Some(t) = type_name {
+                    self.write(t);
+                    self.write("::");
+                }
+                self.write(variant_name);
+                match payload {
+                    crate::EnumPatternPayload::None => {}
+                    crate::EnumPatternPayload::Named(fields) => {
+                        self.write(" { ");
+                        for (i, (fname, sub)) in fields.iter().enumerate() {
+                            if i > 0 {
+                                self.write(", ");
+                            }
+                            self.write(fname);
+                            if matches!(sub.as_ref(), Pattern::Identifier(n) if n == fname) {
+                            } else {
+                                self.write(": ");
+                                self.fmt_pattern(sub.as_ref());
+                            }
+                        }
+                        self.write(" }");
+                    }
+                    crate::EnumPatternPayload::Tuple(subs) => {
+                        self.write("(");
+                        for (i, sub) in subs.iter().enumerate() {
+                            if i > 0 {
+                                self.write(", ");
+                            }
+                            self.fmt_pattern(sub);
+                        }
+                        self.write(")");
+                    }
+                }
+            }
         }
     }
 }

@@ -1306,7 +1306,7 @@ impl Lexer {
 // relative to leaf variants like Wildcard is by design.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
-enum Pattern {
+pub(crate) enum Pattern {
     /// Matches a literal int, float, string, or bool.
     Literal(Node),
     /// Binds the scrutinee to an identifier; always matches.
@@ -1336,6 +1336,36 @@ enum Pattern {
     Some(Box<Pattern>),
     /// RES-375: `None` — matches an absent Option.
     None,
+    /// RES-400: tagged-enum-variant pattern.
+    ///   * `Color::Red`               — payload-less.
+    ///   * `Shape::Circle { r }`      — named-field; binds each
+    ///     field-pattern's name in the arm body.
+    ///   * `Pair::Both(x, y)`         — tuple-style; positional binds.
+    ///
+    /// `type_name` is `None` for bare patterns (`Circle { r }`) — the
+    /// pattern matcher resolves the qualifier from the scrutinee's
+    /// runtime type.
+    EnumVariant {
+        type_name: Option<String>,
+        variant_name: String,
+        payload: EnumPatternPayload,
+    },
+}
+
+/// RES-400: payload portion of a `Pattern::EnumVariant`. Mirrors the
+/// shape of `EnumValuePayload` on the runtime side, but holds
+/// sub-patterns instead of values.
+#[derive(Debug, Clone)]
+pub(crate) enum EnumPatternPayload {
+    /// No payload — `Color::Red`.
+    None,
+    /// Named-field — `Shape::Circle { r }` or `Shape::Circle { r: rr }`.
+    /// Each entry is `(declared field name, sub-pattern)`. A bare
+    /// `{ r }` desugars to `("r", Identifier("r"))` so the field name
+    /// stands for both the declared and bound name.
+    Named(Vec<(String, Box<Pattern>)>),
+    /// Tuple — `Pair::Both(x, y)`. Positional sub-patterns.
+    Tuple(Vec<Pattern>),
 }
 
 /// RES-139: exponential-backoff policy for a `live` block. Sleep
@@ -6989,7 +7019,7 @@ impl Parser {
     /// on entry; on exit current_token is `}`.
     fn parse_struct_literal(&mut self) -> Node {
         self.next_token(); // skip 'new'
-        let name = match &self.current_token {
+        let mut name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             _ => {
                 let tok = self.current_token.clone();
@@ -6998,6 +7028,27 @@ impl Parser {
             }
         };
         self.next_token();
+        // RES-400: accept qualified names like `EnumName::VariantName`
+        // so `new Shape::Circle { r: 1 }` parses as a struct-literal-style
+        // enum constructor. Multiple `::` segments are concatenated into
+        // a single flat name (matching the namespace handling elsewhere).
+        while self.current_token == Token::DoubleColon {
+            self.next_token(); // past `::`
+            match &self.current_token {
+                Token::Identifier(seg) => {
+                    name = format!("{}::{}", name, seg);
+                    self.next_token(); // past segment
+                }
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "Expected identifier after `::` in struct name, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            }
+        }
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
             self.record_error(format!("Expected '{{' after struct name, found {}", tok));
@@ -7244,7 +7295,7 @@ impl Parser {
     /// (RES-160). On exit, `current_token` is the last token of the
     /// last atom (so the caller's `next_token()` advances past the
     /// pattern as a whole).
-    fn parse_pattern(&mut self) -> Pattern {
+    pub(crate) fn parse_pattern(&mut self) -> Pattern {
         let first = self.parse_pattern_atom();
         // RES-160: collect `| <pattern>` tails. `|` is
         // `Token::BitOr`; a lone `|` in pattern position is
@@ -7305,6 +7356,40 @@ impl Parser {
                 // RES-375: `None` — Option absence pattern.
                 if name == "None" {
                     return Pattern::None;
+                }
+                // RES-400: qualified enum-variant pattern —
+                // `EnumName::VariantName` followed optionally by
+                // `{ … }` (named payload) or `(…)` (tuple payload).
+                if self.peek_token == Token::DoubleColon {
+                    self.next_token(); // current = `::`
+                    self.next_token(); // current = variant ident
+                    let variant_name = match &self.current_token {
+                        Token::Identifier(v) => v.clone(),
+                        other => {
+                            let tok = other.clone();
+                            self.record_error(format!(
+                                "Expected variant name after `::`, found {}",
+                                tok
+                            ));
+                            return Pattern::Wildcard;
+                        }
+                    };
+                    let payload = match self.peek_token {
+                        Token::LeftBrace => {
+                            self.next_token(); // current = `{`
+                            crate::sum_types::parse_named_pattern_payload(self)
+                        }
+                        Token::LeftParen => {
+                            self.next_token(); // current = `(`
+                            crate::sum_types::parse_tuple_pattern_payload(self)
+                        }
+                        _ => EnumPatternPayload::None,
+                    };
+                    return Pattern::EnumVariant {
+                        type_name: Some(name),
+                        variant_name,
+                        payload,
+                    };
                 }
                 if self.peek_token == Token::LeftBrace {
                     return self.parse_match_struct_pattern(name);
@@ -7929,6 +8014,32 @@ enum Value {
     /// passes can reject mixed-type array literals while still
     /// permitting `(1, "two")`-style tuples.
     Tuple(Vec<Value>),
+    /// RES-400: tagged-enum value. Produced by enum-variant
+    /// constructors (`Color::Red`, `Shape::Circle { r: 1.0 }`,
+    /// `Pair::Both(1, 2)`). The `type_name` is the enum's name
+    /// (`"Color"`); the `variant` is the variant's bare name
+    /// (`"Red"`); the `payload` carries the data the constructor
+    /// captured. Match patterns and `Display` route through this
+    /// variant.
+    EnumVariant {
+        type_name: String,
+        variant: String,
+        payload: EnumValuePayload,
+    },
+}
+
+/// RES-400: payload carried by a `Value::EnumVariant`. Mirrors the
+/// shape of `EnumPayload` on the AST side, but holds runtime values
+/// instead of source-level type names.
+#[derive(Clone, Debug)]
+enum EnumValuePayload {
+    /// Payload-less variant — `Color::Red`.
+    None,
+    /// Named-field payload — `Shape::Circle { r: 1.0 }`. Stored in
+    /// declaration order so `Display` is stable.
+    Named(Vec<(String, Value)>),
+    /// Tuple-style payload — `Pair::Both(1, 2)`.
+    Tuple(Vec<Value>),
 }
 
 /// RES-148: hashable-key restriction for `Value::Map`. Only the three
@@ -8023,6 +8134,28 @@ impl std::fmt::Debug for Value {
                 Err(_) => write!(f, "Cell(<missing>)"),
             },
             Value::Tuple(items) => write!(f, "Tuple({} items)", items.len()),
+            // RES-400: tagged-enum Debug.
+            Value::EnumVariant {
+                type_name,
+                variant,
+                payload,
+            } => match payload {
+                EnumValuePayload::None => write!(f, "EnumVariant({}::{})", type_name, variant),
+                EnumValuePayload::Named(fields) => write!(
+                    f,
+                    "EnumVariant({}::{}, {} fields)",
+                    type_name,
+                    variant,
+                    fields.len()
+                ),
+                EnumValuePayload::Tuple(items) => write!(
+                    f,
+                    "EnumVariant({}::{}, {} items)",
+                    type_name,
+                    variant,
+                    items.len()
+                ),
+            },
         }
     }
 }
@@ -8161,6 +8294,38 @@ impl std::fmt::Display for Value {
             Value::Cell(id) => match cell_get(*id) {
                 Ok(inner) => write!(f, "cell({})", inner),
                 Err(_) => write!(f, "cell(<missing>)"),
+            },
+            // RES-400: tagged-enum Display.
+            //   `Color::Red`             — payload-less.
+            //   `Shape::Circle { r: 1 }` — named-payload.
+            //   `Pair::Both(1, 2)`       — tuple-payload.
+            // Mirrors the surface syntax for round-trip-friendly output.
+            Value::EnumVariant {
+                type_name,
+                variant,
+                payload,
+            } => match payload {
+                EnumValuePayload::None => write!(f, "{}::{}", type_name, variant),
+                EnumValuePayload::Named(fields) => {
+                    write!(f, "{}::{} {{ ", type_name, variant)?;
+                    for (i, (n, v)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}: {}", n, v)?;
+                    }
+                    write!(f, " }}")
+                }
+                EnumValuePayload::Tuple(items) => {
+                    write!(f, "{}::{}(", type_name, variant)?;
+                    for (i, v) in items.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v)?;
+                    }
+                    write!(f, ")")
+                }
             },
         }
     }
@@ -8302,6 +8467,14 @@ impl Environment {
     fn local_names(&self) -> Vec<String> {
         self.inner.borrow().store.keys().cloned().collect()
     }
+}
+
+/// RES-400: split a qualified name like `"Color::Red"` into
+/// `("Color", "Red")`. Returns `None` if the input isn't qualified.
+/// Multiple `::` separators (e.g. `mod::Color::Red`) are not split — the
+/// leading segments are part of `type_name`.
+fn split_qualified(name: &str) -> Option<(&str, &str)> {
+    name.rfind("::").map(|i| (&name[..i], &name[i + 2..]))
 }
 
 /// Walk a `FieldAssignment` target tree, collecting the chain of field
@@ -17022,6 +17195,15 @@ struct Interpreter {
     /// RES-267: user-function call depth. The tree-walker is recursive
     /// over function calls; guard it before the host stack overflows.
     call_depth: usize,
+    /// RES-400: registry of enum declarations seen in the program,
+    /// keyed by enum name. Used by StructLiteral evaluation
+    /// (`Shape::Circle { r: 1.0 }` produces a `Value::EnumVariant`
+    /// instead of `Value::Struct` when `Shape` is a known enum), by
+    /// CallExpression evaluation (`Pair::Both(1, 2)` constructs a
+    /// tuple-payload `Value::EnumVariant`), and by bare-variant
+    /// patterns inside `match`. Shared via Rc so sub-interpreters
+    /// created by `apply_function` inherit the same registry.
+    enum_decls: Rc<RefCell<HashMap<String, Vec<EnumVariant>>>>,
 }
 
 impl Interpreter {
@@ -17037,6 +17219,7 @@ impl Interpreter {
             consts: Rc::new(HashMap::new()),
             proven_fns: Rc::new(HashSet::new()),
             call_depth: 0,
+            enum_decls: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -17354,6 +17537,42 @@ impl Interpreter {
                 arguments,
                 ..
             } => {
+                // RES-400: tuple-payload enum-variant constructor —
+                // `Pair::Both(1, 2)` parses as `CallExpression` with the
+                // callee `Identifier("Pair::Both")`. If the qualifier
+                // resolves to a registered enum and the variant carries
+                // a tuple payload, build a `Value::EnumVariant` and skip
+                // the regular function-dispatch path.
+                if let Node::Identifier { name, .. } = function.as_ref()
+                    && let Some((type_name_ref, variant_name_ref)) = split_qualified(name)
+                {
+                    let resolved: Option<(String, String, EnumPayload)> = self
+                        .enum_decls
+                        .borrow()
+                        .get(type_name_ref)
+                        .and_then(|vs| vs.iter().find(|v| v.name == variant_name_ref).cloned())
+                        .map(|v| (type_name_ref.to_string(), v.name, v.payload));
+                    if let Some((tn, vn, EnumPayload::Tuple(declared))) = resolved {
+                        let vals = self.eval_expressions(arguments)?;
+                        if vals.len() != declared.len() {
+                            return Err(format!(
+                                "Constructor {}::{}: expected {} arg(s), got {}",
+                                tn,
+                                vn,
+                                declared.len(),
+                                vals.len()
+                            ));
+                        }
+                        return Ok(Value::EnumVariant {
+                            type_name: tn,
+                            variant: vn,
+                            payload: EnumValuePayload::Tuple(vals),
+                        });
+                    }
+                    // None / Named here means the call form is wrong —
+                    // fall through to the regular dispatch which will
+                    // surface a friendlier "not callable" error.
+                }
                 // RES-158: method call desugar.
                 //
                 // If the callee is `TARGET.NAME`, evaluate `TARGET`
@@ -17753,6 +17972,59 @@ impl Interpreter {
                 for (fname, fexpr) in fields {
                     out.push((fname.clone(), self.eval(fexpr)?));
                 }
+                // RES-400: if `name` is `EnumName::VariantName` and
+                // `EnumName` is a registered enum whose variant carries
+                // a `Named` payload, this is an enum constructor —
+                // produce a `Value::EnumVariant` instead of a struct.
+                if let Some((type_name, variant_name)) = split_qualified(name)
+                    && let Some(variants) = self.enum_decls.borrow().get(type_name).cloned()
+                    && let Some(variant) = variants.iter().find(|v| v.name == variant_name)
+                {
+                    return match &variant.payload {
+                        EnumPayload::Named(declared_fields) => {
+                            // Validate field names match the declaration.
+                            let declared: HashSet<&str> =
+                                declared_fields.iter().map(|f| f.name.as_str()).collect();
+                            let provided: HashSet<&str> =
+                                out.iter().map(|(n, _)| n.as_str()).collect();
+                            if declared != provided {
+                                let missing: Vec<&str> =
+                                    declared.difference(&provided).copied().collect();
+                                let extra: Vec<&str> =
+                                    provided.difference(&declared).copied().collect();
+                                return Err(format!(
+                                    "Constructor {}::{}: field mismatch. missing: {:?}, extra: {:?}",
+                                    type_name, variant_name, missing, extra
+                                ));
+                            }
+                            // Re-order fields into declared order so
+                            // Display is stable.
+                            let mut ordered: Vec<(String, Value)> =
+                                Vec::with_capacity(declared_fields.len());
+                            for f in declared_fields {
+                                let v = out
+                                    .iter()
+                                    .find(|(n, _)| n == &f.name)
+                                    .map(|(_, v)| v.clone())
+                                    .expect("validated above");
+                                ordered.push((f.name.clone(), v));
+                            }
+                            Ok(Value::EnumVariant {
+                                type_name: type_name.to_string(),
+                                variant: variant_name.to_string(),
+                                payload: EnumValuePayload::Named(ordered),
+                            })
+                        }
+                        EnumPayload::None => Err(format!(
+                            "{}::{} has no payload — drop the `{{ … }}`",
+                            type_name, variant_name
+                        )),
+                        EnumPayload::Tuple(_) => Err(format!(
+                            "{}::{} expects a tuple payload — use `(…)`, not `{{ … }}`",
+                            type_name, variant_name
+                        )),
+                    };
+                }
                 Ok(Value::Struct {
                     name: name.clone(),
                     fields: out,
@@ -17894,16 +18166,34 @@ impl Interpreter {
             // RES-290: trait declarations carry no runtime payload — the
             // typechecker validates them; here we just produce Void.
             Node::TraitDecl { .. } => Ok(Value::Void),
-            // RES-400 PR 3: enum declarations register each variant
-            // under the qualified key `EnumName::VariantName` in the
-            // current scope. Payload-less variants resolve to a
-            // string-tag value (`"Color::Red"`); payload-carrying
-            // variants need constructor-call evaluation that lands
-            // in PR 4.
+            // RES-400: enum declarations register each variant under
+            // the qualified key `EnumName::VariantName` in the current
+            // scope. Payload-less variants resolve directly to a
+            // `Value::EnumVariant`; named/tuple-payload variants need
+            // their constructor expression to fire (StructLiteral /
+            // CallExpression sites consult `enum_decls`). Each enum's
+            // variant list is also stashed in `enum_decls` so match
+            // patterns and constructor evaluators can resolve a bare
+            // `VariantName` to its enclosing `EnumName`.
             Node::EnumDecl { name, variants, .. } => {
+                self.enum_decls
+                    .borrow_mut()
+                    .insert(name.clone(), variants.clone());
                 for v in variants {
                     let key = format!("{}::{}", name, v.name);
-                    self.env.set(key.clone(), Value::String(key));
+                    if matches!(v.payload, EnumPayload::None) {
+                        self.env.set(
+                            key,
+                            Value::EnumVariant {
+                                type_name: name.clone(),
+                                variant: v.name.clone(),
+                                payload: EnumValuePayload::None,
+                            },
+                        );
+                    }
+                    // Named/tuple variants are NOT pre-bound — they
+                    // come into existence at the constructor call
+                    // site (StructLiteral or CallExpression).
                 }
                 Ok(Value::Void)
             }
@@ -18939,6 +19229,7 @@ impl Interpreter {
                     consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
                     call_depth: self.call_depth + 1,
+                    enum_decls: self.enum_decls.clone(),
                 };
 
                 // RES-035: check each `requires` clause BEFORE running
@@ -19034,6 +19325,7 @@ impl Interpreter {
                     consts: self.consts.clone(),
                     proven_fns: self.proven_fns.clone(),
                     call_depth: self.call_depth,
+                    enum_decls: self.enum_decls.clone(),
                 };
                 for pre in &requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -19061,6 +19353,7 @@ impl Interpreter {
                         consts: self.consts.clone(),
                         proven_fns: self.proven_fns.clone(),
                         call_depth: self.call_depth,
+                        enum_decls: self.enum_decls.clone(),
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in &ensures {
@@ -19171,6 +19464,68 @@ impl Interpreter {
                 Value::Option(None) => Ok(Some(vec![])),
                 _ => Ok(None),
             },
+            // RES-400: tagged-enum-variant pattern. Three shapes
+            // dispatched off the value's payload kind. The pattern's
+            // optional `type_name` qualifier must match the value's
+            // type when present; bare patterns (no qualifier) match
+            // any enum that has a variant with the same name.
+            Pattern::EnumVariant {
+                type_name,
+                variant_name,
+                payload,
+            } => {
+                let Value::EnumVariant {
+                    type_name: vtn,
+                    variant: vvn,
+                    payload: vp,
+                } = value
+                else {
+                    return Ok(None);
+                };
+                if let Some(t) = type_name
+                    && t != vtn
+                {
+                    return Ok(None);
+                }
+                if variant_name != vvn {
+                    return Ok(None);
+                }
+                match (payload, vp) {
+                    (EnumPatternPayload::None, EnumValuePayload::None) => Ok(Some(vec![])),
+                    (
+                        EnumPatternPayload::Named(pat_fields),
+                        EnumValuePayload::Named(val_fields),
+                    ) => {
+                        let mut bindings = Vec::new();
+                        for (fname, sub) in pat_fields {
+                            let Some((_, fv)) = val_fields.iter().find(|(n, _)| n == fname) else {
+                                return Ok(None);
+                            };
+                            match self.match_pattern(sub, fv)? {
+                                None => return Ok(None),
+                                Some(mut b) => bindings.append(&mut b),
+                            }
+                        }
+                        Ok(Some(bindings))
+                    }
+                    (EnumPatternPayload::Tuple(pat_items), EnumValuePayload::Tuple(val_items)) => {
+                        if pat_items.len() != val_items.len() {
+                            return Ok(None);
+                        }
+                        let mut bindings = Vec::new();
+                        for (sub, fv) in pat_items.iter().zip(val_items.iter()) {
+                            match self.match_pattern(sub, fv)? {
+                                None => return Ok(None),
+                                Some(mut b) => bindings.append(&mut b),
+                            }
+                        }
+                        Ok(Some(bindings))
+                    }
+                    // Mismatched payload shape — pattern says `Named`
+                    // but value is `Tuple`, etc. No match.
+                    _ => Ok(None),
+                }
+            }
         }
     }
 
