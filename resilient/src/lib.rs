@@ -13,11 +13,17 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod imports;
+// RES-510 PR 2: injectable stdout sink. The `print` / `println` /
+// `input`-prompt builtins route through this so non-CLI consumers
+// (the WASM playground, in-process test harnesses) can capture
+// program output instead of having it written to the process
+// stdout. The CLI keeps the default `OutputSink::Stdout` behaviour.
 mod inline;
 #[cfg(feature = "jit")]
 mod jit_backend;
 #[cfg(feature = "lsp")]
 mod lsp_server;
+pub mod output_sink;
 mod peephole;
 mod repl;
 mod span;
@@ -8691,14 +8697,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
 fn builtin_println(args: &[Value]) -> RResult<Value> {
     match args {
         [] => {
-            println!();
+            crate::output_sink::write_str("\n");
             Ok(Value::Void)
         }
         [single] => {
-            match single {
-                Value::String(s) => println!("{}", s),
-                other => println!("{}", other),
-            }
+            let s = match single {
+                Value::String(s) => format!("{}\n", s),
+                other => format!("{}\n", other),
+            };
+            crate::output_sink::write_str(&s);
             Ok(Value::Void)
         }
         many => Err(format!(
@@ -8711,19 +8718,19 @@ fn builtin_println(args: &[Value]) -> RResult<Value> {
 /// `print(x)` — like println but without the trailing newline. Useful
 /// for building a line from multiple values or for prompt-style output.
 fn builtin_print(args: &[Value]) -> RResult<Value> {
-    use std::io::Write as _;
     match args {
         [] => {
             // No-op with flush so partial-line state is consistent.
-            let _ = std::io::stdout().flush();
+            crate::output_sink::flush();
             Ok(Value::Void)
         }
         [single] => {
-            match single {
-                Value::String(s) => print!("{}", s),
-                other => print!("{}", other),
-            }
-            let _ = std::io::stdout().flush();
+            let s = match single {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            crate::output_sink::write_str(&s);
+            crate::output_sink::flush();
             Ok(Value::Void)
         }
         many => Err(format!("print expects 0 or 1 argument, got {}", many.len())),
@@ -8765,12 +8772,11 @@ fn builtin_input(args: &[Value]) -> RResult<Value> {
 /// "stubbed stdin via `std::io::Cursor` injected through a small
 /// trait"; here `BufRead` is that trait).
 fn do_input<R: std::io::BufRead>(reader: &mut R, prompt: &str) -> RResult<Value> {
-    use std::io::Write as _;
     if !prompt.is_empty() {
-        print!("{}", prompt);
+        crate::output_sink::write_str(prompt);
         // Flush so a prompt without a trailing newline appears
         // before the reader blocks on input.
-        let _ = std::io::stdout().flush();
+        crate::output_sink::flush();
     }
     let mut line = String::new();
     match reader.read_line(&mut line) {
@@ -21323,6 +21329,75 @@ SUBCOMMANDS:\n\
 \n\
 See SYNTAX.md for the language reference."
     );
+}
+
+/// RES-510 PR 2: result of running a Resilient program in-process.
+///
+/// `stdout` holds whatever `println` / `print` emitted while the
+/// program was running. `errors` is a flat list of human-readable
+/// diagnostic lines (parser errors, runtime errors, etc.). `ok`
+/// is `true` iff parsing + execution both succeeded.
+///
+/// The shape is intentionally minimal — the WASM playground needs
+/// stdout-as-string and a list of error lines, nothing more.
+/// Richer surfaces (typed diagnostics with spans, certificate
+/// emission, verifier output) stay behind the CLI for now.
+pub struct RunResult {
+    pub ok: bool,
+    pub stdout: String,
+    pub errors: Vec<String>,
+}
+
+/// RES-510 PR 2: parse + run a Resilient source string in-process,
+/// capturing stdout. The bare-minimum entry point a non-CLI consumer
+/// (WASM playground, in-process test harness) needs.
+///
+/// What this does:
+/// * Parse the source into AST.
+/// * Run the named-args / default-params / newtype lowerings that
+///   the CLI also runs (so bundled examples behave the same).
+/// * Boot a fresh `Interpreter` and `eval` the program with output
+///   captured into a buffer.
+///
+/// What this does NOT do (deliberately, for the playground use case):
+/// * Type-check (would surface valuable diagnostics — adding it is
+///   a follow-up after the playground proves the basic pipeline).
+/// * Resolve `use` imports (the playground sandbox doesn't have a
+///   filesystem to import from).
+/// * Run Z3 verification, emit certificates, sign, fmt, lint, or
+///   any other CLI sub-command.
+///
+/// Output capture is process-wide via the `output_sink` thread-local.
+/// Concurrent calls to `run_program` from different threads each
+/// capture their own output independently. Within a single thread,
+/// don't call `run_program` from inside another `with_captured_output`
+/// closure unless you want the inner capture to be the only output
+/// the outer call sees.
+pub fn run_program(src: &str) -> RunResult {
+    let (program, parse_errors) = parse(src);
+    if !parse_errors.is_empty() {
+        return RunResult {
+            ok: false,
+            stdout: String::new(),
+            errors: parse_errors,
+        };
+    }
+    let (eval_result, captured) = output_sink::with_captured_output(|| {
+        let mut interp = Interpreter::new();
+        interp.eval(&program)
+    });
+    match eval_result {
+        Ok(_) => RunResult {
+            ok: true,
+            stdout: captured,
+            errors: Vec::new(),
+        },
+        Err(e) => RunResult {
+            ok: false,
+            stdout: captured,
+            errors: vec![e],
+        },
+    }
 }
 
 /// RES-510: CLI entry point.
@@ -43448,6 +43523,66 @@ mod tests {
             "expected did-you-mean suggestion, got: {:?}",
             errs
         );
+    }
+
+    // ---------- RES-510 PR 2: run_program / output capture ----------
+
+    #[test]
+    fn run_program_captures_println_output() {
+        let result = crate::run_program(r#"println("hello, lib");"#);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert_eq!(result.stdout, "hello, lib\n");
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn run_program_captures_print_without_newline() {
+        let result = crate::run_program(r#"print("a"); print("b"); print("c");"#);
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert_eq!(result.stdout, "abc");
+    }
+
+    #[test]
+    fn run_program_returns_parser_errors() {
+        let result = crate::run_program("let x = ;");
+        assert!(!result.ok);
+        assert!(!result.errors.is_empty());
+        assert!(result.stdout.is_empty());
+    }
+
+    #[test]
+    fn run_program_returns_runtime_errors_with_partial_stdout() {
+        // Print first, then trigger a runtime error.
+        let result = crate::run_program(
+            r#"
+            println("before");
+            let x = 1 / 0;
+            println("after");
+            "#,
+        );
+        assert!(!result.ok);
+        // The "before" line was emitted before the error.
+        assert!(
+            result.stdout.contains("before"),
+            "expected partial stdout, got {:?}",
+            result.stdout
+        );
+        // The "after" line was not.
+        assert!(!result.stdout.contains("after"));
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn run_program_handles_int_arithmetic() {
+        let result = crate::run_program(
+            r#"
+            let x = 40;
+            let y = x + 2;
+            println(y);
+            "#,
+        );
+        assert!(result.ok, "errors: {:?}", result.errors);
+        assert_eq!(result.stdout, "42\n");
     }
 }
 
