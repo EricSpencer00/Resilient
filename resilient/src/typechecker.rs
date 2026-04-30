@@ -1328,6 +1328,13 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-483: named-predicate take/drop on int arrays.
+        let arr_str_to_arr = Type::Function {
+            params: vec![Type::Any, Type::String],
+            return_type: Box::new(Type::Any),
+        };
+        env.set("array_take_while_int".to_string(), arr_str_to_arr.clone());
+        env.set("array_drop_while_int".to_string(), arr_str_to_arr);
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4392,6 +4399,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_init",
         // RES-482: string_replace_n.
         "string_replace_n",
+        // RES-483: take/drop while int.
+        "array_take_while_int",
+        "array_drop_while_int",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.
