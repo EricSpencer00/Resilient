@@ -8157,6 +8157,37 @@ pub(crate) fn lookup_builtin(name: &str) -> Option<BuiltinFn> {
     BUILTINS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
 }
 
+/// RES-487: enumerate every builtin name. Feeds `did_you_mean::suggest`
+/// at the runtime "Identifier not found" diagnostic so an `rz file.rz`
+/// run on `array_revrese([...])` hints at `array_reverse`. The
+/// typechecker already covers this via env seeding in
+/// `TypeChecker::new`; this gives the eval path the same affordance
+/// for users who skip `--typecheck` (REPL, JIT, default `rz` entry).
+pub(crate) fn all_builtin_names() -> impl Iterator<Item = &'static str> {
+    BUILTINS.iter().map(|(n, _)| *n)
+}
+
+/// RES-487: format the "Identifier not found" runtime diagnostic with
+/// an optional Levenshtein-distance-2 hint against the canonical
+/// builtin list. Extracted from `Interpreter::eval` so the giant
+/// match's per-arm stack frame stays small — without this, debug
+/// builds hit stack-overflow on deeply-recursive user programs (the
+/// `recursive_function_with_params` regression test caught it).
+#[inline(never)]
+fn format_unknown_identifier(name: &str) -> String {
+    let suggestions = crate::did_you_mean::suggest(name, all_builtin_names());
+    if suggestions.is_empty() {
+        format!("Identifier not found: {}", name)
+    } else {
+        let body = suggestions
+            .iter()
+            .map(|s| format!("`{}`", s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("Identifier not found: {} — did you mean {}?", name, body)
+    }
+}
+
 /// Canonical list of every native function visible in a fresh
 /// Resilient program.
 const BUILTINS: &[(&str, BuiltinFn)] = &[
@@ -13943,7 +13974,10 @@ impl Interpreter {
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
                     Ok(value)
                 } else {
-                    Err(format!("Identifier not found: {}", name))
+                    // RES-487: hint at close builtin matches via the
+                    // out-of-line helper to keep this match-arm's
+                    // stack frame small.
+                    Err(format_unknown_identifier(name))
                 }
             }
             Node::IntegerLiteral { value, .. } => Ok(Value::Int(*value)),

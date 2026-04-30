@@ -254,3 +254,20 @@ fn runtime_unknown_identifier() {
     let src = "fn main(int _d) {\n    return frobnicate(1);\n}\nmain(0);\n";
     check_diagnostic("runtime_unknown_identifier", &["--seed", "0"], src);
 }
+
+#[test]
+fn runtime_unknown_identifier_builtin_typo() {
+    // RES-487: when the misspelled name is within Levenshtein
+    // distance 2 of a known builtin, the runtime "Identifier not
+    // found" diagnostic must append a "did you mean" hint —
+    // mirroring the typechecker's variable-suggestion path
+    // (RES-306). `array_revrese` is a 1-edit transposition of
+    // `array_reverse`, so the suggester must propose it.
+    let src =
+        "fn main(int _d) {\n    let x = array_revrese([1, 2, 3]);\n    return 0;\n}\nmain(0);\n";
+    check_diagnostic(
+        "runtime_unknown_identifier_builtin_typo",
+        &["--seed", "0"],
+        src,
+    );
+}
