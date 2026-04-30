@@ -1,0 +1,12 @@
+// RES-511 demo: single-bit test / set / clear / toggle.
+
+fn main() {
+    println(bit_test(10, 1));
+    println(bit_test(10, 0));
+    println(bit_set(0, 5));
+    println(bit_clear(255, 3));
+    println(bit_toggle(0, 0));
+    println(bit_toggle(1, 0));
+}
+
+main();

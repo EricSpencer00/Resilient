@@ -1557,6 +1557,21 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-511: single-bit test / set / clear / toggle.
+        let int_int_to_int = Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        env.set(
+            "bit_test".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set("bit_set".to_string(), int_int_to_int.clone());
+        env.set("bit_clear".to_string(), int_int_to_int.clone());
+        env.set("bit_toggle".to_string(), int_int_to_int);
         // RES-491: integer floor sqrt.
         env.set(
             "int_sqrt".to_string(),
@@ -4648,6 +4663,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bit_leading_zeros",
         // RES-490: count trailing zero bits.
         "bit_trailing_zeros",
+        // RES-511: single-bit test / set / clear / toggle.
+        "bit_test",
+        "bit_set",
+        "bit_clear",
+        "bit_toggle",
         // RES-491: integer floor sqrt.
         "int_sqrt",
         // RES-492: floor log base 2.

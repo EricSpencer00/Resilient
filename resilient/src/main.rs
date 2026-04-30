@@ -8452,6 +8452,11 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_leading_zeros", builtin_bit_leading_zeros),
     // RES-490: count trailing zero bits.
     ("bit_trailing_zeros", builtin_bit_trailing_zeros),
+    // RES-511: single-bit test / set / clear / toggle.
+    ("bit_test", builtin_bit_test),
+    ("bit_set", builtin_bit_set),
+    ("bit_clear", builtin_bit_clear),
+    ("bit_toggle", builtin_bit_toggle),
     // RES-491: integer floor sqrt.
     ("int_sqrt", builtin_int_sqrt),
     // RES-492: floor log base 2.
@@ -9527,6 +9532,86 @@ fn builtin_bit_trailing_zeros(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("bit_trailing_zeros: expected int, got {}", other)),
         _ => Err(format!(
             "bit_trailing_zeros: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-511: shared validator for the single-bit position builtins.
+/// Mirrors the `0..=63` shift-amount check in `bit_shl` / `bit_shr`
+/// for consistency.
+fn check_bit_pos(name: &str, pos: i64) -> RResult<u32> {
+    if !(0..=63).contains(&pos) {
+        return Err(format!(
+            "{}: bit position must be 0..=63, got {}",
+            name, pos
+        ));
+    }
+    Ok(pos as u32)
+}
+
+/// RES-511: `bit_test(n, pos)` — true iff the bit at position `pos`
+/// is set in `n`. `pos` must be in `0..=63`.
+fn builtin_bit_test(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(pos)] => {
+            let bit = check_bit_pos("bit_test", *pos)?;
+            Ok(Value::Bool((n >> bit) & 1 == 1))
+        }
+        [a, b] => Err(format!("bit_test: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "bit_test: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-511: `bit_set(n, pos)` — `n` with bit `pos` set to 1. `pos`
+/// must be in `0..=63`.
+fn builtin_bit_set(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(pos)] => {
+            let bit = check_bit_pos("bit_set", *pos)?;
+            Ok(Value::Int(n | (1i64 << bit)))
+        }
+        [a, b] => Err(format!("bit_set: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("bit_set: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-511: `bit_clear(n, pos)` — `n` with bit `pos` cleared to 0.
+/// `pos` must be in `0..=63`.
+fn builtin_bit_clear(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(pos)] => {
+            let bit = check_bit_pos("bit_clear", *pos)?;
+            Ok(Value::Int(n & !(1i64 << bit)))
+        }
+        [a, b] => Err(format!(
+            "bit_clear: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "bit_clear: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-511: `bit_toggle(n, pos)` — `n` with bit `pos` flipped (XOR
+/// with `1 << pos`). `pos` must be in `0..=63`.
+fn builtin_bit_toggle(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(pos)] => {
+            let bit = check_bit_pos("bit_toggle", *pos)?;
+            Ok(Value::Int(n ^ (1i64 << bit)))
+        }
+        [a, b] => Err(format!(
+            "bit_toggle: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "bit_toggle: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29661,6 +29746,155 @@ mod tests {
             builtin_bit_trailing_zeros(&[Value::Int(1), Value::Int(2)])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-511: bit_test / bit_set / bit_clear / bit_toggle ----------
+
+    #[test]
+    fn bit_test_basic() {
+        // 0b1010 — bit 0 = 0, bit 1 = 1, bit 2 = 0, bit 3 = 1.
+        assert_bool(
+            builtin_bit_test(&[Value::Int(0b1010), Value::Int(0)]).unwrap(),
+            false,
+            "bit 0 of 0b1010",
+        );
+        assert_bool(
+            builtin_bit_test(&[Value::Int(0b1010), Value::Int(1)]).unwrap(),
+            true,
+            "bit 1 of 0b1010",
+        );
+        assert_bool(
+            builtin_bit_test(&[Value::Int(0b1010), Value::Int(2)]).unwrap(),
+            false,
+            "bit 2 of 0b1010",
+        );
+        assert_bool(
+            builtin_bit_test(&[Value::Int(0b1010), Value::Int(3)]).unwrap(),
+            true,
+            "bit 3 of 0b1010",
+        );
+    }
+
+    #[test]
+    fn bit_test_top_bit_of_min() {
+        // i64::MIN has only the sign bit set (bit 63).
+        assert_bool(
+            builtin_bit_test(&[Value::Int(i64::MIN), Value::Int(63)]).unwrap(),
+            true,
+            "bit 63 of MIN",
+        );
+        for pos in 0..63 {
+            assert_bool(
+                builtin_bit_test(&[Value::Int(i64::MIN), Value::Int(pos)]).unwrap(),
+                false,
+                "low bit of MIN",
+            );
+        }
+    }
+
+    #[test]
+    fn bit_set_sets_zero_bit() {
+        assert_int(
+            builtin_bit_set(&[Value::Int(0), Value::Int(5)]).unwrap(),
+            32,
+            "set bit 5 of 0",
+        );
+        // Setting an already-set bit is idempotent.
+        assert_int(
+            builtin_bit_set(&[Value::Int(0xFF), Value::Int(0)]).unwrap(),
+            0xFF,
+            "idempotent",
+        );
+    }
+
+    #[test]
+    fn bit_clear_clears_set_bit() {
+        assert_int(
+            builtin_bit_clear(&[Value::Int(0xFF), Value::Int(3)]).unwrap(),
+            0xF7,
+            "clear bit 3 of 0xFF",
+        );
+        // Clearing an already-clear bit is idempotent.
+        assert_int(
+            builtin_bit_clear(&[Value::Int(0), Value::Int(5)]).unwrap(),
+            0,
+            "idempotent",
+        );
+    }
+
+    #[test]
+    fn bit_toggle_flips_bit() {
+        assert_int(
+            builtin_bit_toggle(&[Value::Int(0), Value::Int(0)]).unwrap(),
+            1,
+            "toggle bit 0 of 0",
+        );
+        assert_int(
+            builtin_bit_toggle(&[Value::Int(1), Value::Int(0)]).unwrap(),
+            0,
+            "toggle bit 0 of 1",
+        );
+        // Two toggles cancel.
+        let v = Value::Int(0b1010);
+        let once = builtin_bit_toggle(&[v.clone(), Value::Int(2)]).unwrap();
+        let twice = builtin_bit_toggle(&[once, Value::Int(2)]).unwrap();
+        assert_int(twice, 0b1010, "double toggle is identity");
+    }
+
+    #[test]
+    fn bit_position_ops_round_trip_with_bit_test() {
+        // For every bit position, the round-trip
+        //   set, then test → true; clear, then test → false; toggle twice → original.
+        let n: i64 = 0xC0FFEE;
+        for pos in 0..63 {
+            let s = builtin_bit_set(&[Value::Int(n), Value::Int(pos)]).unwrap();
+            assert_bool(
+                builtin_bit_test(&[s, Value::Int(pos)]).unwrap(),
+                true,
+                "set→test",
+            );
+            let c = builtin_bit_clear(&[Value::Int(n), Value::Int(pos)]).unwrap();
+            assert_bool(
+                builtin_bit_test(&[c, Value::Int(pos)]).unwrap(),
+                false,
+                "clear→test",
+            );
+        }
+    }
+
+    #[test]
+    fn bit_position_ops_reject_out_of_range() {
+        for f in [
+            builtin_bit_test,
+            builtin_bit_set,
+            builtin_bit_clear,
+            builtin_bit_toggle,
+        ] {
+            assert!(
+                f(&[Value::Int(0), Value::Int(64)])
+                    .unwrap_err()
+                    .contains("0..=63")
+            );
+            assert!(
+                f(&[Value::Int(0), Value::Int(-1)])
+                    .unwrap_err()
+                    .contains("0..=63")
+            );
+        }
+    }
+
+    #[test]
+    fn bit_position_ops_reject_non_int_and_arity() {
+        assert!(
+            builtin_bit_test(&[Value::Float(1.0), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_bit_set(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
