@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-505-char-to-digit",
-      "claimed_at": "2026-04-30T01:35:44Z"
+      "branch": "res-506-string-drop",
+      "claimed_at": "2026-04-30T01:38:45Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-505-char-to-digit",
-      "claimed_at": "2026-04-30T01:35:44Z"
+      "branch": "res-506-string-drop",
+      "claimed_at": "2026-04-30T01:38:45Z"
     }
   }
 }
