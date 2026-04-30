@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-515-array-concat3",
-      "claimed_at": "2026-04-30T02:04:56Z"
+      "branch": "res-516-array-interleave",
+      "claimed_at": "2026-04-30T02:07:35Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-515-array-concat3",
-      "claimed_at": "2026-04-30T02:04:56Z"
+      "branch": "res-516-array-interleave",
+      "claimed_at": "2026-04-30T02:07:35Z"
     }
   }
 }

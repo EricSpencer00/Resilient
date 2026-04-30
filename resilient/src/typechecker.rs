@@ -1517,6 +1517,8 @@ impl TypeChecker {
         );
         // RES-437: insert separator between adjacent elements.
         env.set("array_intersperse".to_string(), fn_any_any_to_any());
+        // RES-516: alternate elements from two arrays.
+        env.set("array_interleave".to_string(), fn_any_any_to_any());
         // RES-438: one-sided trimmers.
         env.set(
             "trim_start".to_string(),
@@ -4677,6 +4679,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_count",
         // RES-437: array_intersperse.
         "array_intersperse",
+        // RES-516: alternate elements from two arrays.
+        "array_interleave",
         // RES-438: one-sided trimmers.
         "trim_start",
         "trim_end",
