@@ -1,0 +1,13 @@
+// RES-497 demo: string_join_lines glues an array of strings with newlines.
+
+fn main() {
+    let lines = ["one", "two", "three"];
+    println(string_join_lines(lines));
+    println("---");
+    println(string_join_lines(["just one"]));
+    println("---");
+    let empty = [];
+    println(len(string_join_lines(empty)));
+}
+
+main();

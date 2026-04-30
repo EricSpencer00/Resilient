@@ -1406,6 +1406,14 @@ impl TypeChecker {
         env.set("string_lines".to_string(), fn_any_to_any());
         // RES-496: split on Unicode whitespace.
         env.set("string_words".to_string(), fn_any_to_any());
+        // RES-497: join string array with newline.
+        env.set(
+            "string_join_lines".to_string(),
+            Type::Function {
+                params: vec![Type::Array],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-435: split array into fixed-size chunks.
         env.set("array_chunk".to_string(), fn_any_any_to_any());
         // RES-436: non-overlapping substring count.
@@ -4522,6 +4530,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_lines",
         // RES-496: split on Unicode whitespace.
         "string_words",
+        // RES-497: join string array with newline.
+        "string_join_lines",
         // RES-435: array_chunk.
         "array_chunk",
         // RES-436: string_count.
