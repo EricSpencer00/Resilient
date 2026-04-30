@@ -1,0 +1,12 @@
+// RES-505 demo: char_to_digit parses a single char to its base-36
+// digit value (0..35). Case-insensitive for letters.
+
+fn main() {
+    println(char_to_digit("0"));
+    println(char_to_digit("9"));
+    println(char_to_digit("a"));
+    println(char_to_digit("F"));
+    println(char_to_digit("z"));
+}
+
+main();

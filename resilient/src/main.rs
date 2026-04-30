@@ -8276,6 +8276,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-419: Unicode-scalar ↔ single-char string conversions.
     ("chr", builtin_chr),
     ("ord", builtin_ord),
+    // RES-505: parse single char to base-36 digit value.
+    ("char_to_digit", builtin_char_to_digit),
     // RES-420: concatenate two arrays.
     ("array_concat", builtin_array_concat),
     // RES-421: take/drop first n elements.
@@ -11959,6 +11961,37 @@ fn builtin_ord(args: &[Value]) -> RResult<Value> {
         }
         [other] => Err(format!("ord: expected string, got {}", other)),
         _ => Err(format!("ord: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-505: `char_to_digit(c)` — parse a single-character string to its
+/// base-36 digit value (0..35). Accepts `'0'..'9'`, `'a'..'z'`,
+/// `'A'..'Z'` (case-insensitive). Errors on empty / multi-char inputs
+/// and on characters outside the digit / letter range. Backed by
+/// `char::to_digit(36)`.
+fn builtin_char_to_digit(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let mut iter = s.chars();
+            let first = iter
+                .next()
+                .ok_or_else(|| "char_to_digit: empty string".to_string())?;
+            if iter.next().is_some() {
+                return Err(format!(
+                    "char_to_digit: expected single character, got {} chars",
+                    s.chars().count()
+                ));
+            }
+            match first.to_digit(36) {
+                Some(d) => Ok(Value::Int(d as i64)),
+                None => Err(format!("char_to_digit: {:?} is not a base-36 digit", first)),
+            }
+        }
+        [other] => Err(format!("char_to_digit: expected string, got {}", other)),
+        _ => Err(format!(
+            "char_to_digit: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -27395,6 +27428,69 @@ mod tests {
             };
             assert_int(builtin_ord(&[Value::String(s)]).unwrap(), n, "round trip");
         }
+    }
+
+    // ---------- RES-505: char_to_digit ----------
+
+    fn ctd(s: &str) -> i64 {
+        match builtin_char_to_digit(&[Value::String(s.into())]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn char_to_digit_decimal() {
+        for d in 0..=9 {
+            assert_eq!(ctd(&d.to_string()), d as i64);
+        }
+    }
+
+    #[test]
+    fn char_to_digit_letters_case_insensitive() {
+        // 'a' / 'A' both map to 10; 'z' / 'Z' both map to 35.
+        assert_eq!(ctd("a"), 10);
+        assert_eq!(ctd("A"), 10);
+        assert_eq!(ctd("f"), 15);
+        assert_eq!(ctd("F"), 15);
+        assert_eq!(ctd("z"), 35);
+        assert_eq!(ctd("Z"), 35);
+    }
+
+    #[test]
+    fn char_to_digit_rejects_empty_and_multichar() {
+        assert!(
+            builtin_char_to_digit(&[Value::String("".into())])
+                .unwrap_err()
+                .contains("empty string")
+        );
+        assert!(
+            builtin_char_to_digit(&[Value::String("ab".into())])
+                .unwrap_err()
+                .contains("single character")
+        );
+    }
+
+    #[test]
+    fn char_to_digit_rejects_non_digit_chars() {
+        for c in &["!", "?", " ", "/", "@", "{", "好"] {
+            let err = builtin_char_to_digit(&[Value::String(c.to_string())]).unwrap_err();
+            assert!(err.contains("not a base-36 digit"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn char_to_digit_rejects_non_string_and_arity() {
+        assert!(
+            builtin_char_to_digit(&[Value::Int(0)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_char_to_digit(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
     }
 
     // ---------- RES-420: array_concat ----------
