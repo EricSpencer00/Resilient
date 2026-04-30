@@ -1,0 +1,12 @@
+// RES-521 demo: array_zip_with_int applies a named binary op
+// element-wise over two int arrays. Truncates to the shorter input.
+
+fn main() {
+    println(array_zip_with_int([1, 2, 3], [10, 20, 30], "sum"));
+    println(array_zip_with_int([2, 4, 8], [5, 3, 7], "product"));
+    println(array_zip_with_int([2, 8, 5], [4, 3, 9], "max"));
+    println(array_zip_with_int([1, 2, 3], [10, 20], "sum"));
+    println(len(array_zip_with_int([], [1, 2, 3], "sum")));
+}
+
+main();

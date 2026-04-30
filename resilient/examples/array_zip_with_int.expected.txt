@@ -1,0 +1,6 @@
+[11, 22, 33]
+[10, 12, 56]
+[4, 8, 9]
+[11, 22]
+0
+Program executed successfully

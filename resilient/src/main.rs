@@ -8369,6 +8369,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_fold_int", builtin_array_fold_int),
     // RES-502: running-fold (intermediate accumulators).
     ("array_scan_int", builtin_array_scan_int),
+    // RES-521: element-wise binary op on two int arrays.
+    ("array_zip_with_int", builtin_array_zip_with_int),
     // RES-477: one-sided char-set trimmers.
     ("trim_start_chars", builtin_trim_start_chars),
     ("trim_end_chars", builtin_trim_end_chars),
@@ -11059,6 +11061,57 @@ fn builtin_array_scan_int(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_scan_int: expected 3 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-521: `array_zip_with_int(a, b, op)` — element-wise binary op
+/// over two integer arrays. Truncates to the length of the shorter
+/// input. Op is one of "sum", "product", "min", "max" (matching the
+/// `array_fold_int` / `array_scan_int` family). Sum / product wrap
+/// on i64 overflow.
+///
+/// Distinct from `array_zip` (RES-430), which produces tuple pairs
+/// without applying an operation.
+fn builtin_array_zip_with_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b), Value::String(op)] => {
+            let extract = |v: &Value| -> RResult<i64> {
+                match v {
+                    Value::Int(n) => Ok(*n),
+                    other => Err(format!(
+                        "array_zip_with_int: expected all int elements, got {}",
+                        other
+                    )),
+                }
+            };
+            let mut out: Vec<Value> = Vec::with_capacity(a.len().min(b.len()));
+            for (x, y) in a.iter().zip(b.iter()) {
+                let xn = extract(x)?;
+                let yn = extract(y)?;
+                let r = match op.as_str() {
+                    "sum" => xn.wrapping_add(yn),
+                    "product" => xn.wrapping_mul(yn),
+                    "min" => xn.min(yn),
+                    "max" => xn.max(yn),
+                    other => {
+                        return Err(format!(
+                            "array_zip_with_int: unknown op {:?}; expected sum/product/min/max",
+                            other
+                        ));
+                    }
+                };
+                out.push(Value::Int(r));
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b, c] => Err(format!(
+            "array_zip_with_int: expected (array, array, string), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_zip_with_int: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -33834,6 +33887,84 @@ mod tests {
             builtin_array_scan_int(&[
                 Value::Array(vec![Value::Int(1), Value::Float(2.0)]),
                 Value::Int(0),
+                Value::String("sum".into()),
+            ])
+            .unwrap_err()
+            .contains("all int elements")
+        );
+    }
+
+    // ---------- RES-521: array_zip_with_int ----------
+
+    fn zip_with(a: &[i64], b: &[i64], op: &str) -> Vec<i64> {
+        match builtin_array_zip_with_int(&[int_array(a), int_array(b), Value::String(op.into())])
+            .unwrap()
+        {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_zip_with_int_sum() {
+        assert_eq!(zip_with(&[1, 2, 3], &[10, 20, 30], "sum"), vec![11, 22, 33]);
+    }
+
+    #[test]
+    fn array_zip_with_int_product() {
+        assert_eq!(zip_with(&[1, 2, 3], &[4, 5, 6], "product"), vec![4, 10, 18]);
+    }
+
+    #[test]
+    fn array_zip_with_int_min_max() {
+        assert_eq!(zip_with(&[2, 8, 5], &[4, 3, 9], "min"), vec![2, 3, 5]);
+        assert_eq!(zip_with(&[2, 8, 5], &[4, 3, 9], "max"), vec![4, 8, 9]);
+    }
+
+    #[test]
+    fn array_zip_with_int_truncates_to_shorter() {
+        assert_eq!(zip_with(&[1, 2, 3], &[10, 20], "sum"), vec![11, 22]);
+        assert_eq!(zip_with(&[1, 2], &[10, 20, 30], "sum"), vec![11, 22]);
+        assert_eq!(zip_with(&[], &[1, 2, 3], "sum"), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_zip_with_int_rejects_unknown_op() {
+        let err = builtin_array_zip_with_int(&[
+            int_array(&[1]),
+            int_array(&[2]),
+            Value::String("xor".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("unknown op"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_zip_with_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_zip_with_int(&[
+                Value::Int(1),
+                int_array(&[2]),
+                Value::String("sum".into())
+            ])
+            .unwrap_err()
+            .contains("expected (array, array, string)")
+        );
+        assert!(
+            builtin_array_zip_with_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
+        assert!(
+            builtin_array_zip_with_int(&[
+                Value::Array(vec![Value::Int(1), Value::Float(2.0)]),
+                int_array(&[1, 2]),
                 Value::String("sum".into()),
             ])
             .unwrap_err()
