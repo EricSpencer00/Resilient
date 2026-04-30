@@ -1,0 +1,13 @@
+// RES-555 demo: array_signum_int returns the per-element sign:
+// -1 for negative, 0 for zero, 1 for positive. Empty input returns
+// empty.
+
+fn main() {
+    println(array_signum_int([-3, 0, 5, -1, 100]));
+    println(array_signum_int([0, 0, 0]));
+    println(array_signum_int([1, 2, 3]));
+    println(array_signum_int([-1, -2, -3]));
+    println(array_signum_int([]));
+}
+
+main();

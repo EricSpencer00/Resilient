@@ -8289,6 +8289,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_diff_consec_int", builtin_array_diff_consec_int),
     // RES-554: per-element clamp to [lo, hi].
     ("array_clamp_int", builtin_array_clamp_int),
+    // RES-555: per-element sign (-1 / 0 / 1).
+    ("array_signum_int", builtin_array_signum_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13539,6 +13541,34 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-555: `array_signum_int(arr)` — return a new array where each
+/// element is `-1` for negative, `0` for zero, `1` for positive.
+/// Mirrors per-element `i64::signum`. Empty input returns empty.
+fn builtin_array_signum_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => out.push(Value::Int(n.signum())),
+                    other => {
+                        return Err(format!(
+                            "array_signum_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_signum_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_signum_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29793,6 +29823,61 @@ mod tests {
             builtin_array_clamp_int(&[Value::Int(1), Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-555: array_signum_int ----------
+
+    fn signum_arr(xs: &[i64]) -> Vec<i64> {
+        match builtin_array_signum_int(&[int_array(xs)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_signum_int_basic() {
+        assert_eq!(signum_arr(&[-3, 0, 5, -1, 100]), vec![-1, 0, 1, -1, 1]);
+        assert_eq!(signum_arr(&[0, 0, 0]), vec![0, 0, 0]);
+        assert_eq!(signum_arr(&[1, 2, 3]), vec![1, 1, 1]);
+        assert_eq!(signum_arr(&[-1, -2, -3]), vec![-1, -1, -1]);
+    }
+
+    #[test]
+    fn array_signum_int_empty_returns_empty() {
+        assert_eq!(signum_arr(&[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_signum_int_handles_extremes() {
+        assert_eq!(
+            signum_arr(&[i64::MIN, -1, 0, 1, i64::MAX]),
+            vec![-1, -1, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn array_signum_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_signum_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_signum_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_signum_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
