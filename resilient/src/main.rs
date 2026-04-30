@@ -8465,6 +8465,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_set", builtin_bit_set),
     ("bit_clear", builtin_bit_clear),
     ("bit_toggle", builtin_bit_toggle),
+    // RES-520: circular bit rotation.
+    ("bit_rotate_left", builtin_bit_rotate_left),
+    ("bit_rotate_right", builtin_bit_rotate_right),
     // RES-491: integer floor sqrt.
     ("int_sqrt", builtin_int_sqrt),
     // RES-517: integer exponentiation.
@@ -9629,6 +9632,47 @@ fn builtin_bit_toggle(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "bit_toggle: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-520: `bit_rotate_left(n, k)` — rotate `n`'s bits left by `k`
+/// positions (circular; bits shifted off the high end wrap to the
+/// low end). Distinct from `bit_shl` (RES-440), which discards
+/// shifted bits. `k` must be in `0..=63`.
+fn builtin_bit_rotate_left(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(k)] => {
+            let bits = check_bit_pos("bit_rotate_left", *k)?;
+            Ok(Value::Int(n.rotate_left(bits)))
+        }
+        [a, b] => Err(format!(
+            "bit_rotate_left: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "bit_rotate_left: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-520: `bit_rotate_right(n, k)` — rotate `n`'s bits right by `k`
+/// positions (circular; bits shifted off the low end wrap to the
+/// high end). `k` must be in `0..=63`.
+fn builtin_bit_rotate_right(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(k)] => {
+            let bits = check_bit_pos("bit_rotate_right", *k)?;
+            Ok(Value::Int(n.rotate_right(bits)))
+        }
+        [a, b] => Err(format!(
+            "bit_rotate_right: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "bit_rotate_right: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -30384,6 +30428,90 @@ mod tests {
         );
         assert!(
             builtin_bit_set(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-520: bit_rotate_left / bit_rotate_right ----------
+
+    fn rol(n: i64, k: i64) -> i64 {
+        match builtin_bit_rotate_left(&[Value::Int(n), Value::Int(k)]).unwrap() {
+            Value::Int(m) => m,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    fn ror(n: i64, k: i64) -> i64 {
+        match builtin_bit_rotate_right(&[Value::Int(n), Value::Int(k)]).unwrap() {
+            Value::Int(m) => m,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bit_rotate_zero_is_identity() {
+        for n in [0i64, 1, -1, 0xDEAD_BEEF, i64::MIN, i64::MAX] {
+            assert_eq!(rol(n, 0), n, "rol(_, 0)");
+            assert_eq!(ror(n, 0), n, "ror(_, 0)");
+        }
+    }
+
+    #[test]
+    fn bit_rotate_left_basic() {
+        assert_eq!(rol(0x0F, 4), 0xF0);
+        assert_eq!(rol(0xFF, 8), 0xFF00);
+        // High bit wraps to low.
+        assert_eq!(rol(i64::MIN, 1), 1);
+    }
+
+    #[test]
+    fn bit_rotate_right_basic() {
+        assert_eq!(ror(0xF0, 4), 0x0F);
+        assert_eq!(ror(0xFF00, 8), 0xFF);
+        // Low bit wraps to high (sign bit).
+        assert_eq!(ror(1, 1), i64::MIN);
+    }
+
+    #[test]
+    fn bit_rotate_left_right_inverse() {
+        // ror(rol(n, k), k) == n for any n and k in 0..=63.
+        for n in [1i64, 0xDEAD_BEEF, -1, i64::MIN, 12345] {
+            for k in [0, 1, 7, 32, 63] {
+                assert_eq!(ror(rol(n, k), k), n, "round-trip n={} k={}", n, k);
+            }
+        }
+    }
+
+    #[test]
+    fn bit_rotate_64_is_identity() {
+        // The Rust impl wraps modulo 64; bit position 64 is out of
+        // range and we reject it. But k=0 (above) and k=63 (max
+        // valid) cover the boundary.
+        for n in [0xDEAD_BEEFi64, -1] {
+            assert_eq!(rol(n, 63), ror(n, 1), "rol 63 == ror 1");
+        }
+    }
+
+    #[test]
+    fn bit_rotate_reject_out_of_range_and_wrong_types() {
+        assert!(
+            builtin_bit_rotate_left(&[Value::Int(0), Value::Int(64)])
+                .unwrap_err()
+                .contains("0..=63")
+        );
+        assert!(
+            builtin_bit_rotate_right(&[Value::Int(0), Value::Int(-1)])
+                .unwrap_err()
+                .contains("0..=63")
+        );
+        assert!(
+            builtin_bit_rotate_left(&[Value::Float(0.0), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_bit_rotate_right(&[Value::Int(0)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

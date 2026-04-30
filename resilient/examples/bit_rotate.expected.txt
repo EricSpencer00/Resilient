@@ -1,0 +1,5 @@
+240
+65280
+15
+255
+Program executed successfully

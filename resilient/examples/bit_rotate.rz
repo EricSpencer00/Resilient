@@ -1,0 +1,11 @@
+// RES-520 demo: bit_rotate_left / bit_rotate_right do circular
+// rotation. Bits shifted off one end wrap to the other.
+
+fn main() {
+    println(bit_rotate_left(15, 4));
+    println(bit_rotate_left(255, 8));
+    println(bit_rotate_right(240, 4));
+    println(bit_rotate_right(65280, 8));
+}
+
+main();
