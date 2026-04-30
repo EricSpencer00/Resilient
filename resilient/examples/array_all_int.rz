@@ -1,0 +1,11 @@
+// RES-501 demo: array_all_int tests whether every integer element
+// satisfies a named predicate. Empty array is vacuously true.
+
+fn main() {
+    println(array_all_int([2, 4, 6], "even"));
+    println(array_all_int([2, 3, 6], "even"));
+    println(array_all_int([5, 10, 15], "positive"));
+    println(array_all_int([], "negative"));
+}
+
+main();
