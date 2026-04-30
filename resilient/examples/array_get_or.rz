@@ -1,0 +1,13 @@
+// RES-528 demo: array_get_or returns the element at index, or
+// a fallback if out of bounds. No bounds-check ceremony required.
+
+fn main() {
+    let xs = [10, 20, 30];
+    println(array_get_or(xs, 0, -1));
+    println(array_get_or(xs, 2, -1));
+    println(array_get_or(xs, 5, -1));
+    println(array_get_or(xs, -1, -1));
+    println(array_get_or([], 0, -1));
+}
+
+main();

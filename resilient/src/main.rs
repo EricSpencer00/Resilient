@@ -8413,6 +8413,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-428: first/last element accessors (empty array errors).
     ("array_first", builtin_array_first),
     ("array_last", builtin_array_last),
+    // RES-528: bounded indexing with fallback default.
+    ("array_get_or", builtin_array_get_or),
     // RES-429: pad a string to a Unicode-scalar width.
     ("string_pad_left", builtin_string_pad_left),
     ("string_pad_right", builtin_string_pad_right),
@@ -10633,6 +10635,30 @@ fn builtin_string_pad_right(args: &[Value]) -> RResult<Value> {
         out.push(pad_char);
     }
     Ok(Value::String(out))
+}
+
+/// RES-528: `array_get_or(arr, i, default)` — element at index `i`,
+/// or `default` if out of bounds (negative or `>= len`). The
+/// caller-supplied default may be of any type; out-of-bounds is
+/// recoverable, not an error.
+fn builtin_array_get_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(i), default] => {
+            if *i < 0 {
+                return Ok(default.clone());
+            }
+            let idx = *i as usize;
+            Ok(items.get(idx).cloned().unwrap_or_else(|| default.clone()))
+        }
+        [a, b, _] => Err(format!(
+            "array_get_or: expected (array, int, any), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_get_or: expected 3 arguments, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-428: `array_first(arr)` — first element of a non-empty array.
@@ -29049,6 +29075,100 @@ mod tests {
             Value::Bool(false) => {}
             other => panic!("expected Bool(false), got {:?}", other),
         }
+    }
+
+    // ---------- RES-528: array_get_or ----------
+
+    #[test]
+    fn array_get_or_returns_element_when_in_bounds() {
+        match builtin_array_get_or(&[int_array(&[10, 20, 30]), Value::Int(1), Value::Int(99)])
+            .unwrap()
+        {
+            Value::Int(20) => {}
+            other => panic!("expected Int(20), got {:?}", other),
+        }
+        match builtin_array_get_or(&[int_array(&[10, 20, 30]), Value::Int(0), Value::Int(99)])
+            .unwrap()
+        {
+            Value::Int(10) => {}
+            other => panic!("expected Int(10), got {:?}", other),
+        }
+        match builtin_array_get_or(&[int_array(&[10, 20, 30]), Value::Int(2), Value::Int(99)])
+            .unwrap()
+        {
+            Value::Int(30) => {}
+            other => panic!("expected Int(30), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_get_or_returns_default_when_past_end() {
+        match builtin_array_get_or(&[int_array(&[10, 20, 30]), Value::Int(5), Value::Int(99)])
+            .unwrap()
+        {
+            Value::Int(99) => {}
+            other => panic!("expected Int(99), got {:?}", other),
+        }
+        match builtin_array_get_or(&[int_array(&[10, 20, 30]), Value::Int(3), Value::Int(99)])
+            .unwrap()
+        {
+            Value::Int(99) => {}
+            other => panic!("expected Int(99), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_get_or_returns_default_when_negative() {
+        match builtin_array_get_or(&[int_array(&[10, 20, 30]), Value::Int(-1), Value::Int(99)])
+            .unwrap()
+        {
+            Value::Int(99) => {}
+            other => panic!("expected Int(99), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_get_or_empty_array_returns_default() {
+        match builtin_array_get_or(&[
+            Value::Array(vec![]),
+            Value::Int(0),
+            Value::String("fallback".into()),
+        ])
+        .unwrap()
+        {
+            Value::String(s) => assert_eq!(s, "fallback"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_get_or_default_can_differ_from_element_type() {
+        // Array elements are Int but default is String — the default
+        // is returned as-is; this is documented behaviour.
+        match builtin_array_get_or(&[
+            int_array(&[1, 2, 3]),
+            Value::Int(99),
+            Value::String("missing".into()),
+        ])
+        .unwrap()
+        {
+            Value::String(s) => assert_eq!(s, "missing"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_get_or_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_array_get_or(&[Value::Int(1), Value::Int(0), Value::Int(99)])
+                .unwrap_err()
+                .contains("expected (array, int, any)")
+        );
+        assert!(
+            builtin_array_get_or(&[int_array(&[1]), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
     }
 
     // ---------- RES-429: string_pad_left / string_pad_right ----------

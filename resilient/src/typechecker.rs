@@ -1454,6 +1454,14 @@ impl TypeChecker {
         // RES-428: array first/last accessors.
         env.set("array_first".to_string(), fn_any_to_any());
         env.set("array_last".to_string(), fn_any_to_any());
+        // RES-528: bounded indexing with fallback default.
+        env.set(
+            "array_get_or".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
         // RES-429: string padding to Unicode-scalar width.
         env.set(
             "string_pad_left".to_string(),
@@ -4715,6 +4723,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-428: array first/last.
         "array_first",
         "array_last",
+        // RES-528: bounded indexing with fallback.
+        "array_get_or",
         // RES-429: string padding.
         "string_pad_left",
         "string_pad_right",
