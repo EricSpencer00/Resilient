@@ -1,0 +1,11 @@
+// RES-542 demo: array_union concatenates a then b with global dedup.
+// Order-preserving: a-first, then new b-elements in b-order.
+
+fn main() {
+    println(array_union([1, 2, 3], [3, 4, 5]));
+    println(array_union([1, 1, 2], [2, 3]));
+    println(array_union([], [1, 2]));
+    println(array_union([5, 3, 1], [2, 3, 4]));
+}
+
+main();

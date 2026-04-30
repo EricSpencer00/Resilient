@@ -1118,6 +1118,8 @@ impl TypeChecker {
         // RES-541: set-like operations on arrays.
         env.set("array_intersect".to_string(), fn_any_any_to_any());
         env.set("array_diff".to_string(), fn_any_any_to_any());
+        // RES-542: order-preserving global-dedup union.
+        env.set("array_union".to_string(), fn_any_any_to_any());
         // RES-419: Unicode-scalar ↔ char conversions.
         env.set(
             "chr".to_string(),
@@ -4674,6 +4676,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-541: set-like operations on arrays.
         "array_intersect",
         "array_diff",
+        // RES-542: order-preserving global-dedup union.
+        "array_union",
         // RES-419: char-code conversions.
         "chr",
         "ord",

@@ -8281,6 +8281,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-541: set-like operations on arrays.
     ("array_intersect", builtin_array_intersect),
     ("array_diff", builtin_array_diff),
+    // RES-542: order-preserving global-dedup union.
+    ("array_union", builtin_array_union),
     // RES-419: Unicode-scalar ↔ single-char string conversions.
     ("chr", builtin_chr),
     ("ord", builtin_ord),
@@ -13163,6 +13165,32 @@ fn builtin_array_diff(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_diff: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-542: `array_union(a, b)` — concatenate `a` then `b`, removing
+/// duplicates globally. Order: `a` first, then new elements of `b`
+/// in their original order. Completes the set trio with
+/// `array_intersect` / `array_diff` (RES-541).
+fn builtin_array_union(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            let mut out: Vec<Value> = Vec::new();
+            for v in a.iter().chain(b.iter()) {
+                if !array_member_of("array_union", v, &out)? {
+                    out.push(v.clone());
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_union: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_union: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28956,6 +28984,58 @@ mod tests {
         );
         assert!(
             builtin_array_diff(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-542: array_union ----------
+
+    fn union_int(a: &[i64], b: &[i64]) -> Vec<i64> {
+        match builtin_array_union(&[int_array(a), int_array(b)]).unwrap() {
+            Value::Array(out) => out
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_union_basic() {
+        assert_eq!(union_int(&[1, 2, 3], &[3, 4, 5]), vec![1, 2, 3, 4, 5]);
+        assert_eq!(union_int(&[1, 1, 2], &[2, 3]), vec![1, 2, 3]);
+        assert_eq!(union_int(&[], &[1, 2]), vec![1, 2]);
+        assert_eq!(union_int(&[1, 2], &[]), vec![1, 2]);
+        assert_eq!(union_int(&[], &[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_union_preserves_a_order_then_b_extras() {
+        // a's first occurrence is preserved; only `b` items not yet
+        // in the result are appended in their b-order.
+        assert_eq!(union_int(&[5, 3, 1], &[2, 3, 4]), vec![5, 3, 1, 2, 4]);
+        // Already-deduped a unchanged when b adds nothing new.
+        assert_eq!(union_int(&[1, 2, 3], &[1, 2, 3]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn array_union_globally_dedups() {
+        assert_eq!(union_int(&[1, 1, 1, 2, 2], &[2, 2, 3, 3]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn array_union_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_union(&[Value::Int(1), Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_union(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
