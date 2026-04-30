@@ -1600,6 +1600,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-517: integer exponentiation.
+        env.set(
+            "pow_int".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-492: floor log base 2.
         env.set(
             "int_log2".to_string(),
@@ -4706,6 +4714,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bit_toggle",
         // RES-491: integer floor sqrt.
         "int_sqrt",
+        // RES-517: integer exponentiation.
+        "pow_int",
         // RES-492: floor log base 2.
         "int_log2",
         // RES-493: power-of-two predicate.

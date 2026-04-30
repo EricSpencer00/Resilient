@@ -1,0 +1,11 @@
+// RES-517 demo: pow_int returns base^exp as an integer.
+
+fn main() {
+    println(pow_int(2, 10));
+    println(pow_int(3, 4));
+    println(pow_int(10, 6));
+    println(pow_int(0, 0));
+    println(pow_int(-2, 5));
+}
+
+main();

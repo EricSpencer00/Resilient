@@ -8467,6 +8467,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_toggle", builtin_bit_toggle),
     // RES-491: integer floor sqrt.
     ("int_sqrt", builtin_int_sqrt),
+    // RES-517: integer exponentiation.
+    ("pow_int", builtin_pow_int),
     // RES-492: floor log base 2.
     ("int_log2", builtin_int_log2),
     // RES-493: power-of-two predicate.
@@ -9624,6 +9626,31 @@ fn builtin_bit_toggle(args: &[Value]) -> RResult<Value> {
             "bit_toggle: expected 2 arguments, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-517: `pow_int(base, exp)` — integer exponentiation. Negative
+/// `exp` errors (the result would not be an integer). Negative
+/// `base` is fine. Wraps on i64 overflow (consistent with
+/// `bit_shl` / `wrapping_*` arithmetic in `array_fold_int`).
+/// Distinct from the existing `pow(x, y)` which returns float.
+/// `pow_int(0, 0)` is 1 (the conventional choice).
+fn builtin_pow_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(base), Value::Int(exp)] => {
+            if *exp < 0 {
+                return Err(format!(
+                    "pow_int: exponent must be non-negative, got {}",
+                    exp
+                ));
+            }
+            // `i64::wrapping_pow` takes u32; clamp absurd exponents
+            // to u32::MAX, which wraps to 0 on i64 anyway.
+            let e = (*exp).min(i64::from(u32::MAX)) as u32;
+            Ok(Value::Int(base.wrapping_pow(e)))
+        }
+        [a, b] => Err(format!("pow_int: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("pow_int: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -30322,6 +30349,91 @@ mod tests {
             builtin_int_sqrt(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-517: pow_int ----------
+
+    #[test]
+    fn pow_int_basic() {
+        assert_int(
+            builtin_pow_int(&[Value::Int(2), Value::Int(0)]).unwrap(),
+            1,
+            "2^0",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(2), Value::Int(1)]).unwrap(),
+            2,
+            "2^1",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(2), Value::Int(10)]).unwrap(),
+            1024,
+            "2^10",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(3), Value::Int(4)]).unwrap(),
+            81,
+            "3^4",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(10), Value::Int(6)]).unwrap(),
+            1_000_000,
+            "10^6",
+        );
+    }
+
+    #[test]
+    fn pow_int_zero_to_zero_is_one() {
+        // The conventional choice in most languages.
+        assert_int(
+            builtin_pow_int(&[Value::Int(0), Value::Int(0)]).unwrap(),
+            1,
+            "0^0",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(0), Value::Int(5)]).unwrap(),
+            0,
+            "0^5",
+        );
+    }
+
+    #[test]
+    fn pow_int_negative_base_alternates_sign() {
+        assert_int(
+            builtin_pow_int(&[Value::Int(-2), Value::Int(3)]).unwrap(),
+            -8,
+            "(-2)^3 (odd)",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(-2), Value::Int(4)]).unwrap(),
+            16,
+            "(-2)^4 (even)",
+        );
+        assert_int(
+            builtin_pow_int(&[Value::Int(-1), Value::Int(0)]).unwrap(),
+            1,
+            "(-1)^0",
+        );
+    }
+
+    #[test]
+    fn pow_int_rejects_negative_exponent() {
+        let err = builtin_pow_int(&[Value::Int(2), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn pow_int_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_pow_int(&[Value::Float(2.0), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_pow_int(&[Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
