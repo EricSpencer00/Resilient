@@ -20,6 +20,15 @@ program, and picking the right backend for your workload.
 
 ---
 
+## Try without installing
+
+The fastest way to see Resilient run is the in-browser
+[**🛝 playground**](https://ericspencer.us/Resilient/playground/) —
+a WASM build of the compiler, no install required. Edit, run, and
+share examples directly from your browser.
+
+---
+
 ## Install
 
 The shipped CLI is **`rz`**. Three install paths, pick whichever

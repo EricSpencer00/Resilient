@@ -41,7 +41,12 @@ Code blocks marked ```resilient are runnable as-is:
 resilient path/to/snippet.rz
 ```
 
-Copy-paste any one of them into a `.rz` file and run it.
+Copy-paste any one of them into a `.rz` file and run it. Or skip
+the install entirely and try them in the
+[**🛝 in-browser playground**](https://ericspencer.us/Resilient/playground/) —
+a WASM build of the compiler that runs Resilient code without
+leaving your browser.
+
 Install the [VS Code extension](https://marketplace.visualstudio.com/items?itemName=fromamerica.resilient-vscode)
 for syntax highlighting and one-click run. See the
 [syntax reference]({{ site.baseurl }}/syntax) for the grammar.
