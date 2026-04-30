@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-517-pow-int",
-      "claimed_at": "2026-04-30T02:10:03Z"
+      "branch": "res-518-ceil-floor-div",
+      "claimed_at": "2026-04-30T02:12:35Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-517-pow-int",
-      "claimed_at": "2026-04-30T02:10:03Z"
+      "branch": "res-518-ceil-floor-div",
+      "claimed_at": "2026-04-30T02:12:35Z"
     }
   }
 }
