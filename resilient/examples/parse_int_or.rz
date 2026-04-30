@@ -1,0 +1,12 @@
+// RES-529 demo: parse_int_or returns the parsed int or a fallback
+// default if parsing fails. Useful for CSV cells, env vars, etc.
+
+fn main() {
+    println(parse_int_or("42", -1));
+    println(parse_int_or("not a number", -1));
+    println(parse_int_or(" -7 ", 0));
+    println(parse_int_or("3.14", 0));
+    println(parse_int_or("", -999));
+}
+
+main();

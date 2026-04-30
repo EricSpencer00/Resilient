@@ -1783,6 +1783,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Result),
             },
         );
+        // RES-529: non-erroring parse with fallback default.
+        env.set(
+            "parse_int_or".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         env.set(
             "parse_float".to_string(),
             Type::Function {
@@ -4827,6 +4835,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "repeat",
         // RES-339: string parsing and formatting.
         "parse_int",
+        // RES-529: non-erroring parse with fallback default.
+        "parse_int_or",
         "parse_float",
         "char_at",
         "pad_left",
