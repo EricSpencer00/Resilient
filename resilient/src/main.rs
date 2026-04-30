@@ -8297,6 +8297,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_dot_int", builtin_array_dot_int),
     // RES-558: sum of squares (Σ x²) of an int array.
     ("array_sum_squares_int", builtin_array_sum_squares_int),
+    // RES-559: running prefix sum.
+    ("array_cumsum_int", builtin_array_cumsum_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13547,6 +13549,43 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-559: `array_cumsum_int(arr)` — running prefix sum:
+/// `[a[0], a[0]+a[1], …]`. Empty input returns empty. Equivalent to
+/// `array_scan_int(arr, 0, "sum")` (RES-502) but without the
+/// magic-string op and with i128 accumulation that surfaces overflow
+/// as a typed error instead of wrapping silently.
+fn builtin_array_cumsum_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut acc: i128 = 0;
+            let mut out: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        acc += *n as i128;
+                        let cur = i64::try_from(acc).map_err(|_| {
+                            format!("array_cumsum_int: prefix sum {} does not fit in i64", acc)
+                        })?;
+                        out.push(Value::Int(cur));
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_cumsum_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("array_cumsum_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_cumsum_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -30202,6 +30241,75 @@ mod tests {
         );
         assert!(
             builtin_array_sum_squares_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-559: array_cumsum_int ----------
+
+    fn cumsum(xs: &[i64]) -> Vec<i64> {
+        match builtin_array_cumsum_int(&[int_array(xs)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_cumsum_int_basic() {
+        assert_eq!(cumsum(&[1, 2, 3, 4]), vec![1, 3, 6, 10]);
+        assert_eq!(cumsum(&[10]), vec![10]);
+        assert_eq!(cumsum(&[5, -2, -3, 1]), vec![5, 3, 0, 1]);
+    }
+
+    #[test]
+    fn array_cumsum_int_empty_returns_empty() {
+        assert_eq!(cumsum(&[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_cumsum_int_overflow_surfaced() {
+        // i64::MAX + 1 in the running sum overflows i64 (i128 absorbs,
+        // then the per-step try_from triggers the error).
+        let err = builtin_array_cumsum_int(&[int_array(&[i64::MAX, 1])]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+        // Single i64::MAX still fits (cumsum element 0 is just the input).
+        assert_eq!(cumsum(&[i64::MAX]), vec![i64::MAX]);
+    }
+
+    #[test]
+    fn array_cumsum_int_last_element_equals_array_sum() {
+        for arr in [vec![1, 2, 3], vec![-5, 0, 5, 10], vec![42], vec![]] {
+            let cs = cumsum(&arr);
+            let last_cs = cs.last().copied().unwrap_or(0);
+            let s = match builtin_array_sum(&[int_array(&arr)]).unwrap() {
+                Value::Int(n) => n,
+                _ => panic!(),
+            };
+            assert_eq!(last_cs, s, "mismatch for {:?}", arr);
+        }
+    }
+
+    #[test]
+    fn array_cumsum_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_cumsum_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_cumsum_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_cumsum_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

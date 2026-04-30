@@ -1,0 +1,12 @@
+// RES-559 demo: array_cumsum_int returns the running prefix sum
+// [a[0], a[0]+a[1], a[0]+a[1]+a[2], …]. Empty returns empty.
+// Cleaner than array_scan_int(arr, 0, "sum") and overflow-loud.
+
+fn main() {
+    println(array_cumsum_int([1, 2, 3, 4]));
+    println(array_cumsum_int([10]));
+    println(array_cumsum_int([5, -2, -3, 1]));
+    println(array_cumsum_int([]));
+}
+
+main();
