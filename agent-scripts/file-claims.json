@@ -1,8 +1,12 @@
 {
   "claims": {
-    "resilient/src/main.rs": {
-      "branch": "res-545-string-split-last",
-      "claimed_at": "2026-04-30T03:36:59Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-400-sum-types-pr4",
+      "claimed_at": "2026-04-30T19:38:00Z"
+    },
+    "resilient/src/sum_types.rs": {
+      "branch": "res-400-sum-types-pr4",
+      "claimed_at": "2026-04-30T19:38:00Z"
     },
     "resilient/src/typechecker.rs": {
       "branch": "res-545-string-split-last",
@@ -15,6 +19,20 @@
     "resilient/src/quantifiers.rs": {
       "branch": "res-408-z3-array-theory",
       "claimed_at": "2026-04-30T18:53:48Z"
+      "branch": "res-400-sum-types-pr4",
+      "claimed_at": "2026-04-30T19:38:00Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-400-sum-types-pr4",
+      "claimed_at": "2026-04-30T19:38:00Z"
+    },
+    "resilient/src/formatter.rs": {
+      "branch": "res-400-sum-types-pr4",
+      "claimed_at": "2026-04-30T19:38:00Z"
+    },
+    "resilient/src/free_vars.rs": {
+      "branch": "res-400-sum-types-pr4",
+      "claimed_at": "2026-04-30T19:38:00Z"
     }
   }
 }

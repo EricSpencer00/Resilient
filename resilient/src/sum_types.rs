@@ -61,7 +61,9 @@
 //!   `Token::Enum => Some(crate::sum_types::parse_enum_decl(self))`
 //!   in the top-level item-parsing loop.
 
-use crate::{EnumField, EnumPayload, EnumVariant, Node, Parser, Token};
+use crate::{
+    EnumField, EnumPatternPayload, EnumPayload, EnumVariant, Node, Parser, Pattern, Token,
+};
 use std::collections::HashSet;
 
 /// Parse an `enum Name { Variant1, Variant2, ... }` declaration.
@@ -349,6 +351,85 @@ fn parse_payload_type(parser: &mut Parser) -> Option<String> {
     }
 }
 
+/// RES-400 PR 4: parse the named-field payload of a match-arm pattern.
+///
+/// Called from `Parser::parse_pattern_atom` after the parser has seen
+/// `EnumName::VariantName {` and advanced `current_token` to the `{`.
+/// On exit, `current_token` is the closing `}`.
+///
+/// Each entry is `(declared field name, sub-pattern)`. Bare
+/// `{ r }` desugars to `{ r: r }` so the field name binds the
+/// payload field under the same identifier.
+pub(crate) fn parse_named_pattern_payload(parser: &mut Parser) -> EnumPatternPayload {
+    parser.next_token(); // past `{`
+    let mut fields: Vec<(String, Box<Pattern>)> = Vec::new();
+    loop {
+        match &parser.current_token {
+            Token::RightBrace => return EnumPatternPayload::Named(fields),
+            Token::Eof => {
+                parser.record_error(
+                    "Unexpected end of input inside enum-variant pattern payload".to_string(),
+                );
+                return EnumPatternPayload::Named(fields);
+            }
+            Token::Identifier(field_name) => {
+                let f_name = field_name.clone();
+                let sub = if parser.peek_token == Token::Colon {
+                    parser.next_token(); // past field name
+                    parser.next_token(); // past `:` to start of sub-pattern
+                    let p = parser.parse_pattern();
+                    parser.next_token(); // past last token of sub-pattern
+                    p
+                } else {
+                    parser.next_token(); // past field name
+                    Pattern::Identifier(f_name.clone())
+                };
+                fields.push((f_name, Box::new(sub)));
+                if parser.current_token == Token::Comma {
+                    parser.next_token();
+                }
+            }
+            other => {
+                let tok = other.clone();
+                parser.record_error(format!(
+                    "Expected field name in enum pattern payload, found {}",
+                    tok
+                ));
+                parser.next_token();
+            }
+        }
+    }
+}
+
+/// RES-400 PR 4: parse the tuple payload of a match-arm pattern.
+///
+/// Called after the parser has seen `EnumName::VariantName(` and
+/// advanced `current_token` to the `(`. On exit, `current_token` is
+/// the closing `)`.
+pub(crate) fn parse_tuple_pattern_payload(parser: &mut Parser) -> EnumPatternPayload {
+    parser.next_token(); // past `(`
+    let mut subs: Vec<Pattern> = Vec::new();
+    loop {
+        match &parser.current_token {
+            Token::RightParen => return EnumPatternPayload::Tuple(subs),
+            Token::Eof => {
+                parser.record_error(
+                    "Unexpected end of input inside enum-variant tuple payload".to_string(),
+                );
+                return EnumPatternPayload::Tuple(subs);
+            }
+            _ => {
+                let p = parser.parse_pattern();
+                subs.push(p);
+                parser.next_token(); // past last token of sub-pattern
+                if parser.current_token == Token::Comma {
+                    parser.next_token();
+                }
+            }
+        }
+    }
+}
+
 /// RES-400 PR 1: helper used by `lib.rs` (and tests) to unwrap an
 /// `EnumDecl` from a parsed `Node::Program`. Behind a `cfg(test)`
 /// gate today; later PRs will use it from the typechecker / repr
@@ -556,6 +637,55 @@ mod tests {
             "expected colon error, got: {:?}",
             errs
         );
+    }
+
+    #[test]
+    fn match_qualified_payload_less_pattern() {
+        let (_, errs) = crate::parse(
+            r#"
+            enum Color { Red, Green, Blue }
+            fn name(Color c) -> string {
+                return match c {
+                    Color::Red => "r",
+                    Color::Green => "g",
+                    Color::Blue => "b",
+                };
+            }
+            "#,
+        );
+        assert!(errs.is_empty(), "expected clean parse, got: {:?}", errs);
+    }
+
+    #[test]
+    fn match_named_payload_pattern() {
+        let (_, errs) = crate::parse(
+            r#"
+            enum Shape { Circle { r: int }, Square { side: int } }
+            fn area(Shape s) -> int {
+                return match s {
+                    Shape::Circle { r } => r * r,
+                    Shape::Square { side } => side * side,
+                };
+            }
+            "#,
+        );
+        assert!(errs.is_empty(), "expected clean parse, got: {:?}", errs);
+    }
+
+    #[test]
+    fn match_tuple_payload_pattern() {
+        let (_, errs) = crate::parse(
+            r#"
+            enum Pair { Just(int), Both(int, int) }
+            fn sum(Pair p) -> int {
+                return match p {
+                    Pair::Just(x) => x,
+                    Pair::Both(x, y) => x + y,
+                };
+            }
+            "#,
+        );
+        assert!(errs.is_empty(), "expected clean parse, got: {:?}", errs);
     }
 
     #[test]

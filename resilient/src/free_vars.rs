@@ -529,6 +529,20 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
         // RES-375: `Some(inner)` — forwards into inner; `None` — no bindings.
         Pattern::Some(inner) => bind_pattern(inner.as_ref(), bound),
         Pattern::None => {}
+        // RES-400: enum-variant pattern bindings.
+        Pattern::EnumVariant { payload, .. } => match payload {
+            crate::EnumPatternPayload::None => {}
+            crate::EnumPatternPayload::Named(fields) => {
+                for (_, sub) in fields {
+                    bind_pattern(sub.as_ref(), bound);
+                }
+            }
+            crate::EnumPatternPayload::Tuple(subs) => {
+                for sub in subs {
+                    bind_pattern(sub, bound);
+                }
+            }
+        },
     }
 }
 

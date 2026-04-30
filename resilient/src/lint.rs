@@ -228,6 +228,24 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
         // RES-375: `Some(inner)` forwards to inner; `None` has no bindings.
         Pattern::Some(inner) => collect_pattern_bindings(inner.as_ref()),
         Pattern::None => vec![],
+        // RES-400: enum-variant pattern bindings.
+        Pattern::EnumVariant { payload, .. } => match payload {
+            crate::EnumPatternPayload::None => vec![],
+            crate::EnumPatternPayload::Named(fields) => {
+                let mut names = Vec::new();
+                for (_, sub) in fields {
+                    names.extend(collect_pattern_bindings(sub.as_ref()));
+                }
+                names
+            }
+            crate::EnumPatternPayload::Tuple(subs) => {
+                let mut names = Vec::new();
+                for sub in subs {
+                    names.extend(collect_pattern_bindings(sub));
+                }
+                names
+            }
+        },
     }
 }
 
@@ -587,6 +605,9 @@ fn pattern_is_default_for_lint(p: &Pattern) -> bool {
             .all(|(_, sub)| pattern_is_default_for_lint(sub.as_ref())),
         // RES-375: Option patterns are never catch-alls by themselves.
         Pattern::Some(_) | Pattern::None => false,
+        // RES-400: enum-variant patterns are never catch-alls — each
+        // matches one specific variant.
+        Pattern::EnumVariant { .. } => false,
     }
 }
 
