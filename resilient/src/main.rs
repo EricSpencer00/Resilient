@@ -8519,6 +8519,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("repeat", builtin_repeat),
     // RES-339: string parsing and formatting.
     ("parse_int", builtin_parse_int),
+    // RES-529: non-erroring parse with fallback default.
+    ("parse_int_or", builtin_parse_int_or),
     ("parse_float", builtin_parse_float),
     ("char_at", builtin_char_at),
     ("pad_left", builtin_pad_left),
@@ -13048,6 +13050,28 @@ fn builtin_parse_int(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("parse_int: expected string, got {}", other)),
         _ => Err(format!(
             "parse_int: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-529: `parse_int_or(s, default)` — non-erroring base-10 parse.
+/// Returns the parsed integer or `default` if `s` is not a valid
+/// base-10 integer (empty, non-numeric, overflow, etc.). Trims
+/// surrounding whitespace, matching `parse_int` (RES-339). Pairs
+/// with `parse_int` (which returns a `Result`) for code that
+/// already has a fallback in mind.
+fn builtin_parse_int_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(default)] => {
+            Ok(Value::Int(s.trim().parse::<i64>().unwrap_or(*default)))
+        }
+        [a, b] => Err(format!(
+            "parse_int_or: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "parse_int_or: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -25157,6 +25181,64 @@ mod tests {
             err.contains("parse_int: expected string"),
             "err was: {}",
             err
+        );
+    }
+
+    // ---------- RES-529: parse_int_or ----------
+
+    fn pioi(s: &str, default: i64) -> i64 {
+        match builtin_parse_int_or(&[Value::String(s.into()), Value::Int(default)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_int_or_valid_inputs_return_parsed() {
+        assert_eq!(pioi("42", -1), 42);
+        assert_eq!(pioi("0", -1), 0);
+        assert_eq!(pioi("-5", -1), -5);
+        // Leading / trailing whitespace stripped, matching parse_int.
+        assert_eq!(pioi(" 42 ", -1), 42);
+        assert_eq!(pioi("\t-7\n", 0), -7);
+    }
+
+    #[test]
+    fn parse_int_or_invalid_returns_default() {
+        for s in &[
+            "",
+            "abc",
+            "1.5",
+            "0xFF",
+            "9999999999999999999999",
+            "  ",
+            "12abc",
+        ] {
+            assert_eq!(pioi(s, -1), -1, "s={:?}", s);
+        }
+    }
+
+    #[test]
+    fn parse_int_or_default_is_returned_unchanged() {
+        // Different defaults are returned independently of input.
+        assert_eq!(pioi("bad", 0), 0);
+        assert_eq!(pioi("bad", 999), 999);
+        assert_eq!(pioi("bad", -1), -1);
+        assert_eq!(pioi("bad", i64::MIN), i64::MIN);
+        assert_eq!(pioi("bad", i64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn parse_int_or_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_parse_int_or(&[Value::Int(1), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_parse_int_or(&[Value::String("42".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
