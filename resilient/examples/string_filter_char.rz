@@ -1,0 +1,12 @@
+// RES-526 demo: string_filter_char keeps only chars matching a
+// named predicate. Useful for one-shot statistics (e.g. count digits
+// = len(filter(s, "digit"))).
+
+fn main() {
+    println(string_filter_char("a1b2c3d4", "alpha"));
+    println(string_filter_char("a1b2c3d4", "digit"));
+    println(string_filter_char("hello, world!", "alnum"));
+    println(len(string_filter_char("  hi   ", "space")));
+}
+
+main();

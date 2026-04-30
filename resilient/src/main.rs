@@ -8449,6 +8449,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-525: named-predicate prefix slicing on strings.
     ("string_take_while_char", builtin_string_take_while_char),
     ("string_drop_while_char", builtin_string_drop_while_char),
+    // RES-526: named-predicate global char filter.
+    ("string_filter_char", builtin_string_filter_char),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
     // RES-516: alternate elements from two arrays.
@@ -10196,6 +10198,29 @@ fn builtin_string_drop_while_char(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_drop_while_char: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-526: `string_filter_char(s, kind)` — return a new string
+/// containing only those characters of `s` that satisfy the named
+/// predicate. Distinct from `string_take_while_char` /
+/// `string_drop_while_char` (RES-525), which slice a contiguous
+/// prefix; this filter is global. Predicates: alpha / digit / alnum
+/// / space (shared dispatch via `char_predicate_kind`).
+fn builtin_string_filter_char(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(kind)] => {
+            let pred = char_predicate_kind("string_filter_char", kind)?;
+            Ok(Value::String(s.chars().filter(|c| pred(*c)).collect()))
+        }
+        [a, b] => Err(format!(
+            "string_filter_char: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_filter_char: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -30183,6 +30208,88 @@ mod tests {
         );
         assert!(
             builtin_string_drop_while_char(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-526: string_filter_char ----------
+
+    fn filter_char(s: &str, kind: &str) -> String {
+        match builtin_string_filter_char(&[Value::String(s.into()), Value::String(kind.into())])
+            .unwrap()
+        {
+            Value::String(out) => out,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_filter_char_basic() {
+        assert_eq!(filter_char("a1b2c3", "alpha"), "abc");
+        assert_eq!(filter_char("a1b2c3", "digit"), "123");
+        assert_eq!(filter_char("hello world", "alnum"), "helloworld");
+        assert_eq!(filter_char("  hi   ", "space"), "     ");
+        assert_eq!(filter_char("", "alpha"), "");
+        assert_eq!(filter_char("abc", "alpha"), "abc");
+        assert_eq!(filter_char("abc", "digit"), "");
+    }
+
+    #[test]
+    fn string_filter_char_unicode_aware() {
+        // ASCII alpha rejects 'é' (non-ASCII letter), but the rest
+        // of the chars survive.
+        assert_eq!(filter_char("héllo", "alpha"), "hllo");
+        // 'space' uses Unicode whitespace.
+        assert_eq!(filter_char("a\u{3000}b", "space"), "\u{3000}");
+    }
+
+    #[test]
+    fn string_filter_char_length_matches_count_kind() {
+        // len(filter(s, k)) == count of chars matching k. This lets
+        // users compute "count of digits in s" etc. without a
+        // separate builtin.
+        for s in ["", "abc123", "héllo  world", "1 2 3"] {
+            for kind in ["alpha", "digit", "alnum", "space"] {
+                let filtered = filter_char(s, kind);
+                let manual = s
+                    .chars()
+                    .filter(|c| match kind {
+                        "alpha" => c.is_ascii_alphabetic(),
+                        "digit" => c.is_ascii_digit(),
+                        "alnum" => c.is_ascii_alphanumeric(),
+                        "space" => c.is_whitespace(),
+                        _ => unreachable!(),
+                    })
+                    .count();
+                assert_eq!(
+                    filtered.chars().count(),
+                    manual,
+                    "filter len mismatch s={:?} kind={}",
+                    s,
+                    kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn string_filter_char_rejects_unknown_predicate() {
+        let err =
+            builtin_string_filter_char(&[Value::String("abc".into()), Value::String("xyz".into())])
+                .unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_filter_char_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_filter_char(&[Value::Int(1), Value::String("alpha".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_filter_char(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
