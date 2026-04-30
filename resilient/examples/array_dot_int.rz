@@ -1,0 +1,13 @@
+// RES-557 demo: array_dot_int returns the dot product
+// Σ a[i] * b[i] of two equal-length integer arrays. Empty + empty
+// returns 0. Length mismatch errors.
+
+fn main() {
+    println(array_dot_int([1, 2, 3], [4, 5, 6]));
+    println(array_dot_int([2, 3], [2, 3]));
+    println(array_dot_int([-1, -2, -3], [1, 2, 3]));
+    println(array_dot_int([-1, -2, -3], [-1, -2, -3]));
+    println(array_dot_int([], []));
+}
+
+main();
