@@ -1,0 +1,11 @@
+// RES-544 demo: array_index_of_all returns every index where an
+// element matches the given value (vs. array_index_of which is first-only).
+
+fn main() {
+    println(array_index_of_all([1, 5, 2, 5, 3], 5));
+    println(array_index_of_all([5, 5, 5, 5], 5));
+    println(array_index_of_all([1, 2, 3], 5));
+    println(array_index_of_all(["a", "b", "a", "c", "a"], "a"));
+}
+
+main();
