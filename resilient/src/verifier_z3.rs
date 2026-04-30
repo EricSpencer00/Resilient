@@ -31,7 +31,8 @@
 
 use crate::{ActorHandler, Node};
 use std::collections::{BTreeSet, HashMap};
-use z3::ast::{Ast, BV, Bool, Int};
+use z3::Sort;
+use z3::ast::{Array, Ast, BV, Bool, Int};
 
 // ============================================================
 // RES-354: SMT theory selection
@@ -266,6 +267,14 @@ pub fn prove_with_axioms_and_timeout(
         let mut idents: BTreeSet<String> = BTreeSet::new();
         collect_int_identifiers(expr, &mut idents);
 
+        // RES-408: collect arrays referenced via `a[i]` so the cert
+        // declares them with Z3's `(Array Int Int)` sort. Arrays
+        // referenced *only* via `len(a)` (and not via index) keep
+        // the historical behaviour — `len_a` Int const, no array
+        // declaration needed.
+        let mut arr_args: BTreeSet<String> = BTreeSet::new();
+        collect_array_args(expr, &mut arr_args);
+
         let mut smt2 = String::new();
         smt2.push_str("; RES-071 verification certificate\n");
         smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
@@ -279,6 +288,12 @@ pub fn prove_with_axioms_and_timeout(
         // context the prover used.
         for arg in &len_args {
             smt2.push_str(&format!("(declare-const len_{} Int)\n", arg));
+        }
+        // RES-408: declare arrays referenced via `a[i]` with the
+        // `(Array Int Int)` sort so the cert is self-contained for
+        // stock Z3 re-verification.
+        for arg in &arr_args {
+            smt2.push_str(&format!("(declare-const arr_{} (Array Int Int))\n", arg));
         }
         for arg in &len_args {
             smt2.push_str(&format!("(assert (>= len_{} 0))\n", arg));
@@ -613,9 +628,71 @@ fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
             collect_int_identifiers(left, out);
             collect_int_identifiers(right, out);
         }
+        // RES-408: walk into quantifier bodies so the cert declares
+        // free Int identifiers referenced inside `forall i ...: P(i, x)`
+        // (where `x` is free). The bound variable `var` is removed
+        // afterwards because it's quantified inline by the negated
+        // formula's `(forall ((i Int)) ...)` block — declaring it at
+        // top level would shadow the bound binding.
+        Node::Quantifier {
+            var, range, body, ..
+        } => {
+            if let crate::quantifiers::QuantRange::Range { lo, hi } = range {
+                collect_int_identifiers(lo, out);
+                collect_int_identifiers(hi, out);
+            }
+            collect_int_identifiers(body, out);
+            out.remove(var);
+        }
+        // RES-408: walk into the index of `a[i]` (the array name lives
+        // separately in the `arr_<name>` collector — see
+        // `collect_array_args`); descending into `target` would
+        // mistakenly add the array's name to the Int idents.
+        Node::IndexExpression { index, .. } => {
+            collect_int_identifiers(index, out);
+        }
         // Literals contribute no identifiers; everything else
         // (calls, blocks, etc.) is outside the supported subset and
         // would have caused translate_*() to bail already.
+        _ => {}
+    }
+}
+
+/// RES-408: collect every array identifier referenced via
+/// `IndexExpression { target: Identifier(name), .. }` so the
+/// certificate generator can emit
+/// `(declare-const arr_<name> (Array Int Int))`. Mirrors the shape
+/// of `collect_len_args`.
+fn collect_array_args(node: &Node, out: &mut BTreeSet<String>) {
+    match node {
+        Node::IndexExpression { target, index, .. } => {
+            if let Node::Identifier { name, .. } = target.as_ref() {
+                out.insert(name.clone());
+            }
+            collect_array_args(index, out);
+        }
+        Node::PrefixExpression { right, .. } => collect_array_args(right, out),
+        Node::InfixExpression { left, right, .. } => {
+            collect_array_args(left, out);
+            collect_array_args(right, out);
+        }
+        Node::Quantifier { range, body, .. } => {
+            if let crate::quantifiers::QuantRange::Range { lo, hi } = range {
+                collect_array_args(lo, out);
+                collect_array_args(hi, out);
+            }
+            collect_array_args(body, out);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            collect_array_args(function, out);
+            for arg in arguments {
+                collect_array_args(arg, out);
+            }
+        }
         _ => {}
     }
 }
@@ -754,6 +831,26 @@ fn translate_int<'c>(
                 None
             }
         }
+        // RES-408: `a[i]` lowers to Z3 array theory. The array is
+        // modelled as `(Array Int Int)` named `arr_<name>`; the
+        // index translates through the existing Int path and
+        // `select` returns an Int. This is what unblocks
+        // `forall i in 0..len(a): P(a[i])` proofs — without it the
+        // body translates to None and Z3 falls back to runtime.
+        Node::IndexExpression { target, index, .. } => {
+            if let Node::Identifier { name, .. } = target.as_ref() {
+                let idx = translate_int(ctx, index, bindings)?;
+                let arr = Array::new_const(
+                    ctx,
+                    format!("arr_{}", name),
+                    &Sort::int(ctx),
+                    &Sort::int(ctx),
+                );
+                arr.select(&idx).as_int()
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -800,6 +897,21 @@ fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
             for arg in arguments {
                 collect_len_args(arg, out);
             }
+        }
+        // RES-408: walk into quantifier bodies so `forall i in 0..len(a)`
+        // properly registers `a` for the `len_a >= 0` axiom.
+        Node::Quantifier { range, body, .. } => {
+            if let crate::quantifiers::QuantRange::Range { lo, hi } = range {
+                collect_len_args(lo, out);
+                collect_len_args(hi, out);
+            }
+            collect_len_args(body, out);
+        }
+        // RES-408: walk into `a[i]` so a `len()` call hidden inside
+        // an index expression is still picked up.
+        Node::IndexExpression { target, index, .. } => {
+            collect_len_args(target, out);
+            collect_len_args(index, out);
         }
         _ => {}
     }
@@ -1832,5 +1944,179 @@ mod tests {
         let expr = infix(infix(ident("x"), "+", int(0)), "==", ident("x"));
         let (verdict, _cert, _cx, _t) = prove_auto(&expr, &no_b, Z3Theory::Bv, 0);
         assert_eq!(verdict, Some(true), "Bv theory should prove x + 0 == x");
+    }
+
+    // -----------------------------------------------------------
+    // RES-408: array-theory quantifier tests
+    // -----------------------------------------------------------
+
+    /// Build `target[index]` (`Node::IndexExpression`) with default span.
+    fn index_expr(target: Node, index: Node) -> Node {
+        Node::IndexExpression {
+            target: Box::new(target),
+            index: Box::new(index),
+            span: crate::span::Span::default(),
+        }
+    }
+
+    /// Build `forall id in lo..hi: body` (`Node::Quantifier`) with default span.
+    fn forall_range(id: &str, lo: Node, hi: Node, body: Node) -> Node {
+        Node::Quantifier {
+            kind: crate::quantifiers::QuantifierKind::Forall,
+            var: id.to_string(),
+            range: crate::quantifiers::QuantRange::Range {
+                lo: Box::new(lo),
+                hi: Box::new(hi),
+            },
+            body: Box::new(body),
+            span: crate::span::Span::default(),
+        }
+    }
+
+    /// Build `exists id in lo..hi: body` (`Node::Quantifier`) with default span.
+    fn exists_range(id: &str, lo: Node, hi: Node, body: Node) -> Node {
+        Node::Quantifier {
+            kind: crate::quantifiers::QuantifierKind::Exists,
+            var: id.to_string(),
+            range: crate::quantifiers::QuantRange::Range {
+                lo: Box::new(lo),
+                hi: Box::new(hi),
+            },
+            body: Box::new(body),
+            span: crate::span::Span::default(),
+        }
+    }
+
+    #[test]
+    fn z3_proves_forall_array_reflexive_body() {
+        // `forall i in 0..len(a): a[i] == a[i]` — body is a literal
+        // tautology under any value of `(select arr_a i)`. Z3 must
+        // prove it via array theory; if the IndexExpression arm
+        // bailed to None the whole quantifier would translate to None
+        // and the verdict would be None.
+        let no_b = HashMap::new();
+        let body = infix(
+            index_expr(ident("a"), ident("i")),
+            "==",
+            index_expr(ident("a"), ident("i")),
+        );
+        let q = forall_range("i", int(0), len_call("a"), body);
+        let (verdict, cert, _) = prove_with_certificate_and_counterexample(&q, &no_b);
+        assert_eq!(
+            verdict,
+            Some(true),
+            "forall i in 0..len(a): a[i] == a[i] must be a tautology"
+        );
+        let smt2 = cert.expect("expected cert for tautology").smt2;
+        assert!(
+            smt2.contains("(declare-const arr_a (Array Int Int))"),
+            "cert must declare arr_a as Array Int Int:\n{}",
+            smt2
+        );
+        assert!(
+            smt2.contains("(declare-const len_a Int)"),
+            "cert must declare len_a Int (range upper bound is len(a)):\n{}",
+            smt2
+        );
+        assert!(
+            smt2.contains("(assert (>= len_a 0))"),
+            "cert must include len_a >= 0 axiom:\n{}",
+            smt2
+        );
+    }
+
+    #[test]
+    fn z3_exists_array_irreflexive_witness_is_contradiction() {
+        // `exists i in 0..len(a): a[i] != a[i]` is a contradiction:
+        // for any value of `(select arr_a i)`, `v != v` is false.
+        // Z3 must produce verdict = Some(false). Exercises the
+        // existential encoding through array theory.
+        let no_b = HashMap::new();
+        let body = infix(
+            index_expr(ident("a"), ident("i")),
+            "!=",
+            index_expr(ident("a"), ident("i")),
+        );
+        let q = exists_range("i", int(0), len_call("a"), body);
+        let (verdict, _cert, _) = prove_with_certificate_and_counterexample(&q, &no_b);
+        assert_eq!(
+            verdict,
+            Some(false),
+            "exists i: a[i] != a[i] is a contradiction"
+        );
+    }
+
+    #[test]
+    fn z3_index_expression_outside_quantifier() {
+        // `a[0] == a[0]` — index access outside a quantifier still
+        // lowers to (select arr_a 0); reflexivity is trivially true.
+        let no_b = HashMap::new();
+        let expr = infix(
+            index_expr(ident("a"), int(0)),
+            "==",
+            index_expr(ident("a"), int(0)),
+        );
+        let (verdict, _cert, _) = prove_with_certificate_and_counterexample(&expr, &no_b);
+        assert_eq!(verdict, Some(true));
+    }
+
+    #[test]
+    fn collect_array_args_finds_index_target() {
+        // `a[i] + b[j]` — both `a` and `b` should be picked up.
+        let expr = infix(
+            index_expr(ident("a"), ident("i")),
+            "+",
+            index_expr(ident("b"), ident("j")),
+        );
+        let mut out = BTreeSet::new();
+        collect_array_args(&expr, &mut out);
+        assert_eq!(
+            out,
+            ["a".to_string(), "b".to_string()].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn collect_array_args_walks_into_quantifier_body() {
+        // `forall i in 0..len(xs): xs[i] >= 0` — `xs` is referenced
+        // inside the body; collector must recurse.
+        let body = infix(index_expr(ident("xs"), ident("i")), ">=", int(0));
+        let q = forall_range("i", int(0), len_call("xs"), body);
+        let mut out = BTreeSet::new();
+        collect_array_args(&q, &mut out);
+        assert_eq!(out, ["xs".to_string()].into_iter().collect());
+    }
+
+    #[test]
+    fn collect_int_identifiers_excludes_quantifier_bound_var() {
+        // `forall i in 0..len(a): i + x >= 0` — the bound `i` must
+        // NOT be in the collected idents (otherwise the cert would
+        // declare it and shadow the forall binding). `x` and the
+        // implicit `len` arg `a` should still be picked up via their
+        // dedicated collectors.
+        let body = infix(infix(ident("i"), "+", ident("x")), ">=", int(0));
+        let q = forall_range("i", int(0), len_call("a"), body);
+        let mut idents = BTreeSet::new();
+        collect_int_identifiers(&q, &mut idents);
+        assert!(!idents.contains("i"), "bound var leaked into idents");
+        assert!(idents.contains("x"), "free var x missing from idents");
+    }
+
+    #[test]
+    fn z3_index_with_non_identifier_target_bails() {
+        // `[1, 2, 3][0]` — target is a literal-array, not an
+        // Identifier. translate_int returns None; prove returns
+        // None (runtime fallback fires).
+        let no_b = HashMap::new();
+        let arr_lit = Node::ArrayLiteral {
+            items: vec![int(1), int(2), int(3)],
+            span: crate::span::Span::default(),
+        };
+        let expr = infix(index_expr(arr_lit, int(0)), "==", int(1));
+        assert_eq!(
+            prove(&expr, &no_b),
+            None,
+            "non-identifier index target must bail to None"
+        );
     }
 }

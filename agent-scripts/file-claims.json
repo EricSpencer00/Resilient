@@ -7,6 +7,14 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-545-string-split-last",
       "claimed_at": "2026-04-30T03:36:59Z"
+    },
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-408-z3-array-theory",
+      "claimed_at": "2026-04-30T18:53:48Z"
+    },
+    "resilient/src/quantifiers.rs": {
+      "branch": "res-408-z3-array-theory",
+      "claimed_at": "2026-04-30T18:53:48Z"
     }
   }
 }
