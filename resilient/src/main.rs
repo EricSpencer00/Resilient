@@ -8324,6 +8324,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_find", builtin_string_find),
     // RES-547: last byte index of substring, -1 if missing.
     ("string_rfind", builtin_string_rfind),
+    // RES-548: split string at a byte index into [before, after].
+    ("string_split_at", builtin_string_split_at),
     // RES-447: i64 boundary constants as zero-arg functions.
     ("int_min", builtin_int_min),
     ("int_max", builtin_int_max),
@@ -12661,6 +12663,50 @@ fn builtin_int_max(args: &[Value]) -> RResult<Value> {
         return Err(format!("int_max: expected 0 arguments, got {}", args.len()));
     }
     Ok(Value::Int(i64::MAX))
+}
+
+/// RES-548: `string_split_at(s, idx)` — split `s` at byte index `idx`
+/// into `[before, after]`. `idx` must be in `[0, len_bytes(s)]` and
+/// fall on a UTF-8 char boundary. Mirrors Rust's `str::split_at`,
+/// returning a clean error instead of panicking on bad inputs.
+fn builtin_string_split_at(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(idx)] => {
+            if *idx < 0 {
+                return Err(format!(
+                    "string_split_at: index must be non-negative, got {}",
+                    idx
+                ));
+            }
+            let i = *idx as usize;
+            if i > s.len() {
+                return Err(format!(
+                    "string_split_at: index {} out of range for string of {} bytes",
+                    idx,
+                    s.len()
+                ));
+            }
+            if !s.is_char_boundary(i) {
+                return Err(format!(
+                    "string_split_at: index {} is not on a UTF-8 char boundary",
+                    idx
+                ));
+            }
+            let (left, right) = s.split_at(i);
+            Ok(Value::Array(vec![
+                Value::String(left.to_string()),
+                Value::String(right.to_string()),
+            ]))
+        }
+        [a, b] => Err(format!(
+            "string_split_at: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_split_at: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-547: `string_rfind(s, sub)` — last byte index of `sub` in
@@ -34207,6 +34253,80 @@ mod tests {
         );
         assert!(
             builtin_string_rfind(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-548: string_split_at ----------
+
+    fn split_at(s: &str, idx: i64) -> Vec<String> {
+        match builtin_string_split_at(&[Value::String(s.into()), Value::Int(idx)]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(s) => s,
+                    other => panic!("expected String, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_split_at_basic() {
+        assert_eq!(split_at("hello", 0), vec!["", "hello"]);
+        assert_eq!(split_at("hello", 5), vec!["hello", ""]);
+        assert_eq!(split_at("hello", 2), vec!["he", "llo"]);
+    }
+
+    #[test]
+    fn string_split_at_empty_string_only_zero_works() {
+        assert_eq!(split_at("", 0), vec!["", ""]);
+        let err = builtin_string_split_at(&[Value::String("".into()), Value::Int(1)]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_split_at_multibyte_boundary_ok() {
+        // "héllo" — bytes: h(0) é(1..3) l(3) l(4) o(5)  (len 6)
+        assert_eq!(split_at("héllo", 0), vec!["", "héllo"]);
+        assert_eq!(split_at("héllo", 1), vec!["h", "éllo"]);
+        assert_eq!(split_at("héllo", 3), vec!["hé", "llo"]);
+        assert_eq!(split_at("héllo", 6), vec!["héllo", ""]);
+    }
+
+    #[test]
+    fn string_split_at_non_boundary_rejected() {
+        // Index 2 is in the middle of "é" (bytes 1,2).
+        let err =
+            builtin_string_split_at(&[Value::String("héllo".into()), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("UTF-8 char boundary"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_split_at_out_of_range_rejected() {
+        let err =
+            builtin_string_split_at(&[Value::String("hi".into()), Value::Int(99)]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_split_at_negative_rejected() {
+        let err =
+            builtin_string_split_at(&[Value::String("hi".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_split_at_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_split_at(&[Value::Int(1), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_string_split_at(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
