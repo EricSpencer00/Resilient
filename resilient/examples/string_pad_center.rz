@@ -1,0 +1,12 @@
+// RES-540 demo: string_pad_center pads on both sides to a target width.
+// Extra padding goes right when the total padding is odd.
+
+fn main() {
+    println(string_pad_center("hi", 6, "-"));
+    println(string_pad_center("hi", 5, "-"));
+    println(string_pad_center("title", 11, "*"));
+    println(string_pad_center("hello", 3, "-"));
+    println(string_pad_center("", 4, "-"));
+}
+
+main();

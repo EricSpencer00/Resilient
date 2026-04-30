@@ -1519,6 +1519,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-540: center-pad a string to a Unicode-scalar width.
+        env.set(
+            "string_pad_center".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::Int, Type::String],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-430: pair elements as tuples; truncate to shorter array.
         env.set("array_zip".to_string(), fn_any_any_to_any());
         // RES-531: split an array of 2-tuples into two parallel arrays.
@@ -4812,6 +4820,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-429: string padding.
         "string_pad_left",
         "string_pad_right",
+        // RES-540: center-pad a string.
+        "string_pad_center",
         // RES-430: array_zip.
         "array_zip",
         // RES-531: split an array of 2-tuples into two parallel arrays.

@@ -8432,6 +8432,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-429: pad a string to a Unicode-scalar width.
     ("string_pad_left", builtin_string_pad_left),
     ("string_pad_right", builtin_string_pad_right),
+    // RES-540: center-pad a string to a Unicode-scalar width.
+    ("string_pad_center", builtin_string_pad_center),
     // RES-430: pair elements as tuples; truncate to shorter array.
     ("array_zip", builtin_array_zip),
     // RES-531: split an array of 2-tuples into two parallel arrays.
@@ -10792,6 +10794,30 @@ fn builtin_string_pad_right(args: &[Value]) -> RResult<Value> {
     let mut out = String::with_capacity(s.len() + needed * pad_char.len_utf8());
     out.push_str(&s);
     for _ in 0..needed {
+        out.push(pad_char);
+    }
+    Ok(Value::String(out))
+}
+
+/// RES-540: `string_pad_center(s, width, pad)` — pad on both sides
+/// to at least `width` Unicode scalars using the single-char `pad`.
+/// When the total padding count is odd, the extra char goes on the
+/// right (matching Python `str.center` and Rust `format!` `:^`).
+fn builtin_string_pad_center(args: &[Value]) -> RResult<Value> {
+    let (s, width, pad_char) = pad_args("string_pad_center", args)?;
+    let len = s.chars().count();
+    if len >= width {
+        return Ok(Value::String(s));
+    }
+    let needed = width - len;
+    let left = needed / 2;
+    let right = needed - left;
+    let mut out = String::with_capacity(s.len() + (left + right) * pad_char.len_utf8());
+    for _ in 0..left {
+        out.push(pad_char);
+    }
+    out.push_str(&s);
+    for _ in 0..right {
         out.push(pad_char);
     }
     Ok(Value::String(out))
@@ -30084,6 +30110,85 @@ mod tests {
         );
         assert!(
             builtin_string_pad_right(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 3 arguments")
+        );
+    }
+
+    // ---------- RES-540: string_pad_center ----------
+
+    fn pad_center(s: &str, width: i64, pad: &str) -> String {
+        match builtin_string_pad_center(&[
+            Value::String(s.into()),
+            Value::Int(width),
+            Value::String(pad.into()),
+        ])
+        .unwrap()
+        {
+            Value::String(out) => out,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_pad_center_even_split() {
+        // 6 - 2 = 4 chars of padding split evenly: 2 left + 2 right.
+        assert_eq!(pad_center("hi", 6, "-"), "--hi--");
+        assert_eq!(pad_center("a", 5, "*"), "**a**");
+        // Empty string: padding fills the whole width.
+        assert_eq!(pad_center("", 4, "-"), "----");
+    }
+
+    #[test]
+    fn string_pad_center_odd_extra_goes_right() {
+        // 5 - 2 = 3 chars padding: 1 left + 2 right (extra on right,
+        // matching Python str.center / Rust format!`:^`).
+        assert_eq!(pad_center("hi", 5, "-"), "-hi--");
+        // 7 - 4 = 3: 1 left + 2 right.
+        assert_eq!(pad_center("xxxx", 7, "-"), "-xxxx--");
+    }
+
+    #[test]
+    fn string_pad_center_no_padding_when_already_wide() {
+        assert_eq!(pad_center("hello", 5, "-"), "hello");
+        assert_eq!(pad_center("hello", 3, "-"), "hello");
+        assert_eq!(pad_center("hello", 0, "-"), "hello");
+    }
+
+    #[test]
+    fn string_pad_center_unicode_aware() {
+        // 'é' counts as one char; width counts chars not bytes.
+        // 7 - 5 = 2: 1 left + 1 right.
+        assert_eq!(pad_center("héllo", 7, "-"), "-héllo-");
+    }
+
+    #[test]
+    fn string_pad_center_rejects_invalid_pad() {
+        let err = builtin_string_pad_center(&[
+            Value::String("a".into()),
+            Value::Int(5),
+            Value::String("".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("single character"), "got: {}", err);
+        let err = builtin_string_pad_center(&[
+            Value::String("a".into()),
+            Value::Int(-1),
+            Value::String("-".into()),
+        ])
+        .unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_pad_center_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_pad_center(&[Value::Int(1), Value::Int(5), Value::String("0".into())])
+                .unwrap_err()
+                .contains("expected (string, int, string)")
+        );
+        assert!(
+            builtin_string_pad_center(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 3 arguments")
         );
