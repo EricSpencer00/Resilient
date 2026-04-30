@@ -1498,6 +1498,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-494: round up to next power of two.
+        env.set(
+            "next_pow2".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-442: last byte index of substring.
         env.set(
             "last_index_of".to_string(),
@@ -4532,6 +4540,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "int_log2",
         // RES-493: power-of-two predicate.
         "is_pow2",
+        // RES-494: round up to next power of two.
+        "next_pow2",
         // RES-442: last_index_of.
         "last_index_of",
         // RES-413: repeat a string.
