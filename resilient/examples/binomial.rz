@@ -1,0 +1,14 @@
+// RES-568 demo: binomial(n, k) returns C(n, k) = n! / (k!(n-k)!).
+// Computed iteratively in i128 so pairs whose factorials overflow
+// individually still work as long as the ratio fits i64.
+
+fn main() {
+    println(binomial(5, 2));
+    println(binomial(10, 0));
+    println(binomial(10, 10));
+    println(binomial(10, 11));
+    println(binomial(30, 5));
+    println(binomial(50, 25));
+}
+
+main();

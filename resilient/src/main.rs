@@ -8212,6 +8212,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("lcm_array", builtin_lcm_array),
     // RES-567: factorial with overflow detection.
     ("factorial", builtin_factorial),
+    // RES-568: binomial coefficient C(n, k).
+    ("binomial", builtin_binomial),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -15221,6 +15223,43 @@ fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
         a as i64
     })?;
     Ok(Value::Int(result))
+}
+
+/// RES-568: `binomial(n, k)` — `C(n, k) = n! / (k! · (n−k)!)`.
+/// Computed iteratively in i128 (`acc *= n − i + 1`, `acc /= i`) so
+/// individual factorials may overflow even when the ratio fits i64.
+/// `k > n` is 0 (empty set). Negative inputs error. The final result
+/// is bounds-checked back into i64.
+fn builtin_binomial(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(k)] => {
+            if *n < 0 {
+                return Err(format!("binomial: n must be non-negative, got {}", n));
+            }
+            if *k < 0 {
+                return Err(format!("binomial: k must be non-negative, got {}", k));
+            }
+            if *k > *n {
+                return Ok(Value::Int(0));
+            }
+            // Symmetry: C(n, k) == C(n, n - k); pick the smaller k for fewer iterations.
+            let kk = std::cmp::min(*k, *n - *k);
+            let mut acc: i128 = 1;
+            for i in 1..=kk {
+                acc *= (*n - i + 1) as i128;
+                // Exact division: at every step `i!` divides the running product.
+                acc /= i as i128;
+            }
+            i64::try_from(acc)
+                .map(Value::Int)
+                .map_err(|_| format!("binomial: C({}, {}) does not fit in i64", n, k))
+        }
+        [a, b] => Err(format!("binomial: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "binomial: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-567: `factorial(n)` — i64 factorial with overflow detection.
@@ -29662,6 +29701,79 @@ mod tests {
             builtin_factorial(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-568: binomial ----------
+
+    fn binom(n: i64, k: i64) -> i64 {
+        match builtin_binomial(&[Value::Int(n), Value::Int(k)]).unwrap() {
+            Value::Int(r) => r,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn binomial_basic() {
+        assert_eq!(binom(5, 2), 10);
+        assert_eq!(binom(6, 3), 20);
+        assert_eq!(binom(10, 4), 210);
+    }
+
+    #[test]
+    fn binomial_boundaries() {
+        // k = 0 or k = n → 1
+        assert_eq!(binom(0, 0), 1);
+        assert_eq!(binom(10, 0), 1);
+        assert_eq!(binom(10, 10), 1);
+        // k > n → 0
+        assert_eq!(binom(10, 11), 0);
+        assert_eq!(binom(0, 1), 0);
+    }
+
+    #[test]
+    fn binomial_symmetry() {
+        // C(n, k) == C(n, n-k)
+        for (n, k) in [(10, 3), (20, 5), (30, 12)] {
+            assert_eq!(binom(n, k), binom(n, n - k), "n={} k={}", n, k);
+        }
+    }
+
+    #[test]
+    fn binomial_supports_pairs_with_overflowing_factorials() {
+        // 30! and 25! both overflow i64, but C(30, 5) = 142506 fits.
+        assert_eq!(binom(30, 5), 142506);
+        // C(50, 25) = 126410606437752 — fits i64 even though both
+        // 50! and 25! individually overflow.
+        assert_eq!(binom(50, 25), 126410606437752_i64);
+    }
+
+    #[test]
+    fn binomial_overflow_surfaced() {
+        // C(100, 50) overflows i64.
+        let err = builtin_binomial(&[Value::Int(100), Value::Int(50)]).unwrap_err();
+        assert!(err.contains("does not fit"), "got: {}", err);
+    }
+
+    #[test]
+    fn binomial_negative_errors() {
+        let err = builtin_binomial(&[Value::Int(-1), Value::Int(2)]).unwrap_err();
+        assert!(err.contains("n must be non-negative"), "got: {}", err);
+        let err = builtin_binomial(&[Value::Int(5), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("k must be non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn binomial_rejects_non_int_and_arity() {
+        assert!(
+            builtin_binomial(&[Value::Float(5.0), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_binomial(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
