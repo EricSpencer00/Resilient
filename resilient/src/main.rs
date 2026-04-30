@@ -8411,6 +8411,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_join_lines", builtin_string_join_lines),
     // RES-498: join string array with single-space separator.
     ("string_unwords", builtin_string_unwords),
+    // RES-499: take first n Unicode scalars.
+    ("string_take", builtin_string_take),
     // RES-435: split array into fixed-size chunks (last may be short).
     ("array_chunk", builtin_array_chunk),
     // RES-436: non-overlapping substring count.
@@ -9842,6 +9844,42 @@ fn builtin_string_unwords(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("string_unwords: expected array, got {}", other)),
         _ => Err(format!(
             "string_unwords: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-499: `string_take(s, n)` — return the prefix of `s` consisting
+/// of its first `n` Unicode scalars. `n` past the string's char count
+/// clamps to the full string. Negative `n` errors. Counts chars, not
+/// bytes — consistent with `string_at`, `string_substring`,
+/// `string_chars`.
+fn builtin_string_take(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "string_take: count must be non-negative, got {}",
+                    n
+                ));
+            }
+            let take = *n as usize;
+            // Find the byte index where we have consumed `take` scalars
+            // (or end of string), then slice. This avoids re-allocating
+            // when the count exceeds the full string.
+            let end_byte = s
+                .char_indices()
+                .nth(take)
+                .map(|(b, _)| b)
+                .unwrap_or(s.len());
+            Ok(Value::String(s[..end_byte].to_string()))
+        }
+        [a, b] => Err(format!(
+            "string_take: expected (string, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_take: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -28340,6 +28378,58 @@ mod tests {
             builtin_string_unwords(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-499: string_take ----------
+
+    fn take_str(s: &str, n: i64) -> String {
+        match builtin_string_take(&[Value::String(s.into()), Value::Int(n)]).unwrap() {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_take_basic() {
+        assert_eq!(take_str("hello", 0), "");
+        assert_eq!(take_str("hello", 1), "h");
+        assert_eq!(take_str("hello", 3), "hel");
+        assert_eq!(take_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn string_take_clamps_past_end() {
+        assert_eq!(take_str("hello", 100), "hello");
+        assert_eq!(take_str("", 5), "");
+    }
+
+    #[test]
+    fn string_take_unicode_aware() {
+        // 'é' is a 2-byte scalar; counting chars not bytes.
+        assert_eq!(take_str("héllo", 2), "hé");
+        // Multi-byte scalars: ideographs.
+        assert_eq!(take_str("日本語", 1), "日");
+        assert_eq!(take_str("日本語", 2), "日本");
+    }
+
+    #[test]
+    fn string_take_rejects_negative_count() {
+        let err = builtin_string_take(&[Value::String("foo".into()), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_take_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_take(&[Value::Int(5), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (string, int)")
+        );
+        assert!(
+            builtin_string_take(&[Value::String("x".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 

@@ -1,0 +1,10 @@
+// RES-499 demo: string_take returns the first n Unicode scalars.
+
+fn main() {
+    println(string_take("hello, world!", 5));
+    println(string_take("hello", 100));
+    println(string_take("héllo", 2));
+    println(len(string_take("hello", 0)));
+}
+
+main();
