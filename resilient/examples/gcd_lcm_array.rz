@@ -1,0 +1,12 @@
+// RES-536 demo: gcd_array / lcm_array reduce a list of ints.
+
+fn main() {
+    println(gcd_array([12, 18, 24]));
+    println(gcd_array([7, 11, 13]));
+    println(lcm_array([4, 6]));
+    println(lcm_array([2, 3, 4, 6]));
+    println(gcd_array([]));
+    println(lcm_array([]));
+}
+
+main();

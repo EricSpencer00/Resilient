@@ -935,6 +935,13 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-536: gcd / lcm reduction over an integer array.
+        let arr_to_int = Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("gcd_array".to_string(), arr_to_int.clone());
+        env.set("lcm_array".to_string(), arr_to_int);
         env.set("pow".to_string(), fn_any_any_to_any());
         // RES-295: clamp(x, lo, hi) — type-preserving for Int triples,
         // promoted to Float if any arg is Float. Signed as
@@ -4583,6 +4590,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-415: gcd/lcm.
         "gcd",
         "lcm",
+        // RES-536: gcd / lcm reduction over an integer array.
+        "gcd_array",
+        "lcm_array",
         // RES-411: float predicates.
         "is_nan",
         "is_inf",
