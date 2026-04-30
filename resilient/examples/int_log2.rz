@@ -1,0 +1,11 @@
+// RES-492 demo: int_log2 returns floor(log2(n)) for positive n.
+
+fn main() {
+    println(int_log2(1));
+    println(int_log2(8));
+    println(int_log2(255));
+    println(int_log2(256));
+    println(int_log2(1024));
+}
+
+main();
