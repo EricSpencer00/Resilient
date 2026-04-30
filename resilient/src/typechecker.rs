@@ -830,6 +830,12 @@ pub struct TypeChecker {
     /// `FieldAssignment` to reject writes to non-existent fields
     /// statically.
     struct_fields: HashMap<String, Vec<(String, Type)>>,
+    /// RES-400: enum name → variant list. Populated when we visit each
+    /// `EnumDecl`. Used by the `Match` exhaustiveness check to ensure
+    /// every declared variant is covered, and by `match_pattern_binding_types`
+    /// (future PR) to produce proper payload-field types instead of
+    /// the current `Any` fallback.
+    pub(crate) enum_decls: HashMap<String, Vec<crate::EnumVariant>>,
     /// RES-128: alias name → raw target type name. Populated by
     /// every `TypeAlias` node. Consulted by `parse_type_name` which
     /// walks the chain (with a `seen` set for cycle detection) and
@@ -2492,6 +2498,7 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
+            enum_decls: HashMap::new(),
             type_aliases: HashMap::new(),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
@@ -3658,10 +3665,43 @@ impl TypeChecker {
                             // G7's struct-decl table.
                         }
                         Type::Struct(sname) => {
-                            return Err(format!(
-                                "Non-exhaustive match on struct `{}`: add `{} {{ .. }}`, `_`, or an identifier arm that covers every field",
-                                sname, sname
-                            ));
+                            // RES-400: a `Type::Struct(name)` whose
+                            // `name` resolves in `enum_decls` is
+                            // really an enum scrutinee. Check that
+                            // every declared variant is covered.
+                            if let Some(variants) = self.enum_decls.get(&sname).cloned() {
+                                let covered: HashSet<&str> = arms
+                                    .iter()
+                                    .filter(|(_, g, _)| g.is_none())
+                                    .filter_map(|(p, _, _)| match p {
+                                        Pattern::EnumVariant { variant_name, .. } => {
+                                            Some(variant_name.as_str())
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let missing: Vec<&str> = variants
+                                    .iter()
+                                    .filter(|v| !covered.contains(v.name.as_str()))
+                                    .map(|v| v.name.as_str())
+                                    .collect();
+                                if !missing.is_empty() {
+                                    let list = missing
+                                        .iter()
+                                        .map(|m| format!("{}::{}", sname, m))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    return Err(format!(
+                                        "Non-exhaustive match on enum `{}`: missing variants: {}",
+                                        sname, list
+                                    ));
+                                }
+                            } else {
+                                return Err(format!(
+                                    "Non-exhaustive match on struct `{}`: add `{} {{ .. }}`, `_`, or an identifier arm that covers every field",
+                                    sname, sname
+                                ));
+                            }
                         }
                         other => {
                             return Err(format!(
@@ -3869,6 +3909,17 @@ impl TypeChecker {
                 for (_, e) in fields {
                     let _ = self.check_node(e)?;
                 }
+                // RES-400: if `name` is an enum-variant constructor
+                // (`EnumName::VariantName`), the resulting value's
+                // type is the enum (`EnumName`), not the qualified
+                // name. Otherwise fall through to the historic struct
+                // behaviour.
+                if let Some(idx) = name.rfind("::") {
+                    let type_name = &name[..idx];
+                    if self.enum_decls.contains_key(type_name) {
+                        return Ok(Type::Struct(type_name.to_string()));
+                    }
+                }
                 Ok(Type::Struct(name.clone()))
             }
 
@@ -4066,6 +4117,22 @@ impl TypeChecker {
                 // RES-078: identifier span lets us tell users where
                 // exactly the undefined reference lives. Skip the
                 // prefix when the span looks default (synthetic).
+                // RES-400: payload-less enum-variant constructors
+                // (`Color::Red`) resolve to `Type::Struct(EnumName)` —
+                // the runtime registers them under the qualified key
+                // when the EnumDecl evaluates; the typechecker mirrors
+                // that resolution from `enum_decls` so the typed view
+                // matches.
+                if let Some(idx) = name.rfind("::") {
+                    let type_name = &name[..idx];
+                    let variant_name = &name[idx + 2..];
+                    if let Some(variants) = self.enum_decls.get(type_name)
+                        && let Some(v) = variants.iter().find(|v| v.name == variant_name)
+                        && matches!(v.payload, crate::EnumPayload::None)
+                    {
+                        return Ok(Type::Struct(type_name.to_string()));
+                    }
+                }
                 match self.env.get(name) {
                     Some(typ) => Ok(typ),
                     None => {
@@ -4220,6 +4287,36 @@ impl TypeChecker {
                 arguments,
                 span: call_span,
             } => {
+                // RES-400: tuple-payload enum-variant constructor —
+                // `Either::Just(7)` parses as a CallExpression with
+                // the callee `Identifier("Either::Just")`. Resolve it
+                // here BEFORE the regular `check_node(function)` path
+                // (which would error with "Undefined variable") so
+                // the typechecker treats it as a constructor.
+                if let Node::Identifier { name, .. } = function.as_ref()
+                    && let Some(idx) = name.rfind("::")
+                {
+                    let type_name = &name[..idx];
+                    let variant_name = &name[idx + 2..];
+                    if let Some(variants) = self.enum_decls.get(type_name).cloned()
+                        && let Some(v) = variants.iter().find(|v| v.name == variant_name)
+                        && let crate::EnumPayload::Tuple(declared) = &v.payload
+                    {
+                        if arguments.len() != declared.len() {
+                            return Err(format!(
+                                "Constructor {}::{}: expected {} arg(s), got {}",
+                                type_name,
+                                variant_name,
+                                declared.len(),
+                                arguments.len()
+                            ));
+                        }
+                        for arg in arguments {
+                            let _ = self.check_node(arg)?;
+                        }
+                        return Ok(Type::Struct(type_name.to_string()));
+                    }
+                }
                 let func_type = self.check_node(function)?;
 
                 // RES-061 + RES-063: if the callee is a known top-level
@@ -4442,10 +4539,14 @@ impl TypeChecker {
             Node::TraitDecl { .. } => Ok(Type::Void),
             // RES-400 PR 1: enum declarations are accepted by the
             // typechecker as Void today. PR 2 will extend `Type` with
-            // a `SumType { name, variants }` representation, register
-            // it under `name`, and validate that every variant payload
-            // resolves; for now we just acknowledge the node.
-            Node::EnumDecl { .. } => Ok(Type::Void),
+            // RES-400: register the enum in the typechecker's
+            // `enum_decls` table so the `Match` arm can check
+            // exhaustiveness and so `match_pattern_binding_types`
+            // (future PR) can resolve payload-field types.
+            Node::EnumDecl { name, variants, .. } => {
+                self.enum_decls.insert(name.clone(), variants.clone());
+                Ok(Type::Void)
+            }
             // RES-406: unsafe block. The volatile-call gate (compile-
             // time error when calling `volatile_*` outside an
             // unsafe block) is enforced in a sibling pass —
