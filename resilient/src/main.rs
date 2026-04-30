@@ -8451,6 +8451,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_drop_while_char", builtin_string_drop_while_char),
     // RES-526: named-predicate global char filter.
     ("string_filter_char", builtin_string_filter_char),
+    // RES-527: ASCII case-insensitive string equality.
+    ("string_eq_ignore_case", builtin_string_eq_ignore_case),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
     // RES-516: alternate elements from two arrays.
@@ -10221,6 +10223,24 @@ fn builtin_string_filter_char(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_filter_char: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-527: `string_eq_ignore_case(a, b)` — ASCII case-insensitive
+/// string equality. Useful for protocol parsing (HTTP header names,
+/// MIME types). Only ASCII letters are case-folded; non-ASCII chars
+/// compare as-is, matching Rust's `str::eq_ignore_ascii_case`.
+fn builtin_string_eq_ignore_case(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(a), Value::String(b)] => Ok(Value::Bool(a.eq_ignore_ascii_case(b))),
+        [a, b] => Err(format!(
+            "string_eq_ignore_case: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_eq_ignore_case: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -30290,6 +30310,70 @@ mod tests {
         );
         assert!(
             builtin_string_filter_char(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-527: string_eq_ignore_case ----------
+
+    fn eq_ic(a: &str, b: &str) -> bool {
+        match builtin_string_eq_ignore_case(&[Value::String(a.into()), Value::String(b.into())])
+            .unwrap()
+        {
+            Value::Bool(b) => b,
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_eq_ignore_case_basic() {
+        assert!(eq_ic("hello", "HELLO"));
+        assert!(eq_ic("Hello", "hELLO"));
+        assert!(eq_ic("HELLO", "hello"));
+        assert!(eq_ic("MixedCase", "MIXEDCASE"));
+    }
+
+    #[test]
+    fn string_eq_ignore_case_inequal_when_chars_differ() {
+        assert!(!eq_ic("hello", "world"));
+        assert!(!eq_ic("foo", "foobar"));
+        assert!(!eq_ic("foobar", "foo"));
+    }
+
+    #[test]
+    fn string_eq_ignore_case_empty_strings() {
+        assert!(eq_ic("", ""));
+        assert!(!eq_ic("", "a"));
+        assert!(!eq_ic("a", ""));
+    }
+
+    #[test]
+    fn string_eq_ignore_case_only_folds_ascii() {
+        // Per Rust's str::eq_ignore_ascii_case, non-ASCII letters
+        // are NOT case-folded — only A-Z ↔ a-z.
+        assert!(!eq_ic("héllo", "HÉLLO"));
+        // But the ASCII parts still fold:
+        assert!(eq_ic("héllo", "Héllo"));
+        assert!(!eq_ic("naïve", "NAÏVE"));
+    }
+
+    #[test]
+    fn string_eq_ignore_case_punctuation_and_digits_unchanged() {
+        // Digits and punctuation compare exactly.
+        assert!(eq_ic("Foo123!", "FOO123!"));
+        assert!(!eq_ic("Foo123!", "Foo123?"));
+    }
+
+    #[test]
+    fn string_eq_ignore_case_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_eq_ignore_case(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_eq_ignore_case(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
