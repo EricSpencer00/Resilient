@@ -102,7 +102,6 @@ resilient-runtime = { path = "../resilient-runtime" }
 clap = { version = "4.4", features = ["derive"] }
 libloading = { version = "0.8", optional = true }
 logos = { version = "0.14", optional = true }
-rustyline = "12.0.0"
 z3 = { version = "0.12", optional = true }
 tower-lsp = { version = "0.20", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"], optional = true }
@@ -114,12 +113,6 @@ cranelift-module = { version = "0.108", optional = true }
 # doesn't widen the default build's dep tree; activate with
 # `--features proptest`.
 proptest = { version = "1", optional = true }
-# RES-228: `--watch` mode — cross-platform file watcher with 200ms debounce.
-# Both crates are unconditional so the CLI flag is always available; the
-# overhead is minimal (< 1 ms on the hot path) because the watcher thread
-# only starts when --watch is actually passed.
-notify = { version = "8", features = ["macos_fsevent"] }
-notify-debouncer-mini = "0.7"
 # RES-194: Ed25519 signatures on RES-071 verification certificates.
 # `rand_core` brings in the OS RNG we use for keypair generation
 # in the test helpers (see `resilient/src/cert_sign.rs`).
@@ -132,6 +125,31 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # tree for correctness.
 sha2 = "0.10"
 serde_json = "1"
+
+# RES-510 PR 3: deps that are CLI-only and don't compile to wasm32
+# (or aren't useful there). Moved out of the unconditional
+# `[dependencies]` block so the WASM playground can pull `resilient`
+# in as a library without dragging termios / inotify / fsevent in.
+#
+# - rustyline: REPL line editor; uses termios + ncurses-shaped APIs.
+# - notify, notify-debouncer-mini: file watcher for `--watch` mode;
+#   uses platform-specific fs notification (inotify / kqueue /
+#   ReadDirectoryChangesW / FSEvents), none of which are available
+#   in the wasm32-unknown-unknown sandbox.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustyline = "12.0.0"
+notify = { version = "8", features = ["macos_fsevent"] }
+notify-debouncer-mini = "0.7"
+
+# RES-510 PR 3: WASM-only dep edges. `getrandom` is a transitive of
+# `rand_core` (via `ed25519-dalek`); on `wasm32-unknown-unknown` it
+# needs the `js` feature to call `crypto.getRandomValues` through
+# `wasm-bindgen`. Without this feature, `cargo build --target
+# wasm32-unknown-unknown` aborts during getrandom's compile step.
+# We promote getrandom to a direct dep on wasm32 only, so the
+# native build's transitive resolution stays untouched.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 # RES-200: snapshot tests for diagnostic rendering. Test-only dep —

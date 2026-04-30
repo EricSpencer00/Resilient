@@ -12,7 +12,16 @@ mod bytecode;
 mod compiler;
 mod const_fold;
 mod disasm;
+// RES-510 PR 3: REPL is CLI-only — uses rustyline (termios) which
+// doesn't compile to wasm32. Gated so the playground can depend on
+// the lib without dragging it in.
+#[cfg(not(target_arch = "wasm32"))]
+mod repl;
+// RES-510 PR 3: file watcher for `--watch` mode. Same reason — uses
+// platform fs-notification APIs (inotify / FSEvents / ...).
 mod imports;
+#[cfg(not(target_arch = "wasm32"))]
+mod watch_mode;
 // RES-510 PR 2: injectable stdout sink. The `print` / `println` /
 // `input`-prompt builtins route through this so non-CLI consumers
 // (the WASM playground, in-process test harnesses) can capture
@@ -25,7 +34,6 @@ mod jit_backend;
 mod lsp_server;
 pub mod output_sink;
 mod peephole;
-mod repl;
 mod span;
 mod typechecker;
 #[cfg(feature = "z3")]
@@ -212,10 +220,6 @@ mod modules;
 // A post-parse lowering pass fills in omitted trailing arguments with
 // their declared default expressions before the interpreter runs.
 mod default_params;
-// RES-228: `rz --watch <file>` — re-run on every save with a 200 ms
-// debounce. All watch logic lives in this module; main.rs only adds the
-// `mod` declaration and the dispatch call just before `execute_file`.
-mod watch_mode;
 // RES-289 (RES-81): generic type parameters — `fn identity<T>(x: T) -> T`.
 // Parse-time support (Token::Less/Greater reuse, parse_optional_type_params,
 // Node::Function::type_params field) lives in main.rs; this module owns the
@@ -247,7 +251,10 @@ mod traits;
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
+// RES-510 PR 3: rustyline is CLI-only (termios — no wasm32 build).
+#[cfg(not(target_arch = "wasm32"))]
 use rustyline::error::ReadlineError;
+#[cfg(not(target_arch = "wasm32"))]
 use rustyline::{DefaultEditor, Result as RustylineResult};
 
 // Token types for our lexer
@@ -18870,6 +18877,8 @@ impl Interpreter {
 
 // REPL for interactive evaluation.
 // Kept as a reference implementation; the actual REPL used is `repl::EnhancedREPL`.
+// RES-510 PR 3: gated on non-wasm because it depends on rustyline.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn start_repl() -> RustylineResult<()> {
     let mut interpreter = Interpreter::new();
@@ -21407,6 +21416,11 @@ pub fn run_program(src: &str) -> RunResult {
 /// shim that calls into here; non-CLI consumers (the WASM playground,
 /// future LSP refactor, integration test harnesses) can depend on
 /// `resilient` as a library and skip the CLI entirely.
+///
+/// CLI-only because it pulls in `repl` (rustyline) and `watch_mode`
+/// (notify), neither of which builds for `wasm32-unknown-unknown`.
+/// WASM consumers use `run_program` instead.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_cli() {
     // Get command line arguments
     let args: Vec<String> = env::args().collect();
