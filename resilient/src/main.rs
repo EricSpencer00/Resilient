@@ -8281,6 +8281,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_mean_int", builtin_array_mean_int),
     // RES-550: integer median (sorts a clone; truncating mean for even len).
     ("array_median_int", builtin_array_median_int),
+    // RES-551: integer mode (most-common; smallest on ties).
+    ("array_mode_int", builtin_array_mode_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13531,6 +13533,58 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-551: `array_mode_int(arr)` — most-common integer in a non-empty
+/// integer array. On ties, returns the smallest of the tied values
+/// (deterministic). Empty array errors. Sorts a clone and counts
+/// consecutive runs in one pass — O(n log n) without an auxiliary map.
+fn builtin_array_mode_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_mode_int: empty array has no mode".to_string());
+            }
+            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => nums.push(*n),
+                    other => {
+                        return Err(format!(
+                            "array_mode_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            nums.sort_unstable();
+            let mut best_value = nums[0];
+            let mut best_count: usize = 1;
+            let mut cur_value = nums[0];
+            let mut cur_count: usize = 1;
+            for &n in &nums[1..] {
+                if n == cur_value {
+                    cur_count += 1;
+                } else {
+                    if cur_count > best_count {
+                        best_value = cur_value;
+                        best_count = cur_count;
+                    }
+                    cur_value = n;
+                    cur_count = 1;
+                }
+            }
+            if cur_count > best_count {
+                best_value = cur_value;
+            }
+            Ok(Value::Int(best_value))
+        }
+        [other] => Err(format!("array_mode_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_mode_int: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29319,6 +29373,92 @@ mod tests {
         );
         assert!(
             builtin_array_median_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-551: array_mode_int ----------
+
+    fn mode(xs: &[i64]) -> i64 {
+        match builtin_array_mode_int(&[int_array(xs)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_mode_int_unique_winner() {
+        assert_eq!(mode(&[1, 2, 2, 3, 3, 3]), 3);
+        assert_eq!(mode(&[5, 5, 5, 1, 2]), 5);
+        assert_eq!(mode(&[1, 2, 3, 2]), 2);
+    }
+
+    #[test]
+    fn array_mode_int_smallest_on_ties() {
+        // 2 and 3 both appear twice → smallest (2) wins.
+        assert_eq!(mode(&[1, 2, 2, 3, 3]), 2);
+        // All three appear once → smallest (1) wins.
+        assert_eq!(mode(&[3, 1, 2]), 1);
+        assert_eq!(mode(&[-3, -1, -2]), -3);
+    }
+
+    #[test]
+    fn array_mode_int_single_element_and_all_same() {
+        assert_eq!(mode(&[5]), 5);
+        assert_eq!(mode(&[7, 7, 7, 7]), 7);
+    }
+
+    #[test]
+    fn array_mode_int_handles_negatives_and_zero() {
+        assert_eq!(mode(&[0, 0, -1, 1]), 0);
+        assert_eq!(mode(&[-5, -5, -5, -3, -3]), -5);
+    }
+
+    #[test]
+    fn array_mode_int_does_not_mutate_input() {
+        let arg = Value::Array(vec![
+            Value::Int(3),
+            Value::Int(1),
+            Value::Int(3),
+            Value::Int(2),
+        ]);
+        let _ = builtin_array_mode_int(std::slice::from_ref(&arg)).unwrap();
+        match arg {
+            Value::Array(after) => {
+                let ints: Vec<i64> = after
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        _ => panic!(),
+                    })
+                    .collect();
+                assert_eq!(ints, vec![3, 1, 3, 2]);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn array_mode_int_empty_errors() {
+        let err = builtin_array_mode_int(&[Value::Array(vec![])]).unwrap_err();
+        assert!(err.contains("empty array"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_mode_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_mode_int(&[Value::Array(vec![Value::String("a".into())])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_array_mode_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_mode_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
