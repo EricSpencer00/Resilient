@@ -8305,6 +8305,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_cummin_int", builtin_array_cummin_int),
     // RES-562: running product.
     ("array_cumprod_int", builtin_array_cumprod_int),
+    // RES-563: count elements in inclusive [lo, hi].
+    ("array_count_in_range_int", builtin_array_count_in_range_int),
     // RES-503: index of max / min element (first-occurrence on ties).
     ("array_argmax_int", builtin_array_argmax_int),
     ("array_argmin_int", builtin_array_argmin_int),
@@ -13555,6 +13557,47 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_min_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-563: `array_count_in_range_int(arr, lo, hi)` — count elements
+/// satisfying `lo <= x <= hi` (both inclusive). One pass, no
+/// allocation. `lo > hi` is a typed error (matches `array_clamp_int`).
+fn builtin_array_count_in_range_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::Int(lo), Value::Int(hi)] => {
+            if lo > hi {
+                return Err(format!(
+                    "array_count_in_range_int: lo ({}) must not exceed hi ({})",
+                    lo, hi
+                ));
+            }
+            let mut count: i64 = 0;
+            for v in items {
+                match v {
+                    Value::Int(n) => {
+                        if *n >= *lo && *n <= *hi {
+                            count += 1;
+                        }
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_count_in_range_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(count))
+        }
+        [a, b, c] => Err(format!(
+            "array_count_in_range_int: expected (array, int, int), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "array_count_in_range_int: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -30651,6 +30694,70 @@ mod tests {
             builtin_array_cumprod_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-563: array_count_in_range_int ----------
+
+    fn count_in(xs: &[i64], lo: i64, hi: i64) -> i64 {
+        match builtin_array_count_in_range_int(&[int_array(xs), Value::Int(lo), Value::Int(hi)])
+            .unwrap()
+        {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_count_in_range_int_basic() {
+        assert_eq!(count_in(&[1, 5, 9, -3, 100], 0, 10), 3);
+        assert_eq!(count_in(&[1, 2, 3, 4, 5], 2, 4), 3);
+        assert_eq!(count_in(&[], 0, 10), 0);
+    }
+
+    #[test]
+    fn array_count_in_range_int_inclusive_boundaries() {
+        // 0 is included on the low side, 10 on the high side.
+        assert_eq!(count_in(&[0, 5, 10, -1, 11], 0, 10), 3);
+        // lo == hi pins to a single value.
+        assert_eq!(count_in(&[5, 5, 5, 5], 5, 5), 4);
+        assert_eq!(count_in(&[5, 5, 5, 6], 5, 5), 3);
+    }
+
+    #[test]
+    fn array_count_in_range_int_lo_gt_hi_errors() {
+        let err =
+            builtin_array_count_in_range_int(&[int_array(&[1, 2]), Value::Int(5), Value::Int(1)])
+                .unwrap_err();
+        assert!(err.contains("must not exceed"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_count_in_range_int_extremes() {
+        assert_eq!(count_in(&[i64::MIN, 0, i64::MAX], i64::MIN, i64::MAX), 3);
+        assert_eq!(count_in(&[i64::MIN, 0, i64::MAX], -1, 1), 1);
+    }
+
+    #[test]
+    fn array_count_in_range_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_count_in_range_int(&[
+                Value::Array(vec![Value::String("a".into())]),
+                Value::Int(0),
+                Value::Int(10)
+            ])
+            .unwrap_err()
+            .contains("all int elements")
+        );
+        assert!(
+            builtin_array_count_in_range_int(&[Value::Int(1), Value::Int(0), Value::Int(10)])
+                .unwrap_err()
+                .contains("expected (array, int, int)")
+        );
+        assert!(
+            builtin_array_count_in_range_int(&[Value::Int(1), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
