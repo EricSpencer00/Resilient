@@ -1,0 +1,11 @@
+// RES-531 demo: array_unzip is the inverse of array_zip.
+
+fn main() {
+    let zipped = array_zip([1, 2, 3], ["a", "b", "c"]);
+    let parts = array_unzip(zipped);
+    println(parts);
+    let empty = array_unzip([]);
+    println(empty);
+}
+
+main();

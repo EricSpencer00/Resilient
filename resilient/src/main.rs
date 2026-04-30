@@ -8422,6 +8422,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_pad_right", builtin_string_pad_right),
     // RES-430: pair elements as tuples; truncate to shorter array.
     ("array_zip", builtin_array_zip),
+    // RES-531: split an array of 2-tuples into two parallel arrays.
+    ("array_unzip", builtin_array_unzip),
     // RES-431: generate [start, start+1, ..., end-1].
     ("array_range", builtin_array_range),
     // RES-522: generate [0, 1, ..., len(arr)-1] for the given array.
@@ -10566,6 +10568,41 @@ fn builtin_array_zip(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_zip: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-531: `array_unzip(arr)` — inverse of `array_zip`. Takes an
+/// array of 2-tuples and returns a 2-tuple of two arrays
+/// (firsts, seconds). Empty input → `([], [])`.
+fn builtin_array_unzip(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut firsts: Vec<Value> = Vec::with_capacity(items.len());
+            let mut seconds: Vec<Value> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Tuple(pair) if pair.len() == 2 => {
+                        firsts.push(pair[0].clone());
+                        seconds.push(pair[1].clone());
+                    }
+                    other => {
+                        return Err(format!(
+                            "array_unzip: expected array of 2-tuples, got element {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Tuple(vec![
+                Value::Array(firsts),
+                Value::Array(seconds),
+            ]))
+        }
+        [other] => Err(format!("array_unzip: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_unzip: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -29495,6 +29532,111 @@ mod tests {
             builtin_array_zip(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-531: array_unzip ----------
+
+    fn unzip_pairs(pairs: Vec<(Value, Value)>) -> (Vec<Value>, Vec<Value>) {
+        let arr: Vec<Value> = pairs
+            .into_iter()
+            .map(|(a, b)| Value::Tuple(vec![a, b]))
+            .collect();
+        let result = builtin_array_unzip(&[Value::Array(arr)]).unwrap();
+        match result {
+            Value::Tuple(parts) if parts.len() == 2 => {
+                let firsts = match parts[0].clone() {
+                    Value::Array(items) => items,
+                    other => panic!("expected first as Array, got {:?}", other),
+                };
+                let seconds = match parts[1].clone() {
+                    Value::Array(items) => items,
+                    other => panic!("expected second as Array, got {:?}", other),
+                };
+                (firsts, seconds)
+            }
+            other => panic!("expected 2-tuple, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_unzip_basic() {
+        let (firsts, seconds) = unzip_pairs(vec![
+            (Value::Int(1), Value::String("a".into())),
+            (Value::Int(2), Value::String("b".into())),
+            (Value::Int(3), Value::String("c".into())),
+        ]);
+        assert_eq!(firsts.len(), 3);
+        assert_eq!(seconds.len(), 3);
+        match &firsts[..] {
+            [Value::Int(1), Value::Int(2), Value::Int(3)] => {}
+            other => panic!("unexpected firsts: {:?}", other),
+        }
+        match (&seconds[0], &seconds[1], &seconds[2]) {
+            (Value::String(a), Value::String(b), Value::String(c))
+                if a == "a" && b == "b" && c == "c" => {}
+            other => panic!("unexpected seconds: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_unzip_empty_returns_empty_pair() {
+        let result = builtin_array_unzip(&[Value::Array(vec![])]).unwrap();
+        match result {
+            Value::Tuple(parts) if parts.len() == 2 => {
+                assert!(matches!(&parts[0], Value::Array(v) if v.is_empty()));
+                assert!(matches!(&parts[1], Value::Array(v) if v.is_empty()));
+            }
+            other => panic!("expected ([], []), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_zip_unzip_round_trip() {
+        // unzip ∘ zip = identity for equal-length inputs.
+        let a = vec![Value::Int(1), Value::Int(2), Value::Int(3)];
+        let b = vec![
+            Value::String("x".into()),
+            Value::String("y".into()),
+            Value::String("z".into()),
+        ];
+        let zipped =
+            builtin_array_zip(&[Value::Array(a.clone()), Value::Array(b.clone())]).unwrap();
+        let unzipped = builtin_array_unzip(&[zipped]).unwrap();
+        match unzipped {
+            Value::Tuple(parts) if parts.len() == 2 => {
+                assert!(matches!(&parts[0], Value::Array(arr) if arr.len() == 3));
+                assert!(matches!(&parts[1], Value::Array(arr) if arr.len() == 3));
+            }
+            other => panic!("expected 2-tuple of arrays, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_unzip_rejects_non_2tuple_elements() {
+        let err = builtin_array_unzip(&[Value::Array(vec![Value::Int(1)])]).unwrap_err();
+        assert!(err.contains("2-tuples"), "got: {}", err);
+        // 3-tuple is rejected too.
+        let err = builtin_array_unzip(&[Value::Array(vec![Value::Tuple(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+        ])])])
+        .unwrap_err();
+        assert!(err.contains("2-tuples"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_unzip_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_unzip(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_unzip(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
