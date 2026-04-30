@@ -9,9 +9,26 @@ authors = ["Eric Spencer"]
 # it doesn't try to build them as Rust examples.
 autoexamples = false
 
-# RES-219: the shipped CLI binary is `rz` (short, ergonomic, matches the
-# `.rz` source extension). The package stays `resilient` so library
-# consumers and `cargo install resilient` continue to work.
+# RES-510: the compiler is exposed as both a library and a binary.
+#   - `[lib]`  → `resilient` rlib for non-CLI consumers (WASM
+#                playground, future LSP-as-a-service, in-process
+#                test harnesses).
+#   - `[[bin]]` → the shipped CLI driver `rz` (short, ergonomic,
+#                 matches the `.rz` source extension; from RES-219).
+# The bin's `main.rs` is a thin shim that calls `resilient::run_cli()`.
+#
+# `doctest = false` because the codebase pre-dates the lib split:
+# `///` doc comments throughout the moved code were authored as
+# bin-only documentation (no `use` statements, freely referencing
+# private items). Running them as doctests against the lib API
+# fails — fixing them is out of scope for the lib-split PR; a
+# follow-up can re-enable doctests once the visibility surface is
+# audited.
+[lib]
+name = "resilient"
+path = "src/lib.rs"
+doctest = false
+
 [[bin]]
 name = "rz"
 path = "src/main.rs"
