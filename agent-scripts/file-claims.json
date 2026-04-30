@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-537-array-take-drop-last",
-      "claimed_at": "2026-04-30T03:11:26Z"
+      "branch": "res-538-bit-set-byte",
+      "claimed_at": "2026-04-30T03:14:45Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-537-array-take-drop-last",
-      "claimed_at": "2026-04-30T03:11:26Z"
+      "branch": "res-538-bit-set-byte",
+      "claimed_at": "2026-04-30T03:14:45Z"
     }
   }
 }

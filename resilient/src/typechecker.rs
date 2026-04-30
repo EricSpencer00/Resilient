@@ -1684,6 +1684,14 @@ impl TypeChecker {
         env.set("bit_rotate_right".to_string(), int_int_to_int.clone());
         // RES-534: extract a single byte from an i64.
         env.set("bit_byte".to_string(), int_int_to_int);
+        // RES-538: set a single byte of an i64.
+        env.set(
+            "bit_set_byte".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-491: integer floor sqrt.
         env.set(
             "int_sqrt".to_string(),
@@ -4865,6 +4873,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bit_rotate_right",
         // RES-534: extract a single byte from an i64.
         "bit_byte",
+        // RES-538: set a single byte of an i64.
+        "bit_set_byte",
         // RES-491: integer floor sqrt.
         "int_sqrt",
         // RES-517: integer exponentiation.

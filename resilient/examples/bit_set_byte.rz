@@ -1,0 +1,11 @@
+// RES-538 demo: bit_set_byte sets a single byte of an i64.
+// Inverse of bit_byte: bit_byte(bit_set_byte(n, k, v), k) == v.
+
+fn main() {
+    println(bit_set_byte(0, 0, 190));
+    println(bit_set_byte(0xCAFEBABE, 0, 0xEE));
+    println(bit_set_byte(0xCAFEBABE, 3, 0xDE));
+    println(bit_set_byte(0xCAFE, 0, 0));
+}
+
+main();

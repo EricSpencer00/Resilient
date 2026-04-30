@@ -8501,6 +8501,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_rotate_right", builtin_bit_rotate_right),
     // RES-534: extract a single byte from an i64 (little-endian).
     ("bit_byte", builtin_bit_byte),
+    // RES-538: set a single byte of an i64 (little-endian).
+    ("bit_set_byte", builtin_bit_set_byte),
     // RES-491: integer floor sqrt.
     ("int_sqrt", builtin_int_sqrt),
     // RES-517: integer exponentiation.
@@ -9772,6 +9774,45 @@ fn builtin_bit_byte(args: &[Value]) -> RResult<Value> {
         [a, b] => Err(format!("bit_byte: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!(
             "bit_byte: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-538: `bit_set_byte(n, k, v)` — return `n` with byte position
+/// `k` overwritten by `v`. Inverse of `bit_byte` (RES-534).
+/// `k` in `0..=7` (little-endian); `v` in `0..=255`.
+fn builtin_bit_set_byte(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(k), Value::Int(v)] => {
+            if !(0..=7).contains(k) {
+                return Err(format!(
+                    "bit_set_byte: byte position must be 0..=7, got {}",
+                    k
+                ));
+            }
+            if !(0..=255).contains(v) {
+                return Err(format!(
+                    "bit_set_byte: byte value must be 0..=255, got {}",
+                    v
+                ));
+            }
+            let shift = (*k as u32) * 8;
+            // Operate on the unsigned bit pattern so the byte
+            // replacement is purely bit-level. Cast back to i64 at
+            // the end.
+            let n_u = *n as u64;
+            let mask = !(0xFFu64 << shift);
+            let value = (*v as u64) << shift;
+            let cleared = n_u & mask;
+            Ok(Value::Int((cleared | value) as i64))
+        }
+        [a, b, c] => Err(format!(
+            "bit_set_byte: expected (int, int, int), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "bit_set_byte: expected 3 arguments, got {}",
             args.len()
         )),
     }
@@ -32226,6 +32267,95 @@ mod tests {
             builtin_bit_byte(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-538: bit_set_byte ----------
+
+    fn set_byte(n: i64, k: i64, v: i64) -> i64 {
+        match builtin_bit_set_byte(&[Value::Int(n), Value::Int(k), Value::Int(v)]).unwrap() {
+            Value::Int(out) => out,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bit_set_byte_basic() {
+        assert_eq!(set_byte(0, 0, 0xBE), 0xBE);
+        assert_eq!(set_byte(0xBE, 1, 0xBA), 0xBABE);
+        assert_eq!(set_byte(0xCAFEBABE, 0, 0xEE), 0xCAFEBAEE);
+        assert_eq!(set_byte(0xCAFEBABE, 3, 0xDE), 0xDEFEBABE);
+        // Setting byte to 0 clears it.
+        assert_eq!(set_byte(0xCAFE, 0, 0), 0xCA00);
+    }
+
+    #[test]
+    fn bit_set_byte_inverse_of_bit_byte() {
+        // bit_byte(bit_set_byte(n, k, v), k) == v for any (n, valid k, v).
+        for n in [0i64, 0xCAFEBABE, -1, 0x12345678ABCDEF01u64 as i64] {
+            for k in 0..=7 {
+                for v in [0i64, 1, 0x7F, 0x80, 0xFE, 0xFF] {
+                    let updated = set_byte(n, k, v);
+                    let read_back =
+                        match builtin_bit_byte(&[Value::Int(updated), Value::Int(k)]).unwrap() {
+                            Value::Int(b) => b,
+                            _ => panic!(),
+                        };
+                    assert_eq!(read_back, v, "n={:#x} k={} v={:#x}", n, k, v);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bit_set_byte_other_bytes_untouched() {
+        // Setting byte k of n changes only that byte; the other 7
+        // bytes of bit_byte are unchanged.
+        let n: i64 = 0x0123_4567_89AB_CDEF;
+        let updated = set_byte(n, 3, 0xFF);
+        for other_k in 0..=7 {
+            let original = match builtin_bit_byte(&[Value::Int(n), Value::Int(other_k)]).unwrap() {
+                Value::Int(b) => b,
+                _ => panic!(),
+            };
+            let after = match builtin_bit_byte(&[Value::Int(updated), Value::Int(other_k)]).unwrap()
+            {
+                Value::Int(b) => b,
+                _ => panic!(),
+            };
+            if other_k == 3 {
+                assert_eq!(after, 0xFF);
+            } else {
+                assert_eq!(after, original, "byte {} should be unchanged", other_k);
+            }
+        }
+    }
+
+    #[test]
+    fn bit_set_byte_rejects_out_of_range() {
+        for k in &[-1i64, 8, i64::MIN, i64::MAX] {
+            let err =
+                builtin_bit_set_byte(&[Value::Int(0), Value::Int(*k), Value::Int(0)]).unwrap_err();
+            assert!(err.contains("0..=7"), "k={}: got {}", k, err);
+        }
+        for v in &[-1i64, 256, i64::MIN, i64::MAX] {
+            let err =
+                builtin_bit_set_byte(&[Value::Int(0), Value::Int(0), Value::Int(*v)]).unwrap_err();
+            assert!(err.contains("0..=255"), "v={}: got {}", v, err);
+        }
+    }
+
+    #[test]
+    fn bit_set_byte_rejects_non_int_and_arity() {
+        assert!(
+            builtin_bit_set_byte(&[Value::Float(1.0), Value::Int(0), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (int, int, int)")
+        );
+        assert!(
+            builtin_bit_set_byte(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
