@@ -1,0 +1,11 @@
+// RES-524 demo: string_find_char returns the char index (-1 if absent).
+
+fn main() {
+    println(string_find_char("hello", "l"));
+    println(string_find_char("hello", "x"));
+    println(string_find_char("héllo", "l"));
+    println(string_find_char("日本語", "語"));
+    println(string_find_char("", "y"));
+}
+
+main();

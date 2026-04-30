@@ -1533,6 +1533,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-524: char-index of a single character (-1 if absent).
+        env.set(
+            "string_find_char".to_string(),
+            Type::Function {
+                params: vec![Type::String, Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-437: insert separator between adjacent elements.
         env.set("array_intersperse".to_string(), fn_any_any_to_any());
         // RES-516: alternate elements from two arrays.
@@ -4721,6 +4729,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_count",
         // RES-523: count occurrences of a single character.
         "string_count_char",
+        // RES-524: char-index of a single character.
+        "string_find_char",
         // RES-437: array_intersperse.
         "array_intersperse",
         // RES-516: alternate elements from two arrays.
