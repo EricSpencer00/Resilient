@@ -1450,6 +1450,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-488: popcount.
+        env.set(
+            "bit_count".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-442: last byte index of substring.
         env.set(
             "last_index_of".to_string(),
@@ -4472,6 +4480,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bit_not",
         "bit_shl",
         "bit_shr",
+        // RES-488: popcount.
+        "bit_count",
         // RES-442: last_index_of.
         "last_index_of",
         // RES-413: repeat a string.

@@ -1,0 +1,11 @@
+// RES-488 demo: bit_count returns the number of set bits in n.
+
+fn main() {
+    println(bit_count(0));
+    println(bit_count(1));
+    println(bit_count(7));
+    println(bit_count(255));
+    println(bit_count(-1));
+}
+
+main();

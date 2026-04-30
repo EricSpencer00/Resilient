@@ -1,8 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-487-builtin-typo-suggestions",
-      "claimed_at": "2026-04-30T00:30:40Z"
+      "branch": "res-488-bit-count",
+      "claimed_at": "2026-04-30T00:43:52Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-488-bit-count",
+      "claimed_at": "2026-04-30T00:43:52Z"
     }
   }
 }
