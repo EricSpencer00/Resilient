@@ -8398,6 +8398,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_bytes_len", builtin_string_bytes_len),
     // RES-564: byte at index (-1 if out of range).
     ("string_byte_at", builtin_string_byte_at),
+    // RES-565: string → array of UTF-8 bytes.
+    ("string_to_bytes", builtin_string_to_bytes),
     // RES-464: parse int with explicit radix.
     ("parse_int_base", builtin_parse_int_base),
     // RES-465: render int with explicit radix.
@@ -12143,6 +12145,23 @@ fn builtin_parse_int_base(args: &[Value]) -> RResult<Value> {
 }
 
 /// RES-463: `string_bytes_len(s)` — UTF-8 byte length of `s`.
+/// RES-565: `string_to_bytes(s)` — array of i64s `0..=255` holding
+/// the raw UTF-8 bytes of `s`. Companion to `string_byte_at`
+/// (RES-564) when you want the whole byte buffer at once.
+fn builtin_string_to_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            let out: Vec<Value> = s.bytes().map(|b| Value::Int(b as i64)).collect();
+            Ok(Value::Array(out))
+        }
+        [other] => Err(format!("string_to_bytes: expected string, got {}", other)),
+        _ => Err(format!(
+            "string_to_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
 /// RES-564: `string_byte_at(s, i)` — raw byte at byte index `i`, or
 /// `-1` if out of range. Negative `i` is a typed error. Useful for
 /// byte-level inspection (UTF-8 lead bytes, control chars) without
@@ -37358,6 +37377,65 @@ mod tests {
             builtin_string_byte_at(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-565: string_to_bytes ----------
+
+    fn to_bytes(s: &str) -> Vec<i64> {
+        match builtin_string_to_bytes(&[Value::String(s.into())]).unwrap() {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_to_bytes_basic_ascii() {
+        assert_eq!(to_bytes("hello"), vec![104, 101, 108, 108, 111]);
+        assert_eq!(to_bytes("A"), vec![65]);
+    }
+
+    #[test]
+    fn string_to_bytes_empty_returns_empty() {
+        assert_eq!(to_bytes(""), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn string_to_bytes_multibyte() {
+        // "é" = 0xC3 0xA9
+        assert_eq!(to_bytes("héllo"), vec![104, 195, 169, 108, 108, 111]);
+    }
+
+    #[test]
+    fn string_to_bytes_round_trips_against_byte_at() {
+        // For every i, to_bytes(s)[i] == byte_at(s, i).
+        for s in ["", "hi", "héllo", "日本語"] {
+            let bytes = to_bytes(s);
+            for (i, expected) in bytes.iter().enumerate() {
+                assert_eq!(byte_at(s, i as i64), *expected, "{:?} byte {}", s, i);
+            }
+            // Past-end returns -1.
+            assert_eq!(byte_at(s, bytes.len() as i64), -1);
+        }
+    }
+
+    #[test]
+    fn string_to_bytes_rejects_non_string_and_arity() {
+        assert!(
+            builtin_string_to_bytes(&[Value::Int(5)])
+                .unwrap_err()
+                .contains("expected string")
+        );
+        assert!(
+            builtin_string_to_bytes(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
