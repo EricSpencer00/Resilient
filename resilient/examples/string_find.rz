@@ -1,0 +1,13 @@
+// RES-546 demo: string_find returns the first byte index of the
+// substring, or -1 if missing. Use byte indices because Resilient
+// strings are UTF-8 and `string_substring` accepts byte offsets.
+
+fn main() {
+    println(string_find("hello world", "world"));
+    println(string_find("hello world", "o"));
+    println(string_find("hello world", "xyz"));
+    println(string_find("ababab", "ab"));
+    println(string_find("héllo", "llo"));
+}
+
+main();
