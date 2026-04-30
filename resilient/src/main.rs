@@ -8467,6 +8467,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("next_pow2", builtin_next_pow2),
     // RES-495: lowercase hex string (sign-prefixed for negatives).
     ("int_to_hex", builtin_int_to_hex),
+    // RES-512: binary string (sign-prefixed for negatives).
+    ("int_to_bin", builtin_int_to_bin),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9680,6 +9682,26 @@ fn builtin_int_to_hex(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("int_to_hex: expected int, got {}", other)),
         _ => Err(format!(
             "int_to_hex: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-512: `int_to_bin(n)` — format `n` as a binary string with a
+/// sign prefix for negatives. No `0b` prefix (consistent with
+/// `int_to_hex` / `int_to_base`). Shorthand for
+/// `int_to_base(n, 2)`.
+fn builtin_int_to_bin(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            let abs = n.unsigned_abs();
+            let body = format!("{:b}", abs);
+            let s = if *n < 0 { format!("-{}", body) } else { body };
+            Ok(Value::String(s))
+        }
+        [other] => Err(format!("int_to_bin: expected int, got {}", other)),
+        _ => Err(format!(
+            "int_to_bin: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -30157,6 +30179,57 @@ mod tests {
         );
         assert!(
             builtin_int_to_hex(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-512: int_to_bin ----------
+
+    fn int_to_bin_str(n: i64) -> String {
+        match builtin_int_to_bin(&[Value::Int(n)]).unwrap() {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn int_to_bin_basic() {
+        assert_eq!(int_to_bin_str(0), "0");
+        assert_eq!(int_to_bin_str(1), "1");
+        assert_eq!(int_to_bin_str(2), "10");
+        assert_eq!(int_to_bin_str(5), "101");
+        assert_eq!(int_to_bin_str(255), "11111111");
+        assert_eq!(int_to_bin_str(256), "100000000");
+    }
+
+    #[test]
+    fn int_to_bin_negatives_sign_prefix() {
+        assert_eq!(int_to_bin_str(-1), "-1");
+        assert_eq!(int_to_bin_str(-5), "-101");
+        assert_eq!(int_to_bin_str(-256), "-100000000");
+    }
+
+    #[test]
+    fn int_to_bin_handles_min_and_max() {
+        // i64::MAX = 2^63 - 1 → 63 ones.
+        assert_eq!(int_to_bin_str(i64::MAX), "1".repeat(63));
+        // i64::MIN: unsigned_abs = 2^63 → leading 1 followed by 63 zeros.
+        let min = int_to_bin_str(i64::MIN);
+        assert!(min.starts_with('-'));
+        assert_eq!(min.len(), 1 + 64); // "-" + 64 chars
+        assert!(min.ends_with(&"0".repeat(63)));
+    }
+
+    #[test]
+    fn int_to_bin_rejects_non_int_and_arity() {
+        assert!(
+            builtin_int_to_bin(&[Value::Float(2.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_int_to_bin(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

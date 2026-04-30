@@ -1,0 +1,12 @@
+// RES-512 demo: int_to_bin returns the binary representation with
+// a sign prefix for negatives.
+
+fn main() {
+    println(int_to_bin(0));
+    println(int_to_bin(5));
+    println(int_to_bin(255));
+    println(int_to_bin(-1));
+    println(int_to_bin(-5));
+}
+
+main();

@@ -1612,6 +1612,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::String),
             },
         );
+        // RES-512: int → binary string.
+        env.set(
+            "int_to_bin".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::String),
+            },
+        );
         // RES-442: last byte index of substring.
         env.set(
             "last_index_of".to_string(),
@@ -4678,6 +4686,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "next_pow2",
         // RES-495: int → lowercase hex string.
         "int_to_hex",
+        // RES-512: int → binary string.
+        "int_to_bin",
         // RES-442: last_index_of.
         "last_index_of",
         // RES-413: repeat a string.
