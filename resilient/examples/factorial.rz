@@ -1,0 +1,13 @@
+// RES-567 demo: factorial returns n! as an i64. n=20 is the
+// largest input that fits; n>=21 surfaces as a typed error rather
+// than wrapping. Negative n errors.
+
+fn main() {
+    println(factorial(0));
+    println(factorial(1));
+    println(factorial(5));
+    println(factorial(10));
+    println(factorial(20));
+}
+
+main();
