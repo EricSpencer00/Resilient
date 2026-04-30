@@ -4,11 +4,17 @@
 # backends (walker, VM, JIT). Consumed by the perf-gate CI
 # workflow and by `scripts/update_perf_baseline.sh`.
 #
-# Runs hyperfine on 10 samples × 3 warmup-runs for each backend.
+# Runs hyperfine on 20 samples × 5 warmup-runs for each backend.
 # Wall-clock is the usual "my program, start to finish" time;
 # compile time is amortized into it for the VM/JIT rows, which
 # is appropriate for the `fib(25)` workload (small setup cost,
 # dominant bench loop).
+#
+# 20 samples × 5 warmups was tuned for hosted-runner stability
+# (issue #387): the JIT had occasional 30×+ outliers on first
+# samples that swung the median; bumping warmups absorbs the
+# cold-cache event and bumping samples makes the median itself
+# more robust (one bad sample out of 20 doesn't flip the median).
 #
 # Output shape (single JSON object on stdout):
 #   { "walker_median_ms": 42.1,
@@ -49,8 +55,8 @@ SEED=0
 
 hyperfine \
     --export-json "$TMP/fib.json" \
-    --warmup 3 \
-    --runs 10 \
+    --warmup 5 \
+    --runs 20 \
     --style none \
     --command-name "walker" "$RES --seed $SEED benchmarks/fib/fib.rz" \
     --command-name "vm"     "$RES --seed $SEED --vm benchmarks/fib/fib_vm.rz" \

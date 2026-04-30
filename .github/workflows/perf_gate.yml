@@ -31,8 +31,12 @@ on:
 
 env:
   # Threshold percent: fail if any median is >THIS% slower than
-  # baseline. Tighten once hosted-runner variance is characterized.
+  # baseline. Per-backend overrides because the JIT has higher
+  # hosted-runner variance (LLVM codegen + first-call cost). See
+  # issue #387 for the spurious-failure history that motivated the
+  # split.
   PERF_THRESHOLD_PCT: "15"
+  PERF_THRESHOLD_PCT_JIT: "30"
 
 jobs:
   fib:

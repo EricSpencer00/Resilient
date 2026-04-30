@@ -5,9 +5,15 @@
 #   scripts/compare_perf.sh <baseline.json> <fresh.json>
 #
 # Env vars:
-#   PERF_THRESHOLD_PCT — threshold percent; default 15. Fails if
-#                       any median is >THRESHOLD slower than
-#                       baseline.
+#   PERF_THRESHOLD_PCT     — default threshold (walker, VM); default 15.
+#   PERF_THRESHOLD_PCT_JIT — JIT threshold; default 30. The JIT has
+#                            higher hosted-runner variance from
+#                            LLVM codegen + first-call cache; per
+#                            issue #387 a tighter threshold causes
+#                            spurious failures on documentation-only
+#                            PRs. The slack is bookkeeping for the
+#                            measurement noise floor, not permission
+#                            to regress.
 #
 # Output: a markdown table on stdout with per-backend deltas,
 # plus a final `PASS` / `FAIL` line. Exit 0 on pass, 1 on fail.
@@ -24,6 +30,7 @@ fi
 BASELINE=$1
 FRESH=$2
 THRESHOLD_PCT=${PERF_THRESHOLD_PCT:-15}
+THRESHOLD_PCT_JIT=${PERF_THRESHOLD_PCT_JIT:-30}
 
 if [[ ! -f "$BASELINE" ]]; then
     echo "error: baseline not found: $BASELINE" >&2
@@ -35,25 +42,30 @@ if [[ ! -f "$FRESH" ]]; then
 fi
 
 regressed=false
-echo "| backend | baseline (ms) | fresh (ms) | delta % |"
-echo "| ------- | ------------: | ---------: | ------: |"
+echo "| backend | baseline (ms) | fresh (ms) | delta % | threshold % |"
+echo "| ------- | ------------: | ---------: | ------: | ----------: |"
 
 for key in walker_median_ms vm_median_ms jit_median_ms; do
     label=${key%_median_ms}
+    if [[ "$label" == "jit" ]]; then
+        threshold=$THRESHOLD_PCT_JIT
+    else
+        threshold=$THRESHOLD_PCT
+    fi
     base=$(jq -r ".$key" "$BASELINE")
     fresh=$(jq -r ".$key" "$FRESH")
     # Percentage delta. bc -l for floating-point.
     delta=$(echo "scale=2; ($fresh - $base) / $base * 100" | bc -l)
-    printf "| %s | %s | %s | %s%% |\n" "$label" "$base" "$fresh" "$delta"
-    # $delta > $THRESHOLD → regression.
-    exceeds=$(echo "$delta > $THRESHOLD_PCT" | bc -l)
+    printf "| %s | %s | %s | %s%% | %s%% |\n" "$label" "$base" "$fresh" "$delta" "$threshold"
+    # $delta > $threshold → regression.
+    exceeds=$(echo "$delta > $threshold" | bc -l)
     if [[ "$exceeds" -eq 1 ]]; then
         regressed=true
     fi
 done
 
 echo
-echo "Threshold: ${THRESHOLD_PCT}% (set PERF_THRESHOLD_PCT to override)"
+echo "Thresholds: walker/vm ${THRESHOLD_PCT}%, jit ${THRESHOLD_PCT_JIT}% (override via PERF_THRESHOLD_PCT / PERF_THRESHOLD_PCT_JIT)"
 
 if $regressed; then
     echo "**FAIL** — one or more backends exceed the threshold."
