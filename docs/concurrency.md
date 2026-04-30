@@ -316,6 +316,15 @@ Things this sketch is deliberately noncommittal about:
 The point of the sketch is to show the shape, not to promise
 the shape. Expect changes once the real design work starts.
 
+**Authoritative semantics**: when [#124 RES-332](https://github.com/EricSpencer00/Resilient/issues/124)
+ships actor primitives, the message-ordering, atomicity,
+mailbox-bound, failure-visibility, and self-send rules are
+pinned by
+[docs/superpowers/specs/2026-04-30-actor-message-semantics.md](superpowers/specs/2026-04-30-actor-message-semantics.md).
+That sub-spec is the source of truth for the V2 TLA+
+encoding; future changes go through that document, not
+through ad-hoc behavioural drift.
+
 **How live blocks compose with actors.** A live block inside
 an actor retries local work. If the live block's budget is
 exhausted, it raises to the actor. If the actor can't handle
