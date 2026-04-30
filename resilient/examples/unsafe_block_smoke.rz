@@ -1,0 +1,25 @@
+// RES-406: `unsafe { ... }` block + volatile MMIO intrinsics.
+//
+// Demonstrates the parser-level surface and the capability gate:
+// volatile_* calls inside `unsafe` parse and run; outside, they
+// would be a compile-time error (covered by unsafe_check tests).
+//
+// This example doesn't touch a real device — that requires a
+// known peripheral address. The unit tests in src/volatile.rs
+// exercise the round-trip semantics against a host-allocated
+// buffer.
+
+fn main() -> int {
+    unsafe {
+        // The eight intrinsics are visible inside `unsafe`:
+        //   volatile_read_u8 / _u16 / _u32 / _u64
+        //   volatile_write_u8 / _u16 / _u32 / _u64
+        // A real driver would target an MMIO address like
+        // 0x4002_1000 (STM32 RCC) and operate on its register
+        // shape per the chip datasheet.
+        println("unsafe block parses; volatile intrinsics are reachable");
+    }
+    return 0;
+}
+
+main();

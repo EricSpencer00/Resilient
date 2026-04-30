@@ -495,6 +495,9 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // RES-400 PR 1: enum declarations are pure data (variant names
         // only at this stage); no free variables either.
         Node::EnumDecl { .. } => {}
+        // RES-406: unsafe block — descend into the body so its free
+        // variables flow up to the enclosing scope.
+        Node::UnsafeBlock { body, .. } => walk(body, bound, free),
     }
 }
 

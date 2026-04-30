@@ -4403,6 +4403,13 @@ impl TypeChecker {
             // it under `name`, and validate that every variant payload
             // resolves; for now we just acknowledge the node.
             Node::EnumDecl { .. } => Ok(Type::Void),
+            // RES-406: unsafe block. The volatile-call gate (compile-
+            // time error when calling `volatile_*` outside an
+            // unsafe block) is enforced in a sibling pass —
+            // `crate::unsafe_check::check_program` — that runs after
+            // the typechecker. Here we just descend into the body so
+            // its statements get type-checked.
+            Node::UnsafeBlock { body, .. } => self.check_node(body),
         }
     }
 

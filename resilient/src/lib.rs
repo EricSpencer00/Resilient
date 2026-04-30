@@ -40,7 +40,16 @@ mod span;
 // constructor expressions, exhaustive `match`, and the typechecker
 // integration.
 mod sum_types;
+// RES-406: volatile MMIO intrinsics. The eight `volatile_read_*` /
+// `volatile_write_*` builtins live here; the `unsafe { … }` gate
+// (capability check at typecheck time) is in the typechecker
+// extension block.
+mod volatile;
+// RES-406: capability gate for the volatile intrinsics. Walks the
+// program AST after parse and rejects any `volatile_*` call
+// outside an `unsafe { ... }` block.
 mod typechecker;
+mod unsafe_check;
 #[cfg(feature = "z3")]
 mod verifier_z3;
 // RES-390: distributed-invariant verifier — a joint Z3 state
@@ -403,6 +412,10 @@ enum Token {
     /// variants only; payload variants and exhaustive `match` follow in
     /// later PRs.
     Enum,
+    /// RES-406: `unsafe { ... }` — capability gate for privileged
+    /// operations like `volatile_read_u32` / `volatile_write_u32` that
+    /// can't be reached from a regular block.
+    Unsafe,
     // </EXTENSION_TOKENS>
 
     // Literals
@@ -541,6 +554,7 @@ impl Token {
             Token::Supervisor => "`supervisor`".to_string(),
             Token::Trait => "`trait`".to_string(),
             Token::Enum => "`enum`".to_string(),
+            Token::Unsafe => "`unsafe`".to_string(),
             Token::Underscore => "`_`".to_string(),
             Token::Default => "`default`".to_string(),
             Token::Dot => "`.`".to_string(),
@@ -999,6 +1013,7 @@ impl Lexer {
                         "supervisor" => Token::Supervisor,
                         "trait" => Token::Trait,
                         "enum" => Token::Enum,
+                        "unsafe" => Token::Unsafe,
                         // </EXTENSION_KEYWORDS>
                         "_" => Token::Underscore,
                         // RES-163: `default` is a reserved alias
@@ -2198,6 +2213,17 @@ enum Node {
         value: Box<Node>,
         span: span::Span,
     },
+    /// RES-406: capability-gated block.
+    ///
+    /// `unsafe { ... }` lifts the typechecker's gate on calls to
+    /// the volatile MMIO intrinsics (and, future, raw-pointer ops).
+    /// At runtime it's identical to a regular block — the body is
+    /// evaluated as a sequence of statements. The capability check
+    /// happens during typechecking: a call to `volatile_read_u32`
+    /// (or any of the eight intrinsics) outside an enclosing
+    /// `UnsafeBlock` is rejected with a compile-time error pointing
+    /// at the suggested fix (`unsafe { ... }`).
+    UnsafeBlock { body: Box<Node>, span: span::Span },
     /// RES-400: sum-type declaration. PR 1 covers the parser scaffold
     /// for payload-less variants only:
     ///
@@ -2553,6 +2579,7 @@ impl Parser {
             Token::Supervisor => Some(crate::supervisor::parse(self)),
             Token::Trait => Some(crate::traits::parse(self)),
             Token::Enum => Some(crate::sum_types::parse_enum_decl(self)),
+            Token::Unsafe => Some(self.parse_unsafe_block()),
             Token::Extern => self.parse_extern_block(),
             Token::Use => self.parse_use_statement(),
             Token::Let => Some(self.parse_let_statement()),
@@ -4366,6 +4393,30 @@ impl Parser {
 
         self.next_token(); // Skip ')'
         (parameters, defaults)
+    }
+
+    /// RES-406: parse `unsafe { ... }`. Lifts the typechecker's
+    /// capability gate on the volatile MMIO intrinsics inside the
+    /// body. At runtime it's identical to a regular block.
+    fn parse_unsafe_block(&mut self) -> Node {
+        let kw_span = self.span_at_current();
+        self.next_token(); // consume `unsafe`
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after 'unsafe', found {}", tok));
+            return Node::UnsafeBlock {
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: kw_span,
+                }),
+                span: kw_span,
+            };
+        }
+        let body = self.parse_block_statement();
+        Node::UnsafeBlock {
+            body: Box::new(body),
+            span: kw_span,
+        }
     }
 
     fn parse_block_statement(&mut self) -> Node {
@@ -8685,6 +8736,16 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_indices_where", builtin_array_indices_where),
     // RES-485: |a - b|.
     ("abs_diff", builtin_abs_diff),
+    // RES-406: volatile MMIO intrinsics. Calls outside an `unsafe`
+    // block are rejected by the typechecker.
+    ("volatile_read_u8", crate::volatile::volatile_read_u8),
+    ("volatile_read_u16", crate::volatile::volatile_read_u16),
+    ("volatile_read_u32", crate::volatile::volatile_read_u32),
+    ("volatile_read_u64", crate::volatile::volatile_read_u64),
+    ("volatile_write_u8", crate::volatile::volatile_write_u8),
+    ("volatile_write_u16", crate::volatile::volatile_write_u16),
+    ("volatile_write_u32", crate::volatile::volatile_write_u32),
+    ("volatile_write_u64", crate::volatile::volatile_write_u64),
     // RES-486: (quotient, remainder) tuple.
     ("divmod", builtin_divmod),
     // RES-423: flatten one level of nesting.
@@ -17802,6 +17863,10 @@ impl Interpreter {
             // up constructor expressions and match-arm evaluation;
             // until then, an enum decl is a no-op at runtime.
             Node::EnumDecl { .. } => Ok(Value::Void),
+            // RES-406: unsafe block — at runtime it's identical to a
+            // regular block. The capability gate is enforced by the
+            // typechecker / unsafe_check pass before evaluation.
+            Node::UnsafeBlock { body, .. } => self.eval(body),
         }
     }
 
@@ -20207,6 +20272,21 @@ fn execute_file(
         return Err(format!(
             "Borrow check failed: {} error(s)",
             region_errors.len()
+        ));
+    }
+
+    // RES-406: capability gate for the volatile MMIO intrinsics.
+    // Rejects calls to `volatile_*` outside an `unsafe { ... }`
+    // block. Runs after region checking so the user's diagnostic
+    // ordering matches the lexical order of failures.
+    let unsafe_errors = unsafe_check::check_program(&program);
+    if !unsafe_errors.is_empty() {
+        for e in &unsafe_errors {
+            eprintln!("\x1B[31m{}\x1B[0m", e);
+        }
+        return Err(format!(
+            "Capability check failed: {} error(s)",
+            unsafe_errors.len()
         ));
     }
 

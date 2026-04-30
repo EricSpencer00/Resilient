@@ -1200,6 +1200,8 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::TraitDecl { span, .. } => span.start.line as u32,
         // RES-400 PR 1: enum declarations carry a span.
         Node::EnumDecl { span, .. } => span.start.line as u32,
+        // RES-406: unsafe block carries the keyword's span.
+        Node::UnsafeBlock { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }
