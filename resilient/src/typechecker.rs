@@ -1097,6 +1097,13 @@ impl TypeChecker {
         // RES-417: array min/max.
         env.set("array_min".to_string(), fn_any_to_any());
         env.set("array_max".to_string(), fn_any_to_any());
+        // RES-543: empty-safe min/max with fallback default.
+        let arr_int_to_int = Type::Function {
+            params: vec![Type::Any, Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("array_max_or".to_string(), arr_int_to_int.clone());
+        env.set("array_min_or".to_string(), arr_int_to_int);
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4667,6 +4674,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-417: array min/max.
         "array_min",
         "array_max",
+        // RES-543: empty-safe min/max with fallback default.
+        "array_max_or",
+        "array_min_or",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",
