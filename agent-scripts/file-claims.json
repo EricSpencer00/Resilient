@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-484-array-filter-int",
-      "claimed_at": "2026-04-30T00:02:06Z"
+      "branch": "res-485-int-abs-diff",
+      "claimed_at": "2026-04-30T00:06:22Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-484-array-filter-int",
-      "claimed_at": "2026-04-30T00:02:06Z"
+      "branch": "res-485-int-abs-diff",
+      "claimed_at": "2026-04-30T00:06:22Z"
     }
   }
 }

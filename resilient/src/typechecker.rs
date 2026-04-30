@@ -1338,6 +1338,14 @@ impl TypeChecker {
         // RES-484: named-predicate filter / partition on int arrays.
         env.set("array_filter_int".to_string(), arr_str_to_arr.clone());
         env.set("array_partition_int".to_string(), arr_str_to_arr);
+        // RES-485: |a - b|.
+        env.set(
+            "abs_diff".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-423: flatten one level.
         env.set("array_flatten".to_string(), fn_any_to_any());
         // RES-424: join string array with separator.
@@ -4408,6 +4416,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-484: filter / partition int.
         "array_filter_int",
         "array_partition_int",
+        // RES-485: abs_diff.
+        "abs_diff",
         // RES-423: flatten one level.
         "array_flatten",
         // RES-424: array_join.

@@ -8344,6 +8344,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-484: named-predicate filter / partition on int arrays.
     ("array_filter_int", builtin_array_filter_int),
     ("array_partition_int", builtin_array_partition_int),
+    // RES-485: |a - b|.
+    ("abs_diff", builtin_abs_diff),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9897,6 +9899,26 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-485: `abs_diff(a, b)` — |a - b|. Uses i64::abs_diff (returns
+/// u64); the result fits in i64 for any pair where the difference is
+/// representable, so we narrow back to i64. Pairs that overflow u64
+/// past i64::MAX (only possible with signs that span the full i64
+/// range) saturate at i64::MAX.
+fn builtin_abs_diff(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            let d = a.abs_diff(*b);
+            let narrowed = i64::try_from(d).unwrap_or(i64::MAX);
+            Ok(Value::Int(narrowed))
+        }
+        [a, b] => Err(format!("abs_diff: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "abs_diff: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -31587,6 +31609,75 @@ mod tests {
         );
         assert!(
             builtin_array_partition_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-485: abs_diff ----------
+
+    #[test]
+    fn abs_diff_basic() {
+        assert_int(
+            builtin_abs_diff(&[Value::Int(10), Value::Int(3)]).unwrap(),
+            7,
+            "10-3",
+        );
+        assert_int(
+            builtin_abs_diff(&[Value::Int(3), Value::Int(10)]).unwrap(),
+            7,
+            "3-10 (sign flip)",
+        );
+    }
+
+    #[test]
+    fn abs_diff_negatives() {
+        assert_int(
+            builtin_abs_diff(&[Value::Int(-5), Value::Int(5)]).unwrap(),
+            10,
+            "negative span",
+        );
+        assert_int(
+            builtin_abs_diff(&[Value::Int(-3), Value::Int(-10)]).unwrap(),
+            7,
+            "both negative",
+        );
+    }
+
+    #[test]
+    fn abs_diff_zero() {
+        assert_int(
+            builtin_abs_diff(&[Value::Int(42), Value::Int(42)]).unwrap(),
+            0,
+            "same value",
+        );
+        assert_int(
+            builtin_abs_diff(&[Value::Int(0), Value::Int(0)]).unwrap(),
+            0,
+            "both zero",
+        );
+    }
+
+    #[test]
+    fn abs_diff_max_min_saturates() {
+        // i64::MIN - i64::MAX has abs_diff = 2*i64::MAX + 1 which
+        // overflows u64 narrowing back to i64; we saturate at MAX.
+        assert_int(
+            builtin_abs_diff(&[Value::Int(i64::MIN), Value::Int(i64::MAX)]).unwrap(),
+            i64::MAX,
+            "saturate",
+        );
+    }
+
+    #[test]
+    fn abs_diff_rejects_non_int_and_arity() {
+        assert!(
+            builtin_abs_diff(&[Value::Float(1.0), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_abs_diff(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
