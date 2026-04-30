@@ -8342,6 +8342,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_remove_all", builtin_array_remove_all),
     // RES-468: collapse adjacent duplicates.
     ("array_dedup", builtin_array_dedup),
+    // RES-504: partition into maximal runs of equal elements.
+    ("array_group_by_int", builtin_array_group_by_int),
     // RES-469: scalar all/any equality predicates.
     ("array_all_eq", builtin_array_all_eq),
     ("array_any_eq", builtin_array_any_eq),
@@ -10904,6 +10906,51 @@ fn builtin_array_all_eq(args: &[Value]) -> RResult<Value> {
 /// the more pointed `_eq` suffix; some style guides prefer it.
 fn builtin_array_any_eq(args: &[Value]) -> RResult<Value> {
     builtin_array_contains(args).map_err(|e| e.replace("array_contains", "array_any_eq"))
+}
+
+/// RES-504: `array_group_by_int(arr)` — partition an integer array
+/// into maximal runs of consecutive equal elements. Mirrors Haskell
+/// `Data.List.group`. Distinct from `array_dedup` (RES-468), which
+/// keeps one element per run, and `array_unique` (RES-426), which
+/// dedupes globally regardless of position.
+fn builtin_array_group_by_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut groups: Vec<Value> = Vec::new();
+            let mut current: Vec<Value> = Vec::new();
+            let mut prev: Option<i64> = None;
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_group_by_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                match prev {
+                    Some(p) if p == n => current.push(Value::Int(n)),
+                    _ => {
+                        if !current.is_empty() {
+                            groups.push(Value::Array(std::mem::take(&mut current)));
+                        }
+                        current.push(Value::Int(n));
+                    }
+                }
+                prev = Some(n);
+            }
+            if !current.is_empty() {
+                groups.push(Value::Array(current));
+            }
+            Ok(Value::Array(groups))
+        }
+        [other] => Err(format!("array_group_by_int: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_group_by_int: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-468: `array_dedup(arr)` — collapse runs of adjacent duplicates
@@ -31798,6 +31845,97 @@ mod tests {
         );
         assert!(
             builtin_array_dedup(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-504: array_group_by_int ----------
+
+    fn group_by_int(items: &[i64]) -> Vec<Vec<i64>> {
+        match builtin_array_group_by_int(&[int_array(items)]).unwrap() {
+            Value::Array(groups) => groups
+                .into_iter()
+                .map(|g| match g {
+                    Value::Array(inner) => inner
+                        .into_iter()
+                        .map(|v| match v {
+                            Value::Int(n) => n,
+                            other => panic!("expected Int, got {:?}", other),
+                        })
+                        .collect(),
+                    other => panic!("expected nested Array, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected outer Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_group_by_int_basic() {
+        assert_eq!(
+            group_by_int(&[1, 1, 2, 3, 3, 3]),
+            vec![vec![1, 1], vec![2], vec![3, 3, 3]]
+        );
+    }
+
+    #[test]
+    fn array_group_by_int_no_adjacency_each_singleton() {
+        assert_eq!(
+            group_by_int(&[1, 2, 1, 2]),
+            vec![vec![1], vec![2], vec![1], vec![2]]
+        );
+    }
+
+    #[test]
+    fn array_group_by_int_all_same_one_group() {
+        assert_eq!(group_by_int(&[7, 7, 7, 7]), vec![vec![7, 7, 7, 7]]);
+    }
+
+    #[test]
+    fn array_group_by_int_empty_and_singleton() {
+        assert_eq!(group_by_int(&[]), Vec::<Vec<i64>>::new());
+        assert_eq!(group_by_int(&[42]), vec![vec![42]]);
+    }
+
+    #[test]
+    fn array_group_by_int_round_trip_with_dedup() {
+        // Each group, dedup'd, gives one element — equivalent to
+        // array_dedup on the same input.
+        let input = [1, 1, 2, 3, 3, 1, 4, 4];
+        let groups = group_by_int(&input);
+        let dedup_via_groups: Vec<i64> = groups.iter().map(|g| g[0]).collect();
+        // Independently compute via builtin_array_dedup.
+        let dedup = match builtin_array_dedup(&[int_array(&input)]).unwrap() {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                })
+                .collect::<Vec<_>>(),
+            _ => panic!(),
+        };
+        assert_eq!(dedup_via_groups, dedup);
+    }
+
+    #[test]
+    fn array_group_by_int_rejects_non_int_and_arity() {
+        assert!(
+            builtin_array_group_by_int(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_group_by_int(&[Value::Array(vec![
+                Value::Int(1),
+                Value::String("oops".into())
+            ])])
+            .unwrap_err()
+            .contains("all int elements")
+        );
+        assert!(
+            builtin_array_group_by_int(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

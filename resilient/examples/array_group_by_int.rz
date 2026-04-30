@@ -1,0 +1,11 @@
+// RES-504 demo: array_group_by_int partitions into maximal runs
+// of consecutive equal integers (Haskell Data.List.group semantics).
+
+fn main() {
+    println(array_group_by_int([1, 1, 2, 3, 3, 3]));
+    println(array_group_by_int([7, 7, 7, 7]));
+    println(array_group_by_int([1, 2, 1, 2]));
+    println(len(array_group_by_int([])));
+}
+
+main();

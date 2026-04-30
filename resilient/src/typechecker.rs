@@ -1279,6 +1279,8 @@ impl TypeChecker {
         env.set("array_remove_all".to_string(), fn_any_any_to_any());
         // RES-468: collapse adjacent duplicates.
         env.set("array_dedup".to_string(), fn_any_to_any());
+        // RES-504: partition into maximal runs of equal int elements.
+        env.set("array_group_by_int".to_string(), fn_any_to_any());
         // RES-469: scalar all/any equality predicates.
         env.set("array_all_eq".to_string(), fn_any_any_to_any());
         env.set("array_any_eq".to_string(), fn_any_any_to_any());
@@ -4520,6 +4522,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_remove_all",
         // RES-468: array_dedup.
         "array_dedup",
+        // RES-504: group consecutive equal int elements.
+        "array_group_by_int",
         // RES-469: all/any equality.
         "array_all_eq",
         "array_any_eq",
