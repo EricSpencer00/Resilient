@@ -1,0 +1,13 @@
+# FFI demo: requires `--features ffi` to parse `extern "libm.dylib" { ... }`.
+#
+# The golden-file audit (`cargo test --test examples_golden`) builds the
+# `rz` binary without `--features ffi`, so the parser rejects the
+# `extern "libm.dylib" { ... }` block at compile time and the program
+# produces no output — mismatching the saved `.expected.txt`.
+#
+# Until the golden runner gains a per-example feature-flag mechanism,
+# this example is exempt from the audit. Run it manually with:
+#   cargo run --features ffi -- examples/ffi_libm_demo.rz
+#
+# Pre-existing platform note: the example hardcodes `libm.dylib` (macOS).
+# On Linux change it to `libm.so.6`.
