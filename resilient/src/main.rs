@@ -8352,6 +8352,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_dedup", builtin_array_dedup),
     // RES-504: partition into maximal runs of equal elements.
     ("array_group_by_int", builtin_array_group_by_int),
+    // RES-533: count of maximal runs of equal adjacent elements.
+    ("array_count_runs", builtin_array_count_runs),
     // RES-469: scalar all/any equality predicates.
     ("array_all_eq", builtin_array_all_eq),
     ("array_any_eq", builtin_array_any_eq),
@@ -11666,6 +11668,42 @@ fn builtin_array_group_by_int(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_group_by_int: expected array, got {}", other)),
         _ => Err(format!(
             "array_group_by_int: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-533: `array_count_runs(arr)` — count of maximal runs of
+/// consecutive equal elements. Equivalent to
+/// `len(array_group_by_int(arr))` for int arrays but without
+/// allocating the groups. Works on heterogeneous element types via
+/// scalar value-equality (like `array_dedup`).
+fn builtin_array_count_runs(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            let mut runs: i64 = 0;
+            let mut prev: Option<&Value> = None;
+            for v in items {
+                match prev {
+                    Some(p) => match array_search_eq(p, v) {
+                        Some(true) => {}
+                        Some(false) => runs += 1,
+                        None => {
+                            return Err(format!(
+                                "array_count_runs: element types not comparable ({} vs {})",
+                                p, v
+                            ));
+                        }
+                    },
+                    None => runs = 1,
+                }
+                prev = Some(v);
+            }
+            Ok(Value::Int(runs))
+        }
+        [other] => Err(format!("array_count_runs: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_count_runs: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -34428,6 +34466,111 @@ mod tests {
         );
         assert!(
             builtin_array_group_by_int(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-533: array_count_runs ----------
+
+    fn count_runs(items: Vec<Value>) -> i64 {
+        match builtin_array_count_runs(&[Value::Array(items)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_count_runs_basic() {
+        assert_eq!(
+            count_runs(vec![
+                Value::Int(1),
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(3),
+                Value::Int(3),
+            ]),
+            3
+        );
+        assert_eq!(
+            count_runs(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(1),
+                Value::Int(2),
+            ]),
+            4
+        );
+        assert_eq!(
+            count_runs(vec![Value::Int(7), Value::Int(7), Value::Int(7)]),
+            1
+        );
+        assert_eq!(count_runs(vec![Value::Int(1)]), 1);
+        assert_eq!(count_runs(vec![]), 0);
+    }
+
+    #[test]
+    fn array_count_runs_matches_group_by_int_length() {
+        // Identity for int arrays:
+        //   array_count_runs(arr) == len(array_group_by_int(arr)).
+        for items in [
+            vec![1, 1, 2, 3, 3, 3],
+            vec![1, 2, 1, 2],
+            vec![7, 7, 7, 7],
+            vec![],
+            vec![42],
+            vec![1, 2, 2, 3, 3, 3, 4],
+        ] {
+            let runs = count_runs(items.iter().copied().map(Value::Int).collect());
+            let groups = match builtin_array_group_by_int(&[int_array(&items)]).unwrap() {
+                Value::Array(g) => g.len() as i64,
+                _ => panic!(),
+            };
+            assert_eq!(runs, groups, "items={:?}", items);
+        }
+    }
+
+    #[test]
+    fn array_count_runs_works_on_strings_and_bools() {
+        assert_eq!(
+            count_runs(vec![
+                Value::String("a".into()),
+                Value::String("a".into()),
+                Value::String("b".into()),
+            ]),
+            2
+        );
+        assert_eq!(
+            count_runs(vec![
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Bool(true),
+            ]),
+            3
+        );
+    }
+
+    #[test]
+    fn array_count_runs_rejects_non_comparable_elements() {
+        let err = builtin_array_count_runs(&[Value::Array(vec![
+            Value::Array(vec![Value::Int(1)]),
+            Value::Array(vec![Value::Int(2)]),
+        ])])
+        .unwrap_err();
+        assert!(err.contains("not comparable"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_count_runs_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_count_runs(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_array_count_runs(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
