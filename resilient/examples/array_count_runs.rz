@@ -1,0 +1,11 @@
+// RES-533 demo: array_count_runs counts maximal runs of equal
+// adjacent elements (run-length-encoded group count).
+
+fn main() {
+    println(array_count_runs([1, 1, 2, 3, 3, 3]));
+    println(array_count_runs([1, 2, 1, 2]));
+    println(array_count_runs([7, 7, 7, 7]));
+    println(array_count_runs([]));
+}
+
+main();

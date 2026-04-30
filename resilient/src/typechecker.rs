@@ -1307,6 +1307,14 @@ impl TypeChecker {
         env.set("array_dedup".to_string(), fn_any_to_any());
         // RES-504: partition into maximal runs of equal int elements.
         env.set("array_group_by_int".to_string(), fn_any_to_any());
+        // RES-533: count of maximal runs.
+        env.set(
+            "array_count_runs".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-469: scalar all/any equality predicates.
         env.set("array_all_eq".to_string(), fn_any_any_to_any());
         env.set("array_any_eq".to_string(), fn_any_any_to_any());
@@ -4688,6 +4696,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_dedup",
         // RES-504: group consecutive equal int elements.
         "array_group_by_int",
+        // RES-533: count of maximal runs.
+        "array_count_runs",
         // RES-469: all/any equality.
         "array_all_eq",
         "array_any_eq",
