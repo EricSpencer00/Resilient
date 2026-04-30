@@ -1,0 +1,10 @@
+// RES-496 demo: string_words splits on Unicode whitespace.
+
+fn main() {
+    println(len(string_words("hello world")));
+    println(len(string_words("  foo   bar  ")));
+    println(len(string_words("")));
+    println(len(string_words("a b c d e")));
+}
+
+main();
