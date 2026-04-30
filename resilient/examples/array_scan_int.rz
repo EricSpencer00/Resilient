@@ -1,0 +1,11 @@
+// RES-502 demo: array_scan_int emits every running fold accumulator.
+
+fn main() {
+    println(array_scan_int([1, 2, 3, 4], 0, "sum"));
+    println(array_scan_int([1, 2, 3], 1, "product"));
+    println(array_scan_int([5, 3, 1, 4], 999, "min"));
+    let empty = [];
+    println(len(array_scan_int(empty, 0, "sum")));
+}
+
+main();
