@@ -1224,6 +1224,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-563: count elements in inclusive [lo, hi].
+        env.set(
+            "array_count_in_range_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Int, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4853,6 +4861,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_cummin_int",
         // RES-562: running product.
         "array_cumprod_int",
+        // RES-563: count elements in inclusive [lo, hi].
+        "array_count_in_range_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",

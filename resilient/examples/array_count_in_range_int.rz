@@ -1,0 +1,13 @@
+// RES-563 demo: array_count_in_range_int counts elements x with
+// lo <= x <= hi (both inclusive). lo > hi is an error. Useful for
+// histogram bucketing and threshold-band checks.
+
+fn main() {
+    println(array_count_in_range_int([1, 5, 9, -3, 100], 0, 10));
+    println(array_count_in_range_int([0, 5, 10, -1, 11], 0, 10));
+    println(array_count_in_range_int([5, 5, 5, 5], 5, 5));
+    println(array_count_in_range_int([1, 2, 3, 4, 5], 2, 4));
+    println(array_count_in_range_int([], 0, 10));
+}
+
+main();
