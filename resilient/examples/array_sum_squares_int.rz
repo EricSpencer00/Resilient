@@ -1,0 +1,13 @@
+// RES-558 demo: array_sum_squares_int returns Σ x² over an
+// integer array. Empty returns 0. Equivalent to
+// array_dot_int(arr, arr) but cleaner for variance/RSS.
+
+fn main() {
+    println(array_sum_squares_int([1, 2, 3]));
+    println(array_sum_squares_int([3, 4]));
+    println(array_sum_squares_int([10]));
+    println(array_sum_squares_int([-2, -3]));
+    println(array_sum_squares_int([]));
+}
+
+main();

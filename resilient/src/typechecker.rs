@@ -1184,6 +1184,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Int),
             },
         );
+        // RES-558: sum of squares (Σ x²).
+        env.set(
+            "array_sum_squares_int".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
         // RES-503: index of max/min element.
         env.set(
             "array_argmax_int".to_string(),
@@ -4803,6 +4811,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_abs_int",
         // RES-557: dot product.
         "array_dot_int",
+        // RES-558: sum of squares.
+        "array_sum_squares_int",
         // RES-503: index of max/min int element.
         "array_argmax_int",
         "array_argmin_int",
