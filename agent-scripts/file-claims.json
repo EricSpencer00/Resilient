@@ -1,8 +1,12 @@
 {
   "claims": {
-    "resilient/src/typechecker.rs": {
-      "branch": "res-402-element-enforcement",
-      "claimed_at": "2026-04-30T19:52:56Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-400-sum-types-pr6",
+      "claimed_at": "2026-04-30T23:17:45Z"
+    },
+    "resilient/src/sum_types.rs": {
+      "branch": "res-400-sum-types-pr6",
+      "claimed_at": "2026-04-30T23:17:45Z"
     }
   }
 }
