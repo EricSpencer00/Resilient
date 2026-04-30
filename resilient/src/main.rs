@@ -8491,6 +8491,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-520: circular bit rotation.
     ("bit_rotate_left", builtin_bit_rotate_left),
     ("bit_rotate_right", builtin_bit_rotate_right),
+    // RES-534: extract a single byte from an i64 (little-endian).
+    ("bit_byte", builtin_bit_byte),
     // RES-491: integer floor sqrt.
     ("int_sqrt", builtin_int_sqrt),
     // RES-517: integer exponentiation.
@@ -9700,6 +9702,31 @@ fn builtin_bit_rotate_right(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "bit_rotate_right: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-534: `bit_byte(n, k)` — return the `k`-th byte of `n` (little
+/// endian; byte 0 is the lowest 8 bits). `k` must be in `0..=7`.
+/// Result is always in `0..=255` (returned as a non-negative i64).
+/// Useful for protocol parsing — pulling a specific byte out of a
+/// packed register / integer.
+fn builtin_bit_byte(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n), Value::Int(k)] => {
+            if !(0..=7).contains(k) {
+                return Err(format!("bit_byte: byte position must be 0..=7, got {}", k));
+            }
+            let shift = (*k as u32) * 8;
+            // Use unsigned wrapping shift so the right shift is
+            // logical (not arithmetic), then mask to a single byte.
+            let bits = (*n as u64).wrapping_shr(shift) & 0xFF;
+            Ok(Value::Int(bits as i64))
+        }
+        [a, b] => Err(format!("bit_byte: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "bit_byte: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -31692,6 +31719,77 @@ mod tests {
         );
         assert!(
             builtin_bit_rotate_right(&[Value::Int(0)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-534: bit_byte ----------
+
+    fn byte_of(n: i64, k: i64) -> i64 {
+        match builtin_bit_byte(&[Value::Int(n), Value::Int(k)]).unwrap() {
+            Value::Int(b) => b,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bit_byte_decomposes_packed_int() {
+        let n: i64 = 0xCAFE_BABE;
+        assert_eq!(byte_of(n, 0), 0xBE);
+        assert_eq!(byte_of(n, 1), 0xBA);
+        assert_eq!(byte_of(n, 2), 0xFE);
+        assert_eq!(byte_of(n, 3), 0xCA);
+        assert_eq!(byte_of(n, 4), 0); // upper bytes are zero
+    }
+
+    #[test]
+    fn bit_byte_zero_and_minus_one() {
+        for k in 0..=7 {
+            assert_eq!(byte_of(0, k), 0, "0 byte {}", k);
+            // -1 as i64 is all-bits-set; every byte should be 0xFF.
+            assert_eq!(byte_of(-1, k), 0xFF, "-1 byte {}", k);
+        }
+    }
+
+    #[test]
+    fn bit_byte_int_min_decomposition() {
+        // i64::MIN = 0x8000_0000_0000_0000.
+        assert_eq!(byte_of(i64::MIN, 7), 0x80);
+        for k in 0..=6 {
+            assert_eq!(byte_of(i64::MIN, k), 0, "MIN byte {}", k);
+        }
+    }
+
+    #[test]
+    fn bit_byte_identity_with_bit_shr_and_mask() {
+        // bit_byte(n, k) == (n >> (k * 8)) & 0xFF using the unsigned
+        // wrapping_shr to mirror the implementation (logical shift).
+        for n in [0i64, 1, -1, 0xCAFEBABE, 0x1234_5678_9ABC_DEF0u64 as i64] {
+            for k in 0..=7 {
+                let manual = ((n as u64).wrapping_shr((k as u32) * 8) & 0xFF) as i64;
+                assert_eq!(byte_of(n, k), manual, "n={:#x} k={}", n, k);
+            }
+        }
+    }
+
+    #[test]
+    fn bit_byte_out_of_range_errors() {
+        for k in &[-1i64, 8, 64, i64::MAX, i64::MIN] {
+            let err = builtin_bit_byte(&[Value::Int(0), Value::Int(*k)]).unwrap_err();
+            assert!(err.contains("0..=7"), "k={}: got {}", k, err);
+        }
+    }
+
+    #[test]
+    fn bit_byte_rejects_non_int_and_arity() {
+        assert!(
+            builtin_bit_byte(&[Value::Float(1.0), Value::Int(0)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_bit_byte(&[Value::Int(1)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
