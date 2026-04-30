@@ -8440,6 +8440,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_count", builtin_string_count),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
+    // RES-516: alternate elements from two arrays.
+    ("array_interleave", builtin_array_interleave),
     // RES-438: one-sided whitespace trimmers.
     ("trim_start", builtin_trim_start),
     ("trim_end", builtin_trim_end),
@@ -9801,6 +9803,48 @@ fn builtin_trim_end(args: &[Value]) -> RResult<Value> {
         [Value::String(s)] => Ok(Value::String(s.trim_end().to_string())),
         [other] => Err(format!("trim_end: expected string, got {}", other)),
         _ => Err(format!("trim_end: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-516: `array_interleave(a, b)` — alternate elements from two
+/// arrays. Trailing elements of the longer array are appended after
+/// interleaving runs out. Distinct from `array_zip` (RES-430), which
+/// produces tuple pairs and truncates to the shorter input.
+fn builtin_array_interleave(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(a), Value::Array(b)] => {
+            let mut out = Vec::with_capacity(a.len() + b.len());
+            let mut ai = a.iter();
+            let mut bi = b.iter();
+            loop {
+                match (ai.next(), bi.next()) {
+                    (Some(x), Some(y)) => {
+                        out.push(x.clone());
+                        out.push(y.clone());
+                    }
+                    (Some(x), None) => {
+                        out.push(x.clone());
+                        out.extend(ai.cloned());
+                        break;
+                    }
+                    (None, Some(y)) => {
+                        out.push(y.clone());
+                        out.extend(bi.cloned());
+                        break;
+                    }
+                    (None, None) => break,
+                }
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_interleave: expected (array, array), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_interleave: expected 2 arguments, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -29557,6 +29601,62 @@ mod tests {
         );
         assert!(
             builtin_array_intersperse(&[Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-516: array_interleave ----------
+
+    fn interleave_int(a: &[i64], b: &[i64]) -> Vec<i64> {
+        match builtin_array_interleave(&[int_array(a), int_array(b)]).unwrap() {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|v| match v {
+                    Value::Int(n) => n,
+                    other => panic!("expected Int, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_interleave_equal_length() {
+        assert_eq!(
+            interleave_int(&[1, 3, 5], &[2, 4, 6]),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+    }
+
+    #[test]
+    fn array_interleave_a_longer_appends_a_tail() {
+        assert_eq!(interleave_int(&[1, 3, 5], &[2, 4]), vec![1, 2, 3, 4, 5]);
+        assert_eq!(interleave_int(&[1, 2, 3, 4], &[10]), vec![1, 10, 2, 3, 4]);
+    }
+
+    #[test]
+    fn array_interleave_b_longer_appends_b_tail() {
+        assert_eq!(interleave_int(&[1], &[2, 4, 6]), vec![1, 2, 4, 6]);
+        assert_eq!(interleave_int(&[10], &[1, 2, 3, 4]), vec![10, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn array_interleave_with_empty_inputs() {
+        assert_eq!(interleave_int(&[], &[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(interleave_int(&[1, 2], &[]), vec![1, 2]);
+        assert_eq!(interleave_int(&[], &[]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn array_interleave_rejects_non_array_and_arity() {
+        assert!(
+            builtin_array_interleave(&[Value::Int(1), Value::Array(vec![])])
+                .unwrap_err()
+                .contains("expected (array, array)")
+        );
+        assert!(
+            builtin_array_interleave(&[Value::Array(vec![])])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

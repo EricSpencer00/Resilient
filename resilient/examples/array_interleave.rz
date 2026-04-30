@@ -1,0 +1,11 @@
+// RES-516 demo: array_interleave alternates elements from two arrays.
+
+fn main() {
+    println(array_interleave([1, 3, 5], [2, 4, 6]));
+    println(array_interleave([1, 3, 5], [2, 4]));
+    println(array_interleave([1], [2, 4, 6]));
+    println(array_interleave([], [42, 43]));
+    println(len(array_interleave([], [])));
+}
+
+main();
