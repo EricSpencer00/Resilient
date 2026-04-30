@@ -40,6 +40,11 @@ mod span;
 // constructor expressions, exhaustive `match`, and the typechecker
 // integration.
 mod sum_types;
+// RES-332: actor-runtime data model — `ActorPid`, mailbox registry,
+// scheduler. PR 1 lands the data layer; PRs 2-5 add `spawn` /
+// `send` / `receive` builtins, the cooperative scheduler, deadlock
+// detection, and the ping-pong example.
+mod actor_runtime;
 // RES-406: volatile MMIO intrinsics. The eight `volatile_read_*` /
 // `volatile_write_*` builtins live here; the `unsafe { … }` gate
 // (capability check at typecheck time) is in the typechecker
