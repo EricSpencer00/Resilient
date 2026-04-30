@@ -3477,8 +3477,29 @@ impl TypeChecker {
             }
 
             Node::ArrayLiteral { items, .. } => {
+                // RES-402: element-type enforcement at construction.
+                // Walk every item, gather their inferred types, and
+                // reject the literal when the set of distinct concrete
+                // (non-`Any`) types is greater than one. `Any` items
+                // pair with anything (existing inference is permissive).
+                // Empty literals are allowed and remain `Type::Array`.
+                let mut concrete: Vec<(Type, &Node)> = Vec::new();
                 for item in items {
-                    let _ = self.check_node(item)?;
+                    let ty = self.check_node(item)?;
+                    if !matches!(ty, Type::Any) {
+                        concrete.push((ty, item));
+                    }
+                }
+                if concrete.len() > 1 {
+                    let first_ty = concrete[0].0.clone();
+                    if let Some((other_ty, _)) =
+                        concrete.iter().find(|(t, _)| *t != first_ty).cloned()
+                    {
+                        return Err(format!(
+                            "Array literal contains mixed element types: {} and {}. Resilient does not implicitly coerce between types — pick one and convert the others explicitly.",
+                            first_ty, other_ty
+                        ));
+                    }
                 }
                 Ok(Type::Array)
             }
@@ -6774,6 +6795,64 @@ mod res340_rich_type_mismatch_tests {
             tc.fn_decl_spans.contains_key("caller"),
             "fn_decl_spans missing entry for caller: {:?}",
             tc.fn_decl_spans.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+// RES-402: tests for the array-literal mixed-element-type rejection.
+#[cfg(test)]
+mod res402_polymorphic_array_tests {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check(src: &str) -> Result<(), String> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new().check_program(&prog).map(|_| ())
+    }
+
+    #[test]
+    fn homogeneous_int_array_passes() {
+        check("let xs = [1, 2, 3];").expect("homogeneous Int literal should typecheck");
+    }
+
+    #[test]
+    fn homogeneous_string_array_passes() {
+        check("let xs = [\"a\", \"b\", \"c\"];")
+            .expect("homogeneous String literal should typecheck");
+    }
+
+    #[test]
+    fn empty_array_passes() {
+        check("let xs = [];").expect("empty array literal should typecheck");
+    }
+
+    #[test]
+    fn mixed_int_and_string_is_rejected() {
+        let err =
+            check("let xs = [1, \"two\"];").expect_err("mixed Int / String should be rejected");
+        assert!(
+            err.contains("mixed element types"),
+            "diagnostic missing 'mixed element types': {}",
+            err
+        );
+        assert!(err.contains("int"), "diagnostic missing int type: {}", err);
+        assert!(
+            err.contains("string"),
+            "diagnostic missing string type: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn mixed_int_and_float_is_rejected() {
+        // Resilient already rejects Int + Float arithmetic — array
+        // literals follow the same no-implicit-coercion rule.
+        let err = check("let xs = [1, 2.0];").expect_err("mixed Int / Float should be rejected");
+        assert!(
+            err.contains("mixed element types"),
+            "diagnostic missing 'mixed element types': {}",
+            err
         );
     }
 }

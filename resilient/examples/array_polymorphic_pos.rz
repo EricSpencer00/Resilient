@@ -1,0 +1,17 @@
+// RES-402: homogeneous Array literal — typechecker accepts.
+//
+// `[1, 2, 3]` has uniform Int elements; the inferred element type is
+// Int. The typechecker does not flag the literal even when run with
+// `--typecheck`.
+
+fn main() -> int {
+    let xs = [1, 2, 3];
+    let s = 0;
+    for x in xs {
+        s = s + x;
+    }
+    println(s);
+    return 0;
+}
+
+main();
