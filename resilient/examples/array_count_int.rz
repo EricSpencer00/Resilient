@@ -1,0 +1,12 @@
+// RES-530 demo: array_count_int counts integer elements satisfying
+// a named predicate (positive/negative/zero/nonzero/even/odd).
+
+fn main() {
+    println(array_count_int([1, -2, 3, -4, 5], "negative"));
+    println(array_count_int([1, -2, 3, -4, 5], "positive"));
+    println(array_count_int([1, 2, 3, 4, 5, 6], "even"));
+    println(array_count_int([0, 1, 0, 2, 0], "zero"));
+    println(array_count_int([], "positive"));
+}
+
+main();
