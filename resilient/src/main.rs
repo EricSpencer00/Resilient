@@ -8425,6 +8425,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_shr", builtin_bit_shr),
     // RES-488: population count (Hamming weight).
     ("bit_count", builtin_bit_count),
+    // RES-489: count leading zero bits.
+    ("bit_leading_zeros", builtin_bit_leading_zeros),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9459,6 +9461,21 @@ fn builtin_bit_count(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("bit_count: expected int, got {}", other)),
         _ => Err(format!(
             "bit_count: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-489: `bit_leading_zeros(n)` — count of zero bits at the high end
+/// of `n`'s i64 twos-complement representation. `bit_leading_zeros(0)`
+/// is 64; `bit_leading_zeros(-1)` is 0. Lowers to LZCNT / CLZ on
+/// supporting hardware via `i64::leading_zeros`.
+fn builtin_bit_leading_zeros(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => Ok(Value::Int(n.leading_zeros() as i64)),
+        [other] => Err(format!("bit_leading_zeros: expected int, got {}", other)),
+        _ => Err(format!(
+            "bit_leading_zeros: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -28491,6 +28508,68 @@ mod tests {
         );
         assert!(
             builtin_bit_count(&[Value::Int(1), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-489: bit_leading_zeros ----------
+
+    #[test]
+    fn bit_leading_zeros_basic() {
+        assert_int(
+            builtin_bit_leading_zeros(&[Value::Int(0)]).unwrap(),
+            64,
+            "0",
+        );
+        assert_int(
+            builtin_bit_leading_zeros(&[Value::Int(1)]).unwrap(),
+            63,
+            "1",
+        );
+        assert_int(
+            builtin_bit_leading_zeros(&[Value::Int(0xFF)]).unwrap(),
+            56,
+            "0xFF",
+        );
+    }
+
+    #[test]
+    fn bit_leading_zeros_powers_of_two() {
+        for shift in 0..63 {
+            let n: i64 = 1 << shift;
+            assert_int(
+                builtin_bit_leading_zeros(&[Value::Int(n)]).unwrap(),
+                63 - shift,
+                "pow2",
+            );
+        }
+    }
+
+    #[test]
+    fn bit_leading_zeros_negatives_have_zero() {
+        // High bit set in twos-complement → 0 leading zeros.
+        assert_int(
+            builtin_bit_leading_zeros(&[Value::Int(-1)]).unwrap(),
+            0,
+            "-1",
+        );
+        assert_int(
+            builtin_bit_leading_zeros(&[Value::Int(i64::MIN)]).unwrap(),
+            0,
+            "MIN",
+        );
+    }
+
+    #[test]
+    fn bit_leading_zeros_rejects_non_int_and_arity() {
+        assert!(
+            builtin_bit_leading_zeros(&[Value::Float(1.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_bit_leading_zeros(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
