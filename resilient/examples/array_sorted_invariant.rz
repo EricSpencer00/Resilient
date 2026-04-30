@@ -1,0 +1,26 @@
+// RES-408: quantified invariants over array contents.
+//
+// `forall i in 0..len(a): P(a[i])` ranges over array indices and
+// binds `i` inside `P` so the predicate can read `a[i]`.
+//
+// At runtime the quantifier short-circuits on the first false
+// witness for `forall` (true witness for `exists`). At compile
+// time, the Z3 backend currently leaves these as `Unknown` —
+// extending the encoding to use Z3's array theory
+// `(forall ((i Int)) (=> (and (<= 0 i) (< i len_a)) P(select a i)))`
+// is tracked in #371 (this ticket); the runtime-side surface
+// shipped here is the precondition the Z3 lowering targets.
+
+fn main(int dummy) -> int {
+    let a = [1, 2, 3, 4, 5];
+
+    // Sorted-invariant — every adjacent pair is non-decreasing.
+    // This is the canonical "preserves invariant" check that
+    // insertion sort's outer loop maintains.
+    assert(forall i in 1..len(a): a[i - 1] <= a[i]);
+    println("sorted invariant holds");
+
+    return 0;
+}
+
+main(0);
