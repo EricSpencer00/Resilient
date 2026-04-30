@@ -8444,6 +8444,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("string_count", builtin_string_count),
     // RES-523: count occurrences of a single character.
     ("string_count_char", builtin_string_count_char),
+    // RES-524: char-index of a single character (-1 if absent).
+    ("string_find_char", builtin_string_find_char),
     // RES-437: insert separator between adjacent array elements.
     ("array_intersperse", builtin_array_intersperse),
     // RES-516: alternate elements from two arrays.
@@ -10087,6 +10089,43 @@ fn builtin_string_count_char(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "string_count_char: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-524: `string_find_char(s, c)` — first **char index** (not byte
+/// index) of the single Unicode scalar `c` in `s`, or `-1` when
+/// absent. `c` must be exactly one character. Counts chars (mirrors
+/// `string_at` / `string_substring` / `string_take` semantics);
+/// distinct from `index_of` (RES-414), which is multi-char and
+/// returns a byte index.
+fn builtin_string_find_char(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(c)] => {
+            let mut iter = c.chars();
+            let needle = iter
+                .next()
+                .ok_or_else(|| "string_find_char: empty char argument".to_string())?;
+            if iter.next().is_some() {
+                return Err(format!(
+                    "string_find_char: expected single character, got {} chars",
+                    c.chars().count()
+                ));
+            }
+            let idx = s
+                .chars()
+                .position(|ch| ch == needle)
+                .map(|i| i as i64)
+                .unwrap_or(-1);
+            Ok(Value::Int(idx))
+        }
+        [a, b] => Err(format!(
+            "string_find_char: expected (string, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "string_find_char: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -29916,6 +29955,66 @@ mod tests {
         );
         assert!(
             builtin_string_count_char(&[Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-524: string_find_char ----------
+
+    fn find_char(s: &str, c: &str) -> i64 {
+        match builtin_string_find_char(&[Value::String(s.into()), Value::String(c.into())]).unwrap()
+        {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_find_char_basic() {
+        assert_eq!(find_char("hello", "h"), 0);
+        assert_eq!(find_char("hello", "l"), 2);
+        assert_eq!(find_char("hello", "o"), 4);
+    }
+
+    #[test]
+    fn string_find_char_absent_returns_minus_one() {
+        assert_eq!(find_char("hello", "x"), -1);
+        assert_eq!(find_char("", "x"), -1);
+    }
+
+    #[test]
+    fn string_find_char_unicode_aware() {
+        // 'é' is one char even though it's 2 bytes; 'l' lives at
+        // char index 2, NOT byte index 3.
+        assert_eq!(find_char("héllo", "l"), 2);
+        assert_eq!(find_char("héllo", "é"), 1);
+        assert_eq!(find_char("日本語", "語"), 2);
+    }
+
+    #[test]
+    fn string_find_char_rejects_empty_or_multichar_needle() {
+        assert!(
+            builtin_string_find_char(&[Value::String("hi".into()), Value::String("".into())])
+                .unwrap_err()
+                .contains("empty")
+        );
+        assert!(
+            builtin_string_find_char(&[Value::String("hi".into()), Value::String("hi".into())])
+                .unwrap_err()
+                .contains("single character")
+        );
+    }
+
+    #[test]
+    fn string_find_char_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_find_char(&[Value::Int(1), Value::String("a".into())])
+                .unwrap_err()
+                .contains("expected (string, string)")
+        );
+        assert!(
+            builtin_string_find_char(&[Value::String("a".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );
