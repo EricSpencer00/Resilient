@@ -1,0 +1,13 @@
+// RES-534 demo: bit_byte extracts a single byte from an i64
+// (little-endian; byte 0 is the lowest 8 bits).
+
+fn main() {
+    let n = 3405691582;
+    println(bit_byte(n, 0));
+    println(bit_byte(n, 1));
+    println(bit_byte(n, 2));
+    println(bit_byte(n, 3));
+    println(bit_byte(0, 0));
+}
+
+main();
