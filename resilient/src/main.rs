@@ -8207,6 +8207,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-415: integer gcd/lcm.
     ("gcd", builtin_gcd),
     ("lcm", builtin_lcm),
+    // RES-536: gcd / lcm reduction over an integer array.
+    ("gcd_array", builtin_gcd_array),
+    ("lcm_array", builtin_lcm_array),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -13922,6 +13925,79 @@ fn builtin_lcm(args: &[Value]) -> RResult<Value> {
         [a, b] => Err(format!("lcm: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!("lcm: expected 2 arguments, got {}", args.len())),
     }
+}
+
+/// RES-536: shared core of `gcd_array` / `lcm_array` — pairwise gcd
+/// over an array, starting from `init`. The two builtins use
+/// different identities (0 for gcd; 1 for lcm) and short-circuit
+/// rules.
+fn fold_int_array<F>(name: &str, args: &[Value], init: i64, mut op: F) -> RResult<i64>
+where
+    F: FnMut(i64, i64) -> i64,
+{
+    match args {
+        [Value::Array(items)] => {
+            let mut acc = init;
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "{}: expected all int elements, got {}",
+                            name, other
+                        ));
+                    }
+                };
+                acc = op(acc, n);
+            }
+            Ok(acc)
+        }
+        [other] => Err(format!("{}: expected array, got {}", name, other)),
+        _ => Err(format!("{}: expected 1 argument, got {}", name, args.len())),
+    }
+}
+
+/// RES-536: `gcd_array(arr)` — gcd over an integer array. `gcd_array([])`
+/// is 0 (the identity for gcd: `gcd(0, x) == |x|`). Otherwise folds
+/// with the same Euclidean algorithm as `gcd` (RES-415); negative
+/// inputs are treated as their absolute value.
+fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
+    let result = fold_int_array("gcd_array", args, 0, |acc, n| {
+        // The accumulator is always non-negative (gcd never produces
+        // a negative). Use `unsigned_abs` on the new element.
+        let mut a = acc as u64;
+        let mut b = n.unsigned_abs();
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        a as i64
+    })?;
+    Ok(Value::Int(result))
+}
+
+/// RES-536: `lcm_array(arr)` — lcm over an integer array.
+/// `lcm_array([])` is 1 (the identity for lcm). If any element is
+/// 0, the result short-circuits to 0 (matching pairwise `lcm`).
+/// Multiplication wraps on overflow (consistent with pairwise `lcm`).
+fn builtin_lcm_array(args: &[Value]) -> RResult<Value> {
+    let result = fold_int_array("lcm_array", args, 1, |acc, n| {
+        if acc == 0 || n == 0 {
+            return 0;
+        }
+        // lcm(a, b) = |a / gcd(a, b)| * |b|
+        let mut a = acc.unsigned_abs();
+        let mut b = n.unsigned_abs();
+        let (ax, by) = (a, b);
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        ((ax / a).wrapping_mul(by)) as i64
+    })?;
+    Ok(Value::Int(result))
 }
 
 /// RES-411: `is_nan(x)` — IEEE 754 NaN predicate. Int args return false.
@@ -28095,6 +28171,102 @@ mod tests {
             builtin_lcm(&[])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-536: gcd_array / lcm_array ----------
+
+    fn gcd_arr_int(items: &[i64]) -> i64 {
+        match builtin_gcd_array(&[Value::Array(
+            items.iter().copied().map(Value::Int).collect(),
+        )])
+        .unwrap()
+        {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    fn lcm_arr_int(items: &[i64]) -> i64 {
+        match builtin_lcm_array(&[Value::Array(
+            items.iter().copied().map(Value::Int).collect(),
+        )])
+        .unwrap()
+        {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn gcd_array_basic() {
+        assert_eq!(gcd_arr_int(&[]), 0); // identity
+        assert_eq!(gcd_arr_int(&[12]), 12);
+        assert_eq!(gcd_arr_int(&[12, 18]), 6);
+        assert_eq!(gcd_arr_int(&[12, 18, 24]), 6);
+        assert_eq!(gcd_arr_int(&[7, 11, 13]), 1); // coprime
+    }
+
+    #[test]
+    fn gcd_array_handles_zeros_and_negatives() {
+        assert_eq!(gcd_arr_int(&[0, 0, 6]), 6); // 0 acts as identity
+        assert_eq!(gcd_arr_int(&[-12, -18]), 6); // sign normalised
+        assert_eq!(gcd_arr_int(&[0, 0, 0]), 0);
+    }
+
+    #[test]
+    fn lcm_array_basic() {
+        assert_eq!(lcm_arr_int(&[]), 1); // identity
+        assert_eq!(lcm_arr_int(&[4]), 4);
+        assert_eq!(lcm_arr_int(&[4, 6]), 12);
+        assert_eq!(lcm_arr_int(&[2, 3, 4]), 12);
+        assert_eq!(lcm_arr_int(&[3, 5, 7]), 105);
+    }
+
+    #[test]
+    fn lcm_array_with_zero_short_circuits() {
+        assert_eq!(lcm_arr_int(&[0, 5]), 0);
+        assert_eq!(lcm_arr_int(&[5, 0]), 0);
+        assert_eq!(lcm_arr_int(&[0]), 0);
+        assert_eq!(lcm_arr_int(&[2, 3, 0, 4]), 0);
+    }
+
+    #[test]
+    fn gcd_lcm_array_match_pairwise_when_two_elements() {
+        // For two-element arrays, the array fold matches pairwise.
+        for (a, b) in [(12, 18), (-12, 18), (0, 7), (15, 25)] {
+            let pair_gcd = match builtin_gcd(&[Value::Int(a), Value::Int(b)]).unwrap() {
+                Value::Int(n) => n,
+                _ => panic!(),
+            };
+            assert_eq!(gcd_arr_int(&[a, b]), pair_gcd, "gcd a={} b={}", a, b);
+            // Skip 0 for lcm pair-test (lcm short-circuits to 0).
+            if a != 0 && b != 0 {
+                let pair_lcm = match builtin_lcm(&[Value::Int(a), Value::Int(b)]).unwrap() {
+                    Value::Int(n) => n,
+                    _ => panic!(),
+                };
+                assert_eq!(lcm_arr_int(&[a, b]), pair_lcm, "lcm a={} b={}", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn gcd_lcm_array_reject_non_int_and_arity() {
+        assert!(
+            builtin_gcd_array(&[Value::Array(vec![Value::Int(1), Value::Float(2.0)])])
+                .unwrap_err()
+                .contains("all int elements")
+        );
+        assert!(
+            builtin_lcm_array(&[Value::Int(1)])
+                .unwrap_err()
+                .contains("expected array")
+        );
+        assert!(
+            builtin_gcd_array(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
         );
     }
 
