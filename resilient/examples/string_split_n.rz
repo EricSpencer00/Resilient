@@ -1,0 +1,12 @@
+// RES-535 demo: string_split_n splits at most n times. Useful for
+// parsing key/value pairs and bounded delimited fields.
+
+fn main() {
+    println(string_split_n("a,b,c,d", ",", 2));
+    println(string_split_n("k=v=more", "=", 1));
+    println(string_split_n("a,b,c", ",", 0));
+    println(string_split_n("a,b,c", ",", 100));
+    println(string_split_n("noseparator", ",", 5));
+}
+
+main();

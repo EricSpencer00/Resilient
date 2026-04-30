@@ -8254,6 +8254,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("pop", builtin_pop),
     ("slice", builtin_slice),
     ("split", builtin_split),
+    // RES-535: split with a maximum number-of-splits limit.
+    ("string_split_n", builtin_string_split_n),
     ("trim", builtin_trim),
     ("contains", builtin_contains),
     ("to_upper", builtin_to_upper),
@@ -9295,6 +9297,43 @@ fn builtin_split(args: &[Value]) -> RResult<Value> {
             a, b
         )),
         _ => Err(format!("split: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+/// RES-535: `string_split_n(s, sep, n)` — split `s` at most `n`
+/// times on `sep`, returning at most `n + 1` parts. The last
+/// element is the unsplit remainder. Useful for parsing key/value
+/// pairs (`split_n("k=v=more", "=", 1) -> ["k", "v=more"]`).
+/// Errors on empty separator and negative `n`.
+fn builtin_string_split_n(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s), Value::String(sep), Value::Int(n)] => {
+            if sep.is_empty() {
+                return Err("string_split_n: separator must not be empty".to_string());
+            }
+            if *n < 0 {
+                return Err(format!(
+                    "string_split_n: max splits must be non-negative, got {}",
+                    n
+                ));
+            }
+            // `splitn(k, sep)` produces at most `k` parts (so at most
+            // `k - 1` splits). Saturate to `usize::MAX` for huge n.
+            let parts_cap = (*n as usize).saturating_add(1);
+            Ok(Value::Array(
+                s.splitn(parts_cap, sep.as_str())
+                    .map(|p| Value::String(p.to_string()))
+                    .collect(),
+            ))
+        }
+        [a, b, c] => Err(format!(
+            "string_split_n: expected (string, string, int), got ({}, {}, {})",
+            a, b, c
+        )),
+        _ => Err(format!(
+            "string_split_n: expected 3 arguments, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -25450,6 +25489,92 @@ mod tests {
             builtin_parse_float_or(&[Value::String("3.14".into())])
                 .unwrap_err()
                 .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-535: string_split_n ----------
+
+    fn split_n(s: &str, sep: &str, n: i64) -> Vec<String> {
+        match builtin_string_split_n(&[
+            Value::String(s.into()),
+            Value::String(sep.into()),
+            Value::Int(n),
+        ])
+        .unwrap()
+        {
+            Value::Array(parts) => parts
+                .into_iter()
+                .map(|v| match v {
+                    Value::String(s) => s,
+                    other => panic!("expected String, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn string_split_n_basic() {
+        assert_eq!(split_n("a,b,c,d", ",", 2), vec!["a", "b", "c,d"]);
+        assert_eq!(split_n("a,b,c,d", ",", 1), vec!["a", "b,c,d"]);
+        assert_eq!(split_n("a,b,c,d", ",", 3), vec!["a", "b", "c", "d"]);
+        assert_eq!(split_n("a,b,c,d", ",", 100), vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn string_split_n_zero_splits_returns_whole_string() {
+        assert_eq!(split_n("a,b,c", ",", 0), vec!["a,b,c"]);
+        assert_eq!(split_n("", ",", 0), vec![""]);
+    }
+
+    #[test]
+    fn string_split_n_no_separator_returns_singleton() {
+        assert_eq!(split_n("abc", "x", 5), vec!["abc"]);
+        assert_eq!(split_n("", "x", 5), vec![""]);
+    }
+
+    #[test]
+    fn string_split_n_canonical_pair_split() {
+        // Canonical use: parse "key=value=something" as ("key", "value=something").
+        assert_eq!(split_n("k=v", "=", 1), vec!["k", "v"]);
+        assert_eq!(split_n("k=v=more", "=", 1), vec!["k", "v=more"]);
+        assert_eq!(split_n("noequals", "=", 1), vec!["noequals"]);
+    }
+
+    #[test]
+    fn string_split_n_multichar_separator() {
+        assert_eq!(split_n("aa--bb--cc--dd", "--", 1), vec!["aa", "bb--cc--dd"]);
+    }
+
+    #[test]
+    fn string_split_n_rejects_empty_separator_and_negative_n() {
+        let err = builtin_string_split_n(&[
+            Value::String("abc".into()),
+            Value::String("".into()),
+            Value::Int(2),
+        ])
+        .unwrap_err();
+        assert!(err.contains("must not be empty"), "got: {}", err);
+        let err = builtin_string_split_n(&[
+            Value::String("abc".into()),
+            Value::String(",".into()),
+            Value::Int(-1),
+        ])
+        .unwrap_err();
+        assert!(err.contains("non-negative"), "got: {}", err);
+    }
+
+    #[test]
+    fn string_split_n_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_string_split_n(&[Value::Int(1), Value::String(",".into()), Value::Int(2)])
+                .unwrap_err()
+                .contains("expected (string, string, int)")
+        );
+        assert!(
+            builtin_string_split_n(&[Value::String("a".into()), Value::String(",".into())])
+                .unwrap_err()
+                .contains("expected 3 arguments")
         );
     }
 
