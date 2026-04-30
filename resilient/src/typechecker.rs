@@ -1473,6 +1473,8 @@ impl TypeChecker {
         env.set("array_zip".to_string(), fn_any_any_to_any());
         // RES-431: integer range [start, end).
         env.set("array_range".to_string(), fn_any_any_to_any());
+        // RES-522: indices of an array as a new array.
+        env.set("array_indices".to_string(), fn_any_to_any());
         // RES-432: array of n copies.
         env.set("array_repeat".to_string(), fn_any_any_to_any());
         // RES-433: split string into single-char strings.
@@ -4687,6 +4689,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_zip",
         // RES-431: array_range.
         "array_range",
+        // RES-522: indices of an array.
+        "array_indices",
         // RES-432: array_repeat.
         "array_repeat",
         // RES-433: string_chars.

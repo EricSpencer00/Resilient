@@ -1,0 +1,10 @@
+// RES-522 demo: array_indices returns [0, 1, ..., len-1] for an array.
+
+fn main() {
+    println(array_indices([10, 20, 30]));
+    println(array_indices([]));
+    println(array_indices(["a", "b", "c", "d", "e"]));
+    println(len(array_indices([true, false])));
+}
+
+main();
