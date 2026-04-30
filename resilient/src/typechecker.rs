@@ -1614,7 +1614,9 @@ impl TypeChecker {
             return_type: Box::new(Type::Int),
         };
         env.set("ceil_div".to_string(), int_int_to_int.clone());
-        env.set("floor_div".to_string(), int_int_to_int);
+        env.set("floor_div".to_string(), int_int_to_int.clone());
+        // RES-519: Python-style modulo (sign of divisor).
+        env.set("modulo".to_string(), int_int_to_int);
         // RES-492: floor log base 2.
         env.set(
             "int_log2".to_string(),
@@ -4726,6 +4728,8 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-518: integer division with explicit rounding.
         "ceil_div",
         "floor_div",
+        // RES-519: Python-style modulo (sign of divisor).
+        "modulo",
         // RES-492: floor log base 2.
         "int_log2",
         // RES-493: power-of-two predicate.
