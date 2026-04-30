@@ -8427,6 +8427,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bit_count", builtin_bit_count),
     // RES-489: count leading zero bits.
     ("bit_leading_zeros", builtin_bit_leading_zeros),
+    // RES-490: count trailing zero bits.
+    ("bit_trailing_zeros", builtin_bit_trailing_zeros),
     // RES-442: byte index of last substring occurrence, or -1.
     ("last_index_of", builtin_last_index_of),
     // RES-413: repeat a string n times.
@@ -9476,6 +9478,22 @@ fn builtin_bit_leading_zeros(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("bit_leading_zeros: expected int, got {}", other)),
         _ => Err(format!(
             "bit_leading_zeros: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-490: `bit_trailing_zeros(n)` — count of zero bits at the low end
+/// of `n`'s i64 twos-complement representation. `bit_trailing_zeros(0)`
+/// is 64; `bit_trailing_zeros(-1)` is 0; `bit_trailing_zeros(i64::MIN)`
+/// is 63. Lowers to TZCNT / RBIT+CLZ on supporting hardware via
+/// `i64::trailing_zeros`.
+fn builtin_bit_trailing_zeros(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => Ok(Value::Int(n.trailing_zeros() as i64)),
+        [other] => Err(format!("bit_trailing_zeros: expected int, got {}", other)),
+        _ => Err(format!(
+            "bit_trailing_zeros: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -28570,6 +28588,74 @@ mod tests {
         );
         assert!(
             builtin_bit_leading_zeros(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-490: bit_trailing_zeros ----------
+
+    #[test]
+    fn bit_trailing_zeros_basic() {
+        assert_int(
+            builtin_bit_trailing_zeros(&[Value::Int(0)]).unwrap(),
+            64,
+            "0",
+        );
+        assert_int(
+            builtin_bit_trailing_zeros(&[Value::Int(1)]).unwrap(),
+            0,
+            "1",
+        );
+        assert_int(
+            builtin_bit_trailing_zeros(&[Value::Int(8)]).unwrap(),
+            3,
+            "8",
+        );
+        assert_int(
+            builtin_bit_trailing_zeros(&[Value::Int(0b1100)]).unwrap(),
+            2,
+            "0b1100",
+        );
+    }
+
+    #[test]
+    fn bit_trailing_zeros_powers_of_two() {
+        for shift in 0..63 {
+            let n: i64 = 1 << shift;
+            assert_int(
+                builtin_bit_trailing_zeros(&[Value::Int(n)]).unwrap(),
+                shift,
+                "pow2",
+            );
+        }
+    }
+
+    #[test]
+    fn bit_trailing_zeros_negatives() {
+        // -1 has the low bit set → 0 trailing zeros.
+        assert_int(
+            builtin_bit_trailing_zeros(&[Value::Int(-1)]).unwrap(),
+            0,
+            "-1",
+        );
+        // i64::MIN is just the sign bit → 63 trailing zeros below it.
+        assert_int(
+            builtin_bit_trailing_zeros(&[Value::Int(i64::MIN)]).unwrap(),
+            63,
+            "MIN",
+        );
+    }
+
+    #[test]
+    fn bit_trailing_zeros_rejects_non_int_and_arity() {
+        assert!(
+            builtin_bit_trailing_zeros(&[Value::String("x".into())])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_bit_trailing_zeros(&[Value::Int(1), Value::Int(2)])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );

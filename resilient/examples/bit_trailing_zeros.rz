@@ -1,0 +1,11 @@
+// RES-490 demo: bit_trailing_zeros counts zero bits at the low end of n.
+
+fn main() {
+    println(bit_trailing_zeros(0));
+    println(bit_trailing_zeros(1));
+    println(bit_trailing_zeros(8));
+    println(bit_trailing_zeros(12));
+    println(bit_trailing_zeros(-1));
+}
+
+main();
