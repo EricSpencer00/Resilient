@@ -8472,6 +8472,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-518: integer division with explicit rounding mode.
     ("ceil_div", builtin_ceil_div),
     ("floor_div", builtin_floor_div),
+    // RES-519: Python-style modulo (sign of divisor).
+    ("modulo", builtin_modulo),
     // RES-492: floor log base 2.
     ("int_log2", builtin_int_log2),
     // RES-493: power-of-two predicate.
@@ -9710,6 +9712,31 @@ fn builtin_floor_div(args: &[Value]) -> RResult<Value> {
             "floor_div: expected 2 arguments, got {}",
             args.len()
         )),
+    }
+}
+
+/// RES-519: `modulo(a, b)` — Python-style remainder. The result has
+/// the same sign as `b` (when `b != 0`), unlike Resilient's default
+/// `%` which returns the sign of the dividend. Useful for cyclic
+/// indexing (clock arithmetic, circular buffers). Errors on
+/// `b == 0`. Identity: `modulo(a, b) == a - b * floor_div(a, b)`.
+fn builtin_modulo(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("modulo: division by zero".to_string());
+            }
+            // Compute floor_div locally so we don't depend on the
+            // builtin lookup. Same logic as `builtin_floor_div`.
+            let q = a.wrapping_div(*b);
+            let r = a.wrapping_rem(*b);
+            let adjust = i64::from(r != 0 && (r ^ b) < 0);
+            let floor_q = q.wrapping_sub(adjust);
+            // r' = a - b * floor_q.
+            Ok(Value::Int(a.wrapping_sub(b.wrapping_mul(floor_q))))
+        }
+        [a, b] => Err(format!("modulo: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("modulo: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -30587,6 +30614,73 @@ mod tests {
         );
         assert!(
             builtin_floor_div(&[Value::Int(7)])
+                .unwrap_err()
+                .contains("expected 2 arguments")
+        );
+    }
+
+    // ---------- RES-519: modulo ----------
+
+    fn modu(a: i64, b: i64) -> i64 {
+        match builtin_modulo(&[Value::Int(a), Value::Int(b)]).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn modulo_basic_positive() {
+        assert_eq!(modu(7, 3), 1);
+        assert_eq!(modu(6, 3), 0);
+        assert_eq!(modu(0, 5), 0);
+        assert_eq!(modu(1, 5), 1);
+    }
+
+    #[test]
+    fn modulo_negative_dividend_positive_divisor() {
+        // Python: (-7) % 3 == 2; default `%` would give -1.
+        assert_eq!(modu(-7, 3), 2);
+        assert_eq!(modu(-1, 5), 4);
+        assert_eq!(modu(-10, 3), 2);
+    }
+
+    #[test]
+    fn modulo_negative_divisor_returns_negative() {
+        // Result has sign of divisor.
+        assert_eq!(modu(7, -3), -2);
+        assert_eq!(modu(-7, -3), -1);
+        assert_eq!(modu(0, -5), 0);
+    }
+
+    #[test]
+    fn modulo_identity_with_floor_div() {
+        // modulo(a, b) == a - b * floor_div(a, b).
+        for a in [-12, -7, -1, 0, 1, 7, 12, 100] {
+            for b in [-5, -3, -1, 1, 3, 5] {
+                let expected = match builtin_floor_div(&[Value::Int(a), Value::Int(b)]).unwrap() {
+                    Value::Int(q) => a - b * q,
+                    _ => panic!(),
+                };
+                assert_eq!(modu(a, b), expected, "a={} b={}", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn modulo_rejects_zero_divisor() {
+        let err = builtin_modulo(&[Value::Int(7), Value::Int(0)]).unwrap_err();
+        assert!(err.contains("division by zero"), "got: {}", err);
+    }
+
+    #[test]
+    fn modulo_rejects_wrong_types_and_arity() {
+        assert!(
+            builtin_modulo(&[Value::Float(7.0), Value::Int(3)])
+                .unwrap_err()
+                .contains("expected (int, int)")
+        );
+        assert!(
+            builtin_modulo(&[Value::Int(7)])
                 .unwrap_err()
                 .contains("expected 2 arguments")
         );

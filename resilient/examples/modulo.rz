@@ -1,0 +1,13 @@
+// RES-519 demo: modulo returns the remainder with the sign of the
+// divisor (Python convention). Useful for cyclic / wrapping indexing.
+
+fn main() {
+    println(modulo(7, 3));
+    println(modulo(-7, 3));
+    println(modulo(7, -3));
+    println(modulo(-7, -3));
+    println(modulo(10, 7));
+    println(modulo(0, 5));
+}
+
+main();
