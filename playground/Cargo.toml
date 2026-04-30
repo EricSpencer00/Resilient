@@ -22,6 +22,11 @@ wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
+# RES-510 PR 3: real Resilient interpreter. The crate gates its
+# CLI-only deps (rustyline, notify) on `cfg(not(target_arch =
+# "wasm32"))` and pulls `getrandom`'s `js` feature on wasm32, so
+# this dep edge compiles cleanly to wasm32-unknown-unknown.
+resilient = { path = "../resilient" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `js_sys::Date::now()` is the cheapest way to read a wall-clock in
