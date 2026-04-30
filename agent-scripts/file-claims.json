@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-490-bit-trailing-zeros",
-      "claimed_at": "2026-04-30T00:51:02Z"
+      "branch": "res-491-int-sqrt",
+      "claimed_at": "2026-04-30T00:52:58Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-490-bit-trailing-zeros",
-      "claimed_at": "2026-04-30T00:51:02Z"
+      "branch": "res-491-int-sqrt",
+      "claimed_at": "2026-04-30T00:52:58Z"
     }
   }
 }

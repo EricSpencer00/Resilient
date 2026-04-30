@@ -1,0 +1,11 @@
+// RES-491 demo: int_sqrt returns floor(sqrt(n)) for non-negative n.
+
+fn main() {
+    println(int_sqrt(0));
+    println(int_sqrt(1));
+    println(int_sqrt(8));
+    println(int_sqrt(100));
+    println(int_sqrt(99));
+}
+
+main();
