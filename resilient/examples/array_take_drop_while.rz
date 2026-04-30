@@ -1,0 +1,10 @@
+// RES-483 demo: array_take_while_int / array_drop_while_int.
+
+fn main() {
+    println(array_take_while_int([1, 2, -3, 4, 5], "positive"));
+    println(array_drop_while_int([1, 2, -3, 4, 5], "positive"));
+    println(array_take_while_int([2, 4, 6, 7, 8], "even"));
+    println(array_drop_while_int([0, 0, 1, 0], "zero"));
+}
+
+main();

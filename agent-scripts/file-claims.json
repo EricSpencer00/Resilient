@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/main.rs": {
-      "branch": "res-482-string-replace-n",
-      "claimed_at": "2026-04-29T23:54:21Z"
+      "branch": "res-483-array-take-while",
+      "claimed_at": "2026-04-29T23:57:53Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-482-string-replace-n",
-      "claimed_at": "2026-04-29T23:54:21Z"
+      "branch": "res-483-array-take-while",
+      "claimed_at": "2026-04-29T23:57:53Z"
     }
   }
 }

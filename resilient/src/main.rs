@@ -8338,6 +8338,9 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_init", builtin_array_init),
     // RES-482: replace up to n occurrences.
     ("string_replace_n", builtin_string_replace_n),
+    // RES-483: named-predicate take/drop on int arrays.
+    ("array_take_while_int", builtin_array_take_while_int),
+    ("array_drop_while_int", builtin_array_drop_while_int),
     // RES-423: flatten one level of nesting.
     ("array_flatten", builtin_array_flatten),
     // RES-424: join a string array with a separator.
@@ -9891,6 +9894,92 @@ fn builtin_array_flatten(args: &[Value]) -> RResult<Value> {
         [other] => Err(format!("array_flatten: expected array, got {}", other)),
         _ => Err(format!(
             "array_flatten: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-483: shared dispatch for the named-predicate slicers.
+fn int_predicate_kind(name: &str, kind: &str) -> RResult<fn(i64) -> bool> {
+    match kind {
+        "positive" => Ok((|n| n > 0) as fn(i64) -> bool),
+        "negative" => Ok((|n| n < 0) as fn(i64) -> bool),
+        "zero" => Ok((|n| n == 0) as fn(i64) -> bool),
+        "nonzero" => Ok((|n| n != 0) as fn(i64) -> bool),
+        "even" => Ok((|n| n % 2 == 0) as fn(i64) -> bool),
+        "odd" => Ok((|n| n % 2 != 0) as fn(i64) -> bool),
+        other => Err(format!(
+            "{}: unknown predicate {:?}; expected positive/negative/zero/nonzero/even/odd",
+            name, other
+        )),
+    }
+}
+
+/// RES-483: `array_take_while_int(arr, pred)` — longest prefix of arr
+/// where every element satisfies the named predicate.
+fn builtin_array_take_while_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_take_while_int", kind)?;
+            let mut out = Vec::new();
+            for v in items {
+                let n = match v {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_take_while_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if !pred(n) {
+                    break;
+                }
+                out.push(Value::Int(n));
+            }
+            Ok(Value::Array(out))
+        }
+        [a, b] => Err(format!(
+            "array_take_while_int: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_take_while_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-483: `array_drop_while_int(arr, pred)` — drop the longest prefix
+/// satisfying pred, returning the rest.
+fn builtin_array_drop_while_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items), Value::String(kind)] => {
+            let pred = int_predicate_kind("array_drop_while_int", kind)?;
+            let mut idx = 0usize;
+            while idx < items.len() {
+                let n = match &items[idx] {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(format!(
+                            "array_drop_while_int: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                };
+                if !pred(n) {
+                    break;
+                }
+                idx += 1;
+            }
+            Ok(Value::Array(items[idx..].to_vec()))
+        }
+        [a, b] => Err(format!(
+            "array_drop_while_int: expected (array, string), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "array_drop_while_int: expected 2 arguments, got {}",
             args.len()
         )),
     }
@@ -31196,6 +31285,139 @@ mod tests {
             ])
             .unwrap_err()
             .contains("expected 4 arguments")
+        );
+    }
+
+    // ---------- RES-483: array_take_while_int / array_drop_while_int ----------
+
+    #[test]
+    fn array_take_while_int_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_take_while_int(&[
+                    int_array(&[1, 2, -3, 4, 5]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn array_drop_while_int_basic() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_drop_while_int(&[
+                    int_array(&[1, 2, -3, 4, 5]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            vec![-3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn array_take_drop_while_int_predicates() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_take_while_int(&[
+                    int_array(&[2, 4, 6, 7, 8]),
+                    Value::String("even".into())
+                ])
+                .unwrap()
+            ),
+            vec![2, 4, 6]
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_drop_while_int(&[
+                    int_array(&[0, 0, 1, 0]),
+                    Value::String("zero".into())
+                ])
+                .unwrap()
+            ),
+            vec![1, 0]
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_take_while_int(&[
+                    int_array(&[1, 2, 0, 3]),
+                    Value::String("nonzero".into())
+                ])
+                .unwrap()
+            ),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn array_take_drop_while_int_no_match_at_start() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_take_while_int(&[
+                    int_array(&[-1, 1, 2]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_drop_while_int(&[
+                    int_array(&[-1, 1, 2]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            vec![-1, 1, 2]
+        );
+    }
+
+    #[test]
+    fn array_take_drop_while_int_all_match() {
+        assert_eq!(
+            extract_int_array(
+                builtin_array_take_while_int(&[
+                    int_array(&[1, 2, 3]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            extract_int_array(
+                builtin_array_drop_while_int(&[
+                    int_array(&[1, 2, 3]),
+                    Value::String("positive".into())
+                ])
+                .unwrap()
+            ),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn array_take_drop_while_int_reject_unknown_predicate() {
+        let err = builtin_array_take_while_int(&[int_array(&[1]), Value::String("xyz".into())])
+            .unwrap_err();
+        assert!(err.contains("unknown predicate"), "got: {}", err);
+    }
+
+    #[test]
+    fn array_take_drop_while_int_reject_wrong_types_and_arity() {
+        assert!(
+            builtin_array_take_while_int(&[Value::Int(1), Value::String("positive".into())])
+                .unwrap_err()
+                .contains("expected (array, string)")
+        );
+        assert!(
+            builtin_array_drop_while_int(&[int_array(&[1])])
+                .unwrap_err()
+                .contains("expected 2 arguments")
         );
     }
 
