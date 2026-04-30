@@ -1,0 +1,12 @@
+// RES-556 demo: array_abs_int returns |x| per element. Empty input
+// returns empty. |i64::MIN| does not fit i64, so a present i64::MIN
+// element is a typed error (fail-loud, not silent wrap).
+
+fn main() {
+    println(array_abs_int([-3, 0, 5, -1, -100]));
+    println(array_abs_int([1, 2, 3]));
+    println(array_abs_int([0]));
+    println(array_abs_int([]));
+}
+
+main();
