@@ -8218,6 +8218,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("fibonacci", builtin_fibonacci),
     // RES-570: trial-division primality test.
     ("is_prime", builtin_is_prime),
+    // RES-571: smallest prime greater than n.
+    ("next_prime", builtin_next_prime),
     // RES-295: clamp(x, lo, hi) — restrict to [lo, hi]; Err if lo > hi.
     ("clamp", builtin_clamp),
     // RES-130: explicit int ↔ float conversions.
@@ -15227,6 +15229,54 @@ fn builtin_gcd_array(args: &[Value]) -> RResult<Value> {
         a as i64
     })?;
     Ok(Value::Int(result))
+}
+
+/// RES-571: `next_prime(n)` — smallest prime `> n`. Builds on
+/// `is_prime` (RES-570). Errors if no prime fits in i64 above `n`.
+fn builtin_next_prime(args: &[Value]) -> RResult<Value> {
+    fn is_prime_inner(n: i64) -> bool {
+        if n < 2 {
+            return false;
+        }
+        if n < 4 {
+            return true;
+        }
+        if n % 2 == 0 || n % 3 == 0 {
+            return false;
+        }
+        let mut i: i64 = 5;
+        while let Some(sq) = i.checked_mul(i) {
+            if sq > n {
+                break;
+            }
+            if n % i == 0 || n % (i + 2) == 0 {
+                return false;
+            }
+            i += 6;
+        }
+        true
+    }
+    match args {
+        [Value::Int(n)] => {
+            // Start at max(n, 1) + 1 so next_prime(-5) yields 2.
+            let mut candidate = (*n).max(1).checked_add(1).ok_or_else(|| {
+                "next_prime: no prime greater than i64::MAX fits in i64".to_string()
+            })?;
+            loop {
+                if is_prime_inner(candidate) {
+                    return Ok(Value::Int(candidate));
+                }
+                candidate = candidate.checked_add(1).ok_or_else(|| {
+                    "next_prime: no prime greater than the input fits in i64".to_string()
+                })?;
+            }
+        }
+        [other] => Err(format!("next_prime: expected int, got {}", other)),
+        _ => Err(format!(
+            "next_prime: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
 }
 
 /// RES-570: `is_prime(n)` — trial-division primality test using the
@@ -29971,6 +30021,73 @@ mod tests {
         );
         assert!(
             builtin_is_prime(&[])
+                .unwrap_err()
+                .contains("expected 1 argument")
+        );
+    }
+
+    // ---------- RES-571: next_prime ----------
+
+    fn next_prime(n: i64) -> i64 {
+        match builtin_next_prime(&[Value::Int(n)]).unwrap() {
+            Value::Int(r) => r,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn next_prime_basic() {
+        assert_eq!(next_prime(0), 2);
+        assert_eq!(next_prime(1), 2);
+        assert_eq!(next_prime(2), 3);
+        assert_eq!(next_prime(3), 5);
+        assert_eq!(next_prime(10), 11);
+        assert_eq!(next_prime(20), 23);
+        assert_eq!(next_prime(100), 101);
+    }
+
+    #[test]
+    fn next_prime_negative_falls_to_two() {
+        assert_eq!(next_prime(-1), 2);
+        assert_eq!(next_prime(-100), 2);
+        assert_eq!(next_prime(i64::MIN), 2);
+    }
+
+    #[test]
+    fn next_prime_strictly_greater() {
+        // The result is always > input — never == input even if input is prime.
+        for p in [2, 3, 5, 7, 11, 13, 1000003] {
+            assert!(next_prime(p) > p, "p={}", p);
+        }
+    }
+
+    #[test]
+    fn next_prime_matches_is_prime_oracle() {
+        // For any input n, every integer in (n, next_prime(n)) is composite.
+        for n in [0, 5, 10, 13, 100, 1000] {
+            let p = next_prime(n);
+            for k in (n + 1)..p {
+                assert!(
+                    !is_prime(k),
+                    "expected {} composite (between {} and {})",
+                    k,
+                    n,
+                    p
+                );
+            }
+            assert!(is_prime(p), "expected {} prime", p);
+        }
+    }
+
+    #[test]
+    fn next_prime_rejects_non_int_and_arity() {
+        assert!(
+            builtin_next_prime(&[Value::Float(5.0)])
+                .unwrap_err()
+                .contains("expected int")
+        );
+        assert!(
+            builtin_next_prime(&[])
                 .unwrap_err()
                 .contains("expected 1 argument")
         );
