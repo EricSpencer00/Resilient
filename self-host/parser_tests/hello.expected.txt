@@ -1,0 +1,1 @@
+{"type":"Program","body":[{"type":"Function","name":"main","params":[],"returns":"void","body":{"type":"Block","stmts":[{"type":"ExprStmt","expr":{"type":"Call","callee":"println","args":[{"type":"String","value":"hello"}]}}]}},{"type":"ExprStmt","expr":{"type":"Call","callee":"main","args":[]}}]}

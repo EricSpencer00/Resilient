@@ -1177,3 +1177,36 @@ fn res402_mixed_array_literal_rejected_by_typecheck() {
         "diagnostic must mention 'mixed element types'; got:\n{stderr}"
     );
 }
+
+/// RES-379 PR1: self-hosting parser emits a valid JSON Program node
+/// for the hello.tokens.txt snapshot. Verifies the parser runs without
+/// errors and its output starts with the Program type marker.
+#[test]
+fn res379_parser_emits_json_program_node() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let tokens_path = format!("{manifest_dir}/../self-host/hello.tokens.txt");
+    let parser_path = format!("{manifest_dir}/../self-host/parser.rz");
+
+    let output = Command::new(bin())
+        .arg(&parser_path)
+        .env("SELF_HOST_TOKENS", &tokens_path)
+        .output()
+        .expect("spawn resilient parser");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "parser must exit zero; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains(r#""type":"Program""#),
+        "output must contain Program type marker; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(r#""type":"Function""#),
+        "output must contain at least one Function node; got:\n{stdout}"
+    );
+}
