@@ -1,0 +1,2 @@
+worker spawned, no message sent
+error: deadlock detected; 1 actor(s) blocked on receive() with empty mailboxes; PIDs: [1]
