@@ -1,0 +1,23 @@
+// RES-332 PR 5: ping-pong between two actors.
+//
+// pinger receives the ponger's PID, then receives a "go" signal,
+// prints "ping", and sends a message to ponger.
+// ponger receives the message and prints "pong".
+//
+// Expected output: ping\npong\nProgram executed successfully
+fn ponger() {
+    let msg = receive();
+    println("pong");
+}
+
+fn pinger() {
+    let ponger_pid = receive();
+    let go = receive();
+    println("ping");
+    send(ponger_pid, go);
+}
+
+let ponger_pid = spawn(ponger);
+let pinger_pid = spawn(pinger);
+send(pinger_pid, ponger_pid);
+send(pinger_pid, 1);
