@@ -1,0 +1,12 @@
+// RES-395 D8: end-to-end golden test — call-site region aliasing detected.
+//
+// `update<R, S>` is declared with distinct region params R and S.
+// `caller` passes the same &mut[A] variable twice, so the checker
+// infers R=A and S=A — the same concrete region — and reports a
+// call-site aliasing error. The declaration itself is fine.
+region A;
+fn update<R, S>(&mut[R] int a, &mut[S] int b) {}
+fn caller(&mut[A] int a) {
+    update(a, a);
+}
+fn main(int dummy) {}

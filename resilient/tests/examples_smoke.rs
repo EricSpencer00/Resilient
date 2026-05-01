@@ -1138,3 +1138,16 @@ fn res393_z3_neg_requires_eq_does_not_lift_error() {
         "region_z3_neg.rz must fail; requires(a == b) cannot prove disjointness"
     );
 }
+
+/// RES-395 D8: call-site region aliasing detected via substitution.
+/// `update<R, S>` declares distinct regions; calling it with the same
+/// &mut[A] variable twice unifies R=S=A and triggers a borrow error.
+#[test]
+fn res395_d8_call_site_aliasing_detected() {
+    let (_stdout, _stderr, code) = run_example("region_poly_call.rz");
+    assert_ne!(
+        code,
+        Some(0),
+        "region_poly_call.rz must fail — call-site region aliasing should be detected"
+    );
+}
