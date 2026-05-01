@@ -20208,10 +20208,16 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
         if let Node::Function {
             name: fn_name,
             parameters,
+            requires,
             span,
             ..
         } = &stmt.node
         {
+            // `requires` is only consumed by the Z3 fallback below;
+            // avoid an unused-variable warning in non-z3 builds.
+            #[cfg(not(feature = "z3"))]
+            let _ = requires;
+
             // Per-parameter pass: every labeled reference must name
             // a declared region.
             let mut refs: Vec<(usize, bool, Option<String>, String)> = Vec::new();
@@ -20256,6 +20262,15 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
                         (None, None) => (false, String::new(), String::new()),
                     };
                     if ok {
+                        continue;
+                    }
+                    // RES-393 D1: Z3 fallback — if the function's `requires`
+                    // preconditions prove that these two parameters differ (i.e.
+                    // they refer to disjoint memory), skip the syntactic reject.
+                    #[cfg(feature = "z3")]
+                    if crate::verifier_z3::prove_alias_disjoint(i_name, j_name, requires)
+                        == Some(true)
+                    {
                         continue;
                     }
                     let i_kind = if *i_mut { "&mut" } else { "&" };
@@ -44418,6 +44433,46 @@ mod tests {
         assert!(
             borrow_errs.iter().any(|e| e.contains("undeclared region")),
             "expected undeclared-region message, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    // --- RES-393 D1: Z3 alias-disjoint fallback ---
+
+    #[cfg(feature = "z3")]
+    #[test]
+    fn res393_z3_fallback_lifts_same_region_reject() {
+        // Without `requires`, same-region mut refs are always rejected.
+        let src = "region A; fn f(&mut[A] int a, &mut[A] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(borrow_errs.len(), 1, "should reject without requires");
+
+        // With `requires(a != b)`, Z3 proves the params are disjoint.
+        let src2 = "region A; fn f(&mut[A] int a, &mut[A] int b) requires(a != b) {}\n";
+        let (program2, errs2) = parse(src2);
+        assert!(errs2.is_empty(), "parse errors: {:?}", errs2);
+        let borrow_errs2 = check_region_aliasing(&program2, "<test>");
+        assert!(
+            borrow_errs2.is_empty(),
+            "Z3 should lift the rejection when requires(a != b), got: {:?}",
+            borrow_errs2
+        );
+    }
+
+    #[cfg(feature = "z3")]
+    #[test]
+    fn res393_z3_fallback_does_not_lift_true_aliasing() {
+        // `requires(a == b)` makes disjointness UNPROVABLE — error kept.
+        let src = "region A; fn f(&mut[A] int a, &mut[A] int b) requires(a == b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert_eq!(
+            borrow_errs.len(),
+            1,
+            "a == b cannot prove disjointness, error should remain: {:?}",
             borrow_errs
         );
     }
