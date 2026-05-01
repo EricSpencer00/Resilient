@@ -4801,4 +4801,53 @@ return add_two(10, 32);
             jit_run_with_symbols(src, &[("add_two", add_two as *const u8, 2)]).expect("jit ok");
         assert_eq!(result, 42, "expected add_two(10,32)=42, got {}", result);
     }
+
+    // RES-405 PR 4: JIT monomorphization — verify the VM monomorph pass
+    // integrates cleanly with the JIT backend.
+
+    #[test]
+    fn monomorphized_generic_fn_runs_in_jit() {
+        // After `monomorph::lower`, `identity(42)` becomes `identity$Int(42)`.
+        // The JIT must compile and call the specialized clone.
+        let src = "fn identity<T>(T x) -> T { return x; } return identity(42);";
+        let p = parse_program(src);
+        let lowered = crate::monomorph::lower(&p);
+        let result = run(&lowered).expect("JIT should handle monomorphized generic fn");
+        assert_eq!(result, 42, "identity(42) should return 42, got {}", result);
+    }
+
+    #[test]
+    fn monomorphization_preserves_type_param_bounds() {
+        // Regression guard: `monomorph::lower` must not strip `type_param_bounds`
+        // from the original generic declaration (the specialized clone's
+        // bounds are cleared to `[]` — that's correct and tested separately
+        // in monomorph::tests).
+        let src = "fn<T: Printable> show(T x) -> T { return x; } return 0;";
+        let p = parse_program(src);
+        let lowered = crate::monomorph::lower(&p);
+        // No call sites with inferrable types → no specialization, program unchanged.
+        // Original fn must still carry its bounds.
+        let Node::Program(stmts) = &lowered else {
+            panic!("expected Program");
+        };
+        let show_fn = stmts
+            .iter()
+            .find(|s| matches!(&s.node, Node::Function { name, .. } if name == "show"));
+        let show_fn = show_fn.expect("show fn must still exist in the lowered program");
+        if let Node::Function {
+            type_param_bounds,
+            type_params,
+            ..
+        } = &show_fn.node
+        {
+            assert_eq!(type_params, &["T"], "type_params must be preserved");
+            assert_eq!(
+                type_param_bounds,
+                &[vec!["Printable".to_string()]],
+                "type_param_bounds must be preserved on the original generic fn"
+            );
+        } else {
+            panic!("expected Function node");
+        }
+    }
 }
