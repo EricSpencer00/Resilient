@@ -100,6 +100,31 @@ pub fn format_diagnostic_from_line_col(
     format_diagnostic(src, Span::new(pos, pos), level, msg)
 }
 
+/// RES-405 PR 2: wrap an error message that occurred during a generic
+/// function's body with substitution context:
+///
+/// ```text
+/// in generic fn<T = Int>: Type mismatch: 42 + hello
+/// ```
+///
+/// Called by `apply_function` when the body eval fails and the function
+/// has an `active_subst`. Produces a one-line prefix so the original
+/// message (with its own `line:col:` if present) is preserved.
+pub fn format_subst_context(
+    fn_name: &str,
+    subst: &crate::generics::Subst,
+    original: &str,
+) -> String {
+    let mut pairs: Vec<(&String, &crate::typechecker::Type)> = subst.iter().collect();
+    pairs.sort_by_key(|(k, _)| k.as_str());
+    let args_str = pairs
+        .iter()
+        .map(|(k, v)| format!("{} = {}", k, v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("in generic {}<{}>: {}", fn_name, args_str, original)
+}
+
 /// Pull the `n`-th line (1-indexed) out of `src` without the
 /// trailing newline. Returns `None` when `n` is past the last
 /// line.

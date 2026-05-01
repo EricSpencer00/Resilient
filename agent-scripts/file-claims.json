@@ -1,17 +1,5 @@
 {
   "claims": {
-    "SYNTAX.md": {
-      "branch": "res-406-docs",
-      "claimed_at": "2026-04-30T23:30:04Z"
-    },
-    "STABILITY.md": {
-      "branch": "res-406-docs",
-      "claimed_at": "2026-04-30T23:30:04Z"
-    },
-    "docs/no-std.md": {
-      "branch": "res-406-docs",
-      "claimed_at": "2026-04-30T23:30:04Z"
-    },
     "resilient/src/lib.rs": {
       "branch": "res-405-pr2-walker",
       "claimed_at": "2026-04-30T23:45:40Z"

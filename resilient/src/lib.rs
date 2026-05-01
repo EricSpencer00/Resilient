@@ -7896,6 +7896,9 @@ enum Value {
         recovers_to: Option<Box<Node>>,
         /// Function name — used for better contract-violation messages.
         name: String,
+        /// RES-405 PR 2: type parameters declared on this generic function.
+        /// Empty for monomorphic functions.
+        type_params: Vec<String>,
     },
     /// Native function. `name` is the identifier it was registered as,
     /// for diagnostics only.
@@ -17209,6 +17212,10 @@ struct Interpreter {
     /// patterns inside `match`. Shared via Rc so sub-interpreters
     /// created by `apply_function` inherit the same registry.
     enum_decls: Rc<RefCell<HashMap<String, Vec<EnumVariant>>>>,
+    /// RES-405 PR 2: active generic substitution for the current call frame.
+    /// `None` for monomorphic functions. Set by `apply_function` when the
+    /// callee is a generic function; used to annotate error messages.
+    active_subst: Option<crate::generics::Subst>,
 }
 
 impl Interpreter {
@@ -17225,6 +17232,7 @@ impl Interpreter {
             proven_fns: Rc::new(HashSet::new()),
             call_depth: 0,
             enum_decls: Rc::new(RefCell::new(HashMap::new())),
+            active_subst: None,
         }
     }
 
@@ -17270,6 +17278,7 @@ impl Interpreter {
                 requires,
                 ensures,
                 recovers_to,
+                type_params,
                 ..
             } => {
                 // RES-068: if every observed call site for this fn was
@@ -17288,6 +17297,7 @@ impl Interpreter {
                     ensures: ensures.clone(),
                     recovers_to: recovers_to.clone(),
                     name: name.clone(),
+                    type_params: type_params.clone(),
                 };
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
@@ -17739,6 +17749,7 @@ impl Interpreter {
                 ensures: ensures.clone(),
                 recovers_to: recovers_to.clone(),
                 name: "<anon>".to_string(),
+                type_params: vec![],
             }),
             Node::TryExpression { expr: inner, .. } => {
                 let v = self.eval(inner)?;
@@ -19208,6 +19219,7 @@ impl Interpreter {
                 ensures,
                 recovers_to,
                 name,
+                type_params,
             } => {
                 if self.call_depth >= MAX_INTERPRETER_CALL_DEPTH {
                     return Err(format!(
@@ -19235,7 +19247,25 @@ impl Interpreter {
                     proven_fns: self.proven_fns.clone(),
                     call_depth: self.call_depth + 1,
                     enum_decls: self.enum_decls.clone(),
+                    active_subst: None,
                 };
+
+                // RES-405 PR 2: if this is a generic call, infer the substitution
+                // from actual argument values and store it on the child interpreter
+                // so error messages can include context like "T = Int".
+                if !type_params.is_empty() {
+                    let declared_types: Vec<crate::typechecker::Type> = parameters
+                        .iter()
+                        .map(|(ty_str, _)| type_str_to_tc_type(ty_str))
+                        .collect();
+                    let actual_types: Vec<crate::typechecker::Type> =
+                        args.iter().map(value_to_tc_type).collect();
+                    if let Ok(subst) =
+                        crate::generics::infer_subst(&type_params, &declared_types, &actual_types)
+                    {
+                        interpreter.active_subst = Some(subst);
+                    }
+                }
 
                 // RES-035: check each `requires` clause BEFORE running
                 // the body. Parameters are already in scope; anything
@@ -19252,7 +19282,13 @@ impl Interpreter {
                     }
                 }
 
-                let body_result = interpreter.eval(&body)?;
+                let body_result = interpreter.eval(&body).map_err(|e| {
+                    if let Some(ref subst) = interpreter.active_subst {
+                        crate::diag::format_subst_context(&name, subst, &e)
+                    } else {
+                        e
+                    }
+                })?;
                 let return_value = if let Value::Return(v) = body_result {
                     *v
                 } else {
@@ -19331,6 +19367,7 @@ impl Interpreter {
                     proven_fns: self.proven_fns.clone(),
                     call_depth: self.call_depth,
                     enum_decls: self.enum_decls.clone(),
+                    active_subst: None,
                 };
                 for pre in &requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -19359,6 +19396,7 @@ impl Interpreter {
                         proven_fns: self.proven_fns.clone(),
                         call_depth: self.call_depth,
                         enum_decls: self.enum_decls.clone(),
+                        active_subst: None,
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in &ensures {
@@ -19618,6 +19656,39 @@ impl Interpreter {
             Value::String(s) => !s.is_empty(),
             _ => true,
         }
+    }
+}
+
+/// RES-405 PR 2: map a declared type-annotation string to the typechecker
+/// `Type` so `infer_subst` can recognise concrete-vs-generic params.
+/// Unknown names (including type-parameter names like `"T"`) become
+/// `Type::Struct(name)` — exactly what `infer_subst` expects.
+fn type_str_to_tc_type(s: &str) -> crate::typechecker::Type {
+    match s {
+        "Int" | "int" | "Int64" => crate::typechecker::Type::Int,
+        "Float" | "float" => crate::typechecker::Type::Float,
+        "Bool" | "bool" => crate::typechecker::Type::Bool,
+        "String" | "string" => crate::typechecker::Type::String,
+        "Bytes" | "bytes" => crate::typechecker::Type::Bytes,
+        "Void" | "void" => crate::typechecker::Type::Void,
+        other => crate::typechecker::Type::Struct(other.to_string()),
+    }
+}
+
+/// RES-405 PR 2: infer a typechecker `Type` from a runtime `Value` so the
+/// call site can pass actual argument types to `infer_subst`.
+fn value_to_tc_type(v: &Value) -> crate::typechecker::Type {
+    match v {
+        Value::Int(_) => crate::typechecker::Type::Int,
+        Value::Float(_) => crate::typechecker::Type::Float,
+        Value::Bool(_) => crate::typechecker::Type::Bool,
+        Value::String(_) => crate::typechecker::Type::String,
+        Value::Bytes(_) => crate::typechecker::Type::Bytes,
+        Value::Void => crate::typechecker::Type::Void,
+        Value::Array(_) => crate::typechecker::Type::Array,
+        Value::Struct { name, .. } => crate::typechecker::Type::Struct(name.clone()),
+        Value::EnumVariant { type_name, .. } => crate::typechecker::Type::Struct(type_name.clone()),
+        _ => crate::typechecker::Type::Any,
     }
 }
 
