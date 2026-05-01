@@ -20843,6 +20843,27 @@ fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
             }
         }
     }
+
+    // RES-332 PR 4: deadlock detection. After the runnable queue is
+    // empty, if any actors remain blocked on receive() with no sender
+    // able to wake them, the program cannot make progress.
+    if actor_runtime::is_deadlocked() {
+        let pids = actor_runtime::blocked_pids();
+        let pid_list: Vec<String> = pids.iter().map(|p| p.0.to_string()).collect();
+        let msg = format!(
+            "error: deadlock detected; {} actor(s) blocked on receive() \
+             with empty mailboxes; PIDs: [{}]",
+            pids.len(),
+            pid_list.join(", ")
+        );
+        // Write through the output sink so golden tests and run_program
+        // capture the message on stdout; the caller also propagates it
+        // as an Err so the process exits with a non-zero status code.
+        crate::output_sink::write_str(&msg);
+        crate::output_sink::write_str("\n");
+        return Err(msg);
+    }
+
     Ok(())
 }
 

@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/actor_runtime.rs": {
-      "branch": "res-332-pr3-scheduler",
-      "claimed_at": "2026-05-01T01:05:19Z"
+      "branch": "res-332-pr4-deadlock",
+      "claimed_at": "2026-05-01T01:12:19Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-332-pr3-scheduler",
-      "claimed_at": "2026-05-01T01:05:19Z"
+      "branch": "res-332-pr4-deadlock",
+      "claimed_at": "2026-05-01T01:12:19Z"
     }
   }
 }
