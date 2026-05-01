@@ -1,0 +1,10 @@
+// RES-332 PR 4: deadlock detection golden test.
+// The worker calls receive() but no message is ever sent to it.
+// After the main script finishes, the scheduler detects that the
+// only actor is blocked with an empty mailbox and reports a deadlock.
+fn waiting_worker() {
+    let msg = receive();
+    println(msg);
+}
+let pid = spawn(waiting_worker);
+println("worker spawned, no message sent");
