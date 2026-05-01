@@ -1,0 +1,16 @@
+// RES-393 D2: Z3 proves two same-region `&mut` parameters are disjoint.
+//
+// The syntactic rule rejects same-region mut refs, but `requires(a != b)`
+// lets Z3 prove they can never alias. Build with `--features z3` to see
+// this example pass; without z3 the borrow check rejects it.
+region A;
+
+fn update_disjoint(&mut[A] int a, &mut[A] int b) requires(a != b) {
+    println("ok: Z3 proved a and b are disjoint");
+}
+
+fn main() {
+    update_disjoint(1, 2);
+}
+
+main();

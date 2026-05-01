@@ -1,0 +1,16 @@
+// RES-393 D2: Z3 confirms a genuine aliasing violation.
+//
+// Two `&mut[A]` parameters share the same region label AND the
+// `requires` clause asserts they ARE equal — Z3 cannot prove disjointness,
+// so the borrow check error is kept in both z3 and non-z3 builds.
+region A;
+
+fn update_same(&mut[A] int a, &mut[A] int b) requires(a == b) {
+    println("should never reach this — borrow check rejects same-region mut refs");
+}
+
+fn main() {
+    update_same(1, 2);
+}
+
+main();

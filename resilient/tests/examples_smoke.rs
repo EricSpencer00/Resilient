@@ -1107,3 +1107,34 @@ fn bytecode_vm_for_in_inside_fn_body_returns_correct_value() {
     );
     let _ = std::fs::remove_file(&tmp);
 }
+
+/// RES-393 D2: verify that the Z3 alias-disjoint fallback lets a
+/// `requires(a != b)` fn with same-region mut refs compile and run.
+#[test]
+#[cfg(feature = "z3")]
+fn res393_z3_pos_same_region_with_requires_neq_passes() {
+    let (stdout, stderr, code) = run_example("region_z3_pos.rz");
+    assert_eq!(
+        code,
+        Some(0),
+        "region_z3_pos.rz must exit 0 under --features z3; \
+         stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("ok: Z3 proved a and b are disjoint"),
+        "expected success message in stdout; got:\nstdout={stdout}\nstderr={stderr}"
+    );
+}
+
+/// RES-393 D2: verify that Z3 keeps the error when `requires(a == b)` —
+/// the constraint proves aliasing, not disjointness.
+#[test]
+#[cfg(feature = "z3")]
+fn res393_z3_neg_requires_eq_does_not_lift_error() {
+    let (_stdout, _stderr, code) = run_example("region_z3_neg.rz");
+    assert_ne!(
+        code,
+        Some(0),
+        "region_z3_neg.rz must fail; requires(a == b) cannot prove disjointness"
+    );
+}
