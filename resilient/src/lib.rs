@@ -257,6 +257,10 @@ mod monomorph;
 // eval path is not touched — only two thin eval arms are added in
 // main.rs for NewtypeDecl (register) and NewtypeConstruct (wrap).
 mod newtypes;
+// RES-394 PR 1: region-variable machinery + unification table.
+// PR 2 will add the inference pass; PR 3 will wire inferred regions
+// into `check_region_aliasing`.
+pub(crate) mod region_inference;
 // RES-398: termination checking — recursive fns require an explicit
 // `// @decreases <metric>` or `// @may_diverge` annotation. Off by
 // default; enabled via `--strict-termination`. Closes a class of
