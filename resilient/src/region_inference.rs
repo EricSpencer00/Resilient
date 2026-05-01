@@ -229,6 +229,87 @@ pub fn infer(program: &crate::Node, _source_path: &str) -> Result<(), String> {
 }
 
 // ============================================================
+// Region substitution (RES-395 PR D7)
+// ============================================================
+
+/// Maps region type-param names (e.g. `"R"`, `"S"`) to concrete `Region`s.
+///
+/// Built at each call site by `infer_region_subst_from_call` and consumed
+/// by `apply_region_label_subst` to rewrite a callee's region labels in
+/// terms of the caller's concrete regions.
+pub type RegionSubst = HashMap<String, Region>;
+
+/// Apply a region substitution to a label string.
+///
+/// If `label` is one of the type-param names in `subst`, return the
+/// substituted `Region`; otherwise treat it as a concrete `Named` label
+/// and return `Region::Named(label)`.
+pub fn apply_region_label_subst(label: &str, subst: &RegionSubst) -> Region {
+    subst
+        .get(label)
+        .cloned()
+        .unwrap_or_else(|| Region::Named(label.to_string()))
+}
+
+/// Infer a `RegionSubst` from the actual argument types at a call site.
+///
+/// Iterates over `param_types` (the callee's `(type_string, param_name)`
+/// pairs) and `actual_labels` (the region label extracted from each actual
+/// argument — `None` if the argument is not a reference or has no label).
+/// Whenever a param type contains a region label that is one of the callee's
+/// `type_params`, record `type_param_name → actual_label` in the returned
+/// `RegionSubst`.
+///
+/// Returns `Err` on arity mismatch or if the same type param is bound to two
+/// different concrete labels.
+pub fn infer_region_subst_from_call(
+    type_params: &[String],
+    param_types: &[(String, String)],
+    actual_labels: &[Option<String>],
+) -> Result<RegionSubst, String> {
+    if param_types.len() != actual_labels.len() {
+        return Err(format!(
+            "region subst arity mismatch: callee has {} params, caller provided {} labels",
+            param_types.len(),
+            actual_labels.len()
+        ));
+    }
+
+    let param_set: std::collections::HashSet<&str> =
+        type_params.iter().map(|s| s.as_str()).collect();
+    let mut subst = RegionSubst::new();
+
+    for ((ty, _pname), actual_label) in param_types.iter().zip(actual_labels.iter()) {
+        if let Some((_is_mut, Some(param_label))) = region_from_type_str(ty)
+            && param_set.contains(param_label.as_str())
+            && let Some(actual) = actual_label
+        {
+            // This param's region label is a type param — bind it.
+            let region = Region::Named(actual.clone());
+            match subst.get(&param_label) {
+                None => {
+                    subst.insert(param_label.clone(), region);
+                }
+                Some(existing) if *existing == region => {}
+                Some(existing) => {
+                    return Err(format!(
+                        "region param `{}` bound to both `{}` and `{}`",
+                        param_label,
+                        match existing {
+                            Region::Named(n) => n.as_str(),
+                            Region::Var(_) => "<var>",
+                        },
+                        actual
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(subst)
+}
+
+// ============================================================
 // Unit tests
 // ============================================================
 
@@ -334,5 +415,77 @@ mod tests {
         );
         // Non-ref param → not in map.
         assert_eq!(map.entries.get(&key_c), None, "non-ref param not in map");
+    }
+
+    // --- RES-395 D7: region substitution ---
+
+    #[test]
+    fn apply_region_label_subst_maps_param_name() {
+        let mut subst = RegionSubst::new();
+        subst.insert("R".to_string(), Region::named("A"));
+        assert_eq!(
+            apply_region_label_subst("R", &subst),
+            Region::Named("A".to_string())
+        );
+    }
+
+    #[test]
+    fn apply_region_label_subst_passthrough_for_concrete() {
+        let subst = RegionSubst::new();
+        // A label not in the subst is returned as a Named region.
+        assert_eq!(
+            apply_region_label_subst("Heap", &subst),
+            Region::Named("Heap".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_region_subst_binds_single_param() {
+        // fn foo<R>(&mut[R] int x) called with actual label A.
+        let type_params = vec!["R".to_string()];
+        let param_types = vec![("&mut[R] int".to_string(), "x".to_string())];
+        let actual_labels = vec![Some("A".to_string())];
+        let subst =
+            infer_region_subst_from_call(&type_params, &param_types, &actual_labels).unwrap();
+        assert_eq!(subst.get("R"), Some(&Region::Named("A".to_string())));
+    }
+
+    #[test]
+    fn infer_region_subst_binds_two_distinct_params() {
+        // fn foo<R, S>(&mut[R] int a, &mut[S] int b) called with A, B.
+        let type_params = vec!["R".to_string(), "S".to_string()];
+        let param_types = vec![
+            ("&mut[R] int".to_string(), "a".to_string()),
+            ("&mut[S] int".to_string(), "b".to_string()),
+        ];
+        let actual_labels = vec![Some("A".to_string()), Some("B".to_string())];
+        let subst =
+            infer_region_subst_from_call(&type_params, &param_types, &actual_labels).unwrap();
+        assert_eq!(subst.get("R"), Some(&Region::Named("A".to_string())));
+        assert_eq!(subst.get("S"), Some(&Region::Named("B".to_string())));
+    }
+
+    #[test]
+    fn infer_region_subst_conflict_errors() {
+        // R can't be both A and B.
+        let type_params = vec!["R".to_string()];
+        let param_types = vec![
+            ("&mut[R] int".to_string(), "a".to_string()),
+            ("&mut[R] int".to_string(), "b".to_string()),
+        ];
+        let actual_labels = vec![Some("A".to_string()), Some("B".to_string())];
+        let err =
+            infer_region_subst_from_call(&type_params, &param_types, &actual_labels).unwrap_err();
+        assert!(err.contains("R"), "error should mention the param: {err}");
+    }
+
+    #[test]
+    fn infer_region_subst_arity_mismatch_errors() {
+        let type_params = vec!["R".to_string()];
+        let param_types = vec![("&mut[R] int".to_string(), "x".to_string())];
+        let actual_labels: Vec<Option<String>> = vec![];
+        let err =
+            infer_region_subst_from_call(&type_params, &param_types, &actual_labels).unwrap_err();
+        assert!(err.contains("arity"), "error should mention arity: {err}");
     }
 }
