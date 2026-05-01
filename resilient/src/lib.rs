@@ -6294,6 +6294,15 @@ impl Parser {
             // to the quantifiers module so the prefix dispatch stays
             // append-only and conflict-resistant.
             Token::Forall | Token::Exists => crate::quantifiers::parse_quantifier(self),
+            // RES-332 PR 3: `receive()` — the zero-arg actor mailbox dequeue.
+            // `receive` is also a keyword in actor-body handler declarations
+            // (`receive msg_name(...) { ... }`), which always have an
+            // identifier immediately after the keyword. When followed by `(`
+            // directly it can only be the builtin call form.
+            Token::Receive if self.peek_token == Token::LeftParen => Some(Node::Identifier {
+                name: "receive".to_string(),
+                span: tok_span,
+            }),
             _ => None,
         };
 
@@ -20781,6 +20790,62 @@ fn run_actor_verification(program: &Node) {
 #[cfg(not(feature = "z3"))]
 fn run_actor_verification(_program: &Node) {}
 
+// ---------------------------------------------------------------------------
+// RES-332 PR 3: Cooperative actor scheduler
+// ---------------------------------------------------------------------------
+
+/// Run all pending actors to completion (or until they block on `receive`).
+///
+/// Called by `execute_file` and `run_program` after the main script
+/// finishes. The loop pops each runnable PID, calls its registered
+/// function via the interpreter, then deregisters it (completed) or
+/// leaves it blocked (awaiting a message). Cycles end naturally because
+/// each step either completes an actor or moves it to the blocked set —
+/// neither of which puts it back in the runnable queue until a new
+/// `send()` arrives.
+///
+/// The safety cap (`MAX_ACTOR_STEPS`) catches runaway programs where
+/// actors keep re-spawning or sending in a tight loop without making
+/// progress toward termination.
+fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
+    const MAX_ACTOR_STEPS: usize = 100_000;
+    let mut steps = 0;
+    while let Some(pid) = actor_runtime::next_runnable_actor() {
+        if steps >= MAX_ACTOR_STEPS {
+            return Err(format!(
+                "actor scheduler exceeded step limit ({MAX_ACTOR_STEPS}); \
+                 possible infinite loop in actor body"
+            ));
+        }
+        steps += 1;
+        let fn_val = match actor_runtime::get_actor_fn(pid) {
+            Some(v) => v,
+            None => {
+                let _ = actor_runtime::deregister_actor(pid);
+                continue;
+            }
+        };
+        actor_runtime::set_current_actor(Some(pid));
+        let result = interpreter.apply_function(fn_val, vec![]);
+        actor_runtime::set_current_actor(None);
+        match result {
+            Ok(_) => {
+                let _ = actor_runtime::deregister_actor(pid);
+            }
+            Err(e) if e.starts_with("WouldBlock:") => {
+                // Actor blocked on receive() — already marked blocked;
+                // do not deregister; a future send() will re-queue it.
+            }
+            Err(e) => {
+                // Drop-on-crash: deregister the actor and log the failure.
+                let _ = actor_runtime::deregister_actor(pid);
+                eprintln!("actor {} crashed: {}", pid.0, e);
+            }
+        }
+    }
+    Ok(())
+}
+
 // Execute a Resilient source file
 #[allow(clippy::too_many_arguments)] // CLI glue fn — all args come from flags
 fn execute_file(
@@ -21135,6 +21200,9 @@ fn execute_file(
             header
         }
     })?;
+
+    // RES-332 PR 3: drain spawned actors after the main script finishes.
+    run_pending_actors(&mut interpreter).map_err(|e| format_interpreter_error(filename, &e))?;
 
     // RES-355: persist a cache entry so the next run can detect
     // that this source compiled successfully. Errors here are
@@ -22397,7 +22465,10 @@ pub fn run_program(src: &str) -> RunResult {
     }
     let (eval_result, captured) = output_sink::with_captured_output(|| {
         let mut interp = Interpreter::new();
-        interp.eval(&program)
+        interp.eval(&program)?;
+        // RES-332 PR 3: drain spawned actors after the main script.
+        run_pending_actors(&mut interp)?;
+        Ok(Value::Void)
     });
     match eval_result {
         Ok(_) => RunResult {
