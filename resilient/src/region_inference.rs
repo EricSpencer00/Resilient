@@ -220,12 +220,226 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 
 /// EXTENSION_PASSES entry point — runs after type-checking.
 ///
-/// Builds the region map for the program. Currently a no-op with respect
-/// to errors; PR D5 will wire the map into `check_region_aliasing` for
-/// unlabeled-parameter coverage.
+/// Builds the region map for the program. D8 wires call-site substitution
+/// into `check_region_aliasing` via `check_call_site_region_aliasing`.
 pub fn infer(program: &crate::Node, _source_path: &str) -> Result<(), String> {
     let _map = build_region_map(program);
     Ok(())
+}
+
+// ============================================================
+// Call-site region aliasing check (RES-395 PR D8)
+// ============================================================
+
+/// A lightweight record of a callee function's region interface.
+struct CalleeInfo {
+    type_params: Vec<String>,
+    param_types: Vec<(String, String)>,
+}
+
+/// Build a table from function name → `CalleeInfo` for all top-level
+/// functions with region type params.
+fn build_callee_table(stmts: &[crate::Spanned<crate::Node>]) -> HashMap<String, CalleeInfo> {
+    let mut table = HashMap::new();
+    for spanned in stmts {
+        if let crate::Node::Function {
+            name,
+            type_params,
+            parameters,
+            ..
+        } = &spanned.node
+            && !type_params.is_empty()
+        {
+            table.insert(
+                name.clone(),
+                CalleeInfo {
+                    type_params: type_params.clone(),
+                    param_types: parameters.clone(),
+                },
+            );
+        }
+    }
+    table
+}
+
+/// Walk a node tree collecting all `Node::CallExpression` nodes whose
+/// function slot is a plain `Node::Identifier`.
+fn collect_calls(node: &crate::Node, calls: &mut Vec<(String, Vec<crate::Node>)>) {
+    match node {
+        crate::Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if let crate::Node::Identifier { name, .. } = function.as_ref() {
+                calls.push((name.clone(), arguments.clone()));
+            }
+            // Recurse into arguments even if callee isn't an identifier.
+            for arg in arguments {
+                collect_calls(arg, calls);
+            }
+        }
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_calls(s, calls);
+            }
+        }
+        crate::Node::LetStatement { value, .. } => collect_calls(value, calls),
+        crate::Node::Assignment { value, .. } => collect_calls(value, calls),
+        crate::Node::ReturnStatement { value: Some(v), .. } => collect_calls(v, calls),
+        crate::Node::ReturnStatement { value: None, .. } => {}
+        crate::Node::ExpressionStatement { expr, .. } => {
+            collect_calls(expr, calls);
+        }
+        crate::Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_calls(condition, calls);
+            collect_calls(consequence, calls);
+            if let Some(alt) = alternative {
+                collect_calls(alt, calls);
+            }
+        }
+        crate::Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_calls(condition, calls);
+            collect_calls(body, calls);
+        }
+        crate::Node::ForInStatement { body, .. } => collect_calls(body, calls),
+        crate::Node::InfixExpression { left, right, .. } => {
+            collect_calls(left, calls);
+            collect_calls(right, calls);
+        }
+        crate::Node::PrefixExpression { right, .. } => collect_calls(right, calls),
+        _ => {}
+    }
+}
+
+/// RES-395 D8: Check for region aliasing at call sites.
+///
+/// For each top-level function, walks its body for call expressions.
+/// When a call targets a function with region type params, extracts the
+/// region label of each argument (via the caller's parameter types when
+/// the argument is a plain identifier), runs `infer_region_subst_from_call`
+/// to bind type params to concrete regions, and checks for aliasing.
+///
+/// Returns a list of diagnostic strings (format: `"path:line:col: E: …"`).
+pub fn check_call_site_region_aliasing(program: &crate::Node, source_path: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    let stmts = match program {
+        crate::Node::Program(s) => s,
+        _ => return errors,
+    };
+
+    let callee_table = build_callee_table(stmts);
+    if callee_table.is_empty() {
+        return errors;
+    }
+
+    for spanned in stmts {
+        if let crate::Node::Function {
+            parameters: caller_params,
+            body,
+            span: caller_span,
+            ..
+        } = &spanned.node
+        {
+            // Build name → type for the caller's parameters.
+            let caller_param_types: HashMap<String, String> = caller_params
+                .iter()
+                .map(|(ty, name)| (name.clone(), ty.clone()))
+                .collect();
+
+            let mut calls: Vec<(String, Vec<crate::Node>)> = Vec::new();
+            collect_calls(body, &mut calls);
+
+            for (callee_name, args) in &calls {
+                let Some(info) = callee_table.get(callee_name) else {
+                    continue;
+                };
+                if args.len() != info.param_types.len() {
+                    continue; // arity mismatch — typechecker handles it
+                }
+
+                // For each argument, extract the region label when the arg is
+                // a simple identifier whose type is known from caller params.
+                let actual_labels: Vec<Option<String>> = args
+                    .iter()
+                    .map(|arg| {
+                        if let crate::Node::Identifier { name, .. } = arg
+                            && let Some(ty) = caller_param_types.get(name)
+                        {
+                            return region_from_type_str(ty).and_then(|(_, lbl)| lbl);
+                        }
+                        None
+                    })
+                    .collect();
+
+                // Build the region substitution.
+                let subst = match infer_region_subst_from_call(
+                    &info.type_params,
+                    &info.param_types,
+                    &actual_labels,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                // Apply substitution to callee's param region labels; check
+                // for aliasing between mutable ref pairs.
+                let substituted: Vec<(bool, Region)> = info
+                    .param_types
+                    .iter()
+                    .filter_map(|(ty, _)| {
+                        region_from_type_str(ty).map(|(is_mut, lbl)| {
+                            let region = match lbl {
+                                Some(l) => apply_region_label_subst(&l, &subst),
+                                None => return (is_mut, Region::Var(RegionVar(u32::MAX))),
+                            };
+                            (is_mut, region)
+                        })
+                    })
+                    .collect();
+
+                for i in 0..substituted.len() {
+                    for j in (i + 1)..substituted.len() {
+                        let (i_mut, ref i_region) = substituted[i];
+                        let (j_mut, ref j_region) = substituted[j];
+                        if !i_mut && !j_mut {
+                            continue;
+                        }
+                        if i_region == j_region && !matches!(i_region, Region::Var(_)) {
+                            let loc = if caller_span.start.line == 0 {
+                                "E: ".to_string()
+                            } else {
+                                format!(
+                                    "{}:{}:{}: E: ",
+                                    source_path, caller_span.start.line, caller_span.start.column
+                                )
+                            };
+                            errors.push(format!(
+                                "{}call to `{}` aliases mutable region `{}` via args {} and {} — callee region params must be disjoint",
+                                loc,
+                                callee_name,
+                                match i_region {
+                                    Region::Named(n) => n.as_str(),
+                                    _ => "?",
+                                },
+                                i,
+                                j
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    errors
 }
 
 // ============================================================
