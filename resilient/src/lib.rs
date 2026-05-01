@@ -247,6 +247,10 @@ mod default_params;
 // Node::Function::type_params field) lives in main.rs; this module owns the
 // typechecker validation pass (duplicate type-param detection).
 mod generics;
+// RES-405 PR 3: VM/JIT monomorphization pass — rewrites generic call sites
+// to specialized clones (e.g. `identity(42)` → `identity$Int(42)`).
+// Runs after typecheck, before `compiler::compile`.
+mod monomorph;
 // RES-319: newtype declarations — `newtype Meters = Float;`. All
 // logic lives here: post-parse lowering (rewrites CallExpression to
 // NewtypeConstruct) and the typechecker validation pass. The hot
@@ -20935,6 +20939,8 @@ fn execute_file(
         // a panic or opaque message.
         #[cfg(feature = "jit")]
         {
+            // RES-405 PR 3: monomorphize before JIT compilation.
+            let program = monomorph::lower(&program);
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
             // RES-355: write cache entry on JIT success.
@@ -20956,6 +20962,9 @@ fn execute_file(
         // a Program (main chunk + function table), run it, print the
         // resulting value (mirroring the tree walker's behavior for
         // non-Void results).
+        // RES-405 PR 3: lower generic functions to monomorphic specializations
+        // before handing the AST to the bytecode compiler.
+        let program = monomorph::lower(&program);
         let prog = compiler::compile(&program).map_err(|e| format!("VM compile error: {}", e))?;
         let result = vm::run(&prog).map_err(|e| {
             // RES-095: mirror the typechecker's `<file>:<line>:` shape
@@ -22844,6 +22853,8 @@ pub fn run_cli() {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
+            // RES-405 PR 3: monomorphize generic functions before disassembly.
+            let resolved = monomorph::lower(&resolved);
             let prog = match compiler::compile(&resolved) {
                 Ok(p) => p,
                 Err(e) => {
