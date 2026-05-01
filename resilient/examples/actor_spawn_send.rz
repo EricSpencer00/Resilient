@@ -1,0 +1,11 @@
+// RES-332 PR 2: hand-rolled test — spawn a worker actor, send it a
+// message, and verify send/spawn return without error.
+// Full end-to-end execution (scheduler driving the actor to print)
+// requires PR 3's cooperative scheduler.  This example demonstrates
+// that spawn() returns an ActorPid and send() accepts it.
+fn worker() {
+    println("worker running");
+}
+let pid = spawn(worker);
+send(pid, 42);
+println("spawned and sent");

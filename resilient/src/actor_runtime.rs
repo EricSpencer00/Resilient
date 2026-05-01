@@ -189,6 +189,16 @@ thread_local! {
     /// Per-thread scheduler. PRs 3-4 add the `step()` loop and
     /// deadlock check.
     static SCHEDULER: RefCell<Scheduler> = RefCell::new(Scheduler::new());
+    /// Maps each live PID to its body `Value::Function`. PR 3's
+    /// `Scheduler::step` reads this to dispatch the actor's frame;
+    /// PR 2's `actor_spawn` writes it.
+    static ACTOR_FN_REGISTRY: RefCell<HashMap<ActorPid, Value>> =
+        RefCell::new(HashMap::new());
+    /// The PID of the actor whose frame is currently executing on this
+    /// thread. PR 3's scheduler sets this before calling the actor fn;
+    /// `actor_receive` reads it so user code can write `receive()` with
+    /// no arguments.
+    static CURRENT_ACTOR_PID: RefCell<Option<ActorPid>> = const { RefCell::new(None) };
 }
 
 /// Allocate a fresh PID, register an empty mailbox for it, and mark
@@ -268,12 +278,66 @@ pub fn mark_blocked(pid: ActorPid) {
     SCHEDULER.with(|s| s.borrow_mut().mark_blocked(pid));
 }
 
+// ---------------------------------------------------------------------------
+// PR 2: spawn / send / receive
+// ---------------------------------------------------------------------------
+
+/// Allocate a new actor running `fn_value`, return `Value::ActorPid`.
+/// Stores the function body in `ACTOR_FN_REGISTRY` for PR 3's scheduler.
+pub fn actor_spawn(fn_value: Value) -> Result<Value, String> {
+    let pid = register_actor();
+    ACTOR_FN_REGISTRY.with(|r| r.borrow_mut().insert(pid, fn_value));
+    Ok(Value::ActorPid(pid.0))
+}
+
+/// Enqueue `msg` into `pid_raw`'s mailbox. Maps `MailboxError` to a
+/// human-readable `String` so it fits the `RResult<Value>` builtin API.
+pub fn actor_send(pid_raw: u64, msg: Value) -> Result<(), String> {
+    enqueue(ActorPid(pid_raw), msg).map_err(|e| e.to_string())
+}
+
+/// Dequeue the next message for the currently-executing actor.
+/// Reads `CURRENT_ACTOR_PID` (set by PR 3's `Scheduler::step`).
+/// Returns `Err("WouldBlock:<pid>")` when the mailbox is empty so the
+/// scheduler can mark the actor blocked and retry later.
+pub fn actor_receive() -> Result<Value, String> {
+    let pid = CURRENT_ACTOR_PID
+        .with(|c| *c.borrow())
+        .ok_or_else(|| "receive() called outside of an actor context".to_string())?;
+    match dequeue(pid).map_err(|e| e.to_string())? {
+        Some(msg) => Ok(msg),
+        None => {
+            mark_blocked(pid);
+            Err(format!("WouldBlock:{}", pid.0))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler helpers (used by PR 3's Scheduler::step)
+// ---------------------------------------------------------------------------
+
+/// Set the currently-executing actor's PID. Called by PR 3's
+/// `Scheduler::step` before dispatching each actor frame; cleared
+/// (pass `None`) after the frame returns.
+pub fn set_current_actor(pid: Option<ActorPid>) {
+    CURRENT_ACTOR_PID.with(|c| *c.borrow_mut() = pid);
+}
+
+/// Retrieve the function body registered for `pid`. Returns `None`
+/// when the PID is unknown or `actor_spawn` was not called for it.
+pub fn get_actor_fn(pid: ActorPid) -> Option<Value> {
+    ACTOR_FN_REGISTRY.with(|r| r.borrow().get(&pid).cloned())
+}
+
 /// Reset every thread-local for a fresh test run. Test-only — calling
 /// this from production code would corrupt any in-flight scheduling.
 #[cfg(test)]
 pub fn reset_for_test() {
     MAILBOX_REGISTRY.with(|m| m.borrow_mut().clear());
     SCHEDULER.with(|s| *s.borrow_mut() = Scheduler::new());
+    ACTOR_FN_REGISTRY.with(|r| r.borrow_mut().clear());
+    CURRENT_ACTOR_PID.with(|c| *c.borrow_mut() = None);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,5 +493,108 @@ mod tests {
             assert_eq!(sched.pop_runnable(), Some(p3));
             assert_eq!(sched.pop_runnable(), None);
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // PR 2 tests: actor_spawn / actor_send / actor_receive
+    // -----------------------------------------------------------------------
+
+    /// Minimal placeholder value for spawn tests — actor_spawn accepts
+    /// any Value; the function body is only executed by PR 3's scheduler.
+    fn stub_fn() -> Value {
+        Value::Int(0)
+    }
+
+    #[test]
+    fn actor_spawn_returns_pid_value() {
+        reset_for_test();
+        let result = actor_spawn(stub_fn()).expect("spawn should succeed");
+        match result {
+            Value::ActorPid(id) => assert!(id > 0, "PID must be non-zero"),
+            other => panic!("expected ActorPid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn actor_spawn_stores_fn_in_registry() {
+        reset_for_test();
+        let pid_val = actor_spawn(stub_fn()).expect("spawn should succeed");
+        let Value::ActorPid(id) = pid_val else {
+            panic!("expected ActorPid");
+        };
+        let stored = get_actor_fn(ActorPid(id));
+        assert!(stored.is_some(), "fn body must be in ACTOR_FN_REGISTRY");
+    }
+
+    #[test]
+    fn actor_send_enqueues_message() {
+        reset_for_test();
+        let Value::ActorPid(id) = actor_spawn(stub_fn()).unwrap() else {
+            panic!("expected ActorPid");
+        };
+        actor_send(id, Value::Int(99)).expect("send should succeed");
+        assert_eq!(
+            mailbox_len(ActorPid(id)).unwrap(),
+            1,
+            "mailbox should have 1 message"
+        );
+    }
+
+    #[test]
+    fn actor_send_to_unknown_pid_errors() {
+        reset_for_test();
+        let err = actor_send(9999, Value::Int(1)).expect_err("send to bogus PID should fail");
+        assert!(
+            err.contains("not live"),
+            "error should mention 'not live', got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn actor_receive_dequeues_message() {
+        reset_for_test();
+        let Value::ActorPid(id) = actor_spawn(stub_fn()).unwrap() else {
+            panic!("expected ActorPid");
+        };
+        actor_send(id, Value::Int(42)).unwrap();
+        set_current_actor(Some(ActorPid(id)));
+        let msg = actor_receive().expect("receive should succeed");
+        set_current_actor(None);
+        match msg {
+            Value::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn actor_receive_empty_mailbox_returns_would_block() {
+        reset_for_test();
+        let Value::ActorPid(id) = actor_spawn(stub_fn()).unwrap() else {
+            panic!("expected ActorPid");
+        };
+        set_current_actor(Some(ActorPid(id)));
+        let err = actor_receive().expect_err("receive on empty mailbox should error");
+        set_current_actor(None);
+        assert!(
+            err.starts_with("WouldBlock:"),
+            "error should be WouldBlock, got: {}",
+            err
+        );
+        // Actor must be marked blocked after WouldBlock.
+        SCHEDULER.with(|s| {
+            assert!(
+                s.borrow().blocked_pids().contains(&ActorPid(id)),
+                "actor should be marked blocked"
+            );
+        });
+    }
+
+    #[test]
+    fn actor_receive_without_context_errors() {
+        reset_for_test();
+        set_current_actor(None);
+        let err = actor_receive().expect_err("receive outside actor context should error");
+        assert!(err.contains("outside of an actor context"), "got: {}", err);
     }
 }
