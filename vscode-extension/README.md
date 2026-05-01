@@ -59,6 +59,38 @@ resilient --typecheck --audit divide.rz
 
 ---
 
+## What's New in 1.5.1
+
+This release tracks the major language milestone shipped in the Resilient 1.5 compiler wave.
+
+**Actor model (RES-332)**
+- `spawn(fn)`, `send(pid, value)`, `receive()` builtins
+- Cooperative round-robin scheduler
+- Deadlock detection with source-position diagnostics
+- `actor_ping_pong.rz` end-to-end example
+
+**Region system (RES-393 / 394 / 395)**
+- `region NAME;` declarations and `&[NAME]` / `&mut[NAME]` parameter annotations
+- Borrow checker rejects aliased mutable regions at declaration and call site
+- Region-polymorphic functions: `fn f<R, S>(&mut[R] int a, &mut[S] int b)` with call-site substitution
+- Z3-assisted alias analysis for `requires`-annotated functions
+
+**Sum types (RES-400)** — exhaustiveness checking, match patterns on enum variants, `Option` / `Result` via enum machinery
+
+**Polymorphic Arrays (RES-402)** — `Array<T>` syntax; mixed-element-type literals are a compile-time error under `--typecheck`
+
+**First-class functions (RES-403)** — `fn(int) -> int` type syntax; anonymous function literals; higher-order functions
+
+**Generics (RES-405)** — `fn f<T>(T x)` declarations; substitution machinery; VM monomorphization (`id$Int`, `id$String` specialized chunks); JIT monomorphization
+
+**MMIO / ISR docs (RES-406)** — `unsafe { }` and `#[interrupt]` reference added to SYNTAX.md and STABILITY.md
+
+**Self-hosting parser (RES-379)** — `self-host/parser.rz` PR 1: recursive-descent Pratt parser emitting JSON AST; covers expressions, statements, and fn declarations
+
+*Note: V2 design work is tracked internally and will be scoped separately. This release is purely additive on the V1 surface.*
+
+---
+
 ## Settings
 
 | Setting | Default | Purpose |
