@@ -23,6 +23,10 @@
     "resilient/src/generics.rs": {
       "branch": "res-405-pr3-vm-monomorph",
       "claimed_at": "2026-05-01T00:21:33Z"
+    },
+    "resilient/src/jit_backend.rs": {
+      "branch": "res-405-pr4-jit-monomorph",
+      "claimed_at": "2026-05-01T00:44:05Z"
     }
   }
 }
