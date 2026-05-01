@@ -1,0 +1,15 @@
+fn describe(Option<int> x) -> string {
+    match x {
+        Option::Some(v) => "got",
+        Option::None => "nothing",
+    }
+}
+
+fn main() {
+    let a = Some(42);
+    let b = None;
+    println(describe(a));
+    println(describe(b));
+}
+
+main();

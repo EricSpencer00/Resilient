@@ -19479,6 +19479,82 @@ impl Interpreter {
                 variant_name,
                 payload,
             } => {
+                // RES-400 PR 6: bridge for built-in Option/Result types.
+                // Their runtime representations are Value::Option / Value::Result,
+                // but they can also be matched via enum-variant patterns.
+                let is_option = type_name.as_deref() == Some("Option");
+                let is_result = type_name.as_deref() == Some("Result");
+                let bare = type_name.is_none();
+
+                if is_option || (bare && (variant_name == "Some" || variant_name == "None")) {
+                    match (variant_name.as_str(), value) {
+                        ("Some", Value::Option(Some(inner_val))) => {
+                            return match payload {
+                                EnumPatternPayload::None => Ok(Some(vec![])),
+                                EnumPatternPayload::Tuple(pats) if pats.len() == 1 => {
+                                    self.match_pattern(&pats[0], inner_val)
+                                }
+                                EnumPatternPayload::Named(fields) if fields.len() == 1 => {
+                                    self.match_pattern(&fields[0].1, inner_val)
+                                }
+                                _ => Ok(None),
+                            };
+                        }
+                        ("None", Value::Option(None)) => {
+                            return Ok(Some(vec![]));
+                        }
+                        _ if is_option => {
+                            return Ok(None);
+                        }
+                        _ => {} // bare variant name — fall through to EnumVariant check
+                    }
+                }
+
+                if is_result || (bare && (variant_name == "Ok" || variant_name == "Err")) {
+                    match (variant_name.as_str(), value) {
+                        (
+                            "Ok",
+                            Value::Result {
+                                ok: true,
+                                payload: rp,
+                            },
+                        ) => {
+                            return match payload {
+                                EnumPatternPayload::None => Ok(Some(vec![])),
+                                EnumPatternPayload::Tuple(pats) if pats.len() == 1 => {
+                                    self.match_pattern(&pats[0], rp)
+                                }
+                                EnumPatternPayload::Named(fields) if fields.len() == 1 => {
+                                    self.match_pattern(&fields[0].1, rp)
+                                }
+                                _ => Ok(None),
+                            };
+                        }
+                        (
+                            "Err",
+                            Value::Result {
+                                ok: false,
+                                payload: rp,
+                            },
+                        ) => {
+                            return match payload {
+                                EnumPatternPayload::None => Ok(Some(vec![])),
+                                EnumPatternPayload::Tuple(pats) if pats.len() == 1 => {
+                                    self.match_pattern(&pats[0], rp)
+                                }
+                                EnumPatternPayload::Named(fields) if fields.len() == 1 => {
+                                    self.match_pattern(&fields[0].1, rp)
+                                }
+                                _ => Ok(None),
+                            };
+                        }
+                        _ if is_result => {
+                            return Ok(None);
+                        }
+                        _ => {} // bare variant name — fall through
+                    }
+                }
+
                 let Value::EnumVariant {
                     type_name: vtn,
                     variant: vvn,
@@ -29625,18 +29701,27 @@ mod tests {
         // params that recursively calls itself used to fail with
         // "Identifier not found: <fn name>" because the captured env
         // didn't include the function's own re-bound version.
-        let src = r#"
-            fn fib(int n) {
-                if n < 2 { return n; }
-                return fib(n - 1) + fib(n - 2);
-            }
-            let r = fib(10);
-        "#;
-        let (p, errors) = parse(src);
-        assert!(errors.is_empty(), "{:?}", errors);
-        let mut interp = Interpreter::new();
-        interp.eval(&p).unwrap();
-        assert!(matches!(interp.env.get("r").unwrap(), Value::Int(55)));
+        // Run in a thread with an enlarged stack because the debug
+        // interpreter is deeply recursive and macOS's default 512 KiB
+        // test stack overflows on fib(10).
+        let handle = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let src = r#"
+                    fn fib(int n) {
+                        if n < 2 { return n; }
+                        return fib(n - 1) + fib(n - 2);
+                    }
+                    let r = fib(10);
+                "#;
+                let (p, errors) = parse(src);
+                assert!(errors.is_empty(), "{:?}", errors);
+                let mut interp = Interpreter::new();
+                interp.eval(&p).unwrap();
+                assert!(matches!(interp.env.get("r").unwrap(), Value::Int(55)));
+            })
+            .expect("thread spawn failed");
+        handle.join().expect("thread panicked");
     }
 
     #[test]
