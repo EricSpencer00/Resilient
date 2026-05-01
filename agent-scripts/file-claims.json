@@ -35,13 +35,9 @@
       "branch": "res-332-pr5-ping-pong",
       "claimed_at": "2026-05-01T01:16:36Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-394-pr3-integration",
-      "claimed_at": "2026-05-01T02:00:00Z"
-    },
     "resilient/src/region_inference.rs": {
-      "branch": "res-394-pr3-integration",
-      "claimed_at": "2026-05-01T02:00:00Z"
+      "branch": "res-395-pr2-subst",
+      "claimed_at": "2026-05-01T02:10:00Z"
     }
   }
 }
