@@ -2800,6 +2800,7 @@ impl TypeChecker {
                 crate::generics::check(program, source_path)?;
                 crate::newtypes::check(program, source_path)?;
                 crate::traits::check(program, source_path)?;
+                crate::region_inference::infer(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
