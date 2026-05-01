@@ -4636,6 +4636,9 @@ impl TypeChecker {
             // the typechecker. Here we just descend into the body so
             // its statements get type-checked.
             Node::UnsafeBlock { body, .. } => self.check_node(body),
+            // RES-395: region type-param is a declaration-site marker;
+            // no type to check.
+            Node::RegionParam { .. } => Ok(Type::Void),
         }
     }
 
