@@ -433,6 +433,33 @@ pub fn prove_auto(
     }
 }
 
+/// RES-393 D1: attempt to prove that two function parameters cannot alias
+/// given the function's `requires` preconditions.
+///
+/// Models each parameter as a free Z3 integer (standing for its region ID
+/// or pointer value). Returns `Some(true)` if the `requires` clauses imply
+/// `param_a != param_b`; `None` if Z3 cannot decide or `requires` is empty.
+#[allow(dead_code)]
+pub fn prove_alias_disjoint(param_a: &str, param_b: &str, requires: &[Node]) -> Option<bool> {
+    if requires.is_empty() {
+        return None;
+    }
+    let neq = Node::InfixExpression {
+        left: Box::new(Node::Identifier {
+            name: param_a.to_string(),
+            span: crate::span::Span::default(),
+        }),
+        operator: "!=".to_string(),
+        right: Box::new(Node::Identifier {
+            name: param_b.to_string(),
+            span: crate::span::Span::default(),
+        }),
+        span: crate::span::Span::default(),
+    };
+    let (verdict, _, _, _) = prove_with_axioms_and_timeout(&neq, &HashMap::new(), requires, 500);
+    verdict
+}
+
 /// Collect every identifier name seen in `node` (for BV counterexample
 /// extraction — mirrors `collect_int_identifiers` but used for BV vars).
 fn collect_bv_identifiers(node: &Node, out: &mut BTreeSet<String>) {
