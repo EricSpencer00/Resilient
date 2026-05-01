@@ -1,32 +1,12 @@
 {
   "claims": {
+    "resilient/src/actor_runtime.rs": {
+      "branch": "res-332-pr2-builtins-new",
+      "claimed_at": "2026-05-01T00:54:04Z"
+    },
     "resilient/src/lib.rs": {
-      "branch": "res-405-pr2-walker",
-      "claimed_at": "2026-04-30T23:45:40Z"
-    },
-    "resilient/src/diag.rs": {
-      "branch": "res-405-pr2-walker",
-      "claimed_at": "2026-04-30T23:45:40Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-405-pr3-vm-monomorph",
-      "claimed_at": "2026-05-01T00:21:33Z"
-    },
-    "resilient/src/vm.rs": {
-      "branch": "res-405-pr3-vm-monomorph",
-      "claimed_at": "2026-05-01T00:21:33Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-405-pr3-vm-monomorph",
-      "claimed_at": "2026-05-01T00:21:33Z"
-    },
-    "resilient/src/generics.rs": {
-      "branch": "res-405-pr3-vm-monomorph",
-      "claimed_at": "2026-05-01T00:21:33Z"
-    },
-    "resilient/src/jit_backend.rs": {
-      "branch": "res-405-pr4-jit-monomorph",
-      "claimed_at": "2026-05-01T00:44:05Z"
+      "branch": "res-332-pr2-builtins-new",
+      "claimed_at": "2026-05-01T00:54:04Z"
     }
   }
 }

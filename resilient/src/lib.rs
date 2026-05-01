@@ -8038,6 +8038,11 @@ enum Value {
         variant: String,
         payload: EnumValuePayload,
     },
+    /// RES-332: opaque actor process-identifier. Wraps `ActorPid.0` so
+    /// user code can pass PIDs to `send()` / receive from `spawn()`.
+    /// The raw `u64` is exposed because `actor_runtime::ActorPid` is
+    /// not visible from the parser or eval arms that construct Values.
+    ActorPid(u64),
 }
 
 /// RES-400: payload carried by a `Value::EnumVariant`. Mirrors the
@@ -8168,6 +8173,7 @@ impl std::fmt::Debug for Value {
                     items.len()
                 ),
             },
+            Value::ActorPid(id) => write!(f, "ActorPid({})", id),
         }
     }
 }
@@ -8339,6 +8345,7 @@ impl std::fmt::Display for Value {
                     write!(f, ")")
                 }
             },
+            Value::ActorPid(id) => write!(f, "ActorPid({})", id),
         }
     }
 }
@@ -9173,6 +9180,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // for closures that need to coordinate. Methods (.get / .set) are
     // dispatched via the special cell handler in `CallExpression` eval.
     ("cell", builtin_cell_new),
+    // RES-332 PR 2: actor spawn/send/receive.
+    ("spawn", builtin_spawn),
+    ("send", builtin_send),
+    ("receive", builtin_receive),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -17079,6 +17090,51 @@ fn builtin_cell_new(args: &[Value]) -> RResult<Value> {
             "cell: expected 1 argument (initial value), got {}",
             args.len()
         )),
+    }
+}
+
+// RES-332 PR 2: actor spawn/send/receive builtins.
+
+/// `spawn(fn)` — allocate a new actor running `fn`, return its PID.
+fn builtin_spawn(args: &[Value]) -> RResult<Value> {
+    match args {
+        [fn_val @ Value::Function { .. }] => crate::actor_runtime::actor_spawn(fn_val.clone()),
+        [other] => Err(format!(
+            "spawn: expected a function argument, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "spawn: expected 1 argument (fn), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `send(pid, value)` — enqueue `value` into `pid`'s mailbox.
+fn builtin_send(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::ActorPid(id), msg] => {
+            crate::actor_runtime::actor_send(*id, msg.clone())?;
+            Ok(Value::Void)
+        }
+        [other, _] => Err(format!(
+            "send: first argument must be an ActorPid, got {:?}",
+            other
+        )),
+        _ => Err(format!(
+            "send: expected 2 arguments (pid, value), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// `receive()` — dequeue the next message for the current actor.
+/// Returns `Err` with a `WouldBlock:<pid>` prefix when the mailbox is
+/// empty; PR 3's scheduler handles the retry.
+fn builtin_receive(args: &[Value]) -> RResult<Value> {
+    match args {
+        [] => crate::actor_runtime::actor_receive(),
+        _ => Err(format!("receive: expected 0 arguments, got {}", args.len())),
     }
 }
 
