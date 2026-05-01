@@ -258,9 +258,9 @@ mod monomorph;
 // main.rs for NewtypeDecl (register) and NewtypeConstruct (wrap).
 mod newtypes;
 // RES-394: region inference — assigns region variables to unlabeled
-// reference parameters and unifies them via a union-find table.
-// PR D4 wires `infer` into EXTENSION_PASSES; PR D5 integrates with
-// `check_region_aliasing`.
+// reference parameters; PR D5 integrates results into
+// `check_region_aliasing` so two unlabeled &mut params with distinct
+// inferred vars are no longer conservatively rejected.
 pub(crate) mod region_inference;
 // RES-398: termination checking — recursive fns require an explicit
 // `// @decreases <metric>` or `// @may_diverge` annotation. Off by
@@ -20173,14 +20173,12 @@ fn parse_ref_type(ty: &str) -> Option<(bool, Option<String>)> {
 ///   a region declared elsewhere in the program via `region LABEL;`.
 /// * Two `&mut` parameters in the same fn are rejected whenever they
 ///   could potentially alias — i.e. when they share the same region
-///   label, or when either one is unlabeled (`&mut T` with no
-///   `[LABEL]`). Distinct, declared labels are accepted as
-///   statically disjoint.
-///
-/// Out of scope for the MVP (filed as follow-up tickets):
-///   * RES-392: Z3 fallback proof using `requires` preconditions.
-///   * RES-393: region inference for unlabeled references.
-///   * RES-394: region polymorphism (`fn<'R> ...`).
+///   label, or when one is labeled and the other is unlabeled.
+/// * Two unlabeled `&mut` params with distinct inferred region vars
+///   are accepted as potentially independent (RES-394 D5).
+/// * Distinct, declared labels are accepted as statically disjoint.
+/// * RES-393 D1: when the syntactic rule rejects, a Z3 fallback using
+///   the function's `requires` preconditions may lift the error.
 pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
     let stmts = match program {
@@ -20197,6 +20195,10 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
             declared.insert(name.clone());
         }
     }
+
+    // RES-394 D5: build the region map once so unlabeled parameters get
+    // inferred region variables that the pairwise check can use.
+    let region_map = crate::region_inference::build_region_map(program);
 
     let prefix = |span: span::Span, msg: &str| -> String {
         if span.start.line == 0 {
@@ -20246,8 +20248,8 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
             // Pairwise aliasing check over mutable references.
             for i in 0..refs.len() {
                 for j in (i + 1)..refs.len() {
-                    let (_, i_mut, i_lbl, i_name) = &refs[i];
-                    let (_, j_mut, j_lbl, j_name) = &refs[j];
+                    let (i_idx, i_mut, i_lbl, i_name) = &refs[i];
+                    let (j_idx, j_mut, j_lbl, j_name) = &refs[j];
                     // Only two mutable references can alias
                     // destructively. Two `&[A]` shared references
                     // pointing into the same region is fine (no
@@ -20264,14 +20266,28 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
                         (Some(a), Some(b)) => (false, format!("[{}]", a), format!("[{}]", b)),
                         (Some(a), None) => (false, format!("[{}]", a), String::new()),
                         (None, Some(b)) => (false, String::new(), format!("[{}]", b)),
-                        (None, None) => (false, String::new(), String::new()),
+                        (None, None) => {
+                            // RES-394 D5: consult inferred region vars. Two
+                            // distinct unbound vars are treated as potentially
+                            // different (just like two distinct named labels).
+                            use crate::region_inference::{ParamKey, Region};
+                            let ri = region_map.get_resolved(&ParamKey {
+                                fn_name: fn_name.clone(),
+                                param_idx: *i_idx,
+                            });
+                            let rj = region_map.get_resolved(&ParamKey {
+                                fn_name: fn_name.clone(),
+                                param_idx: *j_idx,
+                            });
+                            let infer_ok = matches!((ri, rj), (Some(Region::Var(vi)), Some(Region::Var(vj))) if vi != vj);
+                            (infer_ok, String::new(), String::new())
+                        }
                     };
                     if ok {
                         continue;
                     }
-                    // RES-393 D1: Z3 fallback — if the function's `requires`
-                    // preconditions prove that these two parameters differ (i.e.
-                    // they refer to disjoint memory), skip the syntactic reject.
+                    // RES-393 D1: Z3 fallback — if requires clauses prove
+                    // disjointness, skip the syntactic reject.
                     #[cfg(feature = "z3")]
                     if crate::verifier_z3::prove_alias_disjoint(i_name, j_name, requires)
                         == Some(true)
@@ -44388,16 +44404,21 @@ mod tests {
     }
 
     #[test]
-    fn res391_unlabeled_mut_pair_rejected() {
-        // `&mut` with no region label is treated as possibly aliasing
-        // with any other `&mut`. The MVP rejects; the follow-up
-        // RES-393 region-inference ticket relaxes this.
+    fn res391_unlabeled_mut_pair_accepted_with_distinct_inferred_vars() {
+        // RES-394 D5: two &mut params with no region label each receive a
+        // fresh, distinct region variable during inference. Two distinct
+        // unbound vars are treated as potentially independent — the
+        // conservative MVP reject is lifted. The mixed-labeled test below
+        // still covers the labeled+unlabeled rejection.
         let src = "fn f(&mut int a, &mut int b) {}\n";
         let (program, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let borrow_errs = check_region_aliasing(&program, "<test>");
-        assert_eq!(borrow_errs.len(), 1);
-        assert!(borrow_errs[0].contains("potential aliasing"));
+        assert!(
+            borrow_errs.is_empty(),
+            "two unlabeled &mut params with distinct inferred vars should be accepted; got: {:?}",
+            borrow_errs
+        );
     }
 
     #[test]
