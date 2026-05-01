@@ -498,6 +498,8 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // RES-406: unsafe block — descend into the body so its free
         // variables flow up to the enclosing scope.
         Node::UnsafeBlock { body, .. } => walk(body, bound, free),
+        // RES-395: region type-param is a declaration marker; no free vars.
+        Node::RegionParam { .. } => {}
     }
 }
 

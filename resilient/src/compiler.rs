@@ -1202,6 +1202,8 @@ fn node_line(n: &Node) -> Option<u32> {
         Node::EnumDecl { span, .. } => span.start.line as u32,
         // RES-406: unsafe block carries the keyword's span.
         Node::UnsafeBlock { span, .. } => span.start.line as u32,
+        // RES-395: region type-param node — carries its declaration span.
+        Node::RegionParam { span, .. } => span.start.line as u32,
     };
     if line == 0 { None } else { Some(line) }
 }
