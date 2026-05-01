@@ -1151,3 +1151,29 @@ fn res395_d8_call_site_aliasing_detected() {
         "region_poly_call.rz must fail — call-site region aliasing should be detected"
     );
 }
+
+/// RES-402: mixed-element-type array literal is rejected by `--typecheck`.
+/// `[1, "two"]` mixes Int and String; the typechecker must exit non-zero
+/// and emit a diagnostic naming both types.
+#[test]
+fn res402_mixed_array_literal_rejected_by_typecheck() {
+    let path = format!(
+        "{}/examples/array_polymorphic_neg.rz",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let output = Command::new(bin())
+        .arg("--typecheck")
+        .arg(&path)
+        .output()
+        .expect("spawn resilient --typecheck");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "mixed-type array literal must fail typecheck; got zero exit\nstderr={stderr}"
+    );
+    assert!(
+        stderr.contains("mixed element types"),
+        "diagnostic must mention 'mixed element types'; got:\n{stderr}"
+    );
+}
