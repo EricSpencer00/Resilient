@@ -1,0 +1,16 @@
+KW fn 1 1
+IDENT main 1 4
+PUNCT ( 1 8
+PUNCT ) 1 9
+PUNCT { 1 11
+IDENT println 2 5
+PUNCT ( 2 12
+STRING "hello" 2 13
+PUNCT ) 2 19
+PUNCT ; 2 20
+PUNCT } 3 1
+IDENT main 4 1
+PUNCT ( 4 5
+PUNCT ) 4 6
+PUNCT ; 4 7
+EOF  5 1

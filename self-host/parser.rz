@@ -1,0 +1,747 @@
+// RES-379: Resilient parser in Resilient (self-hosting step 2, PR 1 of 5).
+//
+// Reads the token stream produced by `self-host/lexer.rz` (one token per
+// line: `KIND LEXEME LINE COL`) and emits a JSON AST to stdout.
+//
+// Input:  token file path via `SELF_HOST_TOKENS` env var.
+//         Defaults to `self-host/hello.tokens.txt`.
+//
+// Output: single JSON line — top-level Program node.
+//
+// PR 1 grammar coverage:
+//   Expressions: int/float/string/bool literals, identifiers,
+//                unary (- !), binary infix ops, assignment (=),
+//                call expressions, array literals, grouping.
+//   Statements:  let, return, if/else, while, for-in, block, expr-stmt.
+//   Declarations: fn with typed parameters and optional return type.
+//   Top-level: sequence of fn declarations and expression statements.
+//
+// Later PRs add: struct, enum, match, type aliases, generics,
+//               region annotations, contracts, actors, error recovery.
+
+// ============================================================
+// Constants for JSON brace characters
+// (Resilient treats { in string literals as interpolation start)
+// ============================================================
+
+fn lbrace() -> string { return chr(123); }
+fn rbrace() -> string { return chr(125); }
+fn lbracket() -> string { return chr(91); }
+fn rbracket() -> string { return chr(93); }
+
+// ============================================================
+// JSON building helpers
+// ============================================================
+
+fn jstr(string s) -> string {
+    // Escape backslash, double-quote, and common control chars.
+    let chars = split(s, "");
+    let out = "";
+    let i = 0;
+    while i < len(chars) {
+        let c = chars[i];
+        if c == "\\" {
+            out = out + "\\\\";
+        } else {
+            if c == "\"" {
+                out = out + "\\\"";
+            } else {
+                if c == "\n" {
+                    out = out + "\\n";
+                } else {
+                    if c == "\r" {
+                        out = out + "\\r";
+                    } else {
+                        if c == "\t" {
+                            out = out + "\\t";
+                        } else {
+                            out = out + c;
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return "\"" + out + "\"";
+}
+
+fn jkey(string k, string v) -> string {
+    return jstr(k) + ":" + v;
+}
+
+fn jobj(string fields) -> string {
+    return lbrace() + fields + rbrace();
+}
+
+fn jarr(string items) -> string {
+    return lbracket() + items + rbracket();
+}
+
+fn jcomma(string a, string b) -> string {
+    if a == "" {
+        return b;
+    }
+    return a + "," + b;
+}
+
+fn jfield(string acc, string k, string v) -> string {
+    return jcomma(acc, jkey(k, v));
+}
+
+// ============================================================
+// Token struct and stream
+// ============================================================
+
+struct Token {
+    string kind,
+    string lexeme,
+    int    line,
+    int    col,
+}
+
+fn make_eof_token() -> Token {
+    return new Token { kind: "EOF", lexeme: "", line: 0, col: 0 };
+}
+
+// ============================================================
+// Integer-to-string (portable — avoids relying on to_string)
+// ============================================================
+
+fn int_to_s(int n) -> string {
+    if n == 0 {
+        return "0";
+    }
+    let neg = n < 0;
+    if neg {
+        n = 0 - n;
+    }
+    let digits = [];
+    while n > 0 {
+        let d = n % 10;
+        let ch = "0";
+        if d == 1 { ch = "1"; }
+        if d == 2 { ch = "2"; }
+        if d == 3 { ch = "3"; }
+        if d == 4 { ch = "4"; }
+        if d == 5 { ch = "5"; }
+        if d == 6 { ch = "6"; }
+        if d == 7 { ch = "7"; }
+        if d == 8 { ch = "8"; }
+        if d == 9 { ch = "9"; }
+        digits = push(digits, ch);
+        n = n / 10;
+    }
+    let result = "";
+    let i = len(digits) - 1;
+    while i >= 0 {
+        result = result + digits[i];
+        i = i - 1;
+    }
+    if neg {
+        result = "-" + result;
+    }
+    return result;
+}
+
+fn parse_int_from(string s) -> int {
+    let chars = split(s, "");
+    let n = 0;
+    let i = 0;
+    while i < len(chars) {
+        let d = chars[i];
+        if d == "0" { n = n * 10 + 0; }
+        if d == "1" { n = n * 10 + 1; }
+        if d == "2" { n = n * 10 + 2; }
+        if d == "3" { n = n * 10 + 3; }
+        if d == "4" { n = n * 10 + 4; }
+        if d == "5" { n = n * 10 + 5; }
+        if d == "6" { n = n * 10 + 6; }
+        if d == "7" { n = n * 10 + 7; }
+        if d == "8" { n = n * 10 + 8; }
+        if d == "9" { n = n * 10 + 9; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// ============================================================
+// Token file loading
+// ============================================================
+
+fn resolve_tokens_path() -> string {
+    let r = env("SELF_HOST_TOKENS");
+    if is_ok(r) {
+        return unwrap(r);
+    }
+    return "self-host/hello.tokens.txt";
+}
+
+fn load_tokens(string path) -> array {
+    let src = file_read(path);
+    let lines = split(src, "\n");
+    let tokens = [];
+    let i = 0;
+    while i < len(lines) {
+        let line = lines[i];
+        if len(line) > 0 {
+            let parts = split(line, " ");
+            if len(parts) >= 4 {
+                let kind   = parts[0];
+                // Lexeme is the second space-delimited field; for string
+                // tokens it may contain spaces — reconstruct from parts[1..n-2].
+                let lexeme = parts[1];
+                let j = 2;
+                while j < len(parts) - 2 {
+                    lexeme = lexeme + " " + parts[j];
+                    j = j + 1;
+                }
+                let tline = parse_int_from(parts[len(parts) - 2]);
+                let tcol  = parse_int_from(parts[len(parts) - 1]);
+                let tok = new Token { kind: kind, lexeme: lexeme, line: tline, col: tcol };
+                tokens = push(tokens, tok);
+            }
+        }
+        i = i + 1;
+    }
+    return tokens;
+}
+
+// ============================================================
+// Token stream accessors
+// ============================================================
+
+fn tok_at(array tokens, int pos) -> Token {
+    if pos < len(tokens) {
+        return tokens[pos];
+    }
+    return make_eof_token();
+}
+
+fn is_eof_at(array tokens, int pos) -> bool {
+    return tok_at(tokens, pos).kind == "EOF";
+}
+
+fn is_kw(array tokens, int pos, string word) -> bool {
+    let t = tok_at(tokens, pos);
+    return t.kind == "KW" && t.lexeme == word;
+}
+
+fn is_op(array tokens, int pos, string op) -> bool {
+    let t = tok_at(tokens, pos);
+    return t.kind == "OP" && t.lexeme == op;
+}
+
+fn is_punct(array tokens, int pos, string p) -> bool {
+    let t = tok_at(tokens, pos);
+    return t.kind == "PUNCT" && t.lexeme == p;
+}
+
+fn expect_punct(array tokens, int pos, string p) -> int {
+    if is_punct(tokens, pos, p) {
+        return pos + 1;
+    }
+    let t = tok_at(tokens, pos);
+    println("parse error: expected '" + p + "' at " + int_to_s(t.line) + ":" + int_to_s(t.col) + " got " + t.lexeme);
+    return pos + 1;
+}
+
+fn expect_kw_tok(array tokens, int pos, string kw) -> int {
+    if is_kw(tokens, pos, kw) {
+        return pos + 1;
+    }
+    let t = tok_at(tokens, pos);
+    println("parse error: expected keyword '" + kw + "' at " + int_to_s(t.line));
+    return pos + 1;
+}
+
+fn expect_op_tok(array tokens, int pos, string op) -> int {
+    if is_op(tokens, pos, op) {
+        return pos + 1;
+    }
+    let t = tok_at(tokens, pos);
+    println("parse error: expected operator '" + op + "' at " + int_to_s(t.line) + ":" + int_to_s(t.col));
+    return pos + 1;
+}
+
+// ============================================================
+// ParseResult — node JSON + updated position
+// ============================================================
+
+struct ParseResult {
+    string node,
+    int    pos,
+}
+
+fn make_result(string node, int pos) -> ParseResult {
+    return new ParseResult { node: node, pos: pos };
+}
+
+// ============================================================
+// Type annotation parser (simplified)
+// ============================================================
+
+fn parse_type_str(array tokens, int pos) -> ParseResult {
+    let t = tok_at(tokens, pos);
+    if t.kind == "IDENT" || t.kind == "KW" {
+        let name = t.lexeme;
+        let cur = pos + 1;
+        // Parameterised: Name<Inner>
+        if is_op(tokens, cur, "<") {
+            cur = cur + 1;
+            let inner_r = parse_type_str(tokens, cur);
+            cur = inner_r.pos;
+            if is_op(tokens, cur, ">") {
+                cur = cur + 1;
+            }
+            name = name + "<" + inner_r.node + ">";
+        }
+        return make_result(name, cur);
+    }
+    // Array type [T]
+    if t.kind == "PUNCT" && t.lexeme == "[" {
+        let cur = pos + 1;
+        let inner_r = parse_type_str(tokens, cur);
+        cur = inner_r.pos;
+        if is_punct(tokens, cur, "]") {
+            cur = cur + 1;
+        }
+        return make_result("[" + inner_r.node + "]", cur);
+    }
+    return make_result("unknown", pos + 1);
+}
+
+// ============================================================
+// Operator precedence
+// ============================================================
+
+fn infix_bp(string op) -> int {
+    if op == "||" { return 10; }
+    if op == "&&" { return 20; }
+    if op == "==" { return 30; }
+    if op == "!=" { return 30; }
+    if op == "<"  { return 40; }
+    if op == "<=" { return 40; }
+    if op == ">"  { return 40; }
+    if op == ">=" { return 40; }
+    if op == "+"  { return 50; }
+    if op == "-"  { return 50; }
+    if op == "*"  { return 60; }
+    if op == "/"  { return 60; }
+    if op == "%"  { return 60; }
+    return 0;
+}
+
+fn is_infix_op(array tokens, int pos) -> bool {
+    let t = tok_at(tokens, pos);
+    if t.kind != "OP" {
+        return false;
+    }
+    return infix_bp(t.lexeme) > 0;
+}
+
+// ============================================================
+// Expression parser — primary atoms
+// ============================================================
+
+fn parse_primary(array tokens, int pos) -> ParseResult {
+    let t = tok_at(tokens, pos);
+
+    // Integer literal
+    if t.kind == "INT" {
+        let node = jobj(jfield(jfield("", "type", jstr("Int")), "value", t.lexeme));
+        return make_result(node, pos + 1);
+    }
+
+    // Float literal
+    if t.kind == "FLOAT" {
+        let node = jobj(jfield(jfield("", "type", jstr("Float")), "value", t.lexeme));
+        return make_result(node, pos + 1);
+    }
+
+    // String literal — strip outer quotes from lexeme
+    if t.kind == "STRING" {
+        let raw = t.lexeme;
+        // raw starts and ends with " — strip them
+        let inner = string_drop(string_take(raw, len(raw) - 1), 1);
+        let node = jobj(jfield(jfield("", "type", jstr("String")), "value", jstr(inner)));
+        return make_result(node, pos + 1);
+    }
+
+    // Boolean
+    if t.kind == "KW" && t.lexeme == "true" {
+        let node = jobj(jfield(jfield("", "type", jstr("Bool")), "value", "true"));
+        return make_result(node, pos + 1);
+    }
+    if t.kind == "KW" && t.lexeme == "false" {
+        let node = jobj(jfield(jfield("", "type", jstr("Bool")), "value", "false"));
+        return make_result(node, pos + 1);
+    }
+
+    // null
+    if t.kind == "KW" && t.lexeme == "null" {
+        return make_result(jobj(jkey("type", jstr("Null"))), pos + 1);
+    }
+
+    // Unary -
+    if t.kind == "OP" && t.lexeme == "-" {
+        let r = parse_primary(tokens, pos + 1);
+        let node = jobj(jfield(jfield(jfield("", "type", jstr("Unary")), "op", jstr("-")), "operand", r.node));
+        return make_result(node, r.pos);
+    }
+
+    // Unary !
+    if t.kind == "OP" && t.lexeme == "!" {
+        let r = parse_primary(tokens, pos + 1);
+        let node = jobj(jfield(jfield(jfield("", "type", jstr("Unary")), "op", jstr("!")), "operand", r.node));
+        return make_result(node, r.pos);
+    }
+
+    // Grouped: ( expr )
+    if t.kind == "PUNCT" && t.lexeme == "(" {
+        let r = parse_expr(tokens, pos + 1, 0);
+        let pos2 = expect_punct(tokens, r.pos, ")");
+        return make_result(r.node, pos2);
+    }
+
+    // Array literal: [ expr, ... ]
+    if t.kind == "PUNCT" && t.lexeme == "[" {
+        let cur = pos + 1;
+        let items_str = "";
+        let first = true;
+        while !is_punct(tokens, cur, "]") && !is_eof_at(tokens, cur) {
+            if first == false {
+                if is_punct(tokens, cur, ",") {
+                    cur = cur + 1;
+                }
+            }
+            if is_punct(tokens, cur, "]") {
+                cur = cur;
+            } else {
+                let item_r = parse_expr(tokens, cur, 0);
+                items_str = jcomma(items_str, item_r.node);
+                cur = item_r.pos;
+            }
+            first = false;
+        }
+        let pos2 = expect_punct(tokens, cur, "]");
+        let node = jobj(jfield(jfield("", "type", jstr("Array")), "items", jarr(items_str)));
+        return make_result(node, pos2);
+    }
+
+    // Identifier or call expression
+    if t.kind == "IDENT" {
+        let name = t.lexeme;
+        let cur = pos + 1;
+
+        // Call: ident ( args )
+        if is_punct(tokens, cur, "(") {
+            cur = cur + 1;
+            let args_str = "";
+            let first = true;
+            while !is_punct(tokens, cur, ")") && !is_eof_at(tokens, cur) {
+                if first == false {
+                    if is_punct(tokens, cur, ",") {
+                        cur = cur + 1;
+                    }
+                }
+                let arg_r = parse_expr(tokens, cur, 0);
+                args_str = jcomma(args_str, arg_r.node);
+                cur = arg_r.pos;
+                first = false;
+            }
+            let pos2 = expect_punct(tokens, cur, ")");
+            let node = jobj(jfield(jfield(jfield("", "type", jstr("Call")), "callee", jstr(name)), "args", jarr(args_str)));
+            return make_result(node, pos2);
+        }
+
+        // Field access: ident.field (chain)
+        let node = jobj(jfield(jfield("", "type", jstr("Identifier")), "name", jstr(name)));
+        while is_punct(tokens, cur, ".") {
+            cur = cur + 1;
+            let field_tok = tok_at(tokens, cur);
+            let field_name = field_tok.lexeme;
+            cur = cur + 1;
+            // Could also be a method call: obj.method(args)
+            if is_punct(tokens, cur, "(") {
+                cur = cur + 1;
+                let args_str = "";
+                let first = true;
+                while !is_punct(tokens, cur, ")") && !is_eof_at(tokens, cur) {
+                    if first == false {
+                        if is_punct(tokens, cur, ",") {
+                            cur = cur + 1;
+                        }
+                    }
+                    let arg_r = parse_expr(tokens, cur, 0);
+                    args_str = jcomma(args_str, arg_r.node);
+                    cur = arg_r.pos;
+                    first = false;
+                }
+                cur = expect_punct(tokens, cur, ")");
+                node = jobj(jfield(jfield(jfield(jfield("", "type", jstr("MethodCall")), "object", node), "method", jstr(field_name)), "args", jarr(args_str)));
+            } else {
+                node = jobj(jfield(jfield(jfield("", "type", jstr("Field")), "object", node), "field", jstr(field_name)));
+            }
+        }
+        return make_result(node, cur);
+    }
+
+    // Error node — advance one token
+    let err_node = jobj(jfield(jfield("", "type", jstr("Error")), "token", jstr(t.kind + " " + t.lexeme)));
+    return make_result(err_node, pos + 1);
+}
+
+// ============================================================
+// Expression parser — infix climbing (Pratt)
+// ============================================================
+
+fn parse_expr(array tokens, int pos, int min_bp) -> ParseResult {
+    let lhs_r = parse_primary(tokens, pos);
+    let lhs = lhs_r.node;
+    let cur = lhs_r.pos;
+
+    // Assignment: expr = expr (right-associative bp=5)
+    if is_op(tokens, cur, "=") && min_bp < 5 {
+        let rhs_r = parse_expr(tokens, cur + 1, 4);
+        lhs = jobj(jfield(jfield(jfield("", "type", jstr("Assign")), "target", lhs), "value", rhs_r.node));
+        cur = rhs_r.pos;
+        return make_result(lhs, cur);
+    }
+
+    // Infix operators
+    let done = false;
+    while done == false {
+        if is_infix_op(tokens, cur) {
+            let t = tok_at(tokens, cur);
+            let bp = infix_bp(t.lexeme);
+            if bp > min_bp {
+                let rhs_r = parse_expr(tokens, cur + 1, bp);
+                lhs = jobj(jfield(jfield(jfield(jfield("", "type", jstr("Binary")), "op", jstr(t.lexeme)), "left", lhs), "right", rhs_r.node));
+                cur = rhs_r.pos;
+            } else {
+                done = true;
+            }
+        } else {
+            done = true;
+        }
+    }
+
+    return make_result(lhs, cur);
+}
+
+// ============================================================
+// Statement parser
+// ============================================================
+
+fn parse_block(array tokens, int pos) -> ParseResult {
+    let cur = expect_punct(tokens, pos, lbrace());
+    let stmts_str = "";
+    while !is_punct(tokens, cur, rbrace()) && !is_eof_at(tokens, cur) {
+        if is_punct(tokens, cur, ";") {
+            cur = cur + 1;
+        } else {
+            let stmt_r = parse_stmt(tokens, cur);
+            stmts_str = jcomma(stmts_str, stmt_r.node);
+            cur = stmt_r.pos;
+        }
+    }
+    cur = expect_punct(tokens, cur, rbrace());
+    return make_result(jobj(jfield(jfield("", "type", jstr("Block")), "stmts", jarr(stmts_str))), cur);
+}
+
+fn parse_stmt(array tokens, int pos) -> ParseResult {
+    let t = tok_at(tokens, pos);
+
+    // let [type] name = expr ;
+    if t.kind == "KW" && t.lexeme == "let" {
+        let cur = pos + 1;
+        // Optional type annotation: `let int name = ...` vs `let name = ...`
+        // Heuristic: if the token after cur is an IDENT (the name), there's no annotation.
+        // If the token after cur is a type-looking IDENT and the next is also an IDENT, annotation present.
+        let type_ann = "";
+        let t2 = tok_at(tokens, cur);
+        let t3 = tok_at(tokens, cur + 1);
+        let has_ann = (t2.kind == "IDENT" || t2.kind == "KW") && t3.kind == "IDENT" && t3.lexeme != "=";
+        if has_ann {
+            let ty_r = parse_type_str(tokens, cur);
+            type_ann = ty_r.node;
+            cur = ty_r.pos;
+        }
+        let name_tok = tok_at(tokens, cur);
+        let name = name_tok.lexeme;
+        cur = cur + 1;
+        cur = expect_op_tok(tokens, cur, "=");
+        let val_r = parse_expr(tokens, cur, 0);
+        cur = val_r.pos;
+        if is_punct(tokens, cur, ";") { cur = cur + 1; }
+        let fields = jfield(jfield(jfield("", "type", jstr("Let")), "name", jstr(name)), "value", val_r.node);
+        if type_ann != "" {
+            fields = jfield(fields, "ann", jstr(type_ann));
+        }
+        return make_result(jobj(fields), cur);
+    }
+
+    // return [expr] ;
+    if t.kind == "KW" && t.lexeme == "return" {
+        let cur = pos + 1;
+        if is_punct(tokens, cur, ";") {
+            return make_result(jobj(jfield(jfield("", "type", jstr("Return")), "value", "null")), cur + 1);
+        }
+        let val_r = parse_expr(tokens, cur, 0);
+        cur = val_r.pos;
+        if is_punct(tokens, cur, ";") { cur = cur + 1; }
+        return make_result(jobj(jfield(jfield("", "type", jstr("Return")), "value", val_r.node)), cur);
+    }
+
+    // if condition { then } [else { alt }]
+    if t.kind == "KW" && t.lexeme == "if" {
+        let cur = pos + 1;
+        let cond_r = parse_expr(tokens, cur, 0);
+        cur = cond_r.pos;
+        let then_r = parse_block(tokens, cur);
+        cur = then_r.pos;
+        let alt_node = "null";
+        if is_kw(tokens, cur, "else") {
+            cur = cur + 1;
+            if is_kw(tokens, cur, "if") {
+                let alt_r = parse_stmt(tokens, cur);
+                alt_node = alt_r.node;
+                cur = alt_r.pos;
+            } else {
+                let alt_r = parse_block(tokens, cur);
+                alt_node = alt_r.node;
+                cur = alt_r.pos;
+            }
+        }
+        let fields = jfield(jfield(jfield(jfield("", "type", jstr("If")),
+                    "condition", cond_r.node), "then", then_r.node), "else", alt_node);
+        return make_result(jobj(fields), cur);
+    }
+
+    // while condition { body }
+    if t.kind == "KW" && t.lexeme == "while" {
+        let cur = pos + 1;
+        let cond_r = parse_expr(tokens, cur, 0);
+        cur = cond_r.pos;
+        let body_r = parse_block(tokens, cur);
+        cur = body_r.pos;
+        let fields = jfield(jfield(jfield("", "type", jstr("While")), "condition", cond_r.node), "body", body_r.node);
+        return make_result(jobj(fields), cur);
+    }
+
+    // for var in iter { body }
+    if t.kind == "KW" && t.lexeme == "for" {
+        let cur = pos + 1;
+        let var_tok = tok_at(tokens, cur);
+        let var_name = var_tok.lexeme;
+        cur = cur + 1;
+        cur = expect_kw_tok(tokens, cur, "in");
+        let iter_r = parse_expr(tokens, cur, 0);
+        cur = iter_r.pos;
+        let body_r = parse_block(tokens, cur);
+        cur = body_r.pos;
+        let fields = jfield(jfield(jfield(jfield("", "type", jstr("For")),
+                    "var", jstr(var_name)), "iter", iter_r.node), "body", body_r.node);
+        return make_result(jobj(fields), cur);
+    }
+
+    // Block statement
+    if t.kind == "PUNCT" && t.lexeme == lbrace() {
+        return parse_block(tokens, pos);
+    }
+
+    // Expression statement
+    let expr_r = parse_expr(tokens, pos, 0);
+    let cur = expr_r.pos;
+    if is_punct(tokens, cur, ";") { cur = cur + 1; }
+    return make_result(jobj(jfield(jfield("", "type", jstr("ExprStmt")), "expr", expr_r.node)), cur);
+}
+
+// ============================================================
+// Function declaration parser
+// ============================================================
+
+fn parse_param_list(array tokens, int pos) -> ParseResult {
+    let cur = expect_punct(tokens, pos, "(");
+    let params_str = "";
+    let first = true;
+    while !is_punct(tokens, cur, ")") && !is_eof_at(tokens, cur) {
+        if first == false {
+            if is_punct(tokens, cur, ",") {
+                cur = cur + 1;
+            }
+        }
+        let ty_r = parse_type_str(tokens, cur);
+        cur = ty_r.pos;
+        let name_tok = tok_at(tokens, cur);
+        let pname = name_tok.lexeme;
+        cur = cur + 1;
+        let param = jobj(jfield(jfield("", "name", jstr(pname)), "type", jstr(ty_r.node)));
+        params_str = jcomma(params_str, param);
+        first = false;
+    }
+    cur = expect_punct(tokens, cur, ")");
+    return make_result(jarr(params_str), cur);
+}
+
+fn parse_fn_decl(array tokens, int pos) -> ParseResult {
+    let cur = expect_kw_tok(tokens, pos, "fn");
+    let name_tok = tok_at(tokens, cur);
+    let fn_name = name_tok.lexeme;
+    cur = cur + 1;
+    let params_r = parse_param_list(tokens, cur);
+    cur = params_r.pos;
+    let ret_type = "void";
+    if is_op(tokens, cur, "->") {
+        cur = cur + 1;
+        let ret_r = parse_type_str(tokens, cur);
+        ret_type = ret_r.node;
+        cur = ret_r.pos;
+    }
+    let body_r = parse_block(tokens, cur);
+    cur = body_r.pos;
+    let fields = jfield(jfield(jfield(jfield(jfield("", "type", jstr("Function")),
+                "name", jstr(fn_name)), "params", params_r.node),
+                "returns", jstr(ret_type)), "body", body_r.node);
+    return make_result(jobj(fields), cur);
+}
+
+// ============================================================
+// Top-level program parser
+// ============================================================
+
+fn parse_program(array tokens) -> string {
+    let pos = 0;
+    let body_str = "";
+    while !is_eof_at(tokens, pos) {
+        if is_punct(tokens, pos, ";") {
+            pos = pos + 1;
+        } else {
+            if is_kw(tokens, pos, "fn") {
+                let decl_r = parse_fn_decl(tokens, pos);
+                body_str = jcomma(body_str, decl_r.node);
+                pos = decl_r.pos;
+            } else {
+                let stmt_r = parse_stmt(tokens, pos);
+                body_str = jcomma(body_str, stmt_r.node);
+                pos = stmt_r.pos;
+            }
+        }
+    }
+    return jobj(jfield(jfield("", "type", jstr("Program")), "body", jarr(body_str)));
+}
+
+// ============================================================
+// Driver
+// ============================================================
+
+fn main(int _d) -> int {
+    let token_path = resolve_tokens_path();
+    let tokens = load_tokens(token_path);
+    let ast = parse_program(tokens);
+    println(ast);
+    return 0;
+}
+
+main(0);
