@@ -239,6 +239,93 @@ Effect tracking is therefore not a concurrency feature. It is
 the foundation a concurrency feature can rest on without
 becoming a new source of safety-case risk.
 
+## Actor Primitives (RES-332)
+
+Resilient V1 ships three actor builtins that implement cooperative
+message-passing concurrency on top of the single-threaded interpreter.
+They are the working implementation of the "Erlang-style actors" shape
+described in the roadmap section below.
+
+### `spawn(fn) -> ActorPid`
+
+Allocates a fresh actor running `fn` and returns its opaque process
+identifier. The actor is immediately runnable but does not execute until
+the main script finishes — execution happens in the cooperative scheduler
+that runs after the program's top-level statements complete.
+
+```rust
+fn worker() {
+    let msg = receive();
+    println(msg);
+}
+
+let pid = spawn(worker);   // returns ActorPid
+```
+
+### `send(pid, value)`
+
+Enqueues `value` into `pid`'s bounded mailbox (default capacity: **8**
+messages). Returns `Void` on success. Errors if `pid` is unknown or the
+mailbox is full. On success, if the target actor was blocked waiting for a
+message, it transitions back to the runnable queue.
+
+```rust
+send(pid, 42);             // enqueue 42 into pid's mailbox
+```
+
+### `receive() -> T`
+
+Dequeues and returns the oldest message from the current actor's mailbox.
+If the mailbox is empty, the calling actor is marked blocked and the
+scheduler suspends it until a future `send` re-readies it. **`receive()`
+is only valid inside an actor function body.** Calling it outside an actor
+context is a runtime error.
+
+```rust
+fn handler() {
+    let v = receive();     // blocks until a message arrives
+    println(v);
+}
+```
+
+### Cooperative scheduler
+
+Actors run to their next yield point without preemption — code between
+`receive()` calls is atomic with respect to other actors. The scheduler
+runs all pending actors after the main script exits. Actors execute in
+FIFO order; `send()` appends to the back of the runnable queue.
+
+### Deadlock detection
+
+If the scheduler's runnable queue is exhausted while actors remain blocked
+on `receive()` with empty mailboxes, it emits:
+
+```
+error: deadlock detected; N actor(s) blocked on receive() with empty mailboxes; PIDs: [...]
+```
+
+### Example: ping-pong
+
+```rust
+fn ponger() {
+    let msg = receive();
+    println("pong");
+}
+
+fn pinger() {
+    let ponger_pid = receive();   // receive the ponger's PID
+    let go = receive();           // receive the go signal
+    println("ping");
+    send(ponger_pid, go);         // forward to ponger
+}
+
+let ponger_pid = spawn(ponger);
+let pinger_pid = spawn(pinger);
+send(pinger_pid, ponger_pid);     // give pinger ponger's address
+send(pinger_pid, 1);              // fire the go signal
+// output: ping\npong
+```
+
 ## Roadmap for Structured Concurrency
 
 The target shape is **actor-based, not shared-memory**, and
@@ -449,14 +536,18 @@ Resilient today is qualification-ready.
 
 ## Summary
 
-- Today: one thread, three backends, no concurrency primitives
-  in the language.
+- Today: one thread, three backends; `spawn` / `send` / `receive()`
+  actor primitives available in the interpreter (V1).
 - ISR-safe at the boundary because Resilient never runs in an
   ISR and is never preempted mid-value by another Resilient
   execution.
+- Actor scheduling is cooperative — yield points are `receive()`
+  and actor completion; no preemption between actors.
+- Bounded mailboxes (default 8) prevent unbounded queue growth;
+  deadlock detection fires when all actors block with empty mailboxes.
 - Live blocks are fault tolerance, not concurrency.
-- Effect tracking (G18) is the named prerequisite for any
-  concurrency work.
+- Effect tracking (G18) is the named prerequisite for the full
+  actor-safety argument; V1 actors are for interpreter use only.
 - The roadmap points to Erlang-style actors + supervisor trees,
   built on top of effect tracking and an AOT path.
 - Real-time scheduling guarantees are a future work item gated

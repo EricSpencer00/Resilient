@@ -25,6 +25,9 @@
     "resilient/src/lib.rs": {
       "branch": "res-332-pr4-deadlock",
       "claimed_at": "2026-05-01T01:12:19Z"
+    "docs/concurrency.md": {
+      "branch": "res-332-pr5-ping-pong",
+      "claimed_at": "2026-05-01T01:16:36Z"
     }
   }
 }
