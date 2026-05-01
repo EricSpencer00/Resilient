@@ -2284,6 +2284,14 @@ enum Node {
         variants: Vec<EnumVariant>,
         span: span::Span,
     },
+    /// RES-395 D6: a region type parameter declared in `fn foo<R>(...)`.
+    ///
+    /// Used to distinguish region parameters (used as labels in `[R]`
+    /// positions) from type parameters (used as types). Parsed in D6 as
+    /// entries in `type_params`; the substitution pass in D7 rewrites
+    /// call sites and upgrades these to explicit `RegionParam` nodes.
+    #[allow(dead_code)]
+    RegionParam { name: String, span: span::Span },
 }
 
 /// RES-400 PR 2: a single variant inside an `enum` declaration.
@@ -18291,6 +18299,9 @@ impl Interpreter {
             // regular block. The capability gate is enforced by the
             // typechecker / unsafe_check pass before evaluation.
             Node::UnsafeBlock { body, .. } => self.eval(body),
+            // RES-395: region type-param is a declaration marker; no
+            // runtime value.
+            Node::RegionParam { .. } => Ok(Value::Void),
         }
     }
 
@@ -20216,6 +20227,7 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
             name: fn_name,
             parameters,
             requires,
+            type_params,
             span,
             ..
         } = &stmt.node
@@ -20224,14 +20236,22 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
             // avoid an unused-variable warning in non-z3 builds.
             #[cfg(not(feature = "z3"))]
             let _ = requires;
+            // RES-395 D6: a function's own `<R, S, ...>` type params may
+            // serve as region parameters (used as labels in `[R]` positions).
+            // Extend the declared set with the function-scoped type params so
+            // `fn foo<R>(&mut[R] int a)` is accepted without a global `region R;`.
+            let mut fn_declared = declared.clone();
+            for tp in type_params {
+                fn_declared.insert(tp.clone());
+            }
 
             // Per-parameter pass: every labeled reference must name
-            // a declared region.
+            // a declared region (global or function-scoped).
             let mut refs: Vec<(usize, bool, Option<String>, String)> = Vec::new();
             for (idx, (ty, pname)) in parameters.iter().enumerate() {
                 if let Some((is_mut, label)) = parse_ref_type(ty) {
                     if let Some(l) = &label
-                        && !declared.contains(l)
+                        && !fn_declared.contains(l)
                     {
                         errors.push(prefix(
                             *span,
@@ -44499,6 +44519,53 @@ mod tests {
             borrow_errs.len(),
             1,
             "a == b cannot prove disjointness, error should remain: {:?}",
+            borrow_errs
+        );
+    }
+
+    // --- RES-395 D6: region type-params accepted as region labels ---
+
+    #[test]
+    fn res395_d6_type_param_accepted_as_region_label() {
+        // `fn foo<R>(&mut[R] int a, &mut[R] int b)` — same label via a
+        // function-scoped type param — should be rejected (same region,
+        // both mutable), just like `region R;` at the top level.
+        let src = "fn foo<R>(&mut[R] int a, &mut[R] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            !borrow_errs.is_empty(),
+            "two &mut[R] params must be rejected as aliasing"
+        );
+    }
+
+    #[test]
+    fn res395_d6_distinct_type_params_accepted() {
+        // `fn foo<R, S>(&mut[R] int a, &mut[S] int b)` — distinct
+        // function-scoped region params → different regions → accepted.
+        let src = "fn foo<R, S>(&mut[R] int a, &mut[S] int b) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.is_empty(),
+            "distinct region type-params should be accepted, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    #[test]
+    fn res395_d6_type_param_not_confused_with_undeclared() {
+        // A label that matches a type-param should NOT be flagged as an
+        // undeclared region.
+        let src = "fn bar<Region>(&mut[Region] int x) {}\n";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.is_empty(),
+            "type-param label should not be flagged as undeclared, got: {:?}",
             borrow_errs
         );
     }

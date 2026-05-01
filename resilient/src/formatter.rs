@@ -1116,6 +1116,7 @@ impl Formatter {
             | Node::TraitDecl { .. }
             | Node::EnumDecl { .. }
             | Node::UnsafeBlock { .. }
+            | Node::RegionParam { .. }
             | Node::Program(_) => {
                 self.fmt_stmt(node);
             }
