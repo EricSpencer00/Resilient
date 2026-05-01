@@ -141,3 +141,36 @@ Resilient programs on bare-metal MCUs. Concretely:
 
 See [ROADMAP.md](https://github.com/EricSpencer00/Resilient/blob/main/ROADMAP.md)
 goalpost G18 for status.
+
+## Hello, GPIO — Volatile MMIO and Interrupt Handlers
+
+Volatile MMIO lets you write Resilient code that reads from and writes to memory-mapped hardware registers on a microcontroller. The compiler enforces that all volatile access is wrapped in `unsafe` blocks, and the `#[interrupt]` attribute lets you define interrupt service routines that the runtime's vector table links automatically.
+
+```resilient
+const GPIOA_ODR: Int = 0x4001_0C14;  # GPIO output data register
+const SYSTICK_CSR: Int = 0xE000_E010; # SysTick control register
+
+unsafe fn write_led_on() {
+    volatile_write_u32(GPIOA_ODR, 1);
+}
+
+unsafe fn write_led_off() {
+    volatile_write_u32(GPIOA_ODR, 0);
+}
+
+#[interrupt(name = "SysTick")]
+fn tick_handler() {
+    unsafe { write_led_off(); }
+}
+
+fn main() {
+    write_led_on();
+}
+```
+
+Build with:
+```bash
+cargo build --release --target thumbv7em-none-eabihf --manifest-path resilient-runtime-cortex-m-demo/Cargo.toml
+```
+
+The compiler lowers `#[interrupt(name = "SysTick")]` to an external symbol `__resilient_isr_SysTick` marked `extern "C"` and `no_mangle`. The `resilient-runtime-cortex-m-demo` crate provides a vector table with weak aliases that resolve to this symbol, so your interrupt handler is automatically registered without manual symbol manipulation.

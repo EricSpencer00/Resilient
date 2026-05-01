@@ -78,6 +78,8 @@ deprecation cycle before any breaking change, even pre-1.0:
 - **Function call syntax** and the `fn name(type arg, ...)` declaration form
 - **String/byte literal escape syntax** (`\n`, `\t`, `\\`, `\"`, `\xNN`,
   `\u{NNNN}`)
+- **`unsafe` blocks** — required wrapper for volatile MMIO intrinsics; the `unsafe { ... }` syntax and the compile-time gate (calling `volatile_read_*`/`volatile_write_*` outside `unsafe` is an error) are stable.
+- **`#[interrupt(name = "…")]` attribute** — registers a zero-parameter unit function as an ISR; lowers to `__resilient_isr_<NAME>` extern symbol; backed by the `resilient-runtime-cortex-m-demo` weak-alias vector table. Stable for Cortex-M4F and RV32IMAC targets.
 
 Where a change is unavoidable, the compiler will emit a deprecation warning
 for at least one release before the construct stops compiling.

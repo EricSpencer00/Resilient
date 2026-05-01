@@ -1,12 +1,24 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-400-sum-types-pr6",
-      "claimed_at": "2026-04-30T23:17:45Z"
+    "SYNTAX.md": {
+      "branch": "res-406-docs",
+      "claimed_at": "2026-04-30T23:30:04Z"
     },
-    "resilient/src/sum_types.rs": {
-      "branch": "res-400-sum-types-pr6",
-      "claimed_at": "2026-04-30T23:17:45Z"
+    "STABILITY.md": {
+      "branch": "res-406-docs",
+      "claimed_at": "2026-04-30T23:30:04Z"
+    },
+    "docs/no-std.md": {
+      "branch": "res-406-docs",
+      "claimed_at": "2026-04-30T23:30:04Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-405-pr2-walker",
+      "claimed_at": "2026-04-30T23:45:40Z"
+    },
+    "resilient/src/diag.rs": {
+      "branch": "res-405-pr2-walker",
+      "claimed_at": "2026-04-30T23:45:40Z"
     }
   }
 }
