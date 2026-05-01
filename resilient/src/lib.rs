@@ -20328,6 +20328,14 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
         }
     }
 
+    // RES-395 D8: call-site check — when a caller passes arguments with
+    // concrete region labels to a callee with region type params, verify
+    // that the substituted labels don't alias.
+    errors.extend(crate::region_inference::check_call_site_region_aliasing(
+        program,
+        source_path,
+    ));
+
     errors
 }
 
@@ -44566,6 +44574,47 @@ mod tests {
         assert!(
             borrow_errs.is_empty(),
             "type-param label should not be flagged as undeclared, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    // --- RES-395 D8: call-site region aliasing via substitution ---
+
+    #[test]
+    fn res395_d8_call_site_same_var_twice_detected() {
+        // Passing the same &mut[A] arg to both params of `update<R, S>`
+        // unifies R=A and S=A → aliasing error at the call site.
+        let src = "\
+            region A;\n\
+            fn update<R, S>(&mut[R] int a, &mut[S] int b) {}\n\
+            fn caller(&mut[A] int x) { update(x, x); }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        assert!(
+            borrow_errs.iter().any(|e| e.contains("call to `update`")),
+            "expected call-site aliasing error, got: {:?}",
+            borrow_errs
+        );
+    }
+
+    #[test]
+    fn res395_d8_call_site_distinct_vars_ok() {
+        // Passing two different-region args — no aliasing.
+        let src = "\
+            region A;\n\
+            region B;\n\
+            fn update<R, S>(&mut[R] int a, &mut[S] int b) {}\n\
+            fn caller(&mut[A] int x, &mut[B] int y) { update(x, y); }\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let borrow_errs = check_region_aliasing(&program, "<test>");
+        // The caller parameters also have distinct regions, so no errors.
+        assert!(
+            borrow_errs.is_empty(),
+            "distinct-region call should be accepted, got: {:?}",
             borrow_errs
         );
     }
