@@ -80,6 +80,8 @@ deprecation cycle before any breaking change, even pre-1.0:
   `\u{NNNN}`)
 - **`unsafe` blocks** — required wrapper for volatile MMIO intrinsics; the `unsafe { ... }` syntax and the compile-time gate (calling `volatile_read_*`/`volatile_write_*` outside `unsafe` is an error) are stable.
 - **`#[interrupt(name = "…")]` attribute** — registers a zero-parameter unit function as an ISR; lowers to `__resilient_isr_<NAME>` extern symbol; backed by the `resilient-runtime-cortex-m-demo` weak-alias vector table. Stable for Cortex-M4F and RV32IMAC targets.
+- **Region annotation syntax** — `region NAME;` declarations, `&[NAME] T` shared-reference parameters, `&mut[NAME] T` exclusive-mutable-reference parameters, and the compile-time borrow check that rejects two `&mut[A]` params with the same label in the same function. Stable; the syntactic alias-rejection rule and diagnostic format are part of the stable surface.
+- **Region-polymorphic function syntax** — `fn f<R, S>(…)` with region type parameters in angle brackets; call-site substitution and aliasing check (two callee region params resolving to the same mutable region is a compile-time error). Stable for the V1 single-label inference model.
 
 Where a change is unavoidable, the compiler will emit a deprecation warning
 for at least one release before the construct stops compiling.
