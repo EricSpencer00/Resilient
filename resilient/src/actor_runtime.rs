@@ -330,6 +330,23 @@ pub fn get_actor_fn(pid: ActorPid) -> Option<Value> {
     ACTOR_FN_REGISTRY.with(|r| r.borrow().get(&pid).cloned())
 }
 
+/// Pop the next runnable actor PID. Called by `lib.rs`'s cooperative-
+/// scheduler loop; returns `None` when the runnable queue is empty.
+pub fn next_runnable_actor() -> Option<ActorPid> {
+    SCHEDULER.with(|s| s.borrow_mut().pop_runnable())
+}
+
+/// True when there are no runnable actors and at least one blocked actor
+/// (deadlock condition). PR 4 surfaces this as a user-visible error.
+pub fn is_deadlocked() -> bool {
+    SCHEDULER.with(|s| s.borrow().is_deadlocked())
+}
+
+/// Snapshot of currently-blocked PIDs. Used by PR 4's deadlock diagnostic.
+pub fn blocked_pids() -> Vec<ActorPid> {
+    SCHEDULER.with(|s| s.borrow().blocked_pids())
+}
+
 /// Reset every thread-local for a fresh test run. Test-only — calling
 /// this from production code would corrupt any in-flight scheduling.
 #[cfg(test)]
