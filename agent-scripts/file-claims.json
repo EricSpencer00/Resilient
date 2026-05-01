@@ -35,21 +35,9 @@
       "branch": "res-332-pr5-ping-pong",
       "claimed_at": "2026-05-01T01:16:36Z"
     },
-    "resilient/examples/region_z3_pos.rz": {
-      "branch": "res-393-pr2-golden",
-      "claimed_at": "2026-05-01T01:31:08Z"
-    },
-    "resilient/examples/region_z3_pos.expected.txt": {
-      "branch": "res-393-pr2-golden",
-      "claimed_at": "2026-05-01T01:31:08Z"
-    },
-    "resilient/examples/region_z3_neg.rz": {
-      "branch": "res-393-pr2-golden",
-      "claimed_at": "2026-05-01T01:31:08Z"
-    },
-    "resilient/examples/region_z3_neg.expected.txt": {
-      "branch": "res-393-pr2-golden",
-      "claimed_at": "2026-05-01T01:31:08Z"
+    "resilient/src/region_inference.rs": {
+      "branch": "res-394-pr1-inference-machinery",
+      "claimed_at": "2026-05-01T01:35:26Z"
     }
   }
 }
