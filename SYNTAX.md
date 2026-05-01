@@ -655,3 +655,50 @@ fn tick_handler() {
 ```
 
 Use `unsafe` and volatile intrinsics when you need to directly manipulate hardware registers (GPIO, timers, peripherals) on an embedded target. The `#[interrupt]` attribute is the entry point for ISR handlers that respond to hardware events; it ensures the handler is discoverable by the runtime's vector table without requiring manual symbol registration.
+
+## Region Annotations and the Borrow Checker
+
+Resilient's region system prevents aliased mutable borrows at compile time. A *region* is a named memory area that tracks ownership. Declare regions at module scope with `region NAME;`, then annotate reference parameters with `&[NAME]` (shared) or `&mut[NAME]` (exclusive mutable).
+
+The borrow checker rejects any function that declares two `&mut[A]` parameters with the **same** region label, because the caller could pass the same variable for both, creating aliased mutation:
+
+```resilient
+region A;
+
+// error: `same_region_bad` has two &mut[A] params — aliasing is possible
+fn same_region_bad(&mut[A] int x, &mut[A] int y) { ... }
+
+// ok: A ≠ B, so x and y cannot alias
+region B;
+fn disjoint_ok(&mut[A] int x, &mut[B] int y) { ... }
+```
+
+### Region-polymorphic functions
+
+When a function should work with *any* region but still enforce disjointness between its parameters, declare it with **region type parameters** using angle brackets after the function name:
+
+```resilient
+region A;
+
+fn update<R, S>(&mut[R] int a, &mut[S] int b) {
+    // R and S are distinct by declaration; the call site enforces it
+}
+
+fn caller(&mut[A] int a, &mut[A] int b) {
+    update(a, b);  // ok — a and b carry different region labels at this call site
+}
+```
+
+At each call site, the compiler infers the concrete region labels for `R` and `S` from the arguments. If both type params resolve to the same mutable region, it is a compile-time error:
+
+```resilient
+fn bad_caller(&mut[A] int a) {
+    update(a, a);  // error: `update` aliases mutable region `A` via args 0 and 1
+}
+```
+
+Region type parameters are scoped to the function declaration. They cannot be constrained further in V1 — two distinct type params always denote disjoint regions, and the borrow checker enforces that at every call site.
+
+### Z3-assisted alias analysis
+
+The syntactic borrow checker is intentionally conservative. When a function carries `@requires` preconditions that prove its reference parameters are disjoint, the Z3 backend can approve the call even when the syntactic rule would otherwise reject it. This fallback is used automatically; no extra syntax is required.
