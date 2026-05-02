@@ -59,7 +59,7 @@ type errors to runtime. The `--typecheck` (or `-t`) flag
 enables the static checker:
 
 ```bash
-resilient --typecheck hello.rz
+rz --typecheck hello.rz
 ```
 
 When every binding and call is consistent, you get a green
