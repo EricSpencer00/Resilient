@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # RES-207: extract every ```resilient code block from
-# docs/tutorial/*.md and run each one through the resilient
+# docs/tutorial/*.md and run each one through the rz
 # binary. Exit 0 when every snippet runs to completion (exit 0
 # from the compiler); non-zero on the first failure.
 #
@@ -11,9 +11,9 @@
 # `mapfile` / `readarray` / other bash-4 idioms.
 #
 # Assumptions:
-# - `resilient` binary is on PATH OR pointed at via $RESILIENT_BIN.
+# - `rz` binary is on PATH OR pointed at via $RESILIENT_BIN.
 #   Defaults to `resilient/target/release/rz` relative to
-#   repo root, then falls back to `resilient` on PATH.
+#   repo root, then falls back to `rz` on PATH.
 # - Code blocks are fenced with triple-backticks followed by the
 #   language tag `resilient` (case-sensitive). Other fences
 #   (```bash, ```rust, etc.) are treated as documentation-only
@@ -30,15 +30,15 @@ if [ -z "$BIN" ]; then
         BIN=resilient/target/release/rz
     elif [ -x resilient/target/debug/rz ]; then
         BIN=resilient/target/debug/rz
-    elif command -v resilient >/dev/null 2>&1; then
-        BIN=resilient
+    elif command -v rz >/dev/null 2>&1; then
+        BIN=rz
     else
-        echo "error: resilient binary not found. Run 'cd resilient && cargo build' or set RESILIENT_BIN." >&2
+        echo "error: rz binary not found. Run 'cd resilient && cargo build' or set RESILIENT_BIN." >&2
         exit 2
     fi
 fi
 
-echo "Using resilient binary: $BIN"
+echo "Using rz binary: $BIN"
 
 TUTORIAL_DIR=docs/tutorial
 if [ ! -d "$TUTORIAL_DIR" ]; then
