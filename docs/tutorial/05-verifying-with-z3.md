@@ -72,7 +72,7 @@ obligation:
 
 ```bash
 mkdir -p certs
-resilient --typecheck --emit-certificate certs path/to/ident_round.rz
+rz --typecheck --emit-certificate certs path/to/ident_round.rz
 ```
 
 You'll see:

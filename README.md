@@ -180,7 +180,7 @@ docker run --rm ghcr.io/ericspencer00/resilient:latest --help
 
 # Run a source file by mounting it in:
 docker run --rm -v "$PWD":/work -w /work \
-    ghcr.io/ericspencer00/resilient:latest examples/hello.rz
+    ghcr.io/ericspencer00/resilient:latest resilient/examples/hello.rz
 ```
 
 The image is multi-arch (linux/amd64 + linux/arm64), built from `Dockerfile`
@@ -240,7 +240,7 @@ If you'd rather not install — typical contributor workflow:
 
 ```bash
 cargo build --release --manifest-path resilient/Cargo.toml
-./resilient/target/release/rz examples/hello.rz
+./resilient/target/release/rz resilient/examples/hello.rz
 ```
 
 ### SMT-backed verification (optional)
@@ -627,7 +627,7 @@ you want to see what the scanner actually emitted, without
 editing source (RES-112). Mutually exclusive with `--lsp`.
 
 ```sh
-rz --dump-tokens examples/hello.rz
+rz --dump-tokens resilient/examples/hello.rz
 # 2:1  Function("fn")
 # 2:4  Identifier("main")("main")
 # 2:8  LeftParen("(")
@@ -642,7 +642,7 @@ columns, and absolute jump targets (RES-173). The output reflects
 the RES-172 peephole pass, so what you see is what runs.
 
 ```sh
-rz --dump-chunks examples/hello.rz
+rz --dump-chunks resilient/examples/hello.rz
 # === main ===
 # constants:
 #   const[0] = "Hello, Resilient world!"
@@ -664,7 +664,7 @@ indented under the function signature). By default it prints to
 stdout; pass `--in-place` to overwrite the file.
 
 ```bash
-rz fmt examples/hello.rz              # print to stdout
+rz fmt resilient/examples/hello.rz    # print to stdout
 rz fmt --in-place src/main.rz         # overwrite
 ```
 

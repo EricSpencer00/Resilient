@@ -55,7 +55,7 @@ Honours the `logos-lexer` feature flag — same output either way.
 Mutually exclusive with `--lsp`.
 
 ```bash
-rz --dump-tokens examples/hello.rz
+rz --dump-tokens resilient/examples/hello.rz
 ```
 
 ### `--dump-chunks <file>`
@@ -66,7 +66,7 @@ every bytecode chunk — `main` plus each user function — with
 constants, offsets, lines, opnames, and resolved jump targets.
 
 ```bash
-rz --dump-chunks examples/hello.rz
+rz --dump-chunks resilient/examples/hello.rz
 ```
 
 Mutually exclusive with `--dump-tokens` and `--lsp`. The column
