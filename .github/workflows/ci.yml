@@ -3,21 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    # RES-398: docs-only changes don't affect Rust build/test/clippy
-    # output, so skip the heavy matrix when only docs/markdown change.
-    # Anything that touches code (.rs, Cargo.{toml,lock}, src/, tests/,
-    # benches/) still runs the full matrix because those paths are not
-    # in the ignore list.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.github/ISSUE_TEMPLATE/**'
 
 # One job per push/PR is enough — cancel in-flight runs on rebase.
 concurrency:
@@ -25,8 +12,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    name: build / clippy / fmt
+  changes:
+    name: detect docs-only change
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only pull request
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          non_docs="$(git diff --name-only "$base" "$head" \
+            | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
+          if [[ -z "$non_docs" ]]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  default_ci:
+    name: build / test / clippy
+    needs: [changes]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -34,53 +52,95 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Docs-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "docs-only change; Rust build/test/clippy gate not needed"
+
       - name: Install Rust toolchain
+        if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           components: clippy, rustfmt
 
       - name: Cache cargo
+        if: needs.changes.outputs.docs_only != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: resilient
 
       - name: cargo build
+        if: needs.changes.outputs.docs_only != 'true'
         run: cargo build --locked --verbose
 
       - name: cargo clippy
+        if: needs.changes.outputs.docs_only != 'true'
         run: cargo clippy --locked -- -D warnings
 
-      - name: cargo fmt --check
+      - name: cargo test
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo test --locked --verbose
+
+      - name: cargo fmt
+        if: needs.changes.outputs.docs_only != 'true'
         run: cargo fmt --check
 
-  test:
+  z3_ci:
+    name: build / test with --features z3
+    needs: [changes]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: resilient
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docs-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "docs-only change; z3 gate not needed"
+
+      - name: Install Z3
+        if: needs.changes.outputs.docs_only != 'true'
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
+
+      - name: Install Rust toolchain
+        if: needs.changes.outputs.docs_only != 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        if: needs.changes.outputs.docs_only != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: resilient
+          key: z3
+
+      - name: cargo build
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo build --locked --features z3 --verbose
+
+      - name: cargo test
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo test --locked --features z3 --verbose
+        env:
+          # Linux distro paths for bindgen + linker (for z3).
+          BINDGEN_EXTRA_CLANG_ARGS: -I/usr/include
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+
+  extra_feature_tests:
     name: test (${{ matrix.features }})
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: resilient
     strategy:
       matrix:
-        include:
-          - features: ''
-            name: 'default'
-            z3_install: false
-          - features: 'z3'
-            name: 'z3'
-            z3_install: true
-          - features: 'lsp'
-            name: 'lsp'
-            z3_install: false
-          - features: 'jit'
-            name: 'jit'
-            z3_install: false
+        features: [lsp, jit]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Z3 (if needed)
-        if: ${{ matrix.z3_install }}
-        run: sudo apt-get update && sudo apt-get install -y libz3-dev z3 clang
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -94,29 +154,7 @@ jobs:
           key: test-${{ matrix.features }}
 
       - name: cargo test
-        run: |
-          if [[ -n "${{ matrix.features }}" ]]; then
-            cargo test --locked --features ${{ matrix.features }} --verbose
-          else
-            cargo test --locked --verbose
-          fi
-        env:
-          # Linux distro paths for bindgen + linker (for z3).
-          BINDGEN_EXTRA_CLANG_ARGS: ${{ matrix.z3_install && '-I/usr/include' || '' }}
-          LIBRARY_PATH: ${{ matrix.z3_install && '/usr/lib/x86_64-linux-gnu' || '' }}
-
-  test-summary:
-    name: test summary
-    runs-on: ubuntu-latest
-    if: always()
-    needs: [test]
-    steps:
-      - name: Check test results
-        run: |
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "::error::One or more test shards failed"
-            exit 1
-          fi
+        run: cargo test --locked --features ${{ matrix.features }} --verbose
 
   board:
     name: board hygiene

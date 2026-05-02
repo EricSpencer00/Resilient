@@ -13,30 +13,57 @@ name: embedded
 on:
   push:
     branches: [main]
-    # RES-398: skip cross-compile gate when only docs/markdown change.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.github/ISSUE_TEMPLATE/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: detect docs-only change
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only pull request
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          non_docs="$(git diff --name-only "$base" "$head" \
+            | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
+          if [[ -z "$non_docs" ]]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   cortex_m:
     name: resilient-runtime-cortex-m-demo (thumbv7em-none-eabihf)
+    needs: [changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Docs-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "docs-only change; Cortex-M demo cross-compile not needed"
+
       - name: Install Rust toolchain
+        if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -44,6 +71,7 @@ jobs:
           targets: thumbv7em-none-eabihf
 
       - name: Cache cargo
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -53,15 +81,22 @@ jobs:
           key: cortex-m-${{ hashFiles('resilient-runtime-cortex-m-demo/Cargo.lock', 'resilient-runtime/Cargo.lock') }}
 
       - name: build_cortex_m_demo.sh
+        if: needs.changes.outputs.docs_only != 'true'
         run: scripts/build_cortex_m_demo.sh
 
   riscv32:
     name: resilient-runtime (riscv32imac-unknown-none-elf)
+    needs: [changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Docs-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "docs-only change; RISC-V cross-compile not needed"
+
       - name: Install Rust toolchain
+        if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -69,6 +104,7 @@ jobs:
           targets: riscv32imac-unknown-none-elf
 
       - name: Cache cargo
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -78,15 +114,22 @@ jobs:
           key: riscv32-${{ hashFiles('resilient-runtime/Cargo.lock') }}
 
       - name: build_riscv32.sh
+        if: needs.changes.outputs.docs_only != 'true'
         run: scripts/build_riscv32.sh
 
   cortex_m0:
     name: resilient-runtime (thumbv6m-none-eabi)
+    needs: [changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Docs-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "docs-only change; Cortex-M0 cross-compile not needed"
+
       - name: Install Rust toolchain
+        if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
@@ -94,6 +137,7 @@ jobs:
           targets: thumbv6m-none-eabi
 
       - name: Cache cargo
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -103,4 +147,5 @@ jobs:
           key: cortex-m0-${{ hashFiles('resilient-runtime/Cargo.lock') }}
 
       - name: build_cortex_m0.sh
+        if: needs.changes.outputs.docs_only != 'true'
         run: scripts/build_cortex_m0.sh
