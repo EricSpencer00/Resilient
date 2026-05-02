@@ -98,7 +98,7 @@ proven statically vs left to runtime. Useful for understanding
 what the verifier is (and isn't) doing on a given program.
 
 ```bash
-rz --audit examples/sensor_monitor.rz
+rz --audit resilient/examples/sensor_monitor.rz
 ```
 
 ### `--emit-certificate <dir>`
@@ -110,7 +110,7 @@ binary. One file per obligation, named `<fn>__<kind>__<idx>.smt2`.
 Implies `--typecheck`. Requires `--features z3`.
 
 ```bash
-rz --emit-certificate ./certs examples/cert_demo.rz   # binary built with --features z3
+rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # binary built with --features z3
 ```
 
 Every run also writes a `manifest.json` index with per-obligation

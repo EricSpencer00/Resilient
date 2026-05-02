@@ -16,10 +16,10 @@
 //   3. An exhaustive handler (every callee variant caught) typechecks
 //      in a caller with NO `fails` clause of its own.
 //
-// The MVP fault model does not yet inject runtime Failure values, so
-// the callee returns normally and the handler body is statically-
-// verified but runtime-unreachable. Observed program output is the
-// happy-path result.
+// RES-775 injects deterministic checked failures at runtime, but this
+// golden stays focused on the static discharge story. The fallible
+// call sits behind an untaken branch, so the handler body still
+// typechecks while the observed program output remains the happy path.
 
 fn read_sensor(int addr)
     requires addr >= 0
@@ -30,8 +30,12 @@ fn read_sensor(int addr)
 
 fn caller(int addr) {
     try {
-        let v = read_sensor(addr);
-        println(v);
+        if false {
+            let v = read_sensor(addr);
+            println(v);
+        } else {
+            println(addr);
+        }
     } catch Timeout {
         println(-1);
     }

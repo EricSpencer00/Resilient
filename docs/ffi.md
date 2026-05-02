@@ -31,7 +31,7 @@ fn main() {
 main();
 ```
 
-Run with: `rz examples/ffi_libm.rz` (binary built with `--features ffi`).
+Run with: `rz resilient/examples/ffi_libm.rz` (binary built with `--features ffi`).
 
 ## Extern block syntax
 
