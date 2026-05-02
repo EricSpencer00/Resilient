@@ -38,7 +38,7 @@ a snippet stops working, CI notices.
 Code blocks marked ```resilient are runnable as-is:
 
 ```bash
-resilient path/to/snippet.rz
+rz path/to/snippet.rz
 ```
 
 Copy-paste any one of them into a `.rz` file and run it. Or skip

@@ -213,7 +213,7 @@ per discharged obligation, each independently re-verifiable
 under any compatible solver.
 
 ```bash
-rz --emit-certificate ./certs examples/cert_demo.rz   # binary built with --features z3
+rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # binary built with --features z3
 z3 -smt2 ./certs/ident_round__decl__0.smt2
 # unsat   ← the proof: negation is unsatisfiable, so the original holds
 ```
