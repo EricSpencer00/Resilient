@@ -7926,8 +7926,10 @@ enum Value {
         /// Empty for monomorphic functions.
         type_params: Vec<String>,
         /// RES-775: declared checked-failure variants for this function.
-        /// Used only by `try`/`catch` runtime injection for now.
-        fails: Vec<String>,
+        /// Stored behind `Rc` because function values are cloned on
+        /// every call/lookup, and keeping this metadata shared avoids
+        /// inflating recursive interpreter stack frames.
+        fails: Rc<Vec<String>>,
     },
     /// Native function. `name` is the identifier it was registered as,
     /// for diagnostics only.
@@ -17363,6 +17365,43 @@ impl Interpreter {
         self.env.local_names()
     }
 
+    #[inline(never)]
+    fn eval_try_catch(
+        &mut self,
+        body: &[Node],
+        handlers: &[(String, Vec<Node>)],
+    ) -> RResult<Value> {
+        let saved_injection = self.inject_checked_failures;
+        self.inject_checked_failures = true;
+        for stmt in body {
+            match self.eval(stmt) {
+                Ok(v @ Value::Return(_)) => {
+                    self.inject_checked_failures = saved_injection;
+                    return Ok(v);
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    self.inject_checked_failures = saved_injection;
+                    if let Some(variant) = parse_checked_failure_signal(&err)
+                        && let Some((_, handler_body)) =
+                            handlers.iter().find(|(name, _)| name == variant)
+                    {
+                        for handler_stmt in handler_body {
+                            let value = self.eval(handler_stmt)?;
+                            if matches!(value, Value::Return(_)) {
+                                return Ok(value);
+                            }
+                        }
+                        return Ok(Value::Void);
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        self.inject_checked_failures = saved_injection;
+        Ok(Value::Void)
+    }
+
     fn eval(&mut self, node: &Node) -> RResult<Value> {
         match node {
             Node::Program(statements) => self.eval_program(statements),
@@ -17402,7 +17441,7 @@ impl Interpreter {
                     recovers_to: recovers_to.clone(),
                     name: name.clone(),
                     type_params: type_params.clone(),
-                    fails: fails.clone(),
+                    fails: Rc::new(fails.clone()),
                 };
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
@@ -17855,7 +17894,7 @@ impl Interpreter {
                 recovers_to: recovers_to.clone(),
                 name: "<anon>".to_string(),
                 type_params: vec![],
-                fails: vec![],
+                fails: Rc::new(vec![]),
             }),
             Node::TryExpression { expr: inner, .. } => {
                 let v = self.eval(inner)?;
@@ -18037,40 +18076,7 @@ impl Interpreter {
             | Node::ActorDecl { .. }
             | Node::ClusterDecl { .. }
             | Node::SupervisorDecl { .. } => Ok(Value::Void),
-            // RES-775: when a `try` body evaluates a call to a fn with
-            // declared `fails` variants, synthesize a checked-failure
-            // runtime signal and route it to the matching handler arm.
-            Node::TryCatch { body, handlers, .. } => {
-                let saved_injection = self.inject_checked_failures;
-                self.inject_checked_failures = true;
-                for stmt in body {
-                    match self.eval(stmt) {
-                        Ok(v @ Value::Return(_)) => {
-                            self.inject_checked_failures = saved_injection;
-                            return Ok(v);
-                        }
-                        Ok(_) => {}
-                        Err(err) => {
-                            self.inject_checked_failures = saved_injection;
-                            if let Some(variant) = parse_checked_failure_signal(&err)
-                                && let Some((_, handler_body)) =
-                                    handlers.iter().find(|(name, _)| name == variant)
-                            {
-                                for handler_stmt in handler_body {
-                                    let value = self.eval(handler_stmt)?;
-                                    if matches!(value, Value::Return(_)) {
-                                        return Ok(value);
-                                    }
-                                }
-                                return Ok(Value::Void);
-                            }
-                            return Err(err);
-                        }
-                    }
-                }
-                self.inject_checked_failures = saved_injection;
-                Ok(Value::Void)
-            }
+            Node::TryCatch { body, handlers, .. } => self.eval_try_catch(body, handlers),
             // RES-330: short-circuit interpreter evaluation for
             // `forall` / `exists` expressions. All logic lives in the
             // quantifiers module; this dispatch line is the only touch
