@@ -16,18 +16,8 @@ name: size-gate
 on:
   push:
     branches: [main]
-    # RES-398: docs/markdown-only changes can't move the .text size,
-    # so skip the cargo-bloat run when nothing relevant changed.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - '.github/ISSUE_TEMPLATE/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -39,19 +29,56 @@ env:
   SIZE_BUDGET_KIB: 64
 
 jobs:
+  changes:
+    name: detect docs-only change
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect docs-only pull request
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          non_docs="$(git diff --name-only "$base" "$head" \
+            | grep -Ev '^(docs/|.*\.md$|\.github/ISSUE_TEMPLATE/)' || true)"
+          if [[ -z "$non_docs" ]]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   size_gate:
     name: cortex-m demo .text budget check
+    needs: [changes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Docs-only fast path
+        if: needs.changes.outputs.docs_only == 'true'
+        run: echo "docs-only change; size gate not needed"
+
       - name: Install Rust toolchain
+        if: needs.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: thumbv7em-none-eabihf
 
       - name: Cache cargo
+        if: needs.changes.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -62,12 +89,14 @@ jobs:
           key: size-gate-${{ hashFiles('resilient-runtime-cortex-m-demo/Cargo.lock', 'resilient-runtime/Cargo.lock') }}
 
       - name: Install cargo-bloat
+        if: needs.changes.outputs.docs_only != 'true'
         # The script installs it if missing, but caching the
         # install here short-circuits the cargo-install compile
         # (~30s) when the cargo-bin cache hits.
         run: command -v cargo-bloat || cargo install --locked cargo-bloat
 
       - name: check_size_budget.sh
+        if: needs.changes.outputs.docs_only != 'true'
         env:
           SIZE_BUDGET_KIB: ${{ env.SIZE_BUDGET_KIB }}
         run: scripts/check_size_budget.sh
