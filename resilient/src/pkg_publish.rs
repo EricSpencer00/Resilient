@@ -645,9 +645,16 @@ mod tests {
         assert_eq!(&a[257..262], b"ustar");
     }
 
+    /// Serialize auth/env tests: `resolve_auth` reads process-global
+    /// environment state, and these tests mutate `RESILIENT_TOKEN` /
+    /// `HOME`, so parallel execution can otherwise observe cross-test
+    /// leakage in CI.
+    static AUTH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn auth_env_var_takes_precedence() {
-        // Save/restore env so concurrent tests don't see leakage.
+        let _guard = AUTH_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
         let prev = env::var("RESILIENT_TOKEN").ok();
         unsafe {
             env::set_var("RESILIENT_TOKEN", "secret-from-env");
@@ -665,6 +672,8 @@ mod tests {
 
     #[test]
     fn auth_returns_none_when_neither_source_present() {
+        let _guard = AUTH_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
         let prev = env::var("RESILIENT_TOKEN").ok();
         let prev_home = env::var("HOME").ok();
         let tmp = std::env::temp_dir().join("res-pub-no-creds");
