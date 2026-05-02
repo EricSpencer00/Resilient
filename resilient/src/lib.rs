@@ -21047,6 +21047,12 @@ fn execute_file(
         ));
     }
 
+    if let Err(count) =
+        fail_on_error_lints(&program, &contents, filename, false, "safety-critical lint")
+    {
+        return Err(format!("Safety-critical lint failed: {} error(s)", count));
+    }
+
     // RES-073: resolve `use` imports before typecheck / interpret.
     let base_dir = Path::new(filename)
         .parent()
@@ -21480,6 +21486,30 @@ fn print_effect_explanation(stats: &typechecker::VerificationStats) {
         println!("  {}: {}", name, tag);
     }
     println!("--- End effects ---");
+}
+
+fn fail_on_error_lints(
+    program: &Node,
+    source: &str,
+    path: &str,
+    quiet: bool,
+    label: &str,
+) -> Result<(), usize> {
+    let lints = lint::check(program, source);
+    let errors: Vec<&lint::Lint> = lints
+        .iter()
+        .filter(|lint| matches!(lint.severity, lint::Severity::Error))
+        .collect();
+    if errors.is_empty() {
+        return Ok(());
+    }
+    if !quiet {
+        for lint in &errors {
+            let diag = lint::format_lint(lint, path);
+            eprintln!("{}", render_with_caret(source, &diag, label));
+        }
+    }
+    Err(errors.len())
 }
 
 // Example programs
@@ -22107,10 +22137,13 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut deny: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut allow: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut safety_critical = false;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
-        if a == "--deny" {
+        if a == "--safety-critical" {
+            safety_critical = true;
+        } else if a == "--deny" {
             i += 1;
             if i >= args.len() {
                 eprintln!("Error: --deny requires a lint code argument");
@@ -22193,6 +22226,7 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     }
 
     // Run lints.
+    lint::set_safety_critical_mode(safety_critical);
     let mut lints = lint::check(&program, &src);
 
     // Apply `--allow` (drop) and `--deny` (severity bump).
@@ -22254,6 +22288,7 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
 
     let mut file: Option<PathBuf> = None;
     let mut quiet = false;
+    let mut safety_critical = false;
     let mut verifier_timeout_ms: u32 = 5000;
     // RES-354: theory selection (z3-gated; default Auto).
     #[cfg(feature = "z3")]
@@ -22263,6 +22298,8 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
         let a = &args[i];
         if a == "--quiet" || a == "-q" {
             quiet = true;
+        } else if a == "--safety-critical" {
+            safety_critical = true;
         } else if a == "--verifier-timeout-ms" {
             i += 1;
             if i >= args.len() {
@@ -22354,6 +22391,17 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                 eprintln!("{}", render_with_caret(&src, e, "parse error"));
             }
         }
+        return Some(1);
+    }
+
+    lint::set_safety_critical_mode(safety_critical);
+    if let Err(_count) = fail_on_error_lints(
+        &program,
+        &src,
+        path.to_string_lossy().as_ref(),
+        quiet,
+        "safety-critical lint",
+    ) {
         return Some(1);
     }
 
@@ -22522,6 +22570,8 @@ COMMON FLAGS:\n\
                                  for every user function\n\
         --emit-certificate DIR   Dump SMT-LIB2 certs per obligation\n\
         --deny-unproven-bounds   Treat any unproven arr[i] as a compile error (RES-351)\n\
+        --safety-critical        Promote vacuous proof-discharge constructs\n\
+                                 such as `assume(false)` to hard errors\n\
         --sign-cert PATH         Ed25519-sign the emitted certificate\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
@@ -22804,6 +22854,10 @@ pub fn run_cli() {
                 // `--typecheck`, which has known limitations on
                 // recursive fns).
                 termination::set_strict_termination(true);
+            } else if arg == "--safety-critical" {
+                // RES-778: safety-sensitive builds can promote
+                // selected proof hazards from warnings to errors.
+                lint::set_safety_critical_mode(true);
             } else if arg == "--explain-effects" {
                 // RES-347: dump one line per user fn with its
                 // inferred effect. Implies --typecheck.
