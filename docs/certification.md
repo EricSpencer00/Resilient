@@ -272,6 +272,7 @@ Resilient's design choices align with that spirit by construction:
 | MISRA C Rule 18.x (pointers and arrays) | No raw pointers in surface syntax. Array access is checked.                                           |
 | MISRA C Rule 21.3 (dynamic memory)      | `--features static-only` makes heap allocation a compile error in the embedded runtime.               |
 | MISRA C Directive 4.1 (run-time failures) | `requires` / `ensures` contracts with static proof or runtime fallback.                             |
+| Safety-policy analogue (vacuous proof rejection) | `--safety-critical` upgrades `assume(false)` from lint L0006 to a hard compile error.            |
 | MISRA C Rule 1.3 (undefined behavior)   | Resilient has no undefined behavior at the language level; the bytecode VM is deterministic.          |
 
 A formal Resilient equivalent of a MISRA-style coding standard —

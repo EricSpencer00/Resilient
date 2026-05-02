@@ -23,6 +23,7 @@
 //!   Main wires that into the `lint <file>` subcommand.
 
 use crate::{Node, Pattern, span::Span};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// RES-198: one lint hit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +74,24 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0012", // RES-397: spec annotation lacks `// source:` provenance comment
 ];
 
+/// RES-778: process-wide policy switch for safety-critical CLI mode.
+///
+/// When enabled, `assume(false)` (L0006) is promoted from a warning to
+/// a hard error and cannot be silenced by a local allow-comment.
+static SAFETY_CRITICAL_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable safety-critical lint policy for the current
+/// process. Mirrors the atomic flag pattern already used by other
+/// strict CLI modes in the compiler driver.
+pub fn set_safety_critical_mode(on: bool) {
+    SAFETY_CRITICAL_MODE.store(on, Ordering::Relaxed);
+}
+
+/// Returns true when safety-critical lint policy is active.
+pub fn safety_critical_mode() -> bool {
+    SAFETY_CRITICAL_MODE.load(Ordering::Relaxed)
+}
+
 /// RES-198: top-level entry. Runs every lint, filters via the
 /// `// resilient: allow LXXXX` comments found in `source`, and
 /// returns the surviving diagnostics sorted by (line, column).
@@ -91,6 +110,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0011_unused_variable(program, &mut out);
     run_l0012_spec_provenance(program, source, &mut out);
 
+    let safety_critical = safety_critical_mode();
+    if safety_critical {
+        for lint in out.iter_mut() {
+            if lint.code == "L0006" {
+                lint.severity = Severity::Error;
+            }
+        }
+    }
+
     // Filter via allow-comments.
     //
     // RES-308: L0011 is the rustc-style sibling of L0001's
@@ -103,6 +131,9 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     // a single comment.
     let allows = collect_allow_comments(source);
     out.retain(|l| {
+        if safety_critical && l.code == "L0006" {
+            return true;
+        }
         if allows.contains(&(l.line, l.code.clone())) {
             return false;
         }
