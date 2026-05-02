@@ -268,7 +268,7 @@ re-verify it under their own solver — without trusting the Resilient
 binary:
 
 ```bash
-rz --emit-certificate ./certs examples/cert_demo.rz   # requires --features z3 build
+rz --emit-certificate ./certs resilient/examples/cert_demo.rz   # requires --features z3 build
 ```
 
 One file is written per discharged obligation:
