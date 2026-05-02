@@ -32,9 +32,18 @@ h1, h2, h3, h4, h5, h6,
   letter-spacing: 0.04em;
 }
 
+// Center the logo image inside just-the-docs's `.site-logo` container —
+// without an explicit text-align/margin, the ~96px-wide rendered image
+// sits flush-left in the wider sidebar slot.
+.site-logo {
+  text-align: center;
+  padding: 0.75rem 0;
+}
 .site-logo img {
   max-height: 56px;
   width: auto;
+  display: inline-block;
+  margin: 0 auto;
 }
 
 .nav-list-item .nav-list-link.active {
@@ -63,18 +72,25 @@ h1, h2, h3, h4, h5, h6,
   border-radius: 0 4px 4px 0;
 }
 
-// Inline `code` only — keep the faint purple wash on `code text` in
-// prose, but don't double-paint inside `pre` blocks (which would
-// give every line its own background and make the block look striped).
+// Inline `code` in prose only — purple wash + tint.
 code {
   color: #4a32a8;
   background-color: rgba($rl-purple, 0.06);
 }
 
+// Inside fenced code blocks, force a single dark color on every
+// descendant span. Rouge emits token spans (.nb, .k, .nf, .err, ...)
+// for autodetected content even when no language is given, and the
+// just-the-docs default token CSS wins the cascade against
+// `color: inherit`. Without `!important` on the descendants we get
+// two-color ASCII diagrams (some chars dark, some purple).
 pre code,
-.highlight code {
+.highlight code,
+.highlight pre,
+.highlight pre code span,
+.highlight code span {
   background-color: transparent !important;
-  color: inherit;
+  color: #2d1f60 !important;
 }
 
 hr {
