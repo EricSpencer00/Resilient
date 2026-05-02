@@ -434,22 +434,22 @@ For a full index of compiler error codes see the [Error Reference](errors/).
 
 ```bash
 # Run the interpreter
-resilient examples/hello.rz
+rz resilient/examples/hello.rz
 
 # With static type checking
-resilient --typecheck examples/hello.rz
+rz --typecheck resilient/examples/hello.rz
 
 # With the verification audit
-resilient --audit examples/hello.rz
+rz --audit resilient/examples/hello.rz
 
 # Bytecode VM
-resilient --vm examples/hello.rz
+rz --vm resilient/examples/hello.rz
 
 # Cranelift JIT (requires --features jit at build time)
-resilient --jit examples/hello.rz
+rz --jit resilient/examples/hello.rz
 
 # Interactive REPL
-resilient
+rz
 ```
 
 ---
