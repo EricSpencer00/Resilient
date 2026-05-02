@@ -1,0 +1,28 @@
+// RES-775: runtime checked-failure injection for structured handlers.
+//
+// `read_sensor` declares `fails Timeout`. While the `try` body runs,
+// the interpreter now injects that declared failure instead of
+// entering the callee body, so the matching `catch Timeout` arm
+// executes and supplies the recovery-path output.
+
+fn read_sensor(int addr)
+    requires addr >= 0
+    fails Timeout
+{
+    return addr;
+}
+
+fn caller(int addr) {
+    try {
+        let v = read_sensor(addr);
+        println(v);
+    } catch Timeout {
+        println(-1);
+    }
+}
+
+fn main() {
+    caller(42);
+}
+
+main();
