@@ -7925,6 +7925,9 @@ enum Value {
         /// RES-405 PR 2: type parameters declared on this generic function.
         /// Empty for monomorphic functions.
         type_params: Vec<String>,
+        /// RES-775: declared checked-failure variants for this function.
+        /// Used only by `try`/`catch` runtime injection for now.
+        fails: Vec<String>,
     },
     /// Native function. `name` is the identifier it was registered as,
     /// for diagnostics only.
@@ -8696,6 +8699,18 @@ fn format_unknown_identifier(name: &str) -> String {
             .join(", ");
         format!("Identifier not found: {} — did you mean {}?", name, body)
     }
+}
+
+const CHECKED_FAILURE_SIGNAL_PREFIX: &str = "__res_checked_failure__:";
+
+fn checked_failure_signal(variant: &str, callee: &str) -> String {
+    format!("{CHECKED_FAILURE_SIGNAL_PREFIX}{variant}:{callee}")
+}
+
+fn parse_checked_failure_signal(err: &str) -> Option<&str> {
+    let rest = err.strip_prefix(CHECKED_FAILURE_SIGNAL_PREFIX)?;
+    let (variant, _callee) = rest.split_once(':')?;
+    Some(variant)
 }
 
 /// Canonical list of every native function visible in a fresh
@@ -17298,6 +17313,11 @@ struct Interpreter {
     /// `None` for monomorphic functions. Set by `apply_function` when the
     /// callee is a generic function; used to annotate error messages.
     active_subst: Option<crate::generics::Subst>,
+    /// RES-775: when true, calls to user fns with declared `fails`
+    /// variants synthesize a checked-failure runtime signal instead of
+    /// entering the body. `try { ... } catch V { ... }` toggles this
+    /// while its body executes.
+    inject_checked_failures: bool,
 }
 
 impl Interpreter {
@@ -17315,6 +17335,7 @@ impl Interpreter {
             call_depth: 0,
             enum_decls: Rc::new(RefCell::new(HashMap::new())),
             active_subst: None,
+            inject_checked_failures: false,
         }
     }
 
@@ -17360,6 +17381,7 @@ impl Interpreter {
                 requires,
                 ensures,
                 recovers_to,
+                fails,
                 type_params,
                 ..
             } => {
@@ -17380,6 +17402,7 @@ impl Interpreter {
                     recovers_to: recovers_to.clone(),
                     name: name.clone(),
                     type_params: type_params.clone(),
+                    fails: fails.clone(),
                 };
                 self.env.set(name.clone(), func);
                 Ok(Value::Void)
@@ -17832,6 +17855,7 @@ impl Interpreter {
                 recovers_to: recovers_to.clone(),
                 name: "<anon>".to_string(),
                 type_params: vec![],
+                fails: vec![],
             }),
             Node::TryExpression { expr: inner, .. } => {
                 let v = self.eval(inner)?;
@@ -18013,17 +18037,38 @@ impl Interpreter {
             | Node::ActorDecl { .. }
             | Node::ClusterDecl { .. }
             | Node::SupervisorDecl { .. } => Ok(Value::Void),
-            // RES-224 (RES-387 follow-up): runtime evaluation of
-            // `try { ... } catch V { ... }`. The MVP fault model does
-            // not surface a runtime Failure value yet — `fails` is
-            // statically verified and callees that declare a variant
-            // still return normally — so the handler bodies are
-            // unreachable at execution time. We still walk the body so
-            // any side-effectful statements inside it run.
-            Node::TryCatch { body, .. } => {
+            // RES-775: when a `try` body evaluates a call to a fn with
+            // declared `fails` variants, synthesize a checked-failure
+            // runtime signal and route it to the matching handler arm.
+            Node::TryCatch { body, handlers, .. } => {
+                let saved_injection = self.inject_checked_failures;
+                self.inject_checked_failures = true;
                 for stmt in body {
-                    self.eval(stmt)?;
+                    match self.eval(stmt) {
+                        Ok(v @ Value::Return(_)) => {
+                            self.inject_checked_failures = saved_injection;
+                            return Ok(v);
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            self.inject_checked_failures = saved_injection;
+                            if let Some(variant) = parse_checked_failure_signal(&err)
+                                && let Some((_, handler_body)) =
+                                    handlers.iter().find(|(name, _)| name == variant)
+                            {
+                                for handler_stmt in handler_body {
+                                    let value = self.eval(handler_stmt)?;
+                                    if matches!(value, Value::Return(_)) {
+                                        return Ok(value);
+                                    }
+                                }
+                                return Ok(Value::Void);
+                            }
+                            return Err(err);
+                        }
+                    }
                 }
+                self.inject_checked_failures = saved_injection;
                 Ok(Value::Void)
             }
             // RES-330: short-circuit interpreter evaluation for
@@ -19305,6 +19350,7 @@ impl Interpreter {
                 recovers_to,
                 name,
                 type_params,
+                fails,
             } => {
                 if self.call_depth >= MAX_INTERPRETER_CALL_DEPTH {
                     return Err(format!(
@@ -19333,6 +19379,7 @@ impl Interpreter {
                     call_depth: self.call_depth + 1,
                     enum_decls: self.enum_decls.clone(),
                     active_subst: None,
+                    inject_checked_failures: self.inject_checked_failures,
                 };
 
                 // RES-405 PR 2: if this is a generic call, infer the substitution
@@ -19365,6 +19412,10 @@ impl Interpreter {
                             format_contract_expr(clause)
                         ));
                     }
+                }
+
+                if self.inject_checked_failures && !fails.is_empty() {
+                    return Err(checked_failure_signal(&fails[0], &name));
                 }
 
                 let body_result = interpreter.eval(&body).map_err(|e| {
@@ -19453,6 +19504,7 @@ impl Interpreter {
                     call_depth: self.call_depth,
                     enum_decls: self.enum_decls.clone(),
                     active_subst: None,
+                    inject_checked_failures: false,
                 };
                 for pre in &requires {
                     let ok = match contract_interp.eval(pre)? {
@@ -19482,6 +19534,7 @@ impl Interpreter {
                         call_depth: self.call_depth,
                         enum_decls: self.enum_decls.clone(),
                         active_subst: None,
+                        inject_checked_failures: false,
                     };
                     post_interp.env.set("result".to_string(), result.clone());
                     for post in &ensures {

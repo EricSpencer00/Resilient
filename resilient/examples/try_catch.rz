@@ -16,10 +16,10 @@
 //   3. An exhaustive handler (every callee variant caught) typechecks
 //      in a caller with NO `fails` clause of its own.
 //
-// The MVP fault model does not yet inject runtime Failure values, so
-// the callee returns normally and the handler body is statically-
-// verified but runtime-unreachable. Observed program output is the
-// happy-path result.
+// RES-775 injects a deterministic checked failure while the `try`
+// body runs, so the handler path is now runtime-reachable. The
+// current scaffold raises the first declared variant (`Timeout`
+// here), which makes the observed program output the recovery path.
 
 fn read_sensor(int addr)
     requires addr >= 0
