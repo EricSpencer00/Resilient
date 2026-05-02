@@ -59,7 +59,7 @@ the boundary the same way a wrong claim from a human would be.
 | Mechanism | What it makes unrepresentable | Module / RES ticket |
 |---|---|---|
 | Linear types | use-after-move on linear values | [resilient/src/linear.rs](../resilient/src/linear.rs), RES-385 |
-| Region annotations | dangling references across explicit regions | [resilient/src/main.rs](../resilient/src/main.rs) `check_region_aliasing`, RES-391 |
+| Region annotations | dangling references across explicit regions | [resilient/src/lib.rs](../resilient/src/lib.rs) `check_region_aliasing`, RES-391 |
 | Effect lattice (`pure` / `io` / `fails`) | a `pure` fn calling an `io` fn | [resilient/src/typechecker.rs](../resilient/src/typechecker.rs) `check_program_effects`, RES-389 / RES-387 |
 | Newtype nominal typing | adding `Meters` to `Seconds` | [resilient/src/newtypes.rs](../resilient/src/newtypes.rs), RES-319 |
 | Bounds-check obligations | unproven `arr[i]` under `--deny-unproven-bounds` | [resilient/src/bounds_check.rs](../resilient/src/bounds_check.rs), RES-351 |
@@ -125,7 +125,7 @@ in your system?*" — yes, here is the list, and here is the closure plan.
 
 ## See also
 
-- [docs/formal-verification-limitations.md](formal-verification-limitations.md) —
+- [docs/VERIFICATION_LIMITS.md](VERIFICATION_LIMITS.md) —
   RES-202: where formal verification's guarantees end and real-world
   uncertainty begins.
 - [STABILITY.md](../STABILITY.md) — the language-surface stability policy.
