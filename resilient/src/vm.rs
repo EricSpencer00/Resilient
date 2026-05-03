@@ -3032,7 +3032,7 @@ mod tests {
             // — comparing fn pointers via address.
             let h = HANDLERS[idx];
             assert!(
-                h as usize != h_unreachable as usize,
+                !std::ptr::eq(h as *const (), h_unreachable as *const ()),
                 "op {:?} mapped to unreachable slot {}",
                 op,
                 idx
