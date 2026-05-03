@@ -58,6 +58,16 @@ Mutually exclusive with `--lsp`.
 rz --dump-tokens resilient/examples/hello.rz
 ```
 
+### `--dump-ast-json <file>`
+
+Prints a stable JSON view of the parsed AST and exits. This is mainly
+for the self-hosting parity harness, which compares Rust-side parse
+output against the self-hosted parser on a curated corpus.
+
+```bash
+rz --dump-ast-json self-host/parity_corpus/success/hello.rz
+```
+
 ### `--dump-chunks <file>`
 
 Compiles the program through the VM pipeline (including the

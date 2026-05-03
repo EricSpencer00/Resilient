@@ -26,6 +26,26 @@ pointing at the input, strips `seed=` / `Program executed
 successfully` noise, and diffs the result against the committed
 `*.expected.txt` snapshot. Exit non-zero on any diff.
 
+## Running the RES-781 parity harness
+
+```bash
+cargo test --manifest-path resilient/Cargo.toml --test self_host_parity
+```
+
+This is the outer trust-loop gate. It walks
+`self-host/parity_corpus/`, then:
+
+- compares the Rust front end's `--dump-tokens` output against the
+  self-hosted lexer token stream
+- compares the Rust front end's `--dump-ast-json` output against the
+  self-hosted parser JSON on curated success cases
+- checks that a malformed corpus file fails in both front ends at the
+  same source location
+
+Failures name the corpus file plus the mismatching artifact (`tokens`,
+`AST`, or parser-failure location), so regressions are easy to
+triage.
+
 ## Adding a snapshot test
 
 ```bash
@@ -57,24 +77,18 @@ the harness pass).
 | Criterion | State |
 |---|---|
 | `self-host/lexer.rz` implements the complete Resilient lexer | 🟡 — covers significantly more than the RES-196 prototype (verification keywords, escapes, hex/bin, block comments, 3-char ops); full coverage matching every example in `resilient/examples/` is a follow-up |
-| Test harness compares against the Rust lexer for every example | 🟡 — current harness uses snapshot inputs; dynamic cross-check vs. `lexer_logos.rs` is the next step (see "What's next" below) |
+| Test harness compares against the Rust frontend on a representative corpus | ✅ — `cargo test --manifest-path resilient/Cargo.toml --test self_host_parity` cross-checks lexer parity, parser AST parity, and one diagnostic-path case |
 | `resilient run self-host/lexer.rz -- <input_file>` | ✅ — `SELF_HOST_INPUT` env var; CLI arg passing isn't a current language surface, env var is the idiomatic substitute |
 | No new language features added to support this | ✅ — uses existing `file_read`, `env`, `is_ok`, `unwrap`, `split`, `push`, `len`, struct field access |
 
 ## What's next
 
-1. **Token-name parity with `lexer_logos.rs`.** The current output
-   format (`KIND LEXEME LINE COL`) groups tokens into KW/PUNCT/OP/...
-   buckets. The Rust lexer emits enum-variant names like `Fn`, `Let`,
-   `Arrow`. A small translator (either side) would let
-   `lexer_check.sh` cross-check dynamically against the canonical
-   token stream rather than against a manually-curated snapshot.
-2. **All-examples sweep.** Walk `resilient/examples/*.{rz,res}` and
+1. **All-examples sweep.** Walk `resilient/examples/*.{rz,res}` and
    add a snapshot per file. Some inputs use string interpolation
    (`{...}` segments inside string literals) which the current
    self-hosted lexer does not yet decompose into nested expressions
    — that would be a bigger lexer extension.
-3. **Multi-line strings.** If/when Resilient grows raw string
+2. **Multi-line strings.** If/when Resilient grows raw string
    literals, the `scan_string` function will need a separate path.
-4. **Self-hosting parser** is tracked as the follow-up [#171](https://github.com/EricSpencer00/Resilient/issues/171)
+3. **Self-hosting parser** is tracked as the follow-up [#171](https://github.com/EricSpencer00/Resilient/issues/171)
    (RES-379). Sequenced after this lexer ships.

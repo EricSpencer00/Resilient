@@ -20174,6 +20174,145 @@ fn dump_tokens_to_stdout(src: &str) {
     }
 }
 
+/// RES-781: dump a stable JSON view of the parsed AST for the
+/// self-hosting parity harness. The shape intentionally mirrors the
+/// self-hosted parser's current JSON output on the curated corpus.
+fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
+    fn node_to_json(node: &Node) -> serde_json::Value {
+        use serde_json::json;
+
+        match node {
+            Node::Program(body) => json!({
+                "type": "Program",
+                "body": body.iter().map(|stmt| node_to_json(&stmt.node)).collect::<Vec<_>>(),
+            }),
+            Node::Function {
+                name,
+                parameters,
+                body,
+                return_type,
+                ..
+            } => json!({
+                "type": "Function",
+                "name": name,
+                "params": parameters
+                    .iter()
+                    .map(|(ty, pname)| json!({"name": pname, "type": ty}))
+                    .collect::<Vec<_>>(),
+                "returns": return_type.clone().unwrap_or_else(|| "void".to_string()),
+                "body": node_to_json(body),
+            }),
+            Node::Block { stmts, .. } => json!({
+                "type": "Block",
+                "stmts": stmts.iter().map(node_to_json).collect::<Vec<_>>(),
+            }),
+            Node::ExpressionStatement { expr, .. } => json!({
+                "type": "ExprStmt",
+                "expr": node_to_json(expr),
+            }),
+            Node::Identifier { name, .. } => json!({
+                "type": "Identifier",
+                "name": name,
+            }),
+            Node::IntegerLiteral { value, .. } => json!({
+                "type": "Int",
+                "value": value,
+            }),
+            Node::FloatLiteral { value, .. } => json!({
+                "type": "Float",
+                "value": value,
+            }),
+            Node::StringLiteral { value, .. } => json!({
+                "type": "String",
+                "value": value,
+            }),
+            Node::BooleanLiteral { value, .. } => json!({
+                "type": "Bool",
+                "value": value,
+            }),
+            Node::PrefixExpression {
+                operator, right, ..
+            } => json!({
+                "type": "Prefix",
+                "op": operator,
+                "right": node_to_json(right),
+            }),
+            Node::InfixExpression {
+                left,
+                operator,
+                right,
+                ..
+            } => json!({
+                "type": "Binary",
+                "op": operator,
+                "left": node_to_json(left),
+                "right": node_to_json(right),
+            }),
+            Node::CallExpression {
+                function,
+                arguments,
+                ..
+            } => {
+                let callee = match function.as_ref() {
+                    Node::Identifier { name, .. } => serde_json::Value::String(name.clone()),
+                    other => node_to_json(other),
+                };
+                json!({
+                    "type": "Call",
+                    "callee": callee,
+                    "args": arguments.iter().map(node_to_json).collect::<Vec<_>>(),
+                })
+            }
+            Node::LetStatement { name, value, .. } => json!({
+                "type": "Let",
+                "name": name,
+                "value": node_to_json(value),
+            }),
+            Node::ReturnStatement { value, .. } => json!({
+                "type": "Return",
+                "value": value.as_ref().map(|expr| node_to_json(expr)).unwrap_or(serde_json::Value::Null),
+            }),
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => json!({
+                "type": "If",
+                "condition": node_to_json(condition),
+                "then": node_to_json(consequence),
+                "else": alternative.as_ref().map(|alt| node_to_json(alt)).unwrap_or(serde_json::Value::Null),
+            }),
+            Node::ArrayLiteral { items, .. } => json!({
+                "type": "Array",
+                "items": items.iter().map(node_to_json).collect::<Vec<_>>(),
+            }),
+            Node::FieldAccess { target, field, .. } => json!({
+                "type": "FieldAccess",
+                "target": node_to_json(target),
+                "field": field,
+            }),
+            Node::IndexExpression { target, index, .. } => json!({
+                "type": "Index",
+                "target": node_to_json(target),
+                "index": node_to_json(index),
+            }),
+            _ => json!({
+                "type": "Unsupported",
+            }),
+        }
+    }
+
+    let (program, errs) = parse(src);
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let rendered =
+        serde_json::to_string(&node_to_json(&program)).expect("self-host parity AST dump JSON");
+    println!("{rendered}");
+    Ok(())
+}
+
 /// RES-073: shared parse helper. Returns the parsed program plus any
 /// parser error strings collected along the way. Used by both the
 /// driver and `imports::expand_uses`.
@@ -22576,6 +22715,7 @@ COMMON FLAGS:\n\
         --vm                     Route through the bytecode VM\n\
         --jit                    Route through the Cranelift JIT\n\
         --dump-tokens            Print the lexer stream and exit\n\
+        --dump-ast-json          Print the parsed AST as JSON and exit\n\
         --dump-chunks            Print the VM disassembly and exit\n\
         --verifier-timeout-ms N  Per-Z3-query timeout (ms, 0 = off)\n\
         --seed N                 Pin the RNG seed for determinism\n\
@@ -22776,6 +22916,9 @@ pub fn run_cli() {
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
+    // RES-781: --dump-ast-json prints a stable JSON AST view used by
+    // the self-hosting parity harness.
+    let mut dump_ast_json = false;
     // RES-173: --dump-chunks compiles the program and prints a
     // human-readable VM disassembly. Reflects RES-172 peephole
     // results because the compiler runs peephole before the
@@ -22902,6 +23045,9 @@ pub fn run_cli() {
                 // the logos-lexer feature path — both go through
                 // `Lexer::new` + `next_token_with_span`.
                 dump_tokens = true;
+            } else if arg == "--dump-ast-json" {
+                // RES-781: print the parsed AST as stable JSON and exit.
+                dump_ast_json = true;
             } else if arg == "--dump-chunks" {
                 // RES-173: compile the program to bytecode and print
                 // a human-readable disassembly (RES-172 peephole
@@ -23089,14 +23235,16 @@ pub fn run_cli() {
         // RES-112: --dump-tokens is mutually exclusive with --lsp
         // (both are terminal modes that don't want a file arg the
         // other way). Emit a clean error if the user combined them.
-        if dump_tokens && lsp_mode {
-            eprintln!("Error: --dump-tokens and --lsp are mutually exclusive");
+        if (dump_tokens || dump_ast_json) && lsp_mode {
+            eprintln!("Error: --dump-tokens/--dump-ast-json and --lsp are mutually exclusive");
             std::process::exit(2);
         }
         // RES-173: --dump-chunks mutually exclusive with the other
         // terminal modes for the same reason.
-        if dump_chunks && (lsp_mode || dump_tokens) {
-            eprintln!("Error: --dump-chunks and --dump-tokens/--lsp are mutually exclusive");
+        if dump_chunks && (lsp_mode || dump_tokens || dump_ast_json) {
+            eprintln!(
+                "Error: --dump-chunks and --dump-tokens/--dump-ast-json/--lsp are mutually exclusive"
+            );
             std::process::exit(2);
         }
 
@@ -23132,6 +23280,28 @@ pub fn run_cli() {
             match fs::read_to_string(filename) {
                 Ok(src) => {
                     dump_tokens_to_stdout(&src);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Error: could not read {}: {}", filename, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if dump_ast_json {
+            if filename.is_empty() {
+                eprintln!("Error: --dump-ast-json requires a path argument");
+                std::process::exit(2);
+            }
+            match fs::read_to_string(filename) {
+                Ok(src) => {
+                    if let Err(errs) = dump_ast_json_to_stdout(&src) {
+                        for err in errs {
+                            eprintln!("Parser error: {}", err);
+                        }
+                        std::process::exit(1);
+                    }
                     return;
                 }
                 Err(e) => {

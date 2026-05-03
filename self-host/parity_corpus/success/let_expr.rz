@@ -1,0 +1,4 @@
+fn add(int a, int b) -> int {
+    return a + b;
+}
+add(3, 4);
