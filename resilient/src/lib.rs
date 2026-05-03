@@ -374,8 +374,10 @@ enum Token {
     /// The minimum slice only uses the `actor` / `receive` /
     /// `concurrent_ensures` keywords inside this block.
     Actor,
-    /// RES-386: `receive name() ensures expr; { body }` — one
-    /// message handler inside an actor block.
+    /// RES-386 / RES-388: `receive handler_name(params) requires R ensures E { body }` — one
+    /// message handler inside an actor block. Handlers are the primary point where
+    /// actors process messages. Parameters must be by-value (no references);
+    /// requires/ensures clauses are optional and used for formal specification.
     Receive,
     /// RES-386: `concurrent_ensures: expr;` — race-freedom
     /// contract attached to an actor declaration. Proved by the
