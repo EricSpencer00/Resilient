@@ -6989,8 +6989,9 @@ mod res402_polymorphic_array_tests {
                 state: &int = 0;
                 receive handle() {}
             }
-            "
-        ).expect_err("reference-typed actor state should be rejected");
+            ",
+        )
+        .expect_err("reference-typed actor state should be rejected");
         assert!(
             err.contains("has reference type"),
             "diagnostic missing 'has reference type': {}",
@@ -7013,8 +7014,9 @@ mod res402_polymorphic_array_tests {
                 state: int = 0;
                 receive handle(&int x) {}
             }
-            "
-        ).expect_err("reference-typed handler parameter should be rejected");
+            ",
+        )
+        .expect_err("reference-typed handler parameter should be rejected");
         assert!(
             err.contains("has reference type"),
             "diagnostic missing 'has reference type': {}",
