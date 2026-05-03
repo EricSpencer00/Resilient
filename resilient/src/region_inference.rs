@@ -130,11 +130,21 @@ pub struct ParamKey {
     pub param_idx: usize,
 }
 
-/// Associates each reference parameter with an inferred `Region`.
+/// Identifies a local variable by function name and variable name.
+/// RES-773: extended region tracking to locals (not just parameters).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LocalKey {
+    pub fn_name: String,
+    pub var_name: String,
+}
+
+/// Associates each reference parameter and local variable with an inferred `Region`.
 pub struct RegionMap {
     pub table: RegionTable,
     /// Mapping from `(fn_name, param_idx)` → `Region`.
     pub entries: HashMap<ParamKey, Region>,
+    /// RES-773: mapping from `(fn_name, var_name)` → `Region` for local variables.
+    pub local_entries: HashMap<LocalKey, Region>,
 }
 
 impl RegionMap {
@@ -142,6 +152,7 @@ impl RegionMap {
         RegionMap {
             table: RegionTable::new(),
             entries: HashMap::new(),
+            local_entries: HashMap::new(),
         }
     }
 
@@ -149,6 +160,14 @@ impl RegionMap {
     /// variable to its canonical representative.
     pub fn get_resolved(&self, key: &ParamKey) -> Option<Region> {
         self.entries.get(key).map(|r| self.table.resolve(r.clone()))
+    }
+
+    /// RES-773: look up the region for a local variable, resolving any
+    /// inference variable to its canonical representative.
+    pub fn get_local_resolved(&self, key: &LocalKey) -> Option<Region> {
+        self.local_entries
+            .get(key)
+            .map(|r| self.table.resolve(r.clone()))
     }
 }
 
@@ -180,10 +199,54 @@ fn region_from_type_str(ty: &str) -> Option<(bool, Option<String>)> {
     }
 }
 
+/// Walk a node tree collecting all `Node::LetStatement` nodes to extract
+/// local variable bindings with their type annotations.
+fn collect_local_bindings(
+    node: &crate::Node,
+    locals: &mut Vec<(String, Option<String>)>,
+) {
+    match node {
+        crate::Node::LetStatement {
+            name,
+            type_annot: Some(ty),
+            ..
+        } => {
+            locals.push((name.clone(), Some(ty.clone())));
+        }
+        crate::Node::LetStatement { .. } => {}  // Ignore untyped locals
+        crate::Node::Block { stmts, .. } => {
+            for s in stmts {
+                collect_local_bindings(s, locals);
+            }
+        }
+        crate::Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            collect_local_bindings(condition, locals);
+            collect_local_bindings(consequence, locals);
+            if let Some(alt) = alternative {
+                collect_local_bindings(alt, locals);
+            }
+        }
+        crate::Node::WhileStatement {
+            condition, body, ..
+        } => {
+            collect_local_bindings(condition, locals);
+            collect_local_bindings(body, locals);
+        }
+        crate::Node::ForInStatement { body, .. } => collect_local_bindings(body, locals),
+        _ => {}
+    }
+}
+
 /// RES-394 PR 2: walk the program AST and build a `RegionMap` by
 /// assigning region variables to unlabeled reference parameters.
+/// RES-773: extended to also collect local variable bindings.
 ///
-/// Labeled parameters (`&[A] T`) keep their concrete `Region::Named`
+/// Labeled parameters/locals (`&[A] T`) keep their concrete `Region::Named`
 /// label; unlabeled ones (`&T` / `&mut T`) receive a fresh `RegionVar`.
 pub fn build_region_map(program: &crate::Node) -> RegionMap {
     let mut map = RegionMap::new();
@@ -195,6 +258,7 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
         if let crate::Node::Function {
             name: fn_name,
             parameters,
+            body,
             ..
         } = &spanned.node
         {
@@ -208,6 +272,27 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
                         ParamKey {
                             fn_name: fn_name.clone(),
                             param_idx: idx,
+                        },
+                        region,
+                    );
+                }
+            }
+
+            // RES-773: collect local variable bindings in the function body.
+            let mut locals: Vec<(String, Option<String>)> = Vec::new();
+            collect_local_bindings(body, &mut locals);
+            for (var_name, type_annot) in locals {
+                if let Some(ty) = type_annot
+                    && let Some((_is_mut, label)) = region_from_type_str(&ty)
+                {
+                    let region = match label {
+                        Some(l) => Region::named(l),
+                        None => Region::Var(map.table.fresh()),
+                    };
+                    map.local_entries.insert(
+                        LocalKey {
+                            fn_name: fn_name.clone(),
+                            var_name,
                         },
                         region,
                     );
@@ -701,5 +786,46 @@ mod tests {
         let err =
             infer_region_subst_from_call(&type_params, &param_types, &actual_labels).unwrap_err();
         assert!(err.contains("arity"), "error should mention arity: {err}");
+    }
+
+    // --- RES-773: local variable region inference ---
+
+    #[test]
+    fn build_region_map_collects_labeled_local_bindings() {
+        let src = "region A; fn f(int x) { let y: &[A] int = 0; }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+
+        let map = build_region_map(&program);
+        let key = LocalKey {
+            fn_name: "f".to_string(),
+            var_name: "y".to_string(),
+        };
+
+        // Labeled local → Named region.
+        assert_eq!(
+            map.get_local_resolved(&key),
+            Some(Region::named("A")),
+            "labeled local should resolve to Named"
+        );
+    }
+
+    #[test]
+    fn build_region_map_collects_unlabeled_local_bindings() {
+        let src = "fn f(int x) { let y: &mut int = 0; }";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+
+        let map = build_region_map(&program);
+        let key = LocalKey {
+            fn_name: "f".to_string(),
+            var_name: "y".to_string(),
+        };
+
+        // Unlabeled local ref → Var (resolved to itself when unbound).
+        assert!(
+            matches!(map.get_local_resolved(&key), Some(Region::Var(_))),
+            "unlabeled local ref should get a RegionVar"
+        );
     }
 }
