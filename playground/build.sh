@@ -52,13 +52,17 @@ cp "$SCRIPT_DIR/web/style.css"  "$DIST_DIR/style.css"
 cp "$SCRIPT_DIR/web/main.js"    "$DIST_DIR/main.js"
 
 echo ">>> baking examples.json from resilient/examples/"
-python3 - "$REPO_ROOT" "$DIST_DIR/examples.json" <<'PYEOF'
+RESILIENT_COMMIT=$(cd "$REPO_ROOT" && git rev-parse HEAD)
+RESILIENT_DATE=$(cd "$REPO_ROOT" && git log -1 --format=%ai HEAD)
+python3 - "$REPO_ROOT" "$DIST_DIR/examples.json" "$RESILIENT_COMMIT" "$RESILIENT_DATE" <<'PYEOF'
 import json
 import os
 import sys
 
 repo_root = sys.argv[1]
 out_path = sys.argv[2]
+language_commit = sys.argv[3]
+language_date = sys.argv[4]
 
 examples_dir = os.path.join(repo_root, "resilient", "examples")
 items = []
@@ -78,9 +82,15 @@ for name in sorted(os.listdir(examples_dir)):
         continue
     items.append({"name": name, "source": source})
 
+manifest = {
+    "language_version": language_commit,
+    "language_date": language_date,
+    "examples": items
+}
+
 with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(items, f, indent=2)
-print(f"baked {len(items)} examples into {out_path}")
+    json.dump(manifest, f, indent=2)
+print(f"baked {len(items)} examples pinned to {language_commit[:8]} ({language_date}) into {out_path}")
 PYEOF
 
 if (( CHECK_SIZE )); then

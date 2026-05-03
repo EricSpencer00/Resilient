@@ -76,19 +76,36 @@ async function bootstrap() {
 
 async function loadExamples() {
   let manifest = null;
+  let languageVersion = null;
+  let languageDate = null;
   try {
     const res = await fetch("./examples.json", { cache: "no-store" });
-    if (res.ok) manifest = await res.json();
+    if (res.ok) {
+      const data = await res.json();
+      // Support both old flat array format and new manifest format
+      if (Array.isArray(data)) {
+        manifest = data;
+      } else if (data.examples && Array.isArray(data.examples)) {
+        manifest = data.examples;
+        languageVersion = data.language_version;
+        languageDate = data.language_date;
+      }
+    }
   } catch (_err) {
     // fall through to fallback
   }
-  const list = Array.isArray(manifest) && manifest.length ? manifest : EXAMPLES_FALLBACK;
+  const list = manifest && manifest.length ? manifest : EXAMPLES_FALLBACK;
   for (const ex of list) {
     const opt = document.createElement("option");
     opt.value = ex.name;
     opt.textContent = ex.name;
     opt.dataset.source = ex.source;
     select.appendChild(opt);
+  }
+  // Display language version if available
+  if (languageVersion) {
+    const shortCommit = languageVersion.substring(0, 8);
+    footerEl.textContent = `examples pinned to language ${shortCommit} (${languageDate})`;
   }
 }
 

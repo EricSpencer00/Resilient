@@ -69,6 +69,30 @@ Runs through `wasm-pack build --release`, bakes
 any artifact whose gzipped `.wasm` exceeds 2 MiB. CI runs this same
 command on every PR that touches `playground/`.
 
+### Example pinning
+
+The WASM interpreter is compiled at a specific point in the language's
+history. As the language evolves, older examples may break against newer
+parser/typechecker rules. To prevent silent failures, the build process
+annotates `examples.json` with:
+
+```json
+{
+  "language_version": "df097e2e702cd5ad264d304610c54ad1b54e5350",
+  "language_date": "2026-05-03 00:39:53 -0500",
+  "examples": [...]
+}
+```
+
+The frontend displays this metadata so users see which language snapshot
+the examples are pinned to. After a major language change, the
+responsible agent should:
+
+1. Rebuild the playground: `playground/build.sh --check-size`
+2. Test all examples via the UI
+3. Update any examples that break, or file follow-up tickets for parser/typechecker changes
+4. Commit the updated `dist/examples.json` alongside the compiler change
+
 ## Acceptance criteria status (#160)
 
 | Criterion | State |
