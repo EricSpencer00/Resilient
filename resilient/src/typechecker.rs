@@ -2940,26 +2940,56 @@ impl TypeChecker {
             // RES-073: `use` is resolved away before typecheck. Treat
             // leftovers as void (no-op) for safety.
             Node::Use { .. } => Ok(Type::Void),
-            // FFI v1: validate extern block — reject non-primitive types.
+            // RES-780: FFI v1 hardening — stricter validation of extern signatures.
+            // Reject unsupported ABI shapes at compile time rather than runtime.
             Node::Extern { decls, .. } => {
-                const PARAM_PRIMS: &[&str] = &["Int", "Float", "Bool", "String"];
-                const RET_PRIMS: &[&str] = &["Int", "Float", "Bool", "String", "Void"];
+                const SUPPORTED_PARAMS: &[&str] =
+                    &["Int", "Float", "Bool", "String", "OpaquePtr", "Callback"];
+                const SUPPORTED_RETURNS: &[&str] =
+                    &["Int", "Float", "Bool", "String", "Void", "OpaquePtr"];
+
                 for d in decls {
-                    for (ty, name) in &d.parameters {
-                        if !PARAM_PRIMS.contains(&ty.as_str()) {
+                    let fn_name = &d.resilient_name;
+
+                    // Validate parameters
+                    for (ty, param_name) in &d.parameters {
+                        if !SUPPORTED_PARAMS.contains(&ty.as_str()) {
                             return Err(format!(
-                                "FFI: extern parameter `{}` has type `{}`; extern fn supports only {} in v1",
-                                name,
+                                "FFI: extern fn `{}` parameter `{}` has unsupported type `{}`; \
+                                 supported types are: {}",
+                                fn_name,
+                                param_name,
                                 ty,
-                                PARAM_PRIMS.join(", ")
+                                SUPPORTED_PARAMS.join(", ")
+                            ));
+                        }
+                        // Callbacks as parameters require extra validation
+                        if ty == "Callback" {
+                            return Err(format!(
+                                "FFI: extern fn `{}` parameter `{}` uses Callback type; \
+                                 function pointers as extern parameters are not yet supported (RES-216)",
+                                fn_name, param_name
                             ));
                         }
                     }
-                    if !RET_PRIMS.contains(&d.return_type.as_str()) {
+
+                    // Validate return type
+                    if !SUPPORTED_RETURNS.contains(&d.return_type.as_str()) {
                         return Err(format!(
-                            "FFI: extern return type `{}` not supported in v1 (allowed: {})",
+                            "FFI: extern fn `{}` has unsupported return type `{}`; \
+                             supported types are: {}",
+                            fn_name,
                             d.return_type,
-                            RET_PRIMS.join(", ")
+                            SUPPORTED_RETURNS.join(", ")
+                        ));
+                    }
+
+                    // Reject Callback return types
+                    if d.return_type == "Callback" {
+                        return Err(format!(
+                            "FFI: extern fn `{}` returns Callback type; \
+                             function pointers as return values are not yet supported (RES-216)",
+                            fn_name
                         ));
                     }
                 }
