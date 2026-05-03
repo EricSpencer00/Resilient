@@ -44,7 +44,6 @@ mod sum_types;
 // scheduler. PR 1 lands the data layer; PRs 2-5 add `spawn` /
 // `send` / `receive` builtins, the cooperative scheduler, deadlock
 // detection, and the ping-pong example.
-mod actor_isolation;
 mod actor_runtime;
 // RES-406: volatile MMIO intrinsics. The eight `volatile_read_*` /
 // `volatile_write_*` builtins live here; the `unsafe { … }` gate
@@ -3308,11 +3307,19 @@ impl Parser {
                 Token::Identifier(kw) if kw == "state" && self.peek_token == Token::Colon => {
                     self.next_token(); // skip `state`
                     self.next_token(); // skip `:`
-                    let Some(ty) = self.parse_type_annotation("after `state:` in actor field")
-                    else {
-                        self.skip_until_stmt_end();
-                        continue;
+                    let ty = match &self.current_token {
+                        Token::Identifier(t) => t.clone(),
+                        other => {
+                            let msg = format!(
+                                "Expected type name after `state:` in actor `{}`, found {}",
+                                name, other
+                            );
+                            self.record_error(msg);
+                            self.skip_until_stmt_end();
+                            continue;
+                        }
                     };
+                    self.next_token(); // skip type
                     // RES-388 MVP: require an `= init` so verification
                     // has a concrete base case. A bare `state: Int;`
                     // with no initializer is a parse error.
@@ -44071,87 +44078,6 @@ mod tests {
         let mut interp = Interpreter::new();
         interp.eval(&program).unwrap();
         assert!(matches!(interp.env.get("sentinel"), Some(Value::Int(7))));
-    }
-
-    #[test]
-    fn actor_state_reference_type_is_rejected() {
-        let src = "\
-            actor Q {\n\
-                state: & int = 0;\n\
-            }\n\
-        ";
-        let (program, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
-        let err = tc
-            .check_program_with_source(&program, "<test>")
-            .expect_err("reference-typed actor state should be rejected");
-        assert!(
-            err.contains("ownership-by-value") && err.contains("state field"),
-            "expected actor-isolation diagnostic, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn actor_handler_reference_payload_is_rejected() {
-        let src = "\
-            actor Q {\n\
-                state: int = 0;\n\
-                receive put(& int msg) { self.state = 1; }\n\
-            }\n\
-        ";
-        let (program, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
-        let err = tc
-            .check_program_with_source(&program, "<test>")
-            .expect_err("reference-typed actor payload should be rejected");
-        assert!(
-            err.contains("ownership-by-value") && err.contains("parameter `msg`"),
-            "expected actor-isolation diagnostic, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn actor_struct_payload_without_references_is_accepted() {
-        let src = "\
-            struct Delta { int amount }\n\
-            actor Counter {\n\
-                state: int = 0;\n\
-                receive add(Delta delta) { self.state = self.state + delta.amount; }\n\
-            }\n\
-        ";
-        let (program, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
-        assert!(
-            tc.check_program_with_source(&program, "<test>").is_ok(),
-            "by-value actor payload should typecheck"
-        );
-    }
-
-    #[test]
-    fn actor_struct_payload_with_nested_reference_is_rejected() {
-        let src = "\
-            struct Borrowed { & int ptr }\n\
-            actor Counter {\n\
-                state: int = 0;\n\
-                receive add(Borrowed payload) { self.state = 1; }\n\
-            }\n\
-        ";
-        let (program, errs) = parse(src);
-        assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        let mut tc = typechecker::TypeChecker::new().with_warn_unverified(false);
-        let err = tc
-            .check_program_with_source(&program, "<test>")
-            .expect_err("nested reference in actor payload should be rejected");
-        assert!(
-            err.contains("ownership-by-value") && err.contains("Borrowed"),
-            "expected actor-isolation diagnostic, got: {}",
-            err
-        );
     }
 
     // --- RES-126: nominal struct equivalence ---

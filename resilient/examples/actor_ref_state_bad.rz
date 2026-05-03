@@ -1,3 +1,5 @@
+struct SharedBox { & int ptr }
+
 actor Counter {
-    state: & int = 0;
+    state: SharedBox = 0;
 }

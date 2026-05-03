@@ -53,6 +53,42 @@ use crate::span::Span;
 #[cfg(feature = "z3")]
 use crate::{ActorHandler, Node};
 
+#[cfg(feature = "z3")]
+fn type_name_contains_reference(
+    type_name: &str,
+    type_aliases: &HashMap<String, String>,
+    struct_field_decls: &HashMap<String, Vec<(String, String)>>,
+    visiting: &mut Vec<String>,
+) -> bool {
+    let base = crate::linear::strip_linear(type_name).trim();
+    if base.starts_with('&') {
+        return true;
+    }
+
+    if visiting.iter().any(|name| name == base) {
+        return false;
+    }
+
+    if let Some(target) = type_aliases.get(base) {
+        visiting.push(base.to_string());
+        let contains =
+            type_name_contains_reference(target, type_aliases, struct_field_decls, visiting);
+        visiting.pop();
+        return contains;
+    }
+
+    if let Some(fields) = struct_field_decls.get(base) {
+        visiting.push(base.to_string());
+        let contains = fields.iter().any(|(field_ty, _field_name)| {
+            type_name_contains_reference(field_ty, type_aliases, struct_field_decls, visiting)
+        });
+        visiting.pop();
+        return contains;
+    }
+
+    false
+}
+
 // Helper: extract (field_name, init_expr) pairs from state_fields.
 // The cluster verifier only needs field names + initializers (not type names).
 #[cfg(feature = "z3")]
@@ -124,7 +160,7 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
         } = &spanned.node
         {
             let has_ref_boundary = state_fields.iter().any(|(ty, _field, _init)| {
-                crate::actor_isolation::type_name_contains_reference(
+                type_name_contains_reference(
                     ty,
                     &type_aliases,
                     &struct_field_decls,
@@ -132,7 +168,7 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
                 )
             }) || handlers.iter().any(|handler| {
                 handler.parameters.iter().any(|(ty, _name)| {
-                    crate::actor_isolation::type_name_contains_reference(
+                    type_name_contains_reference(
                         ty,
                         &type_aliases,
                         &struct_field_decls,

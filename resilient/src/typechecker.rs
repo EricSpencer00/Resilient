@@ -3,6 +3,45 @@ use crate::span::Span;
 use crate::{Node, Pattern};
 use std::collections::{HashMap, HashSet};
 
+/// RES-777: actor boundaries must stay ownership-by-value. This helper
+/// checks raw type names (including aliases and nested struct fields)
+/// for any reference-shaped component that would smuggle aliasing
+/// through actor state or mailbox payloads.
+fn type_name_contains_reference(
+    type_name: &str,
+    type_aliases: &HashMap<String, String>,
+    struct_field_decls: &HashMap<String, Vec<(String, String)>>,
+    visiting: &mut Vec<String>,
+) -> bool {
+    let base = crate::linear::strip_linear(type_name).trim();
+    if base.starts_with('&') {
+        return true;
+    }
+
+    if visiting.iter().any(|name| name == base) {
+        return false;
+    }
+
+    if let Some(target) = type_aliases.get(base) {
+        visiting.push(base.to_string());
+        let contains =
+            type_name_contains_reference(target, type_aliases, struct_field_decls, visiting);
+        visiting.pop();
+        return contains;
+    }
+
+    if let Some(fields) = struct_field_decls.get(base) {
+        visiting.push(base.to_string());
+        let contains = fields.iter().any(|(field_ty, _field_name)| {
+            type_name_contains_reference(field_ty, type_aliases, struct_field_decls, visiting)
+        });
+        visiting.pop();
+        return contains;
+    }
+
+    false
+}
+
 /// RES-189: one entry in the typechecker's post-walk inlay-hint
 /// cache. Produced for every unannotated `let` binding (i.e.
 /// `let x = ...;` without an explicit `: T`). The LSP backend
@@ -3921,7 +3960,7 @@ impl TypeChecker {
                 let saved_env = self.env.clone();
                 let mut resolved_fields: Vec<(String, Type)> = Vec::new();
                 for (ty, field, init) in state_fields {
-                    if crate::actor_isolation::type_name_contains_reference(
+                    if type_name_contains_reference(
                         ty,
                         &self.type_aliases,
                         &self.struct_field_decls,
@@ -3976,7 +4015,7 @@ impl TypeChecker {
                     let handler_saved = self.env.clone();
                     self.env.set("self".to_string(), Type::Struct(name.clone()));
                     for (pty, pname) in &handler.parameters {
-                        if crate::actor_isolation::type_name_contains_reference(
+                        if type_name_contains_reference(
                             pty,
                             &self.type_aliases,
                             &self.struct_field_decls,
