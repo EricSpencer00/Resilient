@@ -3304,22 +3304,17 @@ impl Parser {
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             match &self.current_token {
                 // `state: Type = expr;` — Identifier("state") followed by `:`.
+                // RES-777: support reference types via parse_type_annotation.
                 Token::Identifier(kw) if kw == "state" && self.peek_token == Token::Colon => {
                     self.next_token(); // skip `state`
                     self.next_token(); // skip `:`
-                    let ty = match &self.current_token {
-                        Token::Identifier(t) => t.clone(),
-                        other => {
-                            let msg = format!(
-                                "Expected type name after `state:` in actor `{}`, found {}",
-                                name, other
-                            );
-                            self.record_error(msg);
+                    let ty = match self.parse_type_annotation("for actor state") {
+                        Some(t) => t,
+                        None => {
                             self.skip_until_stmt_end();
                             continue;
                         }
                     };
-                    self.next_token(); // skip type
                     // RES-388 MVP: require an `= init` so verification
                     // has a concrete base case. A bare `state: Int;`
                     // with no initializer is a parse error.
