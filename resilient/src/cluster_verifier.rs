@@ -98,6 +98,20 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
         return Vec::new();
     };
 
+    let mut type_aliases: HashMap<String, String> = HashMap::new();
+    let mut struct_field_decls: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for spanned in stmts {
+        match &spanned.node {
+            Node::TypeAlias { name, target, .. } => {
+                type_aliases.insert(name.clone(), target.clone());
+            }
+            Node::StructDecl { name, fields, .. } => {
+                struct_field_decls.insert(name.clone(), fields.clone());
+            }
+            _ => {}
+        }
+    }
+
     // Build an `actor name → &ActorDecl-fields` lookup so the
     // cluster verifier can resolve member types.
     let mut actors: ActorTable = HashMap::new();
@@ -109,6 +123,26 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
             ..
         } = &spanned.node
         {
+            let has_ref_boundary = state_fields.iter().any(|(ty, _field, _init)| {
+                crate::actor_isolation::type_name_contains_reference(
+                    ty,
+                    &type_aliases,
+                    &struct_field_decls,
+                    &mut Vec::new(),
+                )
+            }) || handlers.iter().any(|handler| {
+                handler.parameters.iter().any(|(ty, _name)| {
+                    crate::actor_isolation::type_name_contains_reference(
+                        ty,
+                        &type_aliases,
+                        &struct_field_decls,
+                        &mut Vec::new(),
+                    )
+                })
+            });
+            if has_ref_boundary {
+                continue;
+            }
             actors.insert(
                 name.clone(),
                 (extract_state(state_fields), handlers.clone()),

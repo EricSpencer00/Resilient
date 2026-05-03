@@ -342,7 +342,11 @@ The broad shape being designed toward:
   function plus a private local heap. No other actor has a
   reference to that heap. This is the data-race-freedom
   property stated positively: there is no shared mutable
-  state to race over.
+  state to race over. RES-777 adds a structural fence here:
+  actor `state:` fields and `receive` payloads may not be
+  reference-typed, including through aliases or nested struct
+  fields. Actor boundaries must remain ownership-by-value so
+  aliasing cannot be smuggled from one actor to another.
 - **Actors communicate by message passing.** A message is a
   value — an `Int`, a struct, an array — sent through a
   typed channel. The send operation is `@io`; the send is

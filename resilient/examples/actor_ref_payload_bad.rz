@@ -1,0 +1,6 @@
+actor Counter {
+    state: int = 0;
+    receive put(& int msg) {
+        self.state = 1;
+    }
+}

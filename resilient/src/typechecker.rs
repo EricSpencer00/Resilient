@@ -830,6 +830,10 @@ pub struct TypeChecker {
     /// `FieldAssignment` to reject writes to non-existent fields
     /// statically.
     struct_fields: HashMap<String, Vec<(String, Type)>>,
+    /// RES-777: raw struct field declarations, preserved before type
+    /// resolution so actor-boundary checks can inspect nested field
+    /// shapes without losing reference syntax.
+    struct_field_decls: HashMap<String, Vec<(String, String)>>,
     /// RES-400: enum name → variant list. Populated when we visit each
     /// `EnumDecl`. Used by the `Match` exhaustiveness check to ensure
     /// every declared variant is covered, and by `match_pattern_binding_types`
@@ -2498,6 +2502,7 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
+            struct_field_decls: HashMap::new(),
             enum_decls: {
                 let mut m: std::collections::HashMap<String, Vec<crate::EnumVariant>> =
                     std::collections::HashMap::new();
@@ -2688,6 +2693,9 @@ impl TypeChecker {
                         }
                         Node::TypeAlias { name, target, .. } => {
                             self.type_aliases.insert(name.clone(), target.clone());
+                        }
+                        Node::StructDecl { name, fields, .. } => {
+                            self.struct_field_decls.insert(name.clone(), fields.clone());
                         }
                         _ => {}
                     }
@@ -3913,6 +3921,17 @@ impl TypeChecker {
                 let saved_env = self.env.clone();
                 let mut resolved_fields: Vec<(String, Type)> = Vec::new();
                 for (ty, field, init) in state_fields {
+                    if crate::actor_isolation::type_name_contains_reference(
+                        ty,
+                        &self.type_aliases,
+                        &self.struct_field_decls,
+                        &mut Vec::new(),
+                    ) {
+                        return Err(format!(
+                            "actor `{}` state field `{}` uses reference-typed boundary `{}` — actor boundaries require ownership-by-value to preserve race safety",
+                            name, field, ty
+                        ));
+                    }
                     let resolved = self.parse_type_name(ty)?;
                     let init_ty = self.check_node(init)?;
                     if init_ty != resolved && init_ty != Type::Any && resolved != Type::Any {
@@ -3957,6 +3976,17 @@ impl TypeChecker {
                     let handler_saved = self.env.clone();
                     self.env.set("self".to_string(), Type::Struct(name.clone()));
                     for (pty, pname) in &handler.parameters {
+                        if crate::actor_isolation::type_name_contains_reference(
+                            pty,
+                            &self.type_aliases,
+                            &self.struct_field_decls,
+                            &mut Vec::new(),
+                        ) {
+                            return Err(format!(
+                                "actor `{}` handler `{}` parameter `{}` uses reference-typed boundary `{}` — actor boundaries require ownership-by-value to preserve race safety",
+                                name, handler.name, pname, pty
+                            ));
+                        }
                         let resolved = self.parse_type_name(pty)?;
                         self.env.set(pname.clone(), resolved);
                     }

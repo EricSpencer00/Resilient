@@ -1,0 +1,3 @@
+actor Counter {
+    state: & int = 0;
+}

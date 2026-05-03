@@ -1,0 +1,9 @@
+struct Delta { int amount }
+
+actor Counter {
+    state: int = 0;
+    always: state >= 0;
+    receive add(Delta delta) requires delta.amount >= 0 {
+        self.state = self.state + delta.amount;
+    }
+}
