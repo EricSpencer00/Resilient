@@ -348,6 +348,12 @@ The broad shape being designed toward:
   typed channel. The send operation is `@io`; the send is
   non-blocking if the channel has capacity. The receive
   operation is `@io` and may block (cooperatively).
+  **RES-777 adds a structural constraint**: message payloads
+  must be by-value (no reference types). Reference types
+  (`&int`, `&[Region] T`) in actor state or handler parameters
+  would allow aliasing across actor boundaries, which would
+  enable data races despite the actor model's isolation
+  properties. This constraint is enforced at compile time.
 - **Each actor has its own supervisor.** The Erlang pattern:
   when an actor crashes, its supervisor observes the exit,
   decides on a restart policy, and either restarts, escalates
