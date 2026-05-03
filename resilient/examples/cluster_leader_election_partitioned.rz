@@ -1,0 +1,79 @@
+// RES-782: Cluster verifier follow-up — network partitions and dropped delivery
+// This example shows the desired syntax for modeling partitioned clusters.
+// NOT YET IMPLEMENTED — this is a design reference for RES-782 phase 1.
+
+// Phase 1 goal: Extend the cluster verifier to model network partitions
+// and dropped delivery, allowing users to verify invariants under
+// failure assumptions instead of assuming fully connected, reliable networks.
+
+cluster LeaderElection {
+    members: [A, B, C],
+
+    // The fully-connected ideal case: all members can communicate
+    // (This is the current MVP behavior)
+    cluster_invariant: count_leaders(state) <= 1,
+
+    // Phase 1: Users can now specify partition assumptions
+    // and verify invariants under those assumptions
+    partition_tests: [
+        {
+            name: "no_partition_fully_connected",
+            partition: none,  // No partition — all members connected
+            invariant: count_leaders(state) <= 1,
+        },
+        {
+            name: "split_brain_A_isolated",
+            partition: {
+                disconnected_edges: [(A, B), (A, C)]
+            },
+            // In a split-brain, we expect the invariant might be violated
+            // if both sides elect leaders independently
+            should_hold: false,
+            expected_violation: "split-brain scenario can elect multiple leaders",
+        },
+        {
+            name: "partition_tolerant_quorum",
+            partition: {
+                disconnected_edges: [(A, B), (A, C)]
+            },
+            // A quorum-based variant of the invariant that IS partition-tolerant:
+            // "at most one leader exists in any connected quorum of 2+ members"
+            invariant: count_leaders_in_quorum(state) <= 1,
+            should_hold: true,
+        },
+    ]
+}
+
+// Actor implementation (sample structure)
+actor LeaderA {
+    is_leader: bool = false,
+    term: int = 0,
+}
+
+actor LeaderB {
+    is_leader: bool = false,
+    term: int = 0,
+}
+
+actor LeaderC {
+    is_leader: bool = false,
+    term: int = 0,
+}
+
+// Handlers would implement election logic here
+// (Simplified for design reference)
+
+// Design notes:
+// - Partition model: explicit declaration of disconnected edges
+// - Dropped delivery: handlers cannot assume messages cross partition edges
+// - The verifier checks invariants against the specified partition topology
+// - Users can verify both:
+//   * That invariants are violated under specific failures (split-brain)
+//   * That partition-resilient variants hold despite partitions (quorum-based)
+//
+// Phase 1 work (RES-782):
+// 1. Parser: `partition { disconnected_edges: [...] }` syntax in cluster blocks
+// 2. Verifier model: filter inter-actor send/receive based on partition edges
+// 3. Constraint generation: generate Z3 constraints accounting for dropped messages
+// 4. Examples: split-brain, quorum-based, and partition-tolerant invariants
+// 5. Diagnostics: explain which partition scenario violates the invariant
