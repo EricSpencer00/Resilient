@@ -346,3 +346,163 @@ pub(crate) fn check(node: &Node, env: &TypeEnvironment) -> Result<(), String> {
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::typechecker::TypeEnvironment;
+
+    fn make_fn_env(names: &[&str]) -> TypeEnvironment {
+        let mut env = TypeEnvironment::new();
+        for name in names {
+            // Register each as a function type
+            env.set(
+                name.to_string(),
+                crate::typechecker::Type::Function {
+                    params: vec![],
+                    return_type: Box::new(crate::typechecker::Type::Void),
+                },
+            );
+        }
+        env
+    }
+
+    #[test]
+    fn supervisor_valid_one_for_one() {
+        let node = Node::SupervisorDecl {
+            strategy: "one_for_one".to_string(),
+            children: vec![SupervisorChild {
+                id: "w1".to_string(),
+                fn_name: "worker".to_string(),
+                restart: "permanent".to_string(),
+            }],
+            span: crate::span::Span::default(),
+        };
+        let env = make_fn_env(&["worker"]);
+        assert!(check(&node, &env).is_ok());
+    }
+
+    #[test]
+    fn supervisor_valid_one_for_all() {
+        let node = Node::SupervisorDecl {
+            strategy: "one_for_all".to_string(),
+            children: vec![SupervisorChild {
+                id: "w1".to_string(),
+                fn_name: "worker".to_string(),
+                restart: "permanent".to_string(),
+            }],
+            span: crate::span::Span::default(),
+        };
+        let env = make_fn_env(&["worker"]);
+        assert!(check(&node, &env).is_ok());
+    }
+
+    #[test]
+    fn supervisor_invalid_strategy() {
+        let node = Node::SupervisorDecl {
+            strategy: "invalid_strategy".to_string(),
+            children: vec![SupervisorChild {
+                id: "w1".to_string(),
+                fn_name: "worker".to_string(),
+                restart: "permanent".to_string(),
+            }],
+            span: crate::span::Span::default(),
+        };
+        let env = make_fn_env(&["worker"]);
+        let err = check(&node, &env);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("invalid supervisor strategy"));
+    }
+
+    #[test]
+    fn supervisor_empty_children() {
+        let node = Node::SupervisorDecl {
+            strategy: "one_for_one".to_string(),
+            children: vec![],
+            span: crate::span::Span::default(),
+        };
+        let env = TypeEnvironment::new();
+        let err = check(&node, &env);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("at least one child"));
+    }
+
+    #[test]
+    fn supervisor_duplicate_ids() {
+        let node = Node::SupervisorDecl {
+            strategy: "one_for_one".to_string(),
+            children: vec![
+                SupervisorChild {
+                    id: "worker".to_string(),
+                    fn_name: "w1".to_string(),
+                    restart: "permanent".to_string(),
+                },
+                SupervisorChild {
+                    id: "worker".to_string(),
+                    fn_name: "w2".to_string(),
+                    restart: "permanent".to_string(),
+                },
+            ],
+            span: crate::span::Span::default(),
+        };
+        let env = make_fn_env(&["w1", "w2"]);
+        let err = check(&node, &env);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("duplicate child id"));
+    }
+
+    #[test]
+    fn supervisor_invalid_restart_type() {
+        let node = Node::SupervisorDecl {
+            strategy: "one_for_one".to_string(),
+            children: vec![SupervisorChild {
+                id: "w1".to_string(),
+                fn_name: "worker".to_string(),
+                restart: "invalid".to_string(),
+            }],
+            span: crate::span::Span::default(),
+        };
+        let env = make_fn_env(&["worker"]);
+        let err = check(&node, &env);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("invalid restart type"));
+    }
+
+    #[test]
+    fn supervisor_undefined_function() {
+        let node = Node::SupervisorDecl {
+            strategy: "one_for_one".to_string(),
+            children: vec![SupervisorChild {
+                id: "w1".to_string(),
+                fn_name: "undefined".to_string(),
+                restart: "permanent".to_string(),
+            }],
+            span: crate::span::Span::default(),
+        };
+        let env = TypeEnvironment::new();
+        let err = check(&node, &env);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("undefined function"));
+    }
+
+    #[test]
+    fn supervisor_all_valid_restart_types() {
+        for restart_type in &["permanent", "transient", "temporary"] {
+            let node = Node::SupervisorDecl {
+                strategy: "one_for_one".to_string(),
+                children: vec![SupervisorChild {
+                    id: "w1".to_string(),
+                    fn_name: "worker".to_string(),
+                    restart: restart_type.to_string(),
+                }],
+                span: crate::span::Span::default(),
+            };
+            let env = make_fn_env(&["worker"]);
+            assert!(
+                check(&node, &env).is_ok(),
+                "restart type {} should be valid",
+                restart_type
+            );
+        }
+    }
+}
