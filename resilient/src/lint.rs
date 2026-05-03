@@ -72,6 +72,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0010", // function has no requires/ensures contract
     "L0011", // RES-308: unused variable warning (let binding never read)
     "L0012", // RES-397: spec annotation lacks `// source:` provenance comment
+    "L0013", // RES-798: unchecked array indexing (not proven in-bounds)
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -109,6 +110,7 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     run_l0010_no_contract(program, &mut out);
     run_l0011_unused_variable(program, &mut out);
     run_l0012_spec_provenance(program, source, &mut out);
+    run_l0013_unchecked_indexing(program, &mut out);
 
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -1876,6 +1878,147 @@ fn l0012_walk(node: &Node, sources: &std::collections::HashSet<u32>, out: &mut V
         Node::ImplBlock { methods, .. } => {
             for method in methods {
                 l0012_walk(method, sources, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn run_l0013_unchecked_indexing(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        l0013_walk(&spanned.node, out);
+    }
+}
+
+fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
+    match node {
+        Node::IndexExpression {
+            target,
+            index,
+            span,
+            ..
+        } => {
+            // RES-798: check if this index access was proven in-bounds by
+            // the bounds_check pass. If not, emit L0013 warning.
+            if !crate::bounds_check::is_proven_site(*span) {
+                out.push(Lint {
+                    code: "L0013".into(),
+                    severity: Severity::Warning,
+                    message:
+                        "unchecked array indexing — bounds not proven at compile time; \
+                         use --deny-unproven-bounds to require proof, or suppress with \
+                         `// resilient: allow L0013`"
+                            .to_string(),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+            // Recurse into both target and index
+            l0013_walk(target, out);
+            l0013_walk(index, out);
+        }
+        Node::Block { stmts, .. } => {
+            for stmt in stmts {
+                l0013_walk(stmt, out);
+            }
+        }
+        Node::Function {
+            body, requires, ensures, ..
+        } => {
+            for req in requires {
+                l0013_walk(req, out);
+            }
+            for ens in ensures {
+                l0013_walk(ens, out);
+            }
+            l0013_walk(body, out);
+        }
+        Node::IfStatement {
+            consequence,
+            alternative,
+            condition,
+            ..
+        } => {
+            l0013_walk(condition, out);
+            l0013_walk(consequence, out);
+            if let Some(alt) = alternative {
+                l0013_walk(alt, out);
+            }
+        }
+        Node::WhileStatement { body, condition, .. } => {
+            l0013_walk(condition, out);
+            l0013_walk(body, out);
+        }
+        Node::ForInStatement {
+            iterable, body, ..
+        } => {
+            l0013_walk(iterable, out);
+            l0013_walk(body, out);
+        }
+        Node::LiveBlock { body, .. } => {
+            l0013_walk(body, out);
+        }
+        Node::Match { scrutinee, arms, .. } => {
+            l0013_walk(scrutinee, out);
+            for (_, guard, body) in arms {
+                if let Some(g) = guard {
+                    l0013_walk(g, out);
+                }
+                l0013_walk(body, out);
+            }
+        }
+        Node::InfixExpression { left, right, .. } => {
+            l0013_walk(left, out);
+            l0013_walk(right, out);
+        }
+        Node::PrefixExpression { right, .. } => {
+            l0013_walk(right, out);
+        }
+        Node::CallExpression {
+            function, arguments, ..
+        } => {
+            l0013_walk(function, out);
+            for arg in arguments {
+                l0013_walk(arg, out);
+            }
+        }
+        Node::StructLiteral { fields, .. } => {
+            for (_, value) in fields {
+                l0013_walk(value, out);
+            }
+        }
+        Node::ReturnStatement { value, .. } => {
+            if let Some(val) = value {
+                l0013_walk(val, out);
+            }
+        }
+        Node::ImplBlock { methods, .. } => {
+            for method in methods {
+                l0013_walk(method, out);
+            }
+        }
+        Node::FieldAccess { target, .. } => {
+            l0013_walk(target, out);
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            l0013_walk(expr, out);
+        }
+        Node::TryCatch { body, handlers, .. } => {
+            for stmt in body {
+                l0013_walk(stmt, out);
+            }
+            for (_, handler_body) in handlers {
+                for stmt in handler_body {
+                    l0013_walk(stmt, out);
+                }
+            }
+        }
+        Node::ArrayLiteral { items, .. } => {
+            for item in items {
+                l0013_walk(item, out);
             }
         }
         _ => {}
