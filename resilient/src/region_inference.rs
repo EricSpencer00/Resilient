@@ -201,10 +201,7 @@ fn region_from_type_str(ty: &str) -> Option<(bool, Option<String>)> {
 
 /// Walk a node tree collecting all `Node::LetStatement` nodes to extract
 /// local variable bindings with their type annotations.
-fn collect_local_bindings(
-    node: &crate::Node,
-    locals: &mut Vec<(String, Option<String>)>,
-) {
+fn collect_local_bindings(node: &crate::Node, locals: &mut Vec<(String, Option<String>)>) {
     match node {
         crate::Node::LetStatement {
             name,
@@ -213,7 +210,7 @@ fn collect_local_bindings(
         } => {
             locals.push((name.clone(), Some(ty.clone())));
         }
-        crate::Node::LetStatement { .. } => {}  // Ignore untyped locals
+        crate::Node::LetStatement { .. } => {} // Ignore untyped locals
         crate::Node::Block { stmts, .. } => {
             for s in stmts {
                 collect_local_bindings(s, locals);
