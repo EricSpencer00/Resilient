@@ -1,0 +1,67 @@
+// RES-779: Associated types in traits — design sketch
+// This example shows the desired syntax and behavior for associated types.
+// NOT YET IMPLEMENTED — this is a design reference for RES-779 phase 1-2.
+
+trait Register {
+    // Associated type: the Width type that this register operates on
+    type Width;
+
+    // Method using the associated type
+    fn read(self) -> Self::Width;
+    fn write(self, value: Self::Width);
+}
+
+struct Register8 {
+    addr: int;
+}
+
+struct Register32 {
+    addr: int;
+}
+
+// Implementation for 8-bit register
+impl Register for Register8 {
+    type Width = int;  // 8-bit values
+
+    fn read(self) -> int {
+        return 42;  // Mock read
+    }
+
+    fn write(self, value: int) {
+        // Mock write
+    }
+}
+
+// Implementation for 32-bit register
+impl Register for Register32 {
+    type Width = int;  // 32-bit values (same type, but semantically different width)
+
+    fn read(self) -> int {
+        return 65536;  // Mock read
+    }
+
+    fn write(self, value: int) {
+        // Mock write
+    }
+}
+
+// Generic code that works with any Register type
+fn read_and_echo<R: Register>(reg: R) {
+    let val = reg.read();
+    println("Read from register: " + val);
+}
+
+fn main() {
+    let r8 = Register8 { addr: 100 };
+    let r32 = Register32 { addr: 200 };
+
+    read_and_echo(r8);   // Works with Register8, uses its Width (int)
+    read_and_echo(r32);  // Works with Register32, uses its Width (int)
+}
+
+// Design notes:
+// - Associated types decouple the interface from specific type choices
+// - Each impl provides its own concrete type for `Self::Width`
+// - Generic code using `T: Register` can refer to `T::Width` for type-safe operations
+// - This enables embedded APIs like: "this driver's error type", "this peripheral's data width"
+// - RES-779 will add parser support, typechecker projection checking, and generic instantiation threading

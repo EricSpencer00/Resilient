@@ -28,7 +28,43 @@
 //! is no VTable.
 //!
 //! Out of scope here: VTable / `dyn Trait`, monomorphisation,
-//! supertraits, default method bodies, blanket impls, associated types.
+//! supertraits, default method bodies, blanket impls.
+//!
+//! ## RES-779: Associated Types Extension
+//!
+//! **Status**: In scope for phase 2. Not yet implemented.
+//!
+//! Associated types allow traits to declare type members that each impl
+//! must define. For example:
+//!
+//! ```text
+//! trait Transport {
+//!     type Message;
+//!     type Error;
+//!
+//!     fn send(self, msg: Self::Message) -> Result<(), Self::Error>;
+//! }
+//! ```
+//!
+//! This enables reusable embedded abstractions where the type relationships
+//! are fixed per implementation:
+//!
+//! ```text
+//! struct Serial { ... }
+//!
+//! impl Transport for Serial {
+//!     type Message = [u8; 64];
+//!     type Error = SerialError;
+//!
+//!     fn send(self, msg: Self::Message) -> Result<(), SerialError> { ... }
+//! }
+//! ```
+//!
+//! Implementation plan (RES-779):
+//! 1. Parser: `type Name = ConcreteType;` in impl blocks
+//! 2. Typechecker: validate associated type definitions, projection (`T::AssocType`)
+//! 3. Generics: carry associated type constraints through monomorphization
+//! 4. Examples: demonstrate embedded APIs using associated types
 
 #[allow(unused_imports)]
 use crate::Lexer;
