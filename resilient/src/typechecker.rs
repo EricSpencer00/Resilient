@@ -597,6 +597,14 @@ impl VerificationStats {
 }
 
 /// RES-067: shim that forwards to the Z3 module when built --features z3,
+/// RES-777: check if a type string is a reference type.
+/// Reference types are encoded as `"&[region] type"`, `"&mut[region] type"`,
+/// `"& type"`, or `"&mut type"`.
+fn is_reference_type(type_str: &str) -> bool {
+    let trimmed = type_str.trim_start();
+    trimmed.starts_with("&")
+}
+
 /// or returns None otherwise. Keeps the typechecker code agnostic to
 /// whether the SMT layer is compiled in.
 #[cfg(feature = "z3")]
@@ -3932,6 +3940,12 @@ impl TypeChecker {
 
             // RES-388/RES-390: ActorDecl type-checks state fields,
             // always invariants, and receive handler bodies.
+            // RES-777 / RES-790: validate that actor state, handler parameters,
+            // and mailbox payloads contain no reference types to preserve
+            // ownership-by-value across actor boundaries. This structural constraint
+            // prevents aliasing that could enable data races despite the actor model.
+            // When an actor sends(pid, value) or receives a message, the value must
+            // be by-value to maintain isolation guarantees.
             Node::ActorDecl {
                 name,
                 state_fields,
@@ -3943,6 +3957,13 @@ impl TypeChecker {
                 let saved_env = self.env.clone();
                 let mut resolved_fields: Vec<(String, Type)> = Vec::new();
                 for (ty, field, init) in state_fields {
+                    // RES-777: reject reference types in actor state
+                    if is_reference_type(ty) {
+                        return Err(format!(
+                            "actor `{}` state field `{}` has reference type {}; actor boundaries require ownership-by-value to preserve race safety",
+                            name, field, ty
+                        ));
+                    }
                     let resolved = self.parse_type_name(ty)?;
                     let init_ty = self.check_node(init)?;
                     if init_ty != resolved && init_ty != Type::Any && resolved != Type::Any {
@@ -3987,6 +4008,13 @@ impl TypeChecker {
                     let handler_saved = self.env.clone();
                     self.env.set("self".to_string(), Type::Struct(name.clone()));
                     for (pty, pname) in &handler.parameters {
+                        // RES-777: reject reference types in handler payloads
+                        if is_reference_type(pty) {
+                            return Err(format!(
+                                "actor `{}` handler `{}` parameter `{}` has reference type {}; actor boundaries require ownership-by-value to preserve race safety",
+                                name, handler.name, pname, pty
+                            ));
+                        }
                         let resolved = self.parse_type_name(pty)?;
                         self.env.set(pname.clone(), resolved);
                     }
