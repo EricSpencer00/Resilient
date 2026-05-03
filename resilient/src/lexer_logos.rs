@@ -225,8 +225,14 @@ enum Tok {
     // Add new keyword tokens here — one #[token("keyword")] + Variant per feature.
     // Append-only. Merge conflicts: keep ALL variants from both sides.
     // RES-386/RES-388: actor keywords.
+    /// RES-332: `actor` — declares lightweight concurrent units with isolated state.
+    /// Currently the parser and type system support actor syntax, with primitives
+    /// (`spawn`, `send`, `receive`) partially shipped; full actor declarations
+    /// (with supervised restart policies) ship with RES-332.
     #[token("actor")]
     Actor,
+    /// RES-332: `receive` — declares a handler within an actor that processes
+    /// incoming messages. Syntax: `receive handler_name(params) { ... }`.
     #[token("receive")]
     Receive,
     #[token("concurrent_ensures")]
