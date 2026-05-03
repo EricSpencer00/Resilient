@@ -1,6 +1,9 @@
 //! RES-398: termination checking — recursive fns require an explicit
 //! `// @decreases <metric>` clause or `// @may_diverge` escape hatch.
 //!
+//! RES-774 / RES-784: Extended to mutual recursion — functions in
+//! strongly-connected components (cycles) must also declare termination.
+//!
 //! Reddit critique
 //! (https://www.reddit.com/r/VibeCodersNest/comments/1ssv8ih/) asks:
 //! *can an invalid state even be expressed in your system?* Today,
@@ -11,9 +14,9 @@
 //!
 //! The runtime depth cap (RES-267) catches it at runtime. That's
 //! *filtering*, not structural enforcement. This pass closes the
-//! gap on direct (self-call) recursion: every directly-recursive
-//! function must declare *either* a decreasing metric or that
-//! divergence is acceptable.
+//! gap on both direct (self-call) and mutual recursion: every
+//! recursively-reachable function must declare *either* a decreasing
+//! metric or that divergence is acceptable.
 //!
 //! # Surface syntax
 //!
@@ -55,6 +58,41 @@
 //!   ticket.
 //! - **Loop termination**: `while`/`for` are out of scope here;
 //!   loop invariants (RES-132a) and loop-bound checks live elsewhere.
+//!
+//! # RES-774 / RES-784: Mutual Recursion Support
+//!
+//! Phase 1: Mutual recursion is now detected and required to have
+//! termination annotations under `--strict-termination`.
+//!
+//! **Algorithm**: Build a call graph from function definitions, then
+//! compute strongly-connected components (SCCs) using Tarjan's algorithm.
+//! Any SCC with size > 1 (or a self-loop for size == 1) requires all
+//! functions in it to declare `// @decreases` or `// @may_diverge`.
+//!
+//! **Diagnostics**: When a mutually-recursive function lacks an annotation,
+//! the error message identifies the full cycle (e.g., "f → g → f") and
+//! explains that it requires a termination proof.
+//!
+//! **Example**:
+//! ```text
+//! fn f(n: int) {
+//!     if (n > 0) { g(n - 1); }
+//! }
+//!
+//! fn g(n: int) {
+//!     if (n > 0) { f(n + 1); }  // SCC detects f↔g cycle
+//! }
+//! // Error: functions in cycle (f, g) require @decreases or @may_diverge
+//! ```
+//!
+//! Adding annotations resolves it:
+//! ```text
+//! // @decreases n
+//! fn f(n: int) { ... }
+//!
+//! // @decreases n
+//! fn g(n: int) { ... }  // Now accepted: both prove termination
+//! ```
 
 use crate::Node;
 use std::collections::{HashMap, HashSet};
