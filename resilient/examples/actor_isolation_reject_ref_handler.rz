@@ -1,0 +1,13 @@
+// RES-785: Actor isolation rejection — reference-typed handler parameter.
+// This example demonstrates that actors cannot have handlers with
+// reference-typed parameters, as references would create aliases across
+// actor boundaries, enabling data races.
+//
+// Expected: type error rejecting the reference-typed handler parameter.
+
+actor MyActor {
+    state: int = 0;
+
+    receive handle(&int x) {
+    }
+}
