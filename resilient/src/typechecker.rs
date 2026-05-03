@@ -5584,6 +5584,23 @@ fn is_known_pure_builtin(name: &str) -> bool {
 // Fixpoint: initialize every user fn to pure; iterate body-walks
 // until no effect flips. Terminates in O(|fns|²) iterations since
 // each pass can only flip pure→IO once per fn.
+//
+// RES-775 Phase 2: Higher-Order Effect Polymorphism
+// ==================================================
+// Current MVP limitation: Higher-order function combinators (map, filter,
+// with_retry, etc.) default to `@io` even when passed a `@pure` callback,
+// because the inference system does not thread effect variables through
+// generic signatures.
+//
+// Phase 2 will extend this to:
+// 1. Accept effect-variable constraints in generics (`E: effect`)
+// 2. Infer concrete effects at HOF call sites based on callback effects
+// 3. Carry effect constraints through monomorphization
+// 4. Compose effects soundly in nested HOF chains
+//
+// This allows reusable combinators to remain provably `@pure` when
+// their callbacks are pure, improving expressiveness for functional
+// programming patterns in safety-critical contexts.
 
 /// RES-192: build the call-graph edge set for `statements`, then
 /// run the fixpoint. Returns `name → has_io` for every top-level

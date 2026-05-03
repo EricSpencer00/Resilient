@@ -193,9 +193,36 @@ of effects it can perform. The alphabet today:
 G18 is **closed** as of 2026-04-29 — RES-191 (`@pure`
 annotation), RES-192 (`@io` inference), RES-389 (declared
 effects on fn signatures), and RES-385c (linear × effect
-interaction) all landed. Higher-order effect polymorphism
-(RES-193) remains an open follow-up; the V1 surface is
-sound without it (HOFs default to `@io`).
+interaction) all landed.
+
+## Higher-Order Effect Polymorphism (RES-775 Phase 2)
+
+**Status**: Phase 2 in progress. V1 surface is sound; the current
+limitation is that higher-order combinators (map, with_retry, etc.)
+default to `@io` instead of preserving their callback's effect.
+
+Currently:
+```rz
+fn map<T, U>(arr: [T], f: fn(T) -> @pure U) -> @io [U] {
+    // Even if f is pure, map() defaults to @io because
+    // we haven't yet threaded effect variables through HOF signatures
+}
+```
+
+Desired behavior (RES-775 phase 2):
+```rz
+fn map<T, U, E: effect>(arr: [T], f: fn(T) -> E U) -> E [U] {
+    // map() now preserves the effect of its callback
+    // @pure callbacks make map() @pure
+    // @io callbacks make map() @io
+}
+```
+
+RES-775 phase 2 threads effect variables through higher-order function
+signatures so reusable combinators preserve the effect of their callbacks
+instead of always defaulting to `@io`. This improves usability for
+functional-style code in safety-critical contexts where pure helper
+functions should remain provably pure.
 
 What matters for this document is *why* we block concurrency
 on effects.

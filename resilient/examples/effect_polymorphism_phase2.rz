@@ -1,0 +1,67 @@
+// RES-775: Effect polymorphism phase 2 — higher-order effect preservation
+// This example shows the desired syntax for effect polymorphism with callbacks.
+// NOT YET IMPLEMENTED — this is a design reference for RES-775 phase 2.
+
+// Phase 2 goal: Higher-order combinators that take callbacks should preserve
+// the callback's effect rather than always defaulting to @io.
+
+// Generic effect variable (syntax subject to design refinement)
+// This allows a function to be polymorphic over effect kinds:
+// - If called with a @pure callback, the HOF becomes @pure
+// - If called with an @io callback, the HOF becomes @io
+
+trait Filterable<T> {
+    fn filter<E: effect>(self, predicate: fn(T) -> E bool) -> E [T];
+}
+
+struct IntList {
+    items: [int];
+}
+
+impl Filterable<int> for IntList {
+    // This implementation preserves the effect of predicate
+    fn filter<E: effect>(self, predicate: fn(int) -> E bool) -> E [int] {
+        let mut result = [];
+        for item in self.items {
+            if predicate(item) {
+                result.push(item);
+            }
+        }
+        return result;
+    }
+}
+
+// Pure predicate
+fn is_even(n: int) -> @pure bool {
+    return n % 2 == 0;
+}
+
+// I/O predicate
+fn is_above_threshold(n: int) -> @io bool {
+    let threshold = receive();  // Read from actor mailbox
+    return n > threshold;
+}
+
+fn main() {
+    let list = IntList { items: [1, 2, 3, 4, 5] };
+
+    // With pure callback, filter is pure
+    let evens = list.filter(is_even);     // Type: @pure [int]
+
+    // With I/O callback, filter becomes I/O
+    let above_threshold = list.filter(is_above_threshold);  // Type: @io [int]
+}
+
+// Design notes:
+// - Effect variables (E: effect) make HOFs polymorphic over effect kinds
+// - Each call site determines the concrete effect based on the callback
+// - Generic code can call pure combinators from pure contexts
+// - Effect inference propagates through nested calls
+// - The verifier can reason about effect composition in complex pipelines
+//
+// Phase 2 work (RES-775):
+// 1. Extend parser to accept E: effect constraints in generics
+// 2. Typechecker: infer concrete effect at call sites based on argument effects
+// 3. Generics: carry effect constraints through monomorphization
+// 4. Verifier: soundly compose effects through HOF chains
+// 5. Examples: demonstrate effect preservation in embedded use cases
