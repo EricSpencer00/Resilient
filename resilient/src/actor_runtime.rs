@@ -34,6 +34,41 @@
 //! single `Value::ActorPid(u64)` arm to `Value` and three calls to
 //! `register_builtins` in `lib.rs`. PRs 3-4 will modify the
 //! interpreter's outer loop. PR 5 lands the ping-pong example.
+//!
+//! ## RES-780: Supervisor Runtime Phase 1
+//!
+//! The parser and typechecker now accept `supervisor { strategy, children }`
+//! declarations that specify restart policies for supervised actors. However,
+//! the runtime does not yet enforce these policies. Phase 1 of RES-780 wires
+//! supervisor declarations into actual crash propagation and restart logic:
+//!
+//! **Data model extensions needed**:
+//! - `SupervisorState`: tracks a supervisor's strategy, child PIDs, and restart counts
+//! - `CrashEvent`: signal that an actor crashed with reason (unhandled error, panic, etc.)
+//! - `RestartPolicy`: enum for permanent/transient/temporary restart behaviors
+//!
+//! **Scheduler loop changes**:
+//! - When an actor crashes, emit a `CrashEvent` to its supervisor (if any)
+//! - Supervisor decides: restart the actor, escalate to its own supervisor, or stop
+//! - Enforce restart policy: permanent → immediate restart, transient → no auto-restart,
+//!   temporary → restart with bounded attempts
+//!
+//! **Example behavior**:
+//! ```rz
+//! supervisor {
+//!     strategy: one_for_one,
+//!     children: [
+//!         { id: "worker", fn: handle_work, restart: permanent }
+//!     ]
+//! }
+//! ```
+//! When the worker crashes:
+//! - one_for_one strategy → restart only the worker
+//! - permanent policy → immediate restart, unlimited retries
+//! - If restart fails, escalate to the supervisor's own supervisor
+//!
+//! Phase 1 focuses on the supervisor-declared child case; cascading supervisor
+//! hierarchies are a follow-up.
 
 // PR 2-5 of RES-332 consume the surface laid down here; PR 1 sets it up
 // without yet calling into it from non-test sites, so dead-code lint

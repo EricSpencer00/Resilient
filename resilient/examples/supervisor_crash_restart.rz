@@ -1,0 +1,75 @@
+// RES-780: Supervisor runtime phase 1 — crash propagation and restart policy enforcement
+// This example shows the desired supervisor-controlled crash/restart behavior.
+// NOT YET IMPLEMENTED — this is a design reference for RES-780 phase 1.
+
+// Phase 1 goal: Wire supervisor{} declarations into actual actor crash handling,
+// enabling supervisor-directed restart policies instead of silently dropping crashed actors.
+
+supervisor {
+    strategy: one_for_one,
+    children: [
+        { id: "reader", fn: read_sensor, restart: permanent },
+        { id: "writer", fn: write_log, restart: transient }
+    ]
+}
+
+// Permanent restart: crashes are restarted immediately, unlimited times
+fn read_sensor() {
+    loop {
+        let val = receive();
+        // If this function crashes (e.g., due to assertion failure),
+        // the supervisor will restart it immediately
+        assert(val >= 0, "sensor value out of range");
+        println(val);
+    }
+}
+
+// Transient restart: crashes cause the actor to stop permanently
+fn write_log() {
+    loop {
+        let msg = receive();
+        // If this crashes, the supervisor will NOT restart it
+        // This is useful for worker processes that shouldn't auto-recover
+        println(msg);
+    }
+}
+
+fn main() {
+    let reader_pid = spawn(read_sensor);
+    let writer_pid = spawn(write_log);
+
+    // Send messages to the supervised actors
+    send(reader_pid, 42);   // OK
+    send(writer_pid, "log entry");
+
+    // Scenario 1: reader crashes (assertion fails)
+    // - Supervisor detects crash
+    // - permanent policy → restart reader immediately
+    // - writer continues running
+    send(reader_pid, -5);  // Violates assertion
+    // → read_sensor restarts, waiting for new messages
+
+    // Scenario 2: writer crashes
+    // - Supervisor detects crash
+    // - transient policy → writer stops permanently
+    // - reader continues running
+    send(writer_pid, "this will crash the writer");
+    // → write_log does NOT restart
+}
+
+// Design notes:
+// - Crash detection: unhandled error or assertion failure in actor function
+// - Restart policies:
+//   * permanent: infinite auto-restart on crash
+//   * transient: one-shot, no restart on crash
+//   * temporary: restart with bounded attempts (future extension)
+// - Supervisor strategy (one_for_one): each child is restarted independently
+// - If restart fails (e.g., repeated crashes), escalate to parent supervisor
+//
+// Phase 1 work (RES-780):
+// 1. Data model: SupervisorState, CrashEvent, RestartPolicy types
+// 2. Crash detection: trap errors/panics in actor execution
+// 3. Supervisor dispatch: route crash events to appropriate supervisor
+// 4. Restart enforcement: implement permanent/transient policies
+// 5. Examples: demonstrate one_for_one strategy with different restart types
+// 6. Tests: verify crash → supervisor → restart flow end-to-end
