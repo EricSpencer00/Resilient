@@ -5,14 +5,14 @@
 // Example 1: REJECTED — mutual recursion without termination annotation
 // The compiler detects that f and g form a cycle (strongly-connected component)
 // Without @decreases or @may_diverge, this is rejected under --strict-termination
-fn f(n: int) {
-    if (n > 0) {
+fn f(int n) {
+    if n > 0 {
         g(n - 1);
     }
 }
 
-fn g(n: int) {
-    if (n > 0) {
+fn g(int n) {
+    if n > 0 {
         f(n + 1);  // This escapes direct-recursion check (f doesn't call itself)
                    // But SCC analysis detects the cycle f → g → f
     }
@@ -21,51 +21,51 @@ fn g(n: int) {
 // Example 2: ACCEPTED — mutual recursion with termination annotation
 // Adding @decreases annotation satisfies the checker
 // @decreases n
-fn safe_f(n: int) {
-    if (n > 0) {
+fn safe_f(int n) {
+    if n > 0 {
         safe_g(n - 1);
     }
 }
 
 // @decreases n
-fn safe_g(n: int) {
-    if (n > 0) {
+fn safe_g(int n) {
+    if n > 0 {
         safe_f(n - 1);  // n strictly decreases
     }
 }
 
-// Example 3: ACCEPTED — no recursion in SCC, even with mutual calls
-// If all functions in an SCC are non-recursive, the check passes
-fn caller() {
-    helper();
+// Example 3: REJECTED — even non-recursive functions in a cycle are flagged
+// caller() and helper() form a cycle: caller → helper → caller
+// Both need annotations, even though neither function body is recursive
+fn caller(int _dummy) {
+    helper(_dummy);
 }
 
-fn helper() {
-    caller();  // This is a cycle, but caller() is not recursive body
+fn helper(int _dummy) {
+    caller(_dummy);  // Forms a cycle with caller
 }
 
 // Example 4: ACCEPTED — @may_diverge for intentional loops
 // @may_diverge
-fn event_loop() {
-    process_event();
+fn event_loop(int _dummy) {
+    process_event(_dummy);
 }
 
 // @may_diverge
-fn process_event() {
-    event_loop();  // Intentional infinite loop
+fn process_event(int _dummy) {
+    event_loop(_dummy);  // Intentional infinite loop
 }
 
-fn main() {
+fn main(int _dummy) {
     // safe_f and safe_g compile successfully with @decreases annotations
     safe_f(5);
     safe_g(3);
 
-    // caller() and helper() form a cycle but are non-recursive
-    // (they don't recursively call themselves in their bodies)
-    caller();
+    // caller() and helper() form a cycle and need annotations
+    // caller(0);  // Would fail termination check without @decreases or @may_diverge
 
     // event_loop with @may_diverge compiles (escape hatch for intentional loops)
-    // event_loop();  // Would run forever, so commented out
+    // event_loop(0);  // Would run forever, so commented out
 }
 
 // Design notes:
