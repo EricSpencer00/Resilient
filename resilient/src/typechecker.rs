@@ -1,4 +1,23 @@
-// Type checker module for Resilient language
+//! Type checker module for Resilient language.
+//!
+//! ## RES-776 / RES-780: Supervisor-Actor Integration Design
+//!
+//! When fully implemented, the typechecker will validate that supervisors
+//! and their supervised actors work together correctly:
+//!
+//! 1. **Supervisor Declaration** (RES-776 PR 1): ✓ Validates syntax
+//! 2. **Supervisor-Actor Binding** (RES-776 PR 2 / RES-780):
+//!    - Validate each child function is a valid actor handler
+//!    - Validate restart policy makes sense for the actor's structure
+//!    - Ensure supervisor and actor messages are compatible
+//! 3. **Runtime Integration** (RES-776 PR 3-5):
+//!    - Wire crash detection into actor scheduler
+//!    - Implement restart policy application
+//!    - Add supervision examples and tests
+//!
+//! This module is the typechecker phase; `actor_runtime.rs` handles
+//! scheduler/crash machinery, and `supervisor.rs` handles parsing.
+
 use crate::span::Span;
 use crate::{Node, Pattern};
 use std::collections::{HashMap, HashSet};
@@ -3876,10 +3895,18 @@ impl TypeChecker {
                 Ok(Type::Struct(type_name.clone()))
             }
 
-            // RES-333: supervisor declaration. Phase 1: stub implementation.
+            // RES-333 / RES-776: supervisor declaration typechecker integration.
+            // Phase 1 (RES-776 PR 1): validation of supervisor syntax and referenced functions ✓
+            // Phase 2 (RES-776 PR 2 / RES-780): typechecker integration to validate:
+            //   - Referenced functions match expected actor handler signatures
+            //   - Supervisor strategy is compatible with supervised actors
+            //   - Child restart policies are well-typed
+            // Phase 3 (RES-776 PR 3-5): runtime crash handling and restart policies
             Node::SupervisorDecl { .. } => {
-                // RES-333: Phase 3 supervisor validation
+                // Currently: basic structural validation (functions exist, strategy valid, IDs unique)
                 crate::supervisor::check(node, &self.env)?;
+                // TODO(RES-776 PR 2): Add semantic validation for supervisor/actor compatibility
+                // TODO(RES-776 PR 2): Validate handler function signatures match expected types
                 Ok(Type::Void)
             }
 
@@ -3946,6 +3973,10 @@ impl TypeChecker {
             // prevents aliasing that could enable data races despite the actor model.
             // When an actor sends(pid, value) or receives a message, the value must
             // be by-value to maintain isolation guarantees.
+            // RES-776 / RES-780: Integration point for supervisor-aware validation.
+            // When a supervisor declares this actor as a child, the typechecker
+            // should validate handler signatures match the child's restart policy
+            // and expected behavior. (Phase 2: not yet implemented)
             Node::ActorDecl {
                 name,
                 state_fields,
