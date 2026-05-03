@@ -1990,11 +1990,12 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
                 l0013_walk(value, out);
             }
         }
-        Node::ReturnStatement { value, .. } => {
-            if let Some(val) = value {
-                l0013_walk(val, out);
-            }
+        Node::ReturnStatement {
+            value: Some(val), ..
+        } => {
+            l0013_walk(val, out);
         }
+        Node::ReturnStatement { value: None, .. } => {}
         Node::ImplBlock { methods, .. } => {
             for method in methods {
                 l0013_walk(method, out);
