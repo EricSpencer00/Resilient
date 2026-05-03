@@ -1,20 +1,3 @@
 {
-  "claims": {
-    "docs/concurrency.md": {
-      "branch": "res-332-pr5-ping-pong",
-      "claimed_at": "2026-05-01T01:16:36Z"
-    },
-    "resilient/src/region_inference.rs": {
-      "branch": "res-395-pr2-subst",
-      "claimed_at": "2026-05-01T02:10:00Z"
-    },
-    "docs/_sass/custom/custom.scss": {
-      "branch": "claude/sharp-bhabha-b3edfe",
-      "claimed_at": "2026-05-02T02:46:56Z"
-    },
-    "docs/STRUCTURAL_ENFORCEMENT.md": {
-      "branch": "claude/sharp-bhabha-b3edfe",
-      "claimed_at": "2026-05-02T02:46:56Z"
-    }
-  }
+  "claims": {}
 }
