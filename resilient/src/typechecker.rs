@@ -3940,12 +3940,8 @@ impl TypeChecker {
 
             // RES-388/RES-390: ActorDecl type-checks state fields,
             // always invariants, and receive handler bodies.
-            // RES-777 / RES-790: validate that actor state, handler parameters,
-            // and mailbox payloads contain no reference types to preserve
-            // ownership-by-value across actor boundaries. This structural constraint
-            // prevents aliasing that could enable data races despite the actor model.
-            // When an actor sends(pid, value) or receives a message, the value must
-            // be by-value to maintain isolation guarantees.
+            // RES-777: validate that actor state and handler payloads
+            // contain no reference types to preserve ownership-by-value.
             Node::ActorDecl {
                 name,
                 state_fields,
