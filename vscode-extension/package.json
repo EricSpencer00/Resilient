@@ -2,7 +2,7 @@
   "name": "resilient-vscode",
   "displayName": "Resilient",
   "description": "Syntax highlighting, LSP diagnostics, and one-click run for Resilient (.rz) — a compiled, contract-driven language for safety-critical embedded systems.",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "publisher": "fromamerica",
   "icon": "icon.png",
   "license": "MIT",
