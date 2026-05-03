@@ -153,6 +153,20 @@ main {
 @media (max-width: 800px) {
   main {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  main > :nth-child(2) {
+    order: -1;
+  }
+
+  .output-pane {
+    min-height: 200px;
+    max-height: 50vh;
+    border-bottom: 1px solid #d0d0d0;
+  }
+
+  .editor-pane {
+    flex: 1 1 auto;
   }
 }
