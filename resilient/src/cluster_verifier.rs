@@ -44,6 +44,34 @@
 //!   existential quantification over payloads.
 //! - No dynamic cluster membership, no inter-cluster communication,
 //!   no liveness — out of scope per the ticket, filed as follow-ups.
+//!
+//! # RES-782: Network Partition and Dropped Delivery Modeling
+//!
+//! The MVP assumes a fully connected, reliable network: every message
+//! sent is delivered. This is sound for verifying in the ideal case,
+//! but many real distributed systems must tolerate network partitions
+//! and dropped messages.
+//!
+//! Phase 1 (RES-782) extends the verifier surface to let users state
+//! and check invariants under explicit partition / failure assumptions:
+//!
+//! - **Partition model**: A partition is a declaration of which members
+//!   cannot communicate. For example, `partition { (A, B), (B, C) }`
+//!   means A ↔ B cannot send/receive, B ↔ C cannot send/receive, but
+//!   A ↔ C can. Messages sent across a partition edge are dropped.
+//!
+//! - **Dropped delivery**: A handler may not assume all sent messages
+//!   arrive. For example, `send(other, msg)` in a partitioned context
+//!   does not guarantee the receiver's mailbox is populated.
+//!
+//! - **Partition-resilient invariants**: An invariant can be checked
+//!   under a specific partition assumption. A split-brain scenario that
+//!   should violate the invariant will be rejected with a diagnostic.
+//!   A partition-tolerant invariant remains provable under the same model.
+//!
+//! Example: a leader-election protocol should maintain "exactly one
+//! leader in the connected set" within a partition. The verifier
+//! should reject a scenario where two disjoint sets both elect leaders.
 
 #[cfg(feature = "z3")]
 use std::collections::HashMap;
