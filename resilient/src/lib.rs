@@ -369,10 +369,11 @@ enum Token {
     // Add new keyword tokens here — one variant per line with RES-NNN doc comment.
     // This block is append-only; merge conflicts in this section are safe to resolve
     // by keeping ALL variants from both sides.
-    /// RES-386: `actor Name { state: T = expr; concurrent_ensures: ...;
-    /// receive name() ensures expr; { body } }` — actor declaration.
-    /// The minimum slice only uses the `actor` / `receive` /
-    /// `concurrent_ensures` keywords inside this block.
+    /// RES-332 / RES-386 / RES-388: `actor Name { state: T = init; always: invariant;
+    /// receive handler() requires R ensures E { body } }` — actor declaration.
+    /// Actors are the foundation of the concurrency model: lightweight units with
+    /// isolated state and message-passing communication. Each actor owns its state;
+    /// handlers process messages (parameters must be by-value per RES-777).
     Actor,
     /// RES-386 / RES-388: `receive handler_name(params) requires R ensures E { body }` — one
     /// message handler inside an actor block. Handlers are the primary point where
