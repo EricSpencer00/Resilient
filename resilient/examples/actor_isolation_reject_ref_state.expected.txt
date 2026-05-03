@@ -1,0 +1,6 @@
+Type error: examples/actor_isolation_reject_ref_state.rz:8:7: actor `MyActor` state field `state` has reference type & int; actor boundaries require ownership-by-value to preserve race safety
+examples/actor_isolation_reject_ref_state.rz:8:7: actor `MyActor` state field `state` has reference type & int; actor boundaries require ownership-by-value to preserve race safety
+Type error: actor `MyActor` state field `state` has reference type & int; actor boundaries require ownership-by-value to preserve race safety
+   actor MyActor {
+         ^
+Error: Type check failed: examples/actor_isolation_reject_ref_state.rz:8:7: actor `MyActor` state field `state` has reference type & int; actor boundaries require ownership-by-value to preserve race safety

@@ -369,13 +369,16 @@ enum Token {
     // Add new keyword tokens here — one variant per line with RES-NNN doc comment.
     // This block is append-only; merge conflicts in this section are safe to resolve
     // by keeping ALL variants from both sides.
-    /// RES-386: `actor Name { state: T = expr; concurrent_ensures: ...;
-    /// receive name() ensures expr; { body } }` — actor declaration.
-    /// The minimum slice only uses the `actor` / `receive` /
-    /// `concurrent_ensures` keywords inside this block.
+    /// RES-332 / RES-386 / RES-388: `actor Name { state: T = init; always: invariant;
+    /// receive handler() requires R ensures E { body } }` — actor declaration.
+    /// Actors are the foundation of the concurrency model: lightweight units with
+    /// isolated state and message-passing communication. Each actor owns its state;
+    /// handlers process messages (parameters must be by-value per RES-777).
     Actor,
-    /// RES-386: `receive name() ensures expr; { body }` — one
-    /// message handler inside an actor block.
+    /// RES-386 / RES-388: `receive handler_name(params) requires R ensures E { body }` — one
+    /// message handler inside an actor block. Handlers are the primary point where
+    /// actors process messages. Parameters must be by-value (no references);
+    /// requires/ensures clauses are optional and used for formal specification.
     Receive,
     /// RES-386: `concurrent_ensures: expr;` — race-freedom
     /// contract attached to an actor declaration. Proved by the
@@ -3304,22 +3307,17 @@ impl Parser {
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             match &self.current_token {
                 // `state: Type = expr;` — Identifier("state") followed by `:`.
+                // RES-777: support reference types via parse_type_annotation.
                 Token::Identifier(kw) if kw == "state" && self.peek_token == Token::Colon => {
                     self.next_token(); // skip `state`
                     self.next_token(); // skip `:`
-                    let ty = match &self.current_token {
-                        Token::Identifier(t) => t.clone(),
-                        other => {
-                            let msg = format!(
-                                "Expected type name after `state:` in actor `{}`, found {}",
-                                name, other
-                            );
-                            self.record_error(msg);
+                    let ty = match self.parse_type_annotation("for actor state") {
+                        Some(t) => t,
+                        None => {
                             self.skip_until_stmt_end();
                             continue;
                         }
                     };
-                    self.next_token(); // skip type
                     // RES-388 MVP: require an `= init` so verification
                     // has a concrete base case. A bare `state: Int;`
                     // with no initializer is a parse error.

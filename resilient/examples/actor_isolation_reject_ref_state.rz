@@ -1,0 +1,13 @@
+// RES-785: Actor isolation rejection — reference-typed state.
+// This example demonstrates that actors cannot have state fields
+// with reference types, as references would create aliases across
+// actor boundaries, enabling data races.
+//
+// Expected: type error rejecting the reference-typed state field.
+
+actor MyActor {
+    state: &int = 0;
+
+    receive handle() {
+    }
+}
