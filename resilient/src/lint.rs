@@ -1907,11 +1907,10 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
                 out.push(Lint {
                     code: "L0013".into(),
                     severity: Severity::Warning,
-                    message:
-                        "unchecked array indexing — bounds not proven at compile time; \
+                    message: "unchecked array indexing — bounds not proven at compile time; \
                          use --deny-unproven-bounds to require proof, or suppress with \
                          `// resilient: allow L0013`"
-                            .to_string(),
+                        .to_string(),
                     line: span.start.line as u32,
                     column: span.start.column as u32,
                 });
@@ -1926,7 +1925,10 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
             }
         }
         Node::Function {
-            body, requires, ensures, ..
+            body,
+            requires,
+            ensures,
+            ..
         } => {
             for req in requires {
                 l0013_walk(req, out);
@@ -1948,20 +1950,22 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
                 l0013_walk(alt, out);
             }
         }
-        Node::WhileStatement { body, condition, .. } => {
+        Node::WhileStatement {
+            body, condition, ..
+        } => {
             l0013_walk(condition, out);
             l0013_walk(body, out);
         }
-        Node::ForInStatement {
-            iterable, body, ..
-        } => {
+        Node::ForInStatement { iterable, body, .. } => {
             l0013_walk(iterable, out);
             l0013_walk(body, out);
         }
         Node::LiveBlock { body, .. } => {
             l0013_walk(body, out);
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             l0013_walk(scrutinee, out);
             for (_, guard, body) in arms {
                 if let Some(g) = guard {
@@ -1978,7 +1982,9 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
             l0013_walk(right, out);
         }
         Node::CallExpression {
-            function, arguments, ..
+            function,
+            arguments,
+            ..
         } => {
             l0013_walk(function, out);
             for arg in arguments {
