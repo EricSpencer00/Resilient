@@ -6977,4 +6977,53 @@ mod res402_polymorphic_array_tests {
             err
         );
     }
+
+    #[test]
+    fn actor_rejects_reference_state_type() {
+        // RES-777: actor state fields cannot have reference types.
+        // References would create aliases across actor boundaries,
+        // enabling data races despite the actor model's isolation.
+        let err = check(
+            "
+            actor TestActor {
+                state: &int = 0;
+                receive handle() {}
+            }
+            "
+        ).expect_err("reference-typed actor state should be rejected");
+        assert!(
+            err.contains("has reference type"),
+            "diagnostic missing 'has reference type': {}",
+            err
+        );
+        assert!(
+            err.contains("actor boundaries require ownership-by-value"),
+            "diagnostic missing 'actor boundaries require ownership-by-value': {}",
+            err
+        );
+    }
+
+    #[test]
+    fn actor_rejects_reference_handler_parameter() {
+        // RES-777: actor handler parameters cannot have reference types
+        // for the same reason as state fields.
+        let err = check(
+            "
+            actor TestActor {
+                state: int = 0;
+                receive handle(&int x) {}
+            }
+            "
+        ).expect_err("reference-typed handler parameter should be rejected");
+        assert!(
+            err.contains("has reference type"),
+            "diagnostic missing 'has reference type': {}",
+            err
+        );
+        assert!(
+            err.contains("actor boundaries require ownership-by-value"),
+            "diagnostic missing 'actor boundaries require ownership-by-value': {}",
+            err
+        );
+    }
 }
