@@ -279,6 +279,11 @@ mod supervisor;
 // reuses the existing `<Type>$<method>` mangling — no VTable.
 mod traits;
 
+// RES-796: Mutual recursion termination check via SCC (Strongly Connected Component)
+// analysis of the function call graph. Detects cycles that direct-recursion checking
+// (RES-398) misses.
+mod mutual_recursion_scc;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
