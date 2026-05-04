@@ -1,3 +1,12 @@
 {
-  "claims": {}
+  "claims": {
+    "resilient/src/lib.rs": {
+      "branch": "res-820-typechecker-associated-types",
+      "claimed_at": "2026-05-04T03:00:54Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-820-typechecker-associated-types",
+      "claimed_at": "2026-05-04T03:00:54Z"
+    }
+  }
 }
