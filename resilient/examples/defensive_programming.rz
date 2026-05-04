@@ -1,0 +1,173 @@
+// RES-852: Defensive programming demonstrating assumption checking,
+// invariant assertions, precondition validation, and graceful degradation.
+
+fn safe_divide_assert(int numerator, int denominator) -> int {
+    if denominator == 0 {
+        return 0;
+    }
+    return numerator / denominator;
+}
+
+fn validate_array_bounds(int index, int array_length) -> Result {
+    if index < 0 {
+        return Err("negative index");
+    }
+    if index >= array_length {
+        return Err("index out of bounds");
+    }
+    return Ok(index);
+}
+
+fn process_with_precondition(int value, int max_value) -> Result {
+    if value < 0 {
+        return Err("precondition: value must be non-negative");
+    }
+    if value > max_value {
+        return Err("precondition: value exceeds maximum");
+    }
+    return Ok(value * 2);
+}
+
+fn check_postcondition(int input, int output) -> Result {
+    if output < input {
+        return Err("postcondition: output should be >= input");
+    }
+    return Ok(output);
+}
+
+fn verify_invariant(int balance) -> Result {
+    if balance < 0 {
+        return Err("invariant violation: negative balance");
+    }
+    return Ok(balance);
+}
+
+fn safe_array_sum(int a, int b, int c) -> int {
+    let arr_len = 3;
+    let idx0 = match validate_array_bounds(0, arr_len) {
+        Result::Ok(i) => i,
+        Result::Err(_) => 0,
+    };
+    let idx1 = match validate_array_bounds(1, arr_len) {
+        Result::Ok(i) => i,
+        Result::Err(_) => 0,
+    };
+    let idx2 = match validate_array_bounds(2, arr_len) {
+        Result::Ok(i) => i,
+        Result::Err(_) => 0,
+    };
+    return a + b + c;
+}
+
+fn transaction_with_rollback(int balance, int amount) -> Result {
+    if is_err(verify_invariant(balance)) {
+        return Err("invalid initial balance");
+    }
+
+    if amount < 0 {
+        return Err("cannot withdraw negative amount");
+    }
+
+    if balance < amount {
+        return Err("insufficient funds");
+    }
+
+    let new_balance = balance - amount;
+
+    if is_err(verify_invariant(new_balance)) {
+        return Err("transaction would violate invariant");
+    }
+
+    return Ok(new_balance);
+}
+
+fn safe_increment(int current, int max_increment) -> Result {
+    if current < 0 {
+        return Err("cannot increment negative value");
+    }
+    if max_increment <= 0 {
+        return Err("increment must be positive");
+    }
+
+    let result = current + max_increment;
+    if result < current {
+        return Err("increment would cause overflow");
+    }
+    return Ok(result);
+}
+
+fn main() {
+    let div1 = safe_divide_assert(10, 2);
+    println(div1);
+
+    let div2 = safe_divide_assert(10, 0);
+    println(div2);
+
+    let bounds_ok = validate_array_bounds(2, 5);
+    if is_err(bounds_ok) {
+        println("bounds check failed");
+    } else {
+        println("bounds check passed");
+    }
+
+    let bounds_bad = validate_array_bounds(10, 5);
+    if is_err(bounds_bad) {
+        println(unwrap_err(bounds_bad));
+    } else {
+        println("bounds check passed");
+    }
+
+    let precond_ok = process_with_precondition(10, 20);
+    if is_err(precond_ok) {
+        println("precondition failed");
+    } else {
+        println(unwrap(precond_ok));
+    }
+
+    let precond_bad = process_with_precondition(-5, 20);
+    if is_err(precond_bad) {
+        println(unwrap_err(precond_bad));
+    } else {
+        println(unwrap(precond_bad));
+    }
+
+    let postcond = check_postcondition(10, 20);
+    if is_err(postcond) {
+        println("postcondition violated");
+    } else {
+        println("postcondition satisfied");
+    }
+
+    let invariant_ok = verify_invariant(100);
+    if is_err(invariant_ok) {
+        println("invariant violated");
+    } else {
+        println("invariant satisfied");
+    }
+
+    let array_sum = safe_array_sum(5, 10, 15);
+    println(array_sum);
+
+    let withdraw_ok = transaction_with_rollback(100, 30);
+    if is_err(withdraw_ok) {
+        println("transaction failed");
+    } else {
+        println(unwrap(withdraw_ok));
+    }
+
+    let withdraw_insufficient = transaction_with_rollback(50, 100);
+    if is_err(withdraw_insufficient) {
+        println(unwrap_err(withdraw_insufficient));
+    } else {
+        println(unwrap(withdraw_insufficient));
+    }
+
+    let incr_ok = safe_increment(10, 5);
+    if is_err(incr_ok) {
+        println("increment failed");
+    } else {
+        println(unwrap(incr_ok));
+    }
+}
+
+main();

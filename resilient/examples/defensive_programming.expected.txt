@@ -1,0 +1,15 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/defensive_programming.rz`
+5
+0
+bounds check passed
+index out of bounds
+20
+precondition: value must be non-negative
+postcondition satisfied
+invariant satisfied
+30
+70
+insufficient funds
+15
+Program executed successfully
