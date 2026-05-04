@@ -1,0 +1,27 @@
+// RES-796/RES-784: Mutual recursion with @decreases annotation
+// Two mutually recursive functions (even/odd) with proven termination.
+// Run with: resilient --strict-termination mutual_recursion_decreases.rz
+
+// @decreases n
+fn is_even(int n) {
+    if n == 0 { return true; }
+    if n == 1 { return false; }
+    is_odd(n - 1);
+}
+
+// @decreases n
+fn is_odd(int n) {
+    if n == 0 { return false; }
+    if n == 1 { return true; }
+    is_even(n - 1);
+}
+
+fn main() {
+    println("Testing mutual recursion with @decreases:");
+    println("is_even(4) = " + is_even(4));
+    println("is_odd(5) = " + is_odd(5));
+    println("is_even(1) = " + is_even(1));
+    println("is_odd(2) = " + is_odd(2));
+}
+
+main();

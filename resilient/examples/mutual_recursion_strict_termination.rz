@@ -69,7 +69,7 @@ fn main(int _dummy) {
 }
 
 // Design notes:
-// - SCC detection: build call graph and find cycles using Tarjan's algorithm
+// - SCC detection: build call graph and find cycles using Kosaraju's algorithm
 // - Annotation requirement: all functions in a recursive SCC need either:
 //   * @decreases <metric>: prove strict decrease on each recursive call
 //   * @may_diverge: explicitly allow unbounded recursion

@@ -1,0 +1,23 @@
+// RES-796/RES-784: Mutual recursion with @may_diverge escape hatch
+// Two functions that call each other indefinitely (intentional).
+// Run with: resilient --strict-termination mutual_recursion_may_diverge.rz
+
+// @may_diverge
+fn ping() {
+    println("ping");
+    pong();
+}
+
+// @may_diverge
+fn pong() {
+    println("pong");
+    // In a real event loop, there would be a break condition
+    // For demo purposes, we'd need a counter to avoid actual infinite loop
+}
+
+fn main() {
+    println("Mutual recursion with @may_diverge escape hatch.");
+    // ping();  // Would run forever, so commented out
+}
+
+main();
