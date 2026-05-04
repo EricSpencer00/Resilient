@@ -1,0 +1,47 @@
+=== Simple Recursion: Factorial ===
+1! = 1
+2! = 2
+3! = 6
+4! = 24
+5! = 120
+
+=== Fibonacci with Direct Recursion ===
+fib(0) = 0
+fib(1) = 1
+fib(2) = 1
+fib(3) = 2
+fib(4) = 3
+fib(5) = 5
+fib(6) = 8
+
+=== Fibonacci with Accumulator ===
+fib_acc(5) = 5
+fib_acc(8) = 21
+
+=== Recursive Sum ===
+sum(1..5) = 15
+sum(1..10) = 55
+
+=== Power Calculation ===
+2^3 = 8
+2^8 = 256
+3^4 = 81
+
+=== Count Digits in Number ===
+digits in 1 = 1
+digits in 10 = 2
+digits in 100 = 3
+digits in 1000 = 4
+digits in 54321 = 5
+
+=== Binary Search Pattern ===
+binary_search(5, 0, 10) = 5
+binary_search(0, 0, 10) = 0
+binary_search(10, 0, 10) = 10
+binary_search(7, 0, 10) = 7
+
+=== Recursive Array Iteration ===
+sum of indices 0-4: 10
+
+Recursion enables elegant algorithm implementation
+Program executed successfully
