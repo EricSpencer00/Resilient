@@ -1,0 +1,86 @@
+// RES-857: Testing patterns demonstrating property-based checks,
+// invariant testing, and assertion-based test cases.
+
+fn is_sorted(int a, int b, int c) -> bool {
+    return a <= b && b <= c;
+}
+
+fn invariant_sum_positive(int x, int y) -> bool {
+    return x + y >= 0 || x + y < 0;
+}
+
+fn assert_equals(int expected, int actual) -> bool {
+    return expected == actual;
+}
+
+fn assert_range(int value, int min_val, int max_val) -> bool {
+    return value >= min_val && value <= max_val;
+}
+
+fn test_doubled(int input) -> bool {
+    let result = input * 2;
+    return result == input + input;
+}
+
+fn test_square_positive(int input) -> bool {
+    if input < 0 {
+        return true;
+    }
+    let result = input * input;
+    return result >= 0;
+}
+
+fn test_commutativity(int a, int b) -> bool {
+    let add1 = a + b;
+    let add2 = b + a;
+    return add1 == add2;
+}
+
+fn test_associativity(int a, int b, int c) -> bool {
+    let left = (a + b) + c;
+    let right = a + (b + c);
+    return left == right;
+}
+
+fn main() {
+    let test1 = is_sorted(1, 2, 3);
+    println(test1);
+
+    let test2 = is_sorted(3, 1, 2);
+    println(test2);
+
+    let test3 = invariant_sum_positive(5, 10);
+    println(test3);
+
+    let test4 = assert_equals(10, 5 * 2);
+    println(test4);
+
+    let test5 = assert_equals(10, 5 * 3);
+    println(test5);
+
+    let test6 = assert_range(50, 0, 100);
+    println(test6);
+
+    let test7 = assert_range(150, 0, 100);
+    println(test7);
+
+    let test8 = test_doubled(5);
+    println(test8);
+
+    let test9 = test_square_positive(4);
+    println(test9);
+
+    let test10 = test_square_positive(-3);
+    println(test10);
+
+    let test11 = test_commutativity(7, 3);
+    println(test11);
+
+    let test12 = test_associativity(2, 3, 4);
+    println(test12);
+
+    let test13 = test_associativity(10, 20, 30);
+    println(test13);
+}
+
+main();

@@ -1,0 +1,16 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/testing_patterns.rz`
+true
+false
+true
+true
+false
+true
+false
+true
+true
+true
+true
+true
+true
+Program executed successfully
