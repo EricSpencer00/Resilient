@@ -1,0 +1,16 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/composition_patterns.rz`
+10
+15
+25
+100
+35
+900
+10
+10
+18
+29
+49
+112
+900
+Program executed successfully

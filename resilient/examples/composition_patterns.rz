@@ -1,0 +1,113 @@
+// RES-851: Code reuse and composition demonstrating function composition,
+// higher-order patterns, generic dispatch, and modular algorithm building.
+
+fn double(int x) -> int {
+    return x * 2;
+}
+
+fn triple(int x) -> int {
+    return x * 3;
+}
+
+fn square(int x) -> int {
+    return x * x;
+}
+
+fn add(int a, int b) -> int {
+    return a + b;
+}
+
+fn compose_two(int x, int f1_result) -> int {
+    let doubled = double(x);
+    let squared = square(doubled);
+    return squared;
+}
+
+fn apply_then_add(int x, int addend) -> int {
+    let transformed = square(x);
+    return add(transformed, addend);
+}
+
+fn pipeline(int value) -> int {
+    let step1 = double(value);
+    let step2 = triple(step1);
+    let step3 = square(step2);
+    return step3;
+}
+
+fn fold_left(int accumulator, int item, int operation) -> int {
+    if operation == 0 {
+        return accumulator + item;
+    }
+    if operation == 1 {
+        return accumulator * item;
+    }
+    return accumulator;
+}
+
+fn map_transform_array(int a, int b, int c, int transform) -> int {
+    if transform == 0 {
+        return double(a) + double(b) + double(c);
+    }
+    if transform == 1 {
+        return square(a) + square(b) + square(c);
+    }
+    return a + b + c;
+}
+
+fn transform_pair(int x, int y) -> int {
+    let sum = add(x, y);
+    return square(sum);
+}
+
+fn chain_operations(int initial) -> int {
+    let step1 = double(initial);
+    let step2 = triple(step1);
+    let step3 = add(step2, 100);
+    return step3;
+}
+
+fn main() {
+    let x = 5;
+
+    let d = double(x);
+    println(d);
+
+    let t = triple(x);
+    println(t);
+
+    let s = square(x);
+    println(s);
+
+    let composed = compose_two(x, 0);
+    println(composed);
+
+    let with_add = apply_then_add(x, 10);
+    println(with_add);
+
+    let piped = pipeline(x);
+    println(piped);
+
+    let fold_sum = fold_left(0, 10, 0);
+    println(fold_sum);
+
+    let fold_prod = fold_left(1, 10, 1);
+    println(fold_prod);
+
+    let array_sum = map_transform_array(2, 3, 4, 0);
+    println(array_sum);
+
+    let array_squares = map_transform_array(2, 3, 4, 1);
+    println(array_squares);
+
+    let pair = transform_pair(3, 4);
+    println(pair);
+
+    let chained = chain_operations(2);
+    println(chained);
+
+    let nested = square(triple(double(5)));
+    println(nested);
+}
+
+main();
