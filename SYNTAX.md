@@ -382,20 +382,73 @@ String comparison is lexicographic (`"apple" < "banana"`).
 
 ## Control Flow
 
+Resilient provides three mechanisms for control flow: conditionals (`if`),
+unbounded loops (`while`), and collection iteration (`for`).
+
+### Conditionals
+
 ```rust
 if condition {
-    ...
+    // executed if condition is truthy
 } else {
-    ...
-}
-
-while condition {
-    ...
+    // optional; executed if condition is falsy
 }
 ```
 
-Parentheses around conditions are optional. `while` has a built-in
-1,000,000-iteration runaway guard.
+- Parentheses around the condition are optional.
+- `else` is optional for chains of conditions:
+  ```rust
+  if x < 0 {
+      println("negative");
+  } else if x == 0 {
+      println("zero");
+  } else {
+      println("positive");
+  }
+  ```
+
+### While Loops
+
+```rust
+while condition {
+    // repeatedly executed while condition is truthy
+}
+```
+
+- Parentheses around the condition are optional.
+- `while` has a built-in 1,000,000-iteration runaway guard to prevent
+  infinite loops in safety-critical embedded contexts.
+- Each iteration re-evaluates the condition before executing the body.
+
+### For Loops
+
+```rust
+for x in collection {
+    // x is bound to each element
+}
+```
+
+Collections can be:
+- Arrays: `[1, 2, 3]`, `xs`, `[int; 5]`
+- Ranges: `0..5` (half-open), `1..=10` (inclusive)
+- Strings: `"hello"` (iterates over characters)
+
+Example:
+```rust
+let xs = [10, 20, 30];
+let total = 0;
+for item in xs {
+    total = total + item;
+}
+
+for i in 0..5 {        // iterates 0, 1, 2, 3, 4
+    println(i);
+}
+
+for i in 1..=5 {       // iterates 1, 2, 3, 4, 5
+    println(i);
+}
+```
 
 ## Match expressions
 
