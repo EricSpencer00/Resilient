@@ -1,0 +1,135 @@
+// RES-844: Demonstrate assertions and compile-time verification.
+// Shows assertion features for safety-critical system validation.
+
+// Validate input preconditions with assertions
+fn calculate_discount(int amount, int discount_percent) -> int
+    requires amount > 0
+    requires discount_percent >= 0
+    requires discount_percent <= 100
+{
+    assert(amount > 0, "amount must be positive");
+    assert(discount_percent >= 0 && discount_percent <= 100, "discount must be 0-100");
+    return amount - (amount * discount_percent / 100);
+}
+
+// Verify array bounds before access
+fn safe_array_access(int idx, int array_len) -> int
+    requires idx >= 0
+    requires array_len > 0
+{
+    assert(idx >= 0, "index cannot be negative");
+    assert(idx < array_len, "index out of bounds");
+    return idx;
+}
+
+// Check invariant properties
+fn validate_counter_state(int count, int max_count) -> int {
+    assert(count >= 0, "count must be non-negative");
+    assert(max_count > 0, "max must be positive");
+    assert(count <= max_count, "count exceeds maximum");
+    return count;
+}
+
+// Verify state transitions
+fn validate_state_transition(int from_state, int to_state) -> int {
+    // Valid transitions: 0->1, 1->2, 2->0 (only)
+    let valid = 0;
+    if from_state == 0 && to_state == 1 { valid = 1; }
+    if from_state == 1 && to_state == 2 { valid = 1; }
+    if from_state == 2 && to_state == 0 { valid = 1; }
+
+    assert(valid == 1, "invalid state transition");
+    return to_state;
+}
+
+// Verify computation results
+fn verified_division(int a, int b) -> int {
+    assert(b != 0, "division by zero not allowed");
+    let result = a / b;
+    // Verify result is consistent with inputs
+    assert(result * b <= a, "division result verification failed");
+    return result;
+}
+
+// Multiple assertions for complex validation
+fn process_transaction(int amount, int balance, int limit) -> int {
+    assert(amount > 0, "transaction amount must be positive");
+    assert(balance >= 0, "balance cannot be negative");
+    assert(limit > 0, "transaction limit must be positive");
+    assert(amount <= limit, "transaction exceeds limit");
+    assert(balance >= amount, "insufficient balance");
+
+    let new_balance = balance - amount;
+    assert(new_balance >= 0, "resulting balance would be negative");
+    return new_balance;
+}
+
+fn main() {
+    println("=== Input Validation with Assertions ===");
+    let discounted = calculate_discount(100, 20);
+    println("100 with 20% discount: " + discounted);
+
+    println("");
+    println("=== Array Bounds Validation ===");
+    let arr = [10, 20, 30, 40];
+    let valid_idx = safe_array_access(2, len(arr));
+    println("Accessing index " + valid_idx + ": " + arr[valid_idx]);
+
+    println("");
+    println("=== State Invariant Validation ===");
+    let counter = validate_counter_state(5, 10);
+    println("Counter value " + counter + " is valid (max=10)");
+
+    println("");
+    println("=== State Transition Validation ===");
+    let from = 0;
+    let to = 1;
+    let new_state = validate_state_transition(from, to);
+    println("Transition " + from + " -> " + to + " is valid, new state: " + new_state);
+
+    println("");
+    println("=== Computation Verification ===");
+    let quotient = verified_division(20, 4);
+    println("20 / 4 = " + quotient);
+
+    println("");
+    println("=== Complex Transaction Validation ===");
+    let transaction_amount = 50;
+    let account_balance = 200;
+    let transaction_limit = 100;
+    let new_balance = process_transaction(transaction_amount, account_balance, transaction_limit);
+    println("Transaction: " + transaction_amount);
+    println("Previous balance: " + account_balance);
+    println("New balance: " + new_balance);
+
+    println("");
+    println("=== Multiple Validations ===");
+    let test_cases = [
+        [10, 100],
+        [25, 200],
+        [50, 500],
+    ];
+    let i = 0;
+    for tc in test_cases {
+        let val = tc[0];
+        let max = tc[1];
+        let validated = validate_counter_state(val, max);
+        println("Value " + validated + " validated with max " + max);
+        i = i + 1;
+    }
+
+    println("");
+    println("=== Assertion-Based Safety ===");
+    let safe_val1 = 42;
+    assert(safe_val1 > 0, "value must be positive");
+    println("Value " + safe_val1 + " passed assertion");
+
+    let safe_val2 = 100;
+    assert(safe_val2 >= 10 && safe_val2 <= 1000, "value must be in range 10-1000");
+    println("Value " + safe_val2 + " passed range assertion");
+
+    println("");
+    println("Assertions enable compile-time and runtime verification");
+}
+
+main();

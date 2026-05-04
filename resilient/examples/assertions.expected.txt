@@ -1,0 +1,31 @@
+=== Input Validation with Assertions ===
+100 with 20% discount: 80
+
+=== Array Bounds Validation ===
+Accessing index 2: 30
+
+=== State Invariant Validation ===
+Counter value 5 is valid (max=10)
+
+=== State Transition Validation ===
+Transition 0 -> 1 is valid, new state: 1
+
+=== Computation Verification ===
+20 / 4 = 5
+
+=== Complex Transaction Validation ===
+Transaction: 50
+Previous balance: 200
+New balance: 150
+
+=== Multiple Validations ===
+Value 10 validated with max 100
+Value 25 validated with max 200
+Value 50 validated with max 500
+
+=== Assertion-Based Safety ===
+Value 42 passed assertion
+Value 100 passed range assertion
+
+Assertions enable compile-time and runtime verification
+Program executed successfully
