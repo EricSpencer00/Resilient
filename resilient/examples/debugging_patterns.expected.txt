@@ -1,0 +1,27 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/debugging_patterns.rz`
+INFO: Starting debug example
+>> Entering main
+Array: [1, 2, 3]
+Assertion passed
+ASSERTION FAILED: 5 should be negative
+>> Entering process_with_tracing
+State snapshot @iter 0: value=10
+Step 1: double -> state=20
+Step 2: add 10 -> state=30
+State snapshot @iter 2: value=30
+<< Exiting process_with_tracing
+Final result: 30
+Input: 50
+INFO: Non-negative input
+Input: -10
+WARN: Negative input detected
+Input: 150
+INFO: Non-negative input
+WARN: Value exceeds threshold
+true
+ERROR: Invariant violation: 150
+false
+INFO: Completed debug example
+<< Exiting main
+Program executed successfully

@@ -1,0 +1,123 @@
+// RES-855: Debugging and tracing patterns demonstrating trace points,
+// state snapshots, assertion-driven debugging, and runtime introspection.
+
+enum LogLevel {
+    Debug,
+    Info,
+    Warning,
+    Error,
+}
+
+fn log_message(string msg, LogLevel level) {
+    match level {
+        LogLevel::Debug => println("DEBUG: " + msg),
+        LogLevel::Info => println("INFO: " + msg),
+        LogLevel::Warning => println("WARN: " + msg),
+        LogLevel::Error => println("ERROR: " + msg),
+    }
+}
+
+fn trace_function_entry(string func_name) {
+    println(">> Entering " + func_name);
+}
+
+fn trace_function_exit(string func_name, int result) {
+    println("<< Exiting " + func_name);
+}
+
+fn snapshot_state(int value, int iteration) {
+    println("State snapshot @iter " + iteration + ": value=" + value);
+}
+
+fn assert_condition(bool condition, string message) {
+    if condition == false {
+        println("ASSERTION FAILED: " + message);
+    } else {
+        println("Assertion passed");
+    }
+}
+
+fn debug_array_values(int a, int b, int c) {
+    println("Array: [" + a + ", " + b + ", " + c + "]");
+}
+
+fn trace_algorithm_step(int step, int state, string operation) {
+    println("Step " + step + ": " + operation + " -> state=" + state);
+}
+
+fn validate_invariant(int value, int min_val, int max_val) -> bool {
+    let is_valid = value >= min_val && value <= max_val;
+    if is_valid == false {
+        log_message("Invariant violation: " + value, LogLevel::Error);
+    }
+    return is_valid;
+}
+
+fn process_with_tracing(int initial_value) -> int {
+    trace_function_entry("process_with_tracing");
+
+    let state = initial_value;
+    snapshot_state(state, 0);
+
+    let state1 = state * 2;
+    trace_algorithm_step(1, state1, "double");
+
+    let state2 = state1 + 10;
+    trace_algorithm_step(2, state2, "add 10");
+
+    let is_valid = validate_invariant(state2, 0, 1000);
+    if is_valid == false {
+        log_message("Aborting due to invariant violation", LogLevel::Error);
+        return 0;
+    }
+
+    snapshot_state(state2, 2);
+
+    trace_function_exit("process_with_tracing", state2);
+    return state2;
+}
+
+fn debug_branching(int value) {
+    println("Input: " + value);
+
+    if value < 0 {
+        log_message("Negative input detected", LogLevel::Warning);
+    } else {
+        log_message("Non-negative input", LogLevel::Info);
+    }
+
+    if value > 100 {
+        log_message("Value exceeds threshold", LogLevel::Warning);
+    }
+}
+
+fn main() {
+    log_message("Starting debug example", LogLevel::Info);
+
+    trace_function_entry("main");
+
+    let test_val = 5;
+    debug_array_values(1, 2, 3);
+
+    assert_condition(5 > 0, "5 should be positive");
+    assert_condition(5 < 0, "5 should be negative");
+
+    let result = process_with_tracing(10);
+    println("Final result: " + result);
+
+    debug_branching(50);
+    debug_branching(-10);
+    debug_branching(150);
+
+    let check1 = validate_invariant(50, 0, 100);
+    println(check1);
+
+    let check2 = validate_invariant(150, 0, 100);
+    println(check2);
+
+    log_message("Completed debug example", LogLevel::Info);
+
+    trace_function_exit("main", 0);
+}
+
+main();
