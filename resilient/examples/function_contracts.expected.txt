@@ -1,0 +1,29 @@
+=== Simple Requirements ===
+abs(-42) = 42
+abs(42) = 42
+
+=== Postcondition Verification ===
+double(5) = 10
+verified: result > input: true
+
+=== Multiple Constraints ===
+20 / 4 = 5
+verified: result >= 0: true
+
+=== Complex Postconditions ===
+approx_sqrt(16) = 4
+verified: result >= 0: true
+verified: result^2 <= input: true
+
+=== Temperature Monitoring ===
+is_overtemp(85, max=100) = 0
+verified: result is 0 or 1: true
+is_overtemp(125, max=100) = 1
+
+=== Clamped Increment ===
+increment(8, 10) = 9
+verified: result > input: true
+verified: result <= max: true
+
+Contracts enable compile-time proof of safety
+Program executed successfully

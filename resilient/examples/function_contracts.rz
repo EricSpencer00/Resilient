@@ -1,0 +1,140 @@
+// RES-838: Demonstrate function contracts for static verification.
+// Shows requires/ensures clauses and how contracts enable compile-time proofs
+// that operations are safe and correct.
+
+// Simple contract: requires precondition
+fn safe_absolute(int x) -> int
+    requires x >= -2147483647  // Exclude INT_MIN to prevent overflow
+{
+    if x < 0 {
+        return -x;
+    }
+    return x;
+}
+
+// Contract with ensures postcondition: prove result property holds
+fn double_positive(int x) -> int
+    requires x > 0
+    ensures result > x
+{
+    return x * 2;
+}
+
+// Contract with multiple conditions
+fn safe_divide_bounded(int a, int b) -> int
+    requires b != 0
+    requires a >= 0
+    requires b > 0
+    ensures result >= 0
+{
+    return a / b;
+}
+
+// Contracts prevent invalid parameters at compile time.
+// This sqrt-like function requires non-negative input.
+fn approx_sqrt(int x) -> int
+    requires x >= 0
+    ensures result >= 0
+    ensures result * result <= x
+{
+    if x == 0 { return 0; }
+    if x == 1 { return 1; }
+
+    let guess = x / 2;
+    let count = 0;
+    while count < 10 {
+        let new_guess = (guess + x / guess) / 2;
+        if new_guess == guess {
+            return guess;
+        }
+        guess = new_guess;
+        count = count + 1;
+    }
+    return guess;
+}
+
+// Temperature with bounds contracts
+struct TempSensor {
+    int value,
+    int max_safe,
+}
+
+// Contract: reading must be within safe bounds
+fn is_overtemp(TempSensor sensor) -> int
+    requires sensor.value >= -100
+    requires sensor.value <= 200
+    ensures result == 0 || result == 1
+{
+    if sensor.value > sensor.max_safe {
+        return 1;
+    }
+    return 0;
+}
+
+// Contract proving increment stays within bounds
+fn increment_clamped(int val, int max) -> int
+    requires val < max
+    requires max > 0
+    ensures result <= max
+    ensures result > val
+{
+    return val + 1;
+}
+
+fn main() {
+    println("=== Simple Requirements ===");
+    let abs_neg = safe_absolute(-42);
+    println("abs(-42) = " + abs_neg);
+
+    let abs_pos = safe_absolute(42);
+    println("abs(42) = " + abs_pos);
+
+    println("");
+    println("=== Postcondition Verification ===");
+    let doubled = double_positive(5);
+    println("double(5) = " + doubled);
+    println("verified: result > input: " + (doubled > 5));
+
+    println("");
+    println("=== Multiple Constraints ===");
+    let quotient = safe_divide_bounded(20, 4);
+    println("20 / 4 = " + quotient);
+    println("verified: result >= 0: " + (quotient >= 0));
+
+    println("");
+    println("=== Complex Postconditions ===");
+    let root = approx_sqrt(16);
+    println("approx_sqrt(16) = " + root);
+    println("verified: result >= 0: " + (root >= 0));
+    println("verified: result^2 <= input: " + (root * root <= 16));
+
+    println("");
+    println("=== Temperature Monitoring ===");
+    let sensor = new TempSensor {
+        value: 85,
+        max_safe: 100,
+    };
+    let overtemp = is_overtemp(sensor);
+    println("is_overtemp(85, max=100) = " + overtemp);
+    println("verified: result is 0 or 1: " + (overtemp == 0 || overtemp == 1));
+
+    let sensor2 = new TempSensor {
+        value: 125,
+        max_safe: 100,
+    };
+    let overtemp2 = is_overtemp(sensor2);
+    println("is_overtemp(125, max=100) = " + overtemp2);
+
+    println("");
+    println("=== Clamped Increment ===");
+    let val = 8;
+    let incremented = increment_clamped(val, 10);
+    println("increment(8, 10) = " + incremented);
+    println("verified: result > input: " + (incremented > val));
+    println("verified: result <= max: " + (incremented <= 10));
+
+    println("");
+    println("Contracts enable compile-time proof of safety");
+}
+
+main();
