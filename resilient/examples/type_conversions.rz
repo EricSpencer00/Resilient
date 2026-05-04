@@ -1,0 +1,126 @@
+// RES-849: Type-safe conversions demonstrating safe coercion patterns,
+// fallible conversions, width changes, and lossy conversion detection.
+
+fn int_to_string(int value) -> string {
+    return "" + value;
+}
+
+fn string_to_int(string s) -> Result {
+    return parse_int(s);
+}
+
+fn int_to_byte(int value) -> Result {
+    if value < 0 {
+        return Err("negative values cannot fit in byte");
+    }
+    if value > 255 {
+        return Err("value exceeds byte maximum");
+    }
+    return Ok(value);
+}
+
+fn byte_to_int(int byte_val) -> int {
+    return byte_val;
+}
+
+fn saturating_int_to_byte(int value) -> int {
+    if value < 0 {
+        return 0;
+    }
+    if value > 255 {
+        return 255;
+    }
+    return value;
+}
+
+fn detect_lossy_conversion(int original, int narrowed, int max_val) -> bool {
+    if original > max_val && narrowed != max_val {
+        return true;
+    }
+    if original < 0 && narrowed != 0 {
+        return true;
+    }
+    return false;
+}
+
+fn safe_multiply(int a, int b, int max_result) -> Result {
+    let result = a * b;
+    if result > max_result {
+        return Err("multiplication overflow");
+    }
+    return Ok(result);
+}
+
+fn main() {
+    let num = 42;
+    let num_str = int_to_string(num);
+    println(num_str);
+
+    let str_val = "123";
+    let parsed = string_to_int(str_val);
+    if is_err(parsed) {
+        println("parse error");
+    } else {
+        println(unwrap(parsed));
+    }
+
+    let invalid_str = "not_a_number";
+    let bad_parse = string_to_int(invalid_str);
+    if is_err(bad_parse) {
+        println(unwrap_err(bad_parse));
+    } else {
+        println(unwrap(bad_parse));
+    }
+
+    let byte_attempt = int_to_byte(200);
+    if is_err(byte_attempt) {
+        println("byte conversion error");
+    } else {
+        println(unwrap(byte_attempt));
+    }
+
+    let overflow_byte = int_to_byte(300);
+    if is_err(overflow_byte) {
+        println(unwrap_err(overflow_byte));
+    } else {
+        println(unwrap(overflow_byte));
+    }
+
+    let negative_byte = int_to_byte(-5);
+    if is_err(negative_byte) {
+        println(unwrap_err(negative_byte));
+    } else {
+        println(unwrap(negative_byte));
+    }
+
+    let saturated_high = saturating_int_to_byte(300);
+    println(saturated_high);
+
+    let saturated_low = saturating_int_to_byte(-10);
+    println(saturated_low);
+
+    let saturated_normal = saturating_int_to_byte(100);
+    println(saturated_normal);
+
+    let is_lossy = detect_lossy_conversion(300, 255, 255);
+    println(is_lossy);
+
+    let is_not_lossy = detect_lossy_conversion(100, 100, 255);
+    println(is_not_lossy);
+
+    let mul_result = safe_multiply(10, 20, 1000);
+    if is_err(mul_result) {
+        println("multiplication failed");
+    } else {
+        println(unwrap(mul_result));
+    }
+
+    let mul_overflow = safe_multiply(100, 100, 1000);
+    if is_err(mul_overflow) {
+        println(unwrap_err(mul_overflow));
+    } else {
+        println(unwrap(mul_overflow));
+    }
+}
+
+main();

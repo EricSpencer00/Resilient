@@ -1,0 +1,16 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/type_conversions.rz`
+42
+123
+parse_int: invalid integer "not_a_number": invalid digit found in string
+200
+value exceeds byte maximum
+negative values cannot fit in byte
+255
+0
+100
+false
+false
+200
+multiplication overflow
+Program executed successfully
