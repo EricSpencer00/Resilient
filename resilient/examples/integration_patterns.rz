@@ -1,0 +1,177 @@
+// RES-854: Integration patterns demonstrating cross-module communication,
+// configuration initialization, orchestration, and end-to-end workflows.
+
+struct Config {
+    string app_name,
+    int max_connections,
+    int timeout_ms,
+    int port,
+}
+
+enum ServiceState {
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+}
+
+struct Service {
+    Config config,
+    ServiceState state,
+    int active_connections,
+}
+
+fn create_default_config() -> Config {
+    return new Config {
+        app_name: "MyApp",
+        max_connections: 100,
+        timeout_ms: 5000,
+        port: 8080,
+    };
+}
+
+fn validate_config(Config cfg) -> Result {
+    if cfg.max_connections <= 0 {
+        return Err("invalid max connections");
+    }
+    if cfg.timeout_ms < 0 {
+        return Err("invalid timeout");
+    }
+    if cfg.port < 1024 || cfg.port > 65535 {
+        return Err("invalid port");
+    }
+    return Ok(cfg);
+}
+
+fn initialize_service(Config cfg) -> Result {
+    if is_err(validate_config(cfg)) {
+        return Err("config validation failed");
+    }
+
+    let service = new Service {
+        config: cfg,
+        state: ServiceState::Stopped,
+        active_connections: 0,
+    };
+    return Ok(service);
+}
+
+fn start_service(Service svc) -> Result {
+    match svc.state {
+        ServiceState::Stopped => Ok(ServiceState::Starting),
+        ServiceState::Starting => Err("already starting"),
+        ServiceState::Running => Err("already running"),
+        ServiceState::Stopping => Err("currently stopping"),
+    }
+}
+
+fn handle_connection(Service svc) -> Result {
+    let can_accept = svc.active_connections < svc.config.max_connections;
+    if can_accept == false {
+        return Err("max connections reached");
+    }
+    return Ok(svc.active_connections + 1);
+}
+
+fn orchestrate_startup(Config cfg) -> Result {
+    if is_err(initialize_service(cfg)) {
+        return Err("initialization failed");
+    }
+
+    let svc_result = initialize_service(cfg);
+    let svc = unwrap(svc_result);
+
+    if is_err(start_service(svc)) {
+        return Err("startup failed");
+    }
+
+    return Ok("service started");
+}
+
+fn execute_workflow(Config cfg, int connection_requests) -> Result {
+    let svc_init = initialize_service(cfg);
+    if is_err(svc_init) {
+        return Err("failed to initialize service");
+    }
+
+    let svc = unwrap(svc_init);
+
+    let conn_count = 0;
+    let idx = 0;
+    while idx < connection_requests {
+        let conn_result = handle_connection(svc);
+        if is_err(conn_result) {
+            return Err("connection limit reached");
+        }
+        conn_count = conn_count + 1;
+        idx = idx + 1;
+    }
+
+    return Ok(conn_count);
+}
+
+fn main() {
+    let default_cfg = create_default_config();
+    println(default_cfg.app_name);
+    println(default_cfg.max_connections);
+
+    let validate_ok = validate_config(default_cfg);
+    if is_err(validate_ok) {
+        println("config validation failed");
+    } else {
+        println("config valid");
+    }
+
+    let bad_cfg = new Config {
+        app_name: "BadApp",
+        max_connections: -1,
+        timeout_ms: 1000,
+        port: 8080,
+    };
+
+    let validate_bad = validate_config(bad_cfg);
+    if is_err(validate_bad) {
+        println(unwrap_err(validate_bad));
+    } else {
+        println("config valid");
+    }
+
+    let init_result = initialize_service(default_cfg);
+    if is_err(init_result) {
+        println("initialization failed");
+    } else {
+        println("service initialized");
+    }
+
+    let svc = unwrap(init_result);
+
+    let start_result = start_service(svc);
+    if is_err(start_result) {
+        println("startup error");
+    } else {
+        println("service started");
+    }
+
+    let conn_result = handle_connection(svc);
+    if is_err(conn_result) {
+        println("connection failed");
+    } else {
+        println(unwrap(conn_result));
+    }
+
+    let orchestrate = orchestrate_startup(default_cfg);
+    if is_err(orchestrate) {
+        println(unwrap_err(orchestrate));
+    } else {
+        println(unwrap(orchestrate));
+    }
+
+    let workflow = execute_workflow(default_cfg, 10);
+    if is_err(workflow) {
+        println(unwrap_err(workflow));
+    } else {
+        println(unwrap(workflow));
+    }
+}
+
+main();

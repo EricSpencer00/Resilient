@@ -1,0 +1,12 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/integration_patterns.rz`
+MyApp
+100
+config valid
+invalid max connections
+service initialized
+service started
+1
+service started
+10
+Program executed successfully
