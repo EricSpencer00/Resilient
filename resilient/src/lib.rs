@@ -2040,10 +2040,14 @@ enum Node {
     /// trait-impl blocks; the methods still mangle to `<StructName>$<method>`,
     /// so runtime dispatch is unchanged. The trait name is consulted only by
     /// `crate::traits::check` to validate signature coverage.
+    /// RES-779: ImplBlock also carries associated type definitions
+    /// (`type Name = ConcreteType;`) that implement the trait's associated types.
     ImplBlock {
         trait_name: Option<String>,
         struct_name: String,
         methods: Vec<Node>,
+        #[allow(dead_code)]
+        associated_type_impls: Vec<(String, String)>, // (name, type_expr)
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2052,9 +2056,13 @@ enum Node {
     /// signatures are validated against `impl Trait for Type` blocks by
     /// `crate::traits::check`. Trait dispatch reuses the existing
     /// `<Type>$<method>` mangling; there is no VTable.
+    /// RES-779: TraitDecl also carries associated type declarations
+    /// (`type Name;`) that must be defined in each impl.
     TraitDecl {
         name: String,
         methods: Vec<crate::traits::TraitMethodSig>,
+        #[allow(dead_code)]
+        associated_types: Vec<crate::traits::AssociatedTypeDecl>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -3230,25 +3238,70 @@ impl Parser {
         }
 
         let mut methods: Vec<Node> = Vec::new();
+        let mut associated_type_impls: Vec<(String, String)> = Vec::new();
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
-            if self.current_token != Token::Function {
-                let tok = self.current_token.clone();
-                self.record_error(format!("Expected 'fn' inside impl block, found {}", tok));
-                // Best-effort recovery: skip ahead to the closing brace
-                // so the whole parse doesn't cascade.
-                while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
-                    self.next_token();
+            match self.current_token {
+                Token::Function => {
+                    methods.push(self.parse_method(&struct_name));
+                    // `parse_block_statement` (called inside `parse_method` for
+                    // the body) leaves the cursor ON the method body's closing
+                    // `}`. Advance past it so the next iteration sees either
+                    // another `fn` or the impl block's own `}` — matching the
+                    // convention `parse_program` expects for its callers.
+                    if self.current_token == Token::RightBrace {
+                        self.next_token();
+                    }
                 }
-                break;
-            }
-            methods.push(self.parse_method(&struct_name));
-            // `parse_block_statement` (called inside `parse_method` for
-            // the body) leaves the cursor ON the method body's closing
-            // `}`. Advance past it so the next iteration sees either
-            // another `fn` or the impl block's own `}` — matching the
-            // convention `parse_program` expects for its callers.
-            if self.current_token == Token::RightBrace {
-                self.next_token();
+                Token::Type => {
+                    // RES-779: parse `type Name = ConcreteType;`
+                    self.next_token(); // skip 'type'
+                    if let Token::Identifier(name) = &self.current_token {
+                        let type_name = name.clone();
+                        self.next_token(); // skip name
+                        if self.current_token == Token::Assign {
+                            self.next_token(); // skip '='
+                            // Collect tokens until semicolon as the type expression
+                            let mut type_expr_tokens = Vec::new();
+                            while self.current_token != Token::Semicolon
+                                && self.current_token != Token::Eof
+                                && self.current_token != Token::RightBrace
+                            {
+                                type_expr_tokens.push(format!("{}", self.current_token));
+                                self.next_token();
+                            }
+                            let type_expr = type_expr_tokens.join(" ");
+                            if self.current_token == Token::Semicolon {
+                                self.next_token(); // skip ';'
+                            } else {
+                                self.record_error(
+                                    "Expected ';' after associated type assignment".to_string(),
+                                );
+                            }
+                            associated_type_impls.push((type_name, type_expr));
+                        } else {
+                            self.record_error(
+                                "Expected '=' after associated type name".to_string(),
+                            );
+                        }
+                    } else {
+                        self.record_error("Expected type name after 'type'".to_string());
+                    }
+                }
+                _ => {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected 'fn' or 'type' inside impl block, found {}",
+                        tok
+                    ));
+                    // Best-effort recovery: skip ahead to the closing brace
+                    // so the whole parse doesn't cascade.
+                    while self.current_token != Token::RightBrace
+                        && self.current_token != Token::Eof
+                    {
+                        self.next_token();
+                    }
+                    break;
+                }
             }
         }
         // Leave the cursor ON the impl block's closing `}` — the outer
@@ -3259,6 +3312,7 @@ impl Parser {
             trait_name,
             struct_name,
             methods,
+            associated_type_impls,
             span: impl_span,
         }
     }

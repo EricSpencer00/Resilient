@@ -85,6 +85,17 @@ pub(crate) struct TraitMethodSig {
     pub span: Span,
 }
 
+/// Associated type declaration in a trait.
+/// RES-779: `type Name;` inside a trait declares a type member that each
+/// impl must define.
+#[derive(Debug, Clone)]
+pub(crate) struct AssociatedTypeDecl {
+    #[allow(dead_code)]
+    pub name: String,
+    #[allow(dead_code)]
+    pub span: Span,
+}
+
 /// Parse a `trait` declaration. Called from `parse_statement` when the
 /// current token is `Token::Trait`. On entry, `current_token` is
 /// `Token::Trait`; on a successful exit the cursor sits on the closing
@@ -114,25 +125,40 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
     }
 
     let mut methods: Vec<TraitMethodSig> = Vec::new();
+    let mut associated_types: Vec<AssociatedTypeDecl> = Vec::new();
     while parser.current_token != Token::RightBrace && parser.current_token != Token::Eof {
-        if parser.current_token != Token::Function {
-            let tok = parser.current_token.clone();
-            parser.record_error(format!("Expected 'fn' inside trait body, found {}", tok));
-            // Recover: jump to the closing brace.
-            while parser.current_token != Token::RightBrace && parser.current_token != Token::Eof {
-                parser.next_token();
+        match parser.current_token {
+            Token::Function => {
+                if let Some(sig) = parse_method_sig(parser) {
+                    methods.push(sig);
+                }
             }
-            break;
-        }
-
-        if let Some(sig) = parse_method_sig(parser) {
-            methods.push(sig);
+            Token::Type => {
+                if let Some(assoc_ty) = parse_associated_type_decl(parser) {
+                    associated_types.push(assoc_ty);
+                }
+            }
+            _ => {
+                let tok = parser.current_token.clone();
+                parser.record_error(format!(
+                    "Expected 'fn' or 'type' inside trait body, found {}",
+                    tok
+                ));
+                // Recover: jump to the closing brace.
+                while parser.current_token != Token::RightBrace
+                    && parser.current_token != Token::Eof
+                {
+                    parser.next_token();
+                }
+                break;
+            }
         }
     }
 
     Node::TraitDecl {
         name,
         methods,
+        associated_types,
         span: trait_span,
     }
 }
@@ -252,6 +278,42 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     })
 }
 
+/// Parse a single associated type declaration inside a trait body:
+/// `type Name;` RES-779
+fn parse_associated_type_decl(parser: &mut Parser) -> Option<AssociatedTypeDecl> {
+    let decl_span = parser.span_at_current();
+    parser.next_token(); // skip 'type'
+
+    let type_name = match &parser.current_token {
+        Token::Identifier(n) => n.clone(),
+        other => {
+            let tok = other.clone();
+            parser.record_error(format!(
+                "Expected type name after 'type' in trait body, found {}",
+                tok
+            ));
+            return None;
+        }
+    };
+    parser.next_token(); // skip type name
+
+    // Expect semicolon
+    if parser.current_token != Token::Semicolon {
+        let tok = parser.current_token.clone();
+        parser.record_error(format!(
+            "Expected ';' after associated type `{}` in trait body, found {}",
+            type_name, tok
+        ));
+    } else {
+        parser.next_token(); // skip ';'
+    }
+
+    Some(AssociatedTypeDecl {
+        name: type_name,
+        span: decl_span,
+    })
+}
+
 /// Validate trait declarations, `impl Trait for Type` coverage, and
 /// `<T: Trait>` bound usage. Walks the program once collecting traits,
 /// then again validating impls and call sites.
@@ -268,6 +330,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             name,
             methods,
             span,
+            associated_types: _,
         } = &stmt.node
         {
             if name.is_empty() {
@@ -338,6 +401,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             struct_name,
             methods,
             span,
+            associated_type_impls: _,
         } = &stmt.node
         {
             let (trait_methods, _trait_span) = match traits.get(t) {
