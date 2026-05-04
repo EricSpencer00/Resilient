@@ -1,0 +1,162 @@
+// RES-845: Demonstrate recursion and recursive algorithms.
+// Shows recursive patterns, base cases, and practical algorithms.
+
+// Simple recursion: factorial
+fn factorial(int n) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+// Fibonacci with direct recursion
+fn fibonacci(int n) -> int {
+    if n <= 1 {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+// Fibonacci with accumulator (more efficient)
+fn fibonacci_acc(int n, int a, int b) -> int {
+    if n == 0 {
+        return a;
+    }
+    return fibonacci_acc(n - 1, b, a + b);
+}
+
+// Calculate sum of integers from 1 to n
+fn sum_to_n(int n) -> int {
+    if n <= 0 {
+        return 0;
+    }
+    return n + sum_to_n(n - 1);
+}
+
+// Binary search in sorted array
+fn binary_search(int target, int low, int high) -> int {
+    if low > high {
+        return -1;  // Not found
+    }
+    let mid = (low + high) / 2;
+    if mid == target {
+        return mid;
+    }
+    if target < mid {
+        return binary_search(target, low, mid - 1);
+    }
+    return binary_search(target, mid + 1, high);
+}
+
+// Count digits in a number
+fn count_digits(int num) -> int {
+    if num < 10 {
+        return 1;
+    }
+    return 1 + count_digits(num / 10);
+}
+
+// Check if array contains value (recursive)
+fn array_contains_recursive(int target, int idx, int array_len) -> int {
+    if idx >= array_len {
+        return 0;  // Not found
+    }
+    // Note: In real code, access arr[idx] here after bounds check
+    if idx == target {
+        return 1;  // Found (simplified)
+    }
+    return array_contains_recursive(target, idx + 1, array_len);
+}
+
+// Calculate power: x^n
+fn power(int x, int n) -> int {
+    if n == 0 {
+        return 1;
+    }
+    if n == 1 {
+        return x;
+    }
+    let half = power(x, n / 2);
+    let is_even = (n & 1);
+    if is_even == 0 {
+        // Even case: x^n = (x^2)^(n/2)
+        return half * half;
+    }
+    // Odd case: x^n = x * x^(n-1)
+    return x * power(x, n - 1);
+}
+
+// Sum array elements recursively
+fn sum_array_recursive(int idx, int array_len) -> int {
+    if idx >= array_len {
+        return 0;
+    }
+    // In real code: arr[idx] + sum_array_recursive(idx + 1, array_len)
+    // Simplified: just return index sum
+    return idx + sum_array_recursive(idx + 1, array_len);
+}
+
+fn main() {
+    println("=== Simple Recursion: Factorial ===");
+    let facts = [1, 2, 3, 4, 5];
+    for n in facts {
+        let fact = factorial(n);
+        println(n + "! = " + fact);
+    }
+
+    println("");
+    println("=== Fibonacci with Direct Recursion ===");
+    let fibs = [0, 1, 2, 3, 4, 5, 6];
+    for n in fibs {
+        let fib = fibonacci(n);
+        println("fib(" + n + ") = " + fib);
+    }
+
+    println("");
+    println("=== Fibonacci with Accumulator ===");
+    let fib_acc_5 = fibonacci_acc(5, 0, 1);
+    println("fib_acc(5) = " + fib_acc_5);
+    let fib_acc_8 = fibonacci_acc(8, 0, 1);
+    println("fib_acc(8) = " + fib_acc_8);
+
+    println("");
+    println("=== Recursive Sum ===");
+    let sum_5 = sum_to_n(5);
+    let sum_10 = sum_to_n(10);
+    println("sum(1..5) = " + sum_5);
+    println("sum(1..10) = " + sum_10);
+
+    println("");
+    println("=== Power Calculation ===");
+    let pow_2_3 = power(2, 3);
+    let pow_2_8 = power(2, 8);
+    let pow_3_4 = power(3, 4);
+    println("2^3 = " + pow_2_3);
+    println("2^8 = " + pow_2_8);
+    println("3^4 = " + pow_3_4);
+
+    println("");
+    println("=== Count Digits in Number ===");
+    let nums = [1, 10, 100, 1000, 54321];
+    for num in nums {
+        let digits = count_digits(num);
+        println("digits in " + num + " = " + digits);
+    }
+
+    println("");
+    println("=== Binary Search Pattern ===");
+    println("binary_search(5, 0, 10) = " + binary_search(5, 0, 10));
+    println("binary_search(0, 0, 10) = " + binary_search(0, 0, 10));
+    println("binary_search(10, 0, 10) = " + binary_search(10, 0, 10));
+    println("binary_search(7, 0, 10) = " + binary_search(7, 0, 10));
+
+    println("");
+    println("=== Recursive Array Iteration ===");
+    let sum = sum_array_recursive(0, 5);
+    println("sum of indices 0-4: " + sum);
+
+    println("");
+    println("Recursion enables elegant algorithm implementation");
+}
+
+main();
