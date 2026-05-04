@@ -1,0 +1,53 @@
+// RES-828: Demonstrate trait-based transmission patterns for embedded systems.
+// This example shows how traits enable type-safe, reusable communication abstractions
+// that different transport layers can implement without code duplication.
+
+trait Transport {
+    fn send(self, int byte) -> int;
+}
+
+struct Serial {
+    int baud_rate,
+}
+
+impl Transport for Serial {
+    fn send(self, int byte) -> int {
+        println("Serial@9600 send: " + byte);
+        return 1;
+    }
+}
+
+struct DirectMemory {
+    int addr,
+}
+
+impl Transport for DirectMemory {
+    fn send(self, int byte) -> int {
+        println("DirectMemory@8192 send: " + byte);
+        return 1;
+    }
+}
+
+fn transmit_packet<T: Transport>(T transport, int data) -> int {
+    let result = transport.send(data);
+    if result == 1 {
+        println("Transmitted successfully");
+    }
+    return result;
+}
+
+fn main() {
+    let serial = new Serial { baud_rate: 9600 };
+    println("=== Serial ===");
+    transmit_packet(serial, 72);
+
+    let mem = new DirectMemory { addr: 8192 };
+    println("");
+    println("=== DirectMemory ===");
+    transmit_packet(mem, 88);
+
+    println("");
+    println("Same function works with different transport types");
+}
+
+main();
