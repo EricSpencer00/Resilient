@@ -1,0 +1,62 @@
+// RES-834: Demonstrate functional programming patterns with arrays.
+// Shows how Resilient's array operations enable functional-style
+// transformations: filtering, folding, mapping via composition.
+
+fn main() {
+    println("=== Array Filtering ===");
+    let numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+    let evens = array_filter_int(numbers, "even");
+    println("Even numbers count: " + len(evens));
+
+    let odds = array_filter_int(numbers, "positive");
+    // Filter for positive (non-zero, non-negative)
+    println("Positive numbers count: " + len(odds));
+
+    println("");
+    println("=== Array Folding (Reductions) ===");
+    let nums = [1, 2, 3, 4, 5];
+
+    let sum_result = array_fold_int(nums, 0, "sum");
+    println("Sum of [1,2,3,4,5]: " + sum_result);
+
+    let product = array_fold_int(nums, 1, "product");
+    println("Product: " + product);
+
+    let min_val = array_fold_int(nums, 999, "min");
+    println("Minimum: " + min_val);
+
+    let max_val = array_fold_int(nums, 0, "max");
+    println("Maximum: " + max_val);
+
+    println("");
+    println("=== Array Composition ===");
+    let data = [5, 10, 15, 20, 25];
+
+    let doubled = [];
+    for val in data {
+        doubled = doubled + [val * 2];
+    }
+    println("Doubled count: " + len(doubled));
+
+    let sum_doubled = array_sum(doubled);
+    println("Sum of doubled: " + sum_doubled);
+
+    println("");
+    println("=== Array Query Patterns ===");
+    let items = [1, 3, 2, 4, 2, 5];
+
+    let count_twos = array_count(items, 2);
+    println("Count of 2s: " + count_twos);
+
+    let unique = array_unique(items);
+    println("Unique elements count: " + len(unique));
+
+    let flattened = array_flatten([[1, 2], [3, 4], [5]]);
+    println("Flattened: " + len(flattened) + " elements");
+
+    println("");
+    println("Functional patterns enable declarative, composable code");
+}
+
+main();

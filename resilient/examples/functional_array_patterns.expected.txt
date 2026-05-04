@@ -1,0 +1,21 @@
+=== Array Filtering ===
+Even numbers count: 5
+Positive numbers count: 10
+
+=== Array Folding (Reductions) ===
+Sum of [1,2,3,4,5]: 15
+Product: 120
+Minimum: 1
+Maximum: 5
+
+=== Array Composition ===
+Doubled count: 5
+Sum of doubled: 150
+
+=== Array Query Patterns ===
+Count of 2s: 2
+Unique elements count: 5
+Flattened: 5 elements
+
+Functional patterns enable declarative, composable code
+Program executed successfully
