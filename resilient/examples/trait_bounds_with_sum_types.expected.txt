@@ -1,0 +1,10 @@
+=== PositiveValidator ===
+✓ Validation passed
+✗ Validation failed
+
+=== RangeValidator ===
+✓ Validation passed
+✗ Validation failed
+
+Generic trait bounds + control flow = flexible polymorphism
+Program executed successfully

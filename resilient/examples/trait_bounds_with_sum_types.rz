@@ -1,0 +1,61 @@
+// RES-831: Demonstrate trait bounds combined with pattern matching.
+// This example shows how generic functions with trait bounds work
+// with control flow (conditionals) to create type-safe polymorphic code.
+
+trait Validator {
+    fn validate(self) -> int;
+}
+
+struct PositiveValidator {
+    int value,
+}
+
+impl Validator for PositiveValidator {
+    fn validate(self) -> int {
+        if self.value > 0 {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+struct RangeValidator {
+    int value,
+    int min,
+    int max,
+}
+
+impl Validator for RangeValidator {
+    fn validate(self) -> int {
+        if self.value >= self.min && self.value <= self.max {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+// Generic function: applies validator and shows result based on outcome
+fn check_and_report<T: Validator>(T validator) {
+    let result = validator.validate();
+    if result == 1 {
+        println("✓ Validation passed");
+    } else {
+        println("✗ Validation failed");
+    }
+}
+
+fn main() {
+    println("=== PositiveValidator ===");
+    check_and_report(new PositiveValidator { value: 5 });
+    check_and_report(new PositiveValidator { value: -3 });
+
+    println("");
+    println("=== RangeValidator ===");
+    check_and_report(new RangeValidator { value: 50, min: 0, max: 100 });
+    check_and_report(new RangeValidator { value: 150, min: 0, max: 100 });
+
+    println("");
+    println("Generic trait bounds + control flow = flexible polymorphism");
+}
+
+main();
