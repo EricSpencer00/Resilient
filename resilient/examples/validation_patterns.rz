@@ -1,0 +1,130 @@
+// RES-848: Validation patterns demonstrating input validation,
+// range checks, constraint validation, and error recovery.
+
+fn validate_age(int age) -> Result {
+    if age < 0 {
+        return Err("age cannot be negative");
+    }
+    if age > 150 {
+        return Err("age exceeds maximum");
+    }
+    return Ok(age);
+}
+
+fn validate_email(string email) -> Result {
+    let email_len = len(email);
+    if email_len < 5 {
+        return Err("email too short");
+    }
+    if email_len > 100 {
+        return Err("email too long");
+    }
+
+    let at_index = string_find_char(email, "@");
+    if at_index == -1 {
+        return Err("email missing @");
+    }
+    return Ok(email);
+}
+
+fn validate_percentage(int value) -> Result {
+    if value < 0 {
+        return Err("percentage below 0");
+    }
+    if value > 100 {
+        return Err("percentage above 100");
+    }
+    return Ok(value);
+}
+
+fn validate_and_process(int age, string email, int confidence) -> Result {
+    if is_err(validate_age(age)) {
+        return validate_age(age);
+    }
+
+    if is_err(validate_email(email)) {
+        return Err("email validation failed");
+    }
+
+    if is_err(validate_percentage(confidence)) {
+        return Err("percentage validation failed");
+    }
+
+    return Ok("all validations passed");
+}
+
+fn recover_with_fallback(int value, int min, int max, int fallback_val) -> int {
+    if value >= min && value <= max {
+        return value;
+    }
+    return fallback_val;
+}
+
+fn main() {
+    let age_result = validate_age(25);
+    if is_err(age_result) {
+        println("age error");
+    } else {
+        println("age valid");
+    }
+
+    let age_bad = validate_age(-5);
+    if is_err(age_bad) {
+        println(unwrap_err(age_bad));
+    } else {
+        println("age valid");
+    }
+
+    let email_result = validate_email("user@example.com");
+    if is_err(email_result) {
+        println("email error");
+    } else {
+        println("email valid");
+    }
+
+    let email_bad = validate_email("invalid");
+    if is_err(email_bad) {
+        println(unwrap_err(email_bad));
+    } else {
+        println("email valid");
+    }
+
+    let pct_result = validate_percentage(85);
+    if is_err(pct_result) {
+        println("percentage error");
+    } else {
+        println("percentage valid");
+    }
+
+    let pct_bad = validate_percentage(150);
+    if is_err(pct_bad) {
+        println(unwrap_err(pct_bad));
+    } else {
+        println("percentage valid");
+    }
+
+    let combined = validate_and_process(30, "test@site.org", 75);
+    if is_err(combined) {
+        println(unwrap_err(combined));
+    } else {
+        println(unwrap(combined));
+    }
+
+    let combined_bad = validate_and_process(-1, "x@y", 50);
+    if is_err(combined_bad) {
+        println(unwrap_err(combined_bad));
+    } else {
+        println(unwrap(combined_bad));
+    }
+
+    let recovered = recover_with_fallback(25, 0, 100, 50);
+    println(recovered);
+
+    let recovered_bad = recover_with_fallback(150, 0, 100, 50);
+    println(recovered_bad);
+
+    let recovered_low = recover_with_fallback(-10, 0, 100, 50);
+    println(recovered_low);
+}
+
+main();

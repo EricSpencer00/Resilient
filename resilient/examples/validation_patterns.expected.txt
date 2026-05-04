@@ -1,0 +1,14 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/validation_patterns.rz`
+age valid
+age cannot be negative
+email valid
+email missing @
+percentage valid
+percentage above 100
+all validations passed
+age cannot be negative
+25
+50
+50
+Program executed successfully
