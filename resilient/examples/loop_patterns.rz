@@ -1,0 +1,65 @@
+// RES-833: Demonstrate loop patterns and control flow techniques.
+// Shows for loops with arrays, while loops with conditions,
+// and accumulation patterns commonly used in Resilient programs.
+
+fn main() {
+    println("=== For Loop with Array ===");
+    let numbers = [10, 20, 30, 40, 50];
+    let sum = 0;
+    for num in numbers {
+        sum = sum + num;
+    }
+    println("Sum of array: " + sum);
+
+    println("");
+    println("=== For Loop with Range (Half-Open) ===");
+    let product = 1;
+    for i in 1..5 {
+        product = product * i;
+    }
+    println("Product 1*2*3*4: " + product);
+
+    println("");
+    println("=== For Loop with Inclusive Range ===");
+    let count = 0;
+    for i in 1..=3 {
+        count = count + 1;
+    }
+    println("Counted 1 to 3: " + count + " iterations");
+
+    println("");
+    println("=== While Loop with Counter ===");
+    let n = 10;
+    let squared = 0;
+    while n > 0 {
+        squared = squared + n;
+        n = n - 1;
+    }
+    println("Sum from 10 down to 1: " + squared);
+
+    println("");
+    println("=== Nested Loops ===");
+    let total = 0;
+    for i in 1..3 {
+        for j in 1..3 {
+            total = total + 1;
+        }
+    }
+    println("Nested loops (2x2): " + total + " iterations");
+
+    println("");
+    println("=== Array Accumulation Pattern ===");
+    let values = [5, 15, 10, 20];
+    let min = 999;
+    for val in values {
+        if val < min {
+            min = val;
+        }
+    }
+    println("Minimum value: " + min);
+
+    println("");
+    println("Loops enable iteration, accumulation, and complex control flow");
+}
+
+main();
