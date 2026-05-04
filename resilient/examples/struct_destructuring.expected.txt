@@ -1,0 +1,4 @@
+Full: 1, 2, 3
+Partial (x only): 1
+Renamed: 1, 2
+Program executed successfully

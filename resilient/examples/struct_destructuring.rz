@@ -1,0 +1,26 @@
+// RES-155: Struct destructuring patterns.
+// Extract fields from a struct into local bindings.
+
+struct Point {
+    int x,
+    int y,
+    int z,
+}
+
+fn main() {
+    let p = new Point { x: 1, y: 2, z: 3 };
+
+    // Full destructuring: bind all fields
+    let Point { x, y, z } = p;
+    println("Full: " + x + ", " + y + ", " + z);
+
+    // Partial destructuring: use `..` to ignore remaining fields
+    let Point { x, .. } = p;
+    println("Partial (x only): " + x);
+
+    // Field renaming: bind field to a different local name
+    let Point { x: a, y: b, .. } = p;
+    println("Renamed: " + a + ", " + b);
+}
+
+main();
