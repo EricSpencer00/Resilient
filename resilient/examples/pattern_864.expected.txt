@@ -1,0 +1,6 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/pattern_864.rz`
+10
+20
+0
+Program executed successfully
