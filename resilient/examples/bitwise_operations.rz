@@ -1,0 +1,164 @@
+// RES-842: Demonstrate bitwise operations and bit manipulation.
+// Shows bitwise operators for embedded systems and hardware control.
+
+// GPIO port register simulation
+// Set and clear individual bits for pin control
+fn gpio_set_pin(int port, int pin) -> int {
+    return port | (1 << pin);
+}
+
+fn gpio_clear_pin(int port, int pin) -> int {
+    let mask = 1 << pin;
+    let inverted = 255 - mask;  // Simple NOT for 8-bit values
+    return port & inverted;
+}
+
+fn gpio_read_pin(int port, int pin) -> int {
+    let mask = 1 << pin;
+    let masked = port & mask;
+    if masked == 0 {
+        return 0;
+    }
+    return 1;
+}
+
+// Extract bits from a range
+fn extract_bits(int value, int start_bit, int num_bits) -> int {
+    let mask = (1 << num_bits) - 1;
+    return (value >> start_bit) & mask;
+}
+
+// Insert bits into a value
+fn insert_bits(int value, int bits, int start_bit, int num_bits) -> int {
+    let mask = (1 << num_bits) - 1;
+    let clear_mask = 255 - (mask << start_bit);
+    let cleared = value & clear_mask;
+    let shifted = (bits & mask) << start_bit;
+    return cleared | shifted;
+}
+
+// Count number of 1 bits
+fn count_set_bits(int value) -> int {
+    let count = 0;
+    let v = value;
+    let limit = 0;
+    while limit < 8 {
+        let bit = v & 1;
+        if bit == 1 {
+            count = count + 1;
+        }
+        v = v >> 1;
+        limit = limit + 1;
+    }
+    return count;
+}
+
+// Check if value is power of 2
+fn is_power_of_two(int value) -> int {
+    if value <= 0 {
+        return 0;
+    }
+    let result = value & (value - 1);
+    if result == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// Format value as binary string
+fn to_binary(int value) -> string {
+    let result = "";
+    let v = value;
+    let i = 0;
+    while i < 8 {
+        let bit = v & 1;
+        if bit == 1 {
+            result = "1" + result;
+        } else {
+            result = "0" + result;
+        }
+        v = v >> 1;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn main() {
+    println("=== Bitwise AND, OR, XOR ===");
+    let a = 12;  // 0b1100
+    let b = 10;  // 0b1010
+    println("a = " + a + " (" + to_binary(a) + ")");
+    println("b = " + b + " (" + to_binary(b) + ")");
+    println("a & b = " + (a & b) + " (" + to_binary(a & b) + ")");
+    println("a | b = " + (a | b) + " (" + to_binary(a | b) + ")");
+    println("a ^ b = " + (a ^ b) + " (" + to_binary(a ^ b) + ")");
+
+    println("");
+    println("=== Bit Shifts ===");
+    let val = 6;  // 0b0110
+    println("value = " + val + " (" + to_binary(val) + ")");
+    println("val << 1 = " + (val << 1) + " (" + to_binary(val << 1) + ")");
+    println("val << 2 = " + (val << 2) + " (" + to_binary(val << 2) + ")");
+    println("val >> 1 = " + (val >> 1) + " (" + to_binary(val >> 1) + ")");
+    println("val >> 2 = " + (val >> 2) + " (" + to_binary(val >> 2) + ")");
+
+    println("");
+    println("=== GPIO Pin Control ===");
+    let gpio = 0;
+    println("initial GPIO: " + to_binary(gpio));
+    gpio = gpio_set_pin(gpio, 2);
+    println("after set pin 2: " + to_binary(gpio));
+    gpio = gpio_set_pin(gpio, 5);
+    println("after set pin 5: " + to_binary(gpio));
+    let pin2 = gpio_read_pin(gpio, 2);
+    let pin3 = gpio_read_pin(gpio, 3);
+    println("pin 2 state: " + pin2);
+    println("pin 3 state: " + pin3);
+    gpio = gpio_clear_pin(gpio, 2);
+    println("after clear pin 2: " + to_binary(gpio));
+
+    println("");
+    println("=== Bit Field Extraction and Insertion ===");
+    let data = 171;  // 0b10101011
+    println("data = " + data + " (" + to_binary(data) + ")");
+    let field1 = extract_bits(data, 0, 4);
+    let field2 = extract_bits(data, 4, 4);
+    println("lower 4 bits: " + field1);
+    println("upper 4 bits: " + field2);
+    let modified = insert_bits(data, 3, 2, 3);
+    println("after insert 3 at bits 2-4: " + to_binary(modified));
+
+    println("");
+    println("=== Bit Population Count ===");
+    let test_vals = [0, 1, 3, 7, 15, 85];
+    for val in test_vals {
+        let ones = count_set_bits(val);
+        println("value " + val + " (" + to_binary(val) + ") has " + ones + " bits set");
+    }
+
+    println("");
+    println("=== Power of Two Detection ===");
+    let powers = [1, 2, 3, 4, 8, 16, 17, 32];
+    for num in powers {
+        let is_pow2 = is_power_of_two(num);
+        if is_pow2 == 1 {
+            println(num + " is power of 2");
+        } else {
+            println(num + " is not power of 2");
+        }
+    }
+
+    println("");
+    println("=== Bit Masking ===");
+    let value = 255;
+    let mask1 = value & 15;
+    let mask2 = value & 240;
+    println("value: " + to_binary(value));
+    println("masked (& 15): " + to_binary(mask1));
+    println("masked (& 240): " + to_binary(mask2));
+
+    println("");
+    println("Bitwise operations enable efficient hardware-level programming");
+}
+
+main();

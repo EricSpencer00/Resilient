@@ -1,0 +1,53 @@
+=== Bitwise AND, OR, XOR ===
+a = 12 (00001100)
+b = 10 (00001010)
+a & b = 8 (00001000)
+a | b = 14 (00001110)
+a ^ b = 6 (00000110)
+
+=== Bit Shifts ===
+value = 6 (00000110)
+val << 1 = 12 (00001100)
+val << 2 = 24 (00011000)
+val >> 1 = 3 (00000011)
+val >> 2 = 1 (00000001)
+
+=== GPIO Pin Control ===
+initial GPIO: 00000000
+after set pin 2: 00000100
+after set pin 5: 00100100
+pin 2 state: 1
+pin 3 state: 0
+after clear pin 2: 00100000
+
+=== Bit Field Extraction and Insertion ===
+data = 171 (10101011)
+lower 4 bits: 11
+upper 4 bits: 10
+after insert 3 at bits 2-4: 10101111
+
+=== Bit Population Count ===
+value 0 (00000000) has 0 bits set
+value 1 (00000001) has 1 bits set
+value 3 (00000011) has 2 bits set
+value 7 (00000111) has 3 bits set
+value 15 (00001111) has 4 bits set
+value 85 (01010101) has 4 bits set
+
+=== Power of Two Detection ===
+1 is power of 2
+2 is power of 2
+3 is not power of 2
+4 is power of 2
+8 is power of 2
+16 is power of 2
+17 is not power of 2
+32 is power of 2
+
+=== Bit Masking ===
+value: 11111111
+masked (& 15): 00001111
+masked (& 240): 11110000
+
+Bitwise operations enable efficient hardware-level programming
+Program executed successfully
