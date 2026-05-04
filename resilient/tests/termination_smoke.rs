@@ -127,3 +127,49 @@ fn non_recursive_fn_unaffected_by_strict_flag() {
     );
     let _ = std::fs::remove_file(&src);
 }
+
+#[test]
+fn unannotated_mutual_recursion_rejected_under_strict_flag() {
+    // RES-774/RES-784: mutual recursion (SCC size > 1) is also rejected without annotations
+    let src = tmp_file(
+        "strict_mutual_rec",
+        "fn f(int n) { if n > 0 { g(n - 1); } }\nfn g(int n) { if n > 0 { f(n + 1); } }\nf(2);\n",
+    );
+    let out = Command::new(bin())
+        .args(["--strict-termination"])
+        .arg(&src)
+        .output()
+        .expect("spawn rz");
+    assert!(
+        !out.status.success(),
+        "expected failure for unannotated mutual recursion under --strict-termination, got {:?}",
+        out.status
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("mutually recursive") || stderr.contains("recursive"),
+        "stderr should explain the mutual recursion, got: {stderr}"
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn annotated_mutual_recursion_accepted_under_strict_flag() {
+    // With @decreases annotations, mutual recursion is accepted
+    let src = tmp_file(
+        "strict_mutual_annotated",
+        "// @decreases n\nfn f(int n) { if n > 0 { g(n - 1); } }\n// @decreases n\nfn g(int n) { if n > 0 { f(n - 1); } }\nf(2);\n",
+    );
+    let out = Command::new(bin())
+        .args(["--strict-termination"])
+        .arg(&src)
+        .output()
+        .expect("spawn rz");
+    assert!(
+        out.status.success(),
+        "expected success for annotated mutual recursion under --strict-termination, got {:?}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let _ = std::fs::remove_file(&src);
+}
