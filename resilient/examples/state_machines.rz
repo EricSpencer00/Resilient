@@ -1,0 +1,139 @@
+// RES-850: State machines demonstrating enum-based state representation,
+// transitions with validation, guard conditions, and lifecycle management.
+
+enum Order {
+    Pending,
+    Confirmed,
+    Shipped,
+    Delivered,
+    Cancelled,
+}
+
+enum PaymentState {
+    Unpaid,
+    Processing,
+    Approved,
+    Rejected,
+    Refunded,
+}
+
+fn can_confirm_order(Order state) -> bool {
+    match state {
+        Order::Pending => true,
+        Order::Confirmed => false,
+        Order::Shipped => false,
+        Order::Delivered => false,
+        Order::Cancelled => false,
+    }
+}
+
+fn can_ship_order(Order state) -> bool {
+    match state {
+        Order::Pending => false,
+        Order::Confirmed => true,
+        Order::Shipped => false,
+        Order::Delivered => false,
+        Order::Cancelled => false,
+    }
+}
+
+fn can_cancel_order(Order state) -> bool {
+    match state {
+        Order::Pending => true,
+        Order::Confirmed => true,
+        Order::Shipped => false,
+        Order::Delivered => false,
+        Order::Cancelled => false,
+    }
+}
+
+fn confirm_order(Order state) -> Result {
+    if can_confirm_order(state) == false {
+        return Err("cannot confirm order in current state");
+    }
+    return Ok(Order::Confirmed);
+}
+
+fn ship_order(Order state) -> Result {
+    if can_ship_order(state) == false {
+        return Err("cannot ship order in current state");
+    }
+    return Ok(Order::Shipped);
+}
+
+fn cancel_order(Order state) -> Result {
+    if can_cancel_order(state) == false {
+        return Err("cannot cancel order in current state");
+    }
+    return Ok(Order::Cancelled);
+}
+
+fn process_payment(PaymentState state) -> Result {
+    match state {
+        PaymentState::Unpaid => Ok(PaymentState::Processing),
+        PaymentState::Processing => Err("already processing"),
+        PaymentState::Approved => Err("already approved"),
+        PaymentState::Rejected => Err("payment was rejected"),
+        PaymentState::Refunded => Err("payment was refunded"),
+    }
+}
+
+fn approve_payment(PaymentState state) -> Result {
+    match state {
+        PaymentState::Unpaid => Err("not yet processing"),
+        PaymentState::Processing => Ok(PaymentState::Approved),
+        PaymentState::Approved => Err("already approved"),
+        PaymentState::Rejected => Err("cannot approve rejected payment"),
+        PaymentState::Refunded => Err("payment was refunded"),
+    }
+}
+
+fn main() {
+    let order = Order::Pending;
+
+    let confirmed = confirm_order(order);
+    if is_err(confirmed) {
+        println("confirm failed");
+    } else {
+        println("order confirmed");
+    }
+
+    let payment = PaymentState::Unpaid;
+    let processing = process_payment(payment);
+    if is_err(processing) {
+        println("process failed");
+    } else {
+        println("processing payment");
+    }
+
+    let can_ship_pending = can_ship_order(order);
+    println(can_ship_pending);
+
+    let confirmed_state = unwrap(confirmed);
+    let shipped = ship_order(confirmed_state);
+    if is_err(shipped) {
+        println("ship failed");
+    } else {
+        println("order shipped");
+    }
+
+    let cannot_cancel = cancel_order(Order::Shipped);
+    if is_err(cannot_cancel) {
+        println(unwrap_err(cannot_cancel));
+    } else {
+        println("order cancelled");
+    }
+
+    let can_cancel_pending = can_cancel_order(Order::Pending);
+    println(can_cancel_pending);
+
+    let proc_result = unwrap(processing);
+    let approved = approve_payment(proc_result);
+    if is_err(approved) {
+        println("approve failed");
+    } else {
+        println("payment approved");
+    }
+}
+
+main();

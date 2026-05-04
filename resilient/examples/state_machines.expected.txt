@@ -1,0 +1,10 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/state_machines.rz`
+order confirmed
+processing payment
+false
+order shipped
+cannot cancel order in current state
+true
+payment approved
+Program executed successfully
