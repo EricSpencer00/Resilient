@@ -1,0 +1,145 @@
+// RES-853: Embedded operations demonstrating bit manipulation for register
+// control, fixed-point arithmetic, safe bounds checking, and resource tracking.
+
+fn gpio_set_pin(int pins, int pin_num, int value) -> int {
+    if pin_num < 0 || pin_num >= 8 {
+        return pins;
+    }
+    let mask = 1;
+    let shift = pin_num;
+    let shifted_mask = mask << shift;
+    if value == 0 {
+        let inverted = 255 - shifted_mask;
+        return pins & inverted;
+    } else {
+        return pins | shifted_mask;
+    }
+}
+
+fn gpio_get_pin(int pins, int pin_num) -> int {
+    if pin_num < 0 || pin_num >= 8 {
+        return 0;
+    }
+    let mask = 1 << pin_num;
+    let result = pins & mask;
+    if result == 0 {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+fn fixed_point_multiply(int a, int b, int scale) -> int {
+    return (a * b) / scale;
+}
+
+fn fixed_point_divide(int numerator, int denominator, int scale) -> int {
+    if denominator == 0 {
+        return 0;
+    }
+    return (numerator * scale) / denominator;
+}
+
+fn clamp_value(int value, int min_val, int max_val) -> int {
+    if value < min_val {
+        return min_val;
+    }
+    if value > max_val {
+        return max_val;
+    }
+    return value;
+}
+
+fn track_resource_usage(int current_usage, int request, int max_capacity) -> Result {
+    let new_usage = current_usage + request;
+    if new_usage > max_capacity {
+        return Err("exceeds capacity");
+    }
+    return Ok(new_usage);
+}
+
+fn bit_count(int value) -> int {
+    let count = 0;
+    let remaining = value;
+    let idx = 0;
+    while idx < 8 && remaining > 0 {
+        let bit = remaining & 1;
+        if bit == 1 {
+            count = count + 1;
+        }
+        remaining = remaining >> 1;
+        idx = idx + 1;
+    }
+    return count;
+}
+
+fn is_power_of_two(int value) -> bool {
+    if value <= 0 {
+        return false;
+    }
+    let check = value & (value - 1);
+    if check == 0 {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+fn main() {
+    let pins = 0;
+
+    let pins_set = gpio_set_pin(pins, 0, 1);
+    println(pins_set);
+
+    let pins_set2 = gpio_set_pin(pins_set, 3, 1);
+    println(pins_set2);
+
+    let pin0_value = gpio_get_pin(pins_set2, 0);
+    println(pin0_value);
+
+    let pin1_value = gpio_get_pin(pins_set2, 1);
+    println(pin1_value);
+
+    let fixed_mult = fixed_point_multiply(10, 5, 100);
+    println(fixed_mult);
+
+    let fixed_div = fixed_point_divide(100, 4, 100);
+    println(fixed_div);
+
+    let clamped_high = clamp_value(300, 0, 255);
+    println(clamped_high);
+
+    let clamped_low = clamp_value(-10, 0, 255);
+    println(clamped_low);
+
+    let clamped_normal = clamp_value(100, 0, 255);
+    println(clamped_normal);
+
+    let resource_ok = track_resource_usage(50, 30, 100);
+    if is_err(resource_ok) {
+        println("resource allocation failed");
+    } else {
+        println(unwrap(resource_ok));
+    }
+
+    let resource_full = track_resource_usage(80, 30, 100);
+    if is_err(resource_full) {
+        println(unwrap_err(resource_full));
+    } else {
+        println(unwrap(resource_full));
+    }
+
+    let bits_in_5 = bit_count(5);
+    println(bits_in_5);
+
+    let bits_in_15 = bit_count(15);
+    println(bits_in_15);
+
+    let is_pow2_of_4 = is_power_of_two(4);
+    println(is_pow2_of_4);
+
+    let is_pow2_of_5 = is_power_of_two(5);
+    println(is_pow2_of_5);
+}
+
+main();
