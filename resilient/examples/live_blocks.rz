@@ -1,0 +1,121 @@
+// RES-839: Demonstrate live blocks and self-healing invariants.
+// Live blocks enable automatic recovery when assertions fail,
+// proving safety properties even under transient failures.
+
+// Global state persists across retries
+static let fault_count = 0;
+static let error_state = false;
+
+// Simulates a faulty sensor that needs retry
+fn read_sensor_with_retry() -> int {
+    // live_retries() returns 0 on first attempt, 1 on first retry, etc.
+    let retry_count = live_retries();
+    if retry_count < 2 {
+        error_state = true;
+        assert(false, "sensor read failed");
+    }
+    error_state = false;
+    return 42;
+}
+
+// Demonstrates basic live block with assert-driven retry
+fn safe_sensor_read() -> int {
+    live {
+        let reading = read_sensor_with_retry();
+        return reading;
+    }
+}
+
+// Counter with invariant: count never exceeds limit
+fn bounded_counter_demo() {
+    let count = 0;
+    let max_count = 5;
+
+    // The live block will retry if invariant is violated
+    live invariant count >= 0 && count <= max_count {
+        count = count + 1;
+        if count > max_count {
+            // This assertion violation triggers retry
+            assert(false, "count exceeded max");
+        }
+        println("count = " + count);
+    }
+}
+
+// Transaction-like behavior with rollback
+struct Transaction {
+    int id,
+    int balance,
+}
+
+fn execute_transaction(Transaction tx) -> int {
+    // Simulates occasional transaction failure
+    // Succeeds on 3rd attempt (retry count >= 2)
+    if live_retries() < 2 {
+        assert(false, "transaction failed, retrying");
+    }
+    return tx.balance;
+}
+
+fn safe_transaction() -> int {
+    let tx = new Transaction {
+        id: 1,
+        balance: 100,
+    };
+
+    live {
+        let result = execute_transaction(tx);
+        return result;
+    }
+}
+
+// Resource allocation with invariant
+fn allocate_resources_safely() {
+    let allocated = 0;
+    let max_resources = 10;
+    let freed = 0;
+
+    // Invariant: allocated <= max_resources (never exceed capacity)
+    live invariant allocated >= 0 && allocated <= max_resources {
+        // Allocate
+        allocated = allocated + 3;
+        if allocated > max_resources {
+            // Exceeds capacity — live block will retry
+            assert(false, "exceeded resource limit");
+        }
+        println("allocated: " + allocated + " / " + max_resources);
+
+        // Simulate some work
+        // ...
+
+        // Free
+        freed = freed + 1;
+        allocated = allocated - 1;
+        println("freed: " + freed + ", remaining: " + allocated);
+    }
+}
+
+fn main() {
+    println("=== Basic Live Block with Retry ===");
+    let reading = safe_sensor_read();
+    println("sensor reading: " + reading);
+    println("live block retried successfully");
+
+    println("");
+    println("=== Bounded Counter with Invariant ===");
+    bounded_counter_demo();
+
+    println("");
+    println("=== Transaction with Automatic Retry ===");
+    let balance = safe_transaction();
+    println("transaction succeeded with balance: " + balance);
+
+    println("");
+    println("=== Resource Allocation Invariant ===");
+    allocate_resources_safely();
+
+    println("");
+    println("Live blocks ensure system recovery and invariant preservation");
+}
+
+main();
