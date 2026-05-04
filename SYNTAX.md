@@ -367,6 +367,46 @@ pattern struct name must match the value's struct name at runtime.
 - `bytes`: raw byte sequence, `b"\x00\x01abc"` literal (RES-152)
 - `bool`: `true` / `false`
 
+### Strings
+
+String literals use double quotes with UTF-8 support:
+
+```rust
+let greeting = "Hello, World!";
+let multiword = "hello" + " " + "world";
+```
+
+**String Concatenation** — The `+` operator concatenates strings and
+coerces other types to strings:
+
+```rust
+let message = "Count: " + 42;           // "Count: 42"
+let status = "Ready: " + true;          // "Ready: true"
+let value = "Pi: " + 3.14;              // "Pi: 3.14"
+```
+
+**Common String Operations** — The following builtins work on strings:
+
+- `len(s)` → int: UTF-8 scalar count (not byte length)
+- `split(s, sep)` → [string]: split by separator (empty sep splits into scalars)
+- `trim(s)` → string: strip leading/trailing whitespace
+- `starts_with(s, prefix)` → bool: check if string starts with prefix
+- `ends_with(s, suffix)` → bool: check if string ends with suffix
+- `repeat(s, n)` → string: repeat string n times
+- `parse_int(s)` → Result<int, string>: convert to integer (base 10)
+- `parse_float(s)` → Result<float, string>: convert to float
+- `char_at(s, i)` → Result<string, string>: single character at index i
+- `pad_left(s, n, c)` → string: left-pad to n characters using char c
+- `pad_right(s, n, c)` → string: right-pad to n characters using char c
+
+**String Comparison** — Lexicographic ordering:
+
+```rust
+"apple" < "banana"   // true
+"zebra" > "aardvark" // true
+"cat" == "cat"       // true
+```
+
 ## Operators
 
 | Category | Operators |
@@ -377,8 +417,6 @@ pattern struct name must match the value's struct name at runtime.
 | Bitwise | `&` `\|` `^` `<<` `>>` |
 | Prefix | `!x` (logical-not), `-x` (negate) |
 | String | `+` (concat); int/float/bool coerce to string when concatenated |
-
-String comparison is lexicographic (`"apple" < "banana"`).
 
 ## Control Flow
 
