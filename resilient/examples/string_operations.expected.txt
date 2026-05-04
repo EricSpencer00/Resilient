@@ -1,0 +1,47 @@
+=== String Concatenation and Coercion ===
+Value: 42, Active: true, Pi: 3.14
+
+=== String Length and Trimming ===
+original: '  hello world  ' (len=15)
+trimmed:  'hello world' (len=11)
+
+=== String Splitting ===
+CSV: sensor,temperature,42.5
+field count: 3
+first field: sensor
+second field: temperature
+third field: 42.5
+
+=== String Prefix/Suffix Checking ===
+Alert: error log entry detected
+Alert: timeout error
+
+=== String Repetition ===
+====================
+Status: RUNNING   [OK]
+
+=== String Parsing ===
+parsed '12345' -> 12345
+parsed 'abc123' -> -1
+
+=== Lexicographic Comparison ===
+apple sorts before banana
+zebra sorts after aardvark
+test equals test
+
+=== Configuration Validation ===
+# Comment -> VALID
+param: value -> VALID
+invalid -> INVALID
+param:sensor=temp -> VALID
+
+=== Timestamp Formatting ===
+Formatted time: 14:35:42
+
+=== Pattern Classification ===
+'  exit  ' -> command
+'param:debug=1' -> unknown
+'unknown' -> unknown
+
+String operations enable safe text processing in embedded systems
+Program executed successfully

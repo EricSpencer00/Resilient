@@ -1,0 +1,157 @@
+// RES-840: Demonstrate string operations and pattern matching.
+// Shows concatenation, built-in functions, parsing, validation, and UTF-8 handling.
+
+// Configuration validation using string patterns
+fn validate_config(string config_line) -> int {
+    // Returns 1 if valid, 0 if invalid
+    if len(config_line) == 0 {
+        return 0;
+    }
+    if starts_with(config_line, "#") {
+        return 1;  // Comment is valid
+    }
+    if starts_with(config_line, "param:") {
+        return 1;  // Parameter line is valid
+    }
+    return 0;
+}
+
+// Parse simple key=value configuration
+fn parse_config_value(string config_line) -> string {
+    // Extract value after first =
+    let parts = split(config_line, "=");
+    // Match on array length to verify parsing
+    if len(parts) == 2 {
+        let value = parts[1];
+        return trim(value);
+    }
+    return "ERROR";
+}
+
+// Format a timestamp-like string with padding
+fn format_timestamp(int hour, int minute, int second) -> string {
+    let h = pad_left(("" + hour), 2, "0");
+    let m = pad_left(("" + minute), 2, "0");
+    let s = pad_left(("" + second), 2, "0");
+    return h + ":" + m + ":" + s;
+}
+
+// Validate and parse a number from string input
+fn safe_parse_number(string input) -> int {
+    let trimmed = trim(input);
+    if len(trimmed) == 0 {
+        return -1;
+    }
+
+    let parsed = parse_int(trimmed);
+    if is_err(parsed) {
+        return -1;
+    }
+    return unwrap(parsed);
+}
+
+// Pattern matching on string content
+fn classify_input(string input) -> string {
+    match trim(input) {
+        "" => "empty",
+        "exit" => "command",
+        "help" => "command",
+        s => match starts_with(s, "param:") {
+            1 => "config",
+            _ => "unknown",
+        },
+    }
+}
+
+fn main() {
+    println("=== String Concatenation and Coercion ===");
+    let message = "Value: " + 42 + ", Active: " + true + ", Pi: " + 3.14;
+    println(message);
+
+    println("");
+    println("=== String Length and Trimming ===");
+    let padded = "  hello world  ";
+    let trimmed = trim(padded);
+    println("original: '" + padded + "' (len=" + len(padded) + ")");
+    println("trimmed:  '" + trimmed + "' (len=" + len(trimmed) + ")");
+
+    println("");
+    println("=== String Splitting ===");
+    let csv_line = "sensor,temperature,42.5";
+    let fields = split(csv_line, ",");
+    println("CSV: " + csv_line);
+    println("field count: " + len(fields));
+    println("first field: " + fields[0]);
+    println("second field: " + fields[1]);
+    println("third field: " + fields[2]);
+
+    println("");
+    println("=== String Prefix/Suffix Checking ===");
+    let log_line = "[ERROR] Connection timeout";
+    if starts_with(log_line, "[ERROR]") {
+        println("Alert: error log entry detected");
+    }
+    if ends_with(log_line, "timeout") {
+        println("Alert: timeout error");
+    }
+
+    println("");
+    println("=== String Repetition ===");
+    let pattern = repeat("=", 20);
+    println(pattern);
+    println("Status: RUNNING" + repeat(" ", 3) + "[OK]");
+
+    println("");
+    println("=== String Parsing ===");
+    let num_str = "12345";
+    let parsed_num = safe_parse_number(num_str);
+    println("parsed '" + num_str + "' -> " + parsed_num);
+
+    let invalid_str = "abc123";
+    let invalid_parsed = safe_parse_number(invalid_str);
+    println("parsed '" + invalid_str + "' -> " + invalid_parsed);
+
+    println("");
+    println("=== Lexicographic Comparison ===");
+    if "apple" < "banana" {
+        println("apple sorts before banana");
+    }
+    if "zebra" > "aardvark" {
+        println("zebra sorts after aardvark");
+    }
+    if "test" == "test" {
+        println("test equals test");
+    }
+
+    println("");
+    println("=== Configuration Validation ===");
+    let configs = ["# Comment", "param: value", "invalid", "param:sensor=temp"];
+    let i = 0;
+    for cfg in configs {
+        let valid = validate_config(cfg);
+        let status = match valid {
+            1 => "VALID",
+            _ => "INVALID",
+        };
+        println(cfg + " -> " + status);
+        i = i + 1;
+    }
+
+    println("");
+    println("=== Timestamp Formatting ===");
+    let ts = format_timestamp(14, 35, 42);
+    println("Formatted time: " + ts);
+
+    println("");
+    println("=== Pattern Classification ===");
+    let inputs = ["  exit  ", "param:debug=1", "unknown"];
+    for inp in inputs {
+        let classification = classify_input(inp);
+        println("'" + inp + "' -> " + classification);
+    }
+
+    println("");
+    println("String operations enable safe text processing in embedded systems");
+}
+
+main();
