@@ -1,0 +1,60 @@
+// RES-829: Demonstrate generic type bounds with traits.
+// This example shows how generic functions constrained by trait bounds
+// work with multiple different types, providing reusable code that
+// maintains compile-time safety without runtime dispatch.
+
+trait HasValue {
+    fn get_value(self) -> int;
+}
+
+struct Counter {
+    int count,
+}
+
+impl HasValue for Counter {
+    fn get_value(self) -> int {
+        return self.count;
+    }
+}
+
+struct Temperature {
+    int celsius,
+}
+
+impl HasValue for Temperature {
+    fn get_value(self) -> int {
+        return self.celsius;
+    }
+}
+
+struct Score {
+    int points,
+}
+
+impl HasValue for Score {
+    fn get_value(self) -> int {
+        return self.points;
+    }
+}
+
+// Generic function with trait bound: works with ANY type that implements HasValue
+fn double_value<T: HasValue>(T item) -> int {
+    let val = item.get_value();
+    return val * 2;
+}
+
+fn main() {
+    let counter = new Counter { count: 5 };
+    println("Counter value doubled: " + double_value(counter));
+
+    let temp = new Temperature { celsius: 20 };
+    println("Temperature doubled: " + double_value(temp));
+
+    let score = new Score { points: 42 };
+    println("Score doubled: " + double_value(score));
+
+    println("");
+    println("Same generic function works with any HasValue type!");
+}
+
+main();

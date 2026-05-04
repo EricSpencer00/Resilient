@@ -1,0 +1,6 @@
+Counter value doubled: 10
+Temperature doubled: 40
+Score doubled: 84
+
+Same generic function works with any HasValue type!
+Program executed successfully
