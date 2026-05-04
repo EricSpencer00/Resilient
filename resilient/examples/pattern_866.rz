@@ -1,0 +1,11 @@
+fn sample(int x) -> int {
+    return x * 2;
+}
+
+fn main() {
+    println(sample(5));
+    println(sample(10));
+    println(sample(0));
+}
+
+main();
