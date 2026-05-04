@@ -33,6 +33,14 @@ impl CallGraph {
         CallGraph { graph }
     }
 
+    /// Check if a function calls itself (direct recursion).
+    pub fn has_self_call(&self, fn_name: &str) -> bool {
+        self.graph
+            .get(fn_name)
+            .map(|calls| calls.contains(fn_name))
+            .unwrap_or(false)
+    }
+
     /// Find all strongly-connected components using Kosaraju's algorithm.
     pub fn find_sccs(&self) -> Vec<Vec<String>> {
         if self.graph.is_empty() {
@@ -61,6 +69,15 @@ impl CallGraph {
         }
 
         sccs
+    }
+
+    /// Find mutual recursion cycles (non-trivial SCCs of size > 1).
+    /// Returns a list of cycles, where each cycle is a list of function names forming the cycle.
+    pub fn find_mutual_recursion_cycles(&self) -> Vec<Vec<String>> {
+        let sccs = self.find_sccs();
+        sccs.into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect()
     }
 
     /// Return the transposed graph (edges reversed).
