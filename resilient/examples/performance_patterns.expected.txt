@@ -1,0 +1,16 @@
+   Compiling resilient v0.1.0 (/Users/eric/GitHub/Resilient/resilient)
+     Running `resilient/target/debug/rz resilient/examples/performance_patterns.rz`
+1
+-1
+120
+33
+113
+true
+false
+false
+75
+120
+50
+0
+100
+Program executed successfully

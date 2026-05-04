@@ -1,0 +1,121 @@
+// RES-856: Performance optimization patterns demonstrating early returns,
+// tail recursion, loop fusion, and algorithmic efficiency.
+
+fn linear_search_optimized(int target, int a, int b, int c, int d) -> int {
+    if a == target {
+        return 0;
+    }
+    if b == target {
+        return 1;
+    }
+    if c == target {
+        return 2;
+    }
+    if d == target {
+        return 3;
+    }
+    return -1;
+}
+
+fn factorial_tail_recursive(int n, int accumulator) -> int {
+    if n <= 1 {
+        return accumulator;
+    }
+    return factorial_tail_recursive(n - 1, accumulator * n);
+}
+
+fn sum_product_fused(int a, int b, int c) -> int {
+    let sum = a + b + c;
+    let product = a * b * c;
+    return sum + product;
+}
+
+fn avoid_redundant_computation(int x) -> int {
+    let expensive = x * x * x;
+    let use1 = expensive + 10;
+    let use2 = expensive * 2;
+    let use3 = expensive - 5;
+    return use1 + use2 + use3;
+}
+
+fn short_circuit_evaluation(bool flag1, bool flag2, bool flag3) -> bool {
+    if flag1 == false {
+        return false;
+    }
+    if flag2 == false {
+        return false;
+    }
+    return flag3;
+}
+
+fn cache_result(int base, int iterations) -> int {
+    let squared = base * base;
+    let idx = 0;
+    let accumulated = 0;
+    while idx < iterations {
+        accumulated = accumulated + squared;
+        idx = idx + 1;
+    }
+    return accumulated;
+}
+
+fn batch_operations(int val1, int val2, int val3) -> int {
+    let r1 = val1 * 2;
+    let r2 = val2 * 2;
+    let r3 = val3 * 2;
+    return r1 + r2 + r3;
+}
+
+fn minimize_branching(int value) -> int {
+    let clipped = value;
+    if clipped < 0 {
+        clipped = 0;
+    }
+    if clipped > 100 {
+        clipped = 100;
+    }
+    return clipped;
+}
+
+fn main() {
+    let search1 = linear_search_optimized(20, 10, 20, 30, 40);
+    println(search1);
+
+    let search2 = linear_search_optimized(50, 10, 20, 30, 40);
+    println(search2);
+
+    let fact_result = factorial_tail_recursive(5, 1);
+    println(fact_result);
+
+    let fused = sum_product_fused(2, 3, 4);
+    println(fused);
+
+    let reused = avoid_redundant_computation(3);
+    println(reused);
+
+    let short1 = short_circuit_evaluation(true, true, true);
+    println(short1);
+
+    let short2 = short_circuit_evaluation(false, true, true);
+    println(short2);
+
+    let short3 = short_circuit_evaluation(true, false, true);
+    println(short3);
+
+    let cached = cache_result(5, 3);
+    println(cached);
+
+    let batched = batch_operations(10, 20, 30);
+    println(batched);
+
+    let clipped1 = minimize_branching(50);
+    println(clipped1);
+
+    let clipped2 = minimize_branching(-10);
+    println(clipped2);
+
+    let clipped3 = minimize_branching(150);
+    println(clipped3);
+}
+
+main();
