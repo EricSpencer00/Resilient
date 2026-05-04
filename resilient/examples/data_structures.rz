@@ -1,0 +1,122 @@
+// RES-847: Demonstrate data structure initialization and manipulation.
+// Shows practical patterns for creating and working with composite data.
+
+struct Person {
+    string name,
+    int age,
+    int id,
+}
+
+struct Address {
+    string street,
+    string city,
+    int zip,
+}
+
+struct Employee {
+    Person person,
+    Address address,
+    int salary,
+}
+
+struct Team {
+    string name,
+    int size,
+    int budget,
+}
+
+// Create a person
+fn create_person(string n, int a, int id) -> Person {
+    return new Person { name: n, age: a, id: id };
+}
+
+// Create an address
+fn create_address(string st, string c, int z) -> Address {
+    return new Address { street: st, city: c, zip: z };
+}
+
+// Create an employee with nested structures
+fn create_employee(string name, int age, int emp_id, string street, string city, int zip, int sal) -> Employee {
+    let person = create_person(name, age, emp_id);
+    let address = create_address(street, city, zip);
+    return new Employee { person: person, address: address, salary: sal };
+}
+
+// Calculate team statistics
+fn analyze_salaries(int sal1, int sal2, int sal3) -> int {
+    let total = sal1 + sal2 + sal3;
+    return total / 3;
+}
+
+fn main() {
+    println("=== Simple Struct Creation ===");
+    let p1 = create_person("Alice", 30, 101);
+    println("Person: " + p1.name + ", age " + p1.age);
+
+    let p2 = create_person("Bob", 28, 102);
+    println("Person: " + p2.name + ", age " + p2.age);
+
+    println("");
+    println("=== Address Creation ===");
+    let addr1 = create_address("123 Main St", "Boston", 02134);
+    println("Address: " + addr1.street + ", " + addr1.city);
+
+    println("");
+    println("=== Nested Structure Creation ===");
+    let emp1 = create_employee("Charlie", 35, 201, "456 Oak Ave", "Seattle", 98101, 85000);
+    println("Employee: " + emp1.person.name);
+    println("Location: " + emp1.address.city);
+    println("Salary: " + emp1.salary);
+
+    let emp2 = create_employee("Diana", 32, 202, "789 Pine Rd", "Portland", 97210, 92000);
+    println("Employee: " + emp2.person.name);
+    println("Location: " + emp2.address.city);
+    println("Salary: " + emp2.salary);
+
+    println("");
+    println("=== Team Aggregation ===");
+    let team = new Team { name: "Engineering", size: 3, budget: 300000 };
+    println("Team: " + team.name);
+    println("Members: " + team.size);
+    println("Budget: " + team.budget);
+
+    println("");
+    println("=== Batch Structure Creation ===");
+    let people = [
+        create_person("Eve", 29, 103),
+        create_person("Frank", 34, 104),
+        create_person("Grace", 26, 105),
+    ];
+    let i = 0;
+    for person in people {
+        println("Person " + i + ": " + person.name + " (age " + person.age + ")");
+        i = i + 1;
+    }
+
+    println("");
+    println("=== Nested Access and Computation ===");
+    let avg_salary = analyze_salaries(emp1.salary, emp2.salary, 88000);
+    println("Average salary: " + avg_salary);
+
+    println("");
+    println("=== Structure Field Updates ===");
+    let emp3 = new Employee {
+        person: create_person("Henry", 40, 203),
+        address: create_address("321 Elm St", "Austin", 78701),
+        salary: 95000,
+    };
+    println("New employee: " + emp3.person.name);
+    println("Starting salary: " + emp3.salary);
+
+    println("");
+    println("=== Composite Data Management ===");
+    let emp4 = emp1;
+    let emp5 = emp2;
+    let total_salaries = emp4.salary + emp5.salary + emp3.salary;
+    println("Total payroll (3 employees): " + total_salaries);
+
+    println("");
+    println("Data structures enable organized information management");
+}
+
+main();
