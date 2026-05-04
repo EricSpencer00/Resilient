@@ -1,0 +1,144 @@
+// RES-843: Demonstrate struct destructuring patterns.
+// Shows concise and type-safe field extraction through pattern matching.
+
+struct Point {
+    int x,
+    int y,
+}
+
+struct Rectangle {
+    Point top_left,
+    Point bottom_right,
+    int width,
+    int height,
+}
+
+struct Configuration {
+    int mode,
+    int timeout,
+    int retries,
+    string label,
+}
+
+// Calculate distance using destructured Point
+fn distance_from_origin(Point p) -> int {
+    let Point { x, y } = p;
+    return x * x + y * y;
+}
+
+// Get rectangle center using destructuring
+fn get_center(Rectangle rect) -> Point {
+    let Rectangle { top_left, bottom_right, .. } = rect;
+    let Point { x: x1, y: y1 } = top_left;
+    let Point { x: x2, y: y2 } = bottom_right;
+    let center_x = (x1 + x2) / 2;
+    let center_y = (y1 + y2) / 2;
+    return new Point { x: center_x, y: center_y };
+}
+
+// Extract only needed fields
+fn describe_config(Configuration cfg) -> string {
+    let Configuration { mode, label, .. } = cfg;
+    return label + " (mode=" + mode + ")";
+}
+
+// Rename fields during destructuring
+fn swap_point_coords(Point p) -> Point {
+    let Point { x: new_y, y: new_x } = p;
+    return new Point { x: new_x, y: new_y };
+}
+
+// Destructure in match expression
+fn point_location(Point p) -> string {
+    match p {
+        Point { x: 0, y: 0 } => "origin",
+        Point { x: 0, y } => "on y-axis: " + y,
+        Point { x, y: 0 } => "on x-axis: " + x,
+        Point { x, y } if x > 0 && y > 0 => "quadrant 1",
+        Point { x, y } if x < 0 && y > 0 => "quadrant 2",
+        Point { x, y } if x < 0 && y < 0 => "quadrant 3",
+        Point { x, y } => "quadrant 4",
+    }
+}
+
+fn main() {
+    println("=== Full Destructuring ===");
+    let p1 = new Point { x: 3, y: 4 };
+    let Point { x, y } = p1;
+    println("Point: x=" + x + ", y=" + y);
+    let distance = distance_from_origin(p1);
+    println("Distance from origin: " + distance);
+
+    println("");
+    println("=== Field Renaming During Destructuring ===");
+    let p2 = new Point { x: 5, y: 7 };
+    let Point { x: col, y: row } = p2;
+    println("Point as (col, row): (" + col + ", " + row + ")");
+    let p3 = swap_point_coords(p2);
+    println("After coordinate swap: x=" + p3.x + ", y=" + p3.y);
+
+    println("");
+    println("=== Partial Destructuring with .. ===");
+    let config = new Configuration {
+        mode: 1,
+        timeout: 5000,
+        retries: 3,
+        label: "default",
+    };
+    let Configuration { mode, timeout, .. } = config;
+    println("Config mode=" + mode + ", timeout=" + timeout);
+
+    println("");
+    println("=== Nested Struct Extraction ===");
+    let rect = new Rectangle {
+        top_left: new Point { x: 0, y: 10 },
+        bottom_right: new Point { x: 10, y: 0 },
+        width: 10,
+        height: 10,
+    };
+    let center = get_center(rect);
+    println("Rectangle center: (" + center.x + ", " + center.y + ")");
+
+    println("");
+    println("=== Match with Destructuring ===");
+    let points = [
+        new Point { x: 0, y: 0 },
+        new Point { x: 0, y: 5 },
+        new Point { x: 3, y: 4 },
+        new Point { x: -2, y: 3 },
+    ];
+    for pt in points {
+        println("Point (" + pt.x + ", " + pt.y + "): " + point_location(pt));
+    }
+
+    println("");
+    println("=== Selective Field Extraction ===");
+    let cfg1 = new Configuration {
+        mode: 2,
+        timeout: 1000,
+        retries: 5,
+        label: "custom",
+    };
+    println(describe_config(cfg1));
+
+    let cfg2 = new Configuration {
+        mode: 0,
+        timeout: 30000,
+        retries: 0,
+        label: "production",
+    };
+    println(describe_config(cfg2));
+
+    println("");
+    println("=== Extracting Multiple Values ===");
+    let p4 = new Point { x: 8, y: 6 };
+    let Point { x: a, y: b } = p4;
+    println("Extracted: a=" + a + ", b=" + b);
+    println("Sum: " + (a + b));
+    println("Difference: " + (a - b));
+
+    println("");
+    println("Destructuring provides safe and concise field access");
+}
+
+main();
