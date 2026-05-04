@@ -151,7 +151,7 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 if *fn_line < 2 {
                     let cycle_str = cycle.join(" → ");
                     return Err(format!(
-                        "{}:{}:{}: error: function `{}` is in mutual recursion cycle ({}) \
+                        "{}:{}:{}: error: function `{}` is mutually recursive ({}) \
                          but has no termination annotation; expected `// @decreases <metric>` \
                          or `// @may_diverge` on the line above",
                         source_path, fn_line, col, name, cycle_str
@@ -161,7 +161,7 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 if !has_termination_annotation(prev) {
                     let cycle_str = cycle.join(" → ");
                     return Err(format!(
-                        "{}:{}:{}: error: function `{}` is in mutual recursion cycle ({}) \
+                        "{}:{}:{}: error: function `{}` is mutually recursive ({}) \
                          but has no termination annotation; expected `// @decreases <metric>` \
                          or `// @may_diverge` on the line above",
                         source_path, fn_line, col, name, cycle_str
