@@ -1,0 +1,49 @@
+=== Literal Patterns ===
+Traffic light 1: Green -> Yellow
+
+=== Guard Conditions on Ranges ===
+Temp 5°C: cold
+Temp 15°C: cool
+Temp 25°C: warm
+Temp 35°C: hot
+Temp -5°C: freezing
+
+=== Binding Patterns with Guards ===
+negative: -5
+zero
+small: 8
+medium: 50
+large: 200
+
+=== HTTP Status Codes ===
+200: success
+404: not found
+500: server error
+999: unknown
+
+=== String Pattern Matching ===
+Command 'help': showing help
+Command 'exit': exiting program
+Command 'status': reporting status
+Command 'reload': unknown command: reload
+
+=== Boolean Pattern ===
+Response 1: affirmative
+Response 0: negative
+Response 2: invalid response
+
+=== Nested Pattern Matching ===
+Score=85, Category=error -> high
+Score=75, Category=warning -> medium
+
+=== Range Validation with Guards ===
+Value 50 in range [20, 100]: in range: 50
+
+=== Exhaustive Catch-All Patterns ===
+Direction 'north': up
+Direction 'southeast': unknown: southeast
+Direction 'southwest': unknown: southwest
+Direction 'invalid': unknown: invalid
+
+Pattern matching ensures type-safe exhaustive control flow
+Program executed successfully
