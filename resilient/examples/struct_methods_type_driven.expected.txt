@@ -1,0 +1,11 @@
+=== Point Methods ===
+Point (3,4) distance from origin: 25
+Point (3,4) Manhattan distance: 7
+After translate(2,3): distance = 74
+
+=== Circle Methods ===
+Circle area estimate: 75
+Point (3,4) is inside circle
+
+Type-driven design organizes code around domain types
+Program executed successfully

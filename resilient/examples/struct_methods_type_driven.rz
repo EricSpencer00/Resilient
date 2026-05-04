@@ -1,0 +1,78 @@
+// RES-836: Demonstrate struct methods and type-driven design.
+// Shows how to organize code around custom types using impl blocks
+// and method calls for cleaner, more composable code.
+
+struct Point {
+    int x,
+    int y,
+}
+
+impl Point {
+    fn distance_from_origin(self) -> int {
+        return self.x * self.x + self.y * self.y;
+    }
+
+    fn manhattan_distance(self) -> int {
+        if self.x < 0 {
+            return (-self.x) + self.y;
+        }
+        if self.y < 0 {
+            return self.x + (-self.y);
+        }
+        return self.x + self.y;
+    }
+
+    fn translate(self, int dx, int dy) -> Point {
+        return new Point { x: self.x + dx, y: self.y + dy };
+    }
+}
+
+struct Circle {
+    Point center,
+    int radius,
+}
+
+impl Circle {
+    fn area_estimate(self) -> int {
+        return 3 * self.radius * self.radius;
+    }
+
+    fn contains_point(self, Point p) -> int {
+        let dist_sq = (p.x - self.center.x) * (p.x - self.center.x) +
+                      (p.y - self.center.y) * (p.y - self.center.y);
+        let radius_sq = self.radius * self.radius;
+        if dist_sq <= radius_sq {
+            return 1;
+        }
+        return 0;
+    }
+}
+
+fn main() {
+    println("=== Point Methods ===");
+    let p1 = new Point { x: 3, y: 4 };
+    println("Point (3,4) distance from origin: " + p1.distance_from_origin());
+    println("Point (3,4) Manhattan distance: " + p1.manhattan_distance());
+
+    let p2 = p1.translate(2, 3);
+    println("After translate(2,3): distance = " + p2.distance_from_origin());
+
+    println("");
+    println("=== Circle Methods ===");
+    let center = new Point { x: 0, y: 0 };
+    let circle = new Circle { center: center, radius: 5 };
+    println("Circle area estimate: " + circle.area_estimate());
+
+    let test_point = new Point { x: 3, y: 4 };
+    let inside = circle.contains_point(test_point);
+    if inside == 1 {
+        println("Point (3,4) is inside circle");
+    } else {
+        println("Point (3,4) is outside circle");
+    }
+
+    println("");
+    println("Type-driven design organizes code around domain types");
+}
+
+main();
