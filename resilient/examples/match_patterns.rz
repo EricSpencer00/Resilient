@@ -1,0 +1,178 @@
+// RES-841: Demonstrate advanced match patterns with guards and bindings.
+// Shows exhaustive pattern matching, guards, and type-safe control flow.
+
+// State machine for a simple traffic light
+fn next_light(int current_state) -> string {
+    match current_state {
+        0 => "Red -> Green",
+        1 => "Green -> Yellow",
+        2 => "Yellow -> Red",
+        _ => "Invalid state",
+    }
+}
+
+// Pattern with guard condition
+fn classify_temperature(int temp) -> string {
+    match temp {
+        t if t < 0 => "freezing",
+        t if t < 10 => "cold",
+        t if t < 20 => "cool",
+        t if t < 30 => "warm",
+        t if t >= 30 => "hot",
+    }
+}
+
+// Binding pattern with guard
+fn describe_value(int val) -> string {
+    match val {
+        0 => "zero",
+        n if n < 0 => "negative: " + n,
+        n if n > 0 && n <= 10 => "small: " + n,
+        n if n > 10 && n <= 100 => "medium: " + n,
+        n => "large: " + n,
+    }
+}
+
+// Multiple independent patterns
+fn operation_result(int code) -> string {
+    match code {
+        200 => "success",
+        201 => "created",
+        204 => "no content",
+        400 => "bad request",
+        401 => "unauthorized",
+        404 => "not found",
+        500 => "server error",
+        _ => "unknown",
+    }
+}
+
+// String pattern matching
+fn parse_command(string cmd) -> string {
+    match trim(cmd) {
+        "help" => "showing help",
+        "exit" => "exiting program",
+        "status" => "reporting status",
+        "clear" => "clearing state",
+        s => "unknown command: " + s,
+    }
+}
+
+// Boolean pattern
+fn yes_no_response(int response) -> string {
+    match response {
+        1 => "affirmative",
+        0 => "negative",
+        _ => "invalid response",
+    }
+}
+
+// Complex classification with multiple guards
+fn priority_level(int score, string category) -> string {
+    match score {
+        s if s >= 90 => "critical",
+        s if s >= 70 => match category {
+            "error" => "high",
+            "warning" => "medium",
+            _ => "normal",
+        },
+        s if s >= 50 => "low",
+        _ => "negligible",
+    }
+}
+
+// Pattern on function parameter with guard
+fn evaluate_range(int val, int min_val, int max_val) -> string {
+    match val {
+        v if v < min_val => "below range",
+        v if v > max_val => "above range",
+        v if v >= min_val && v <= max_val => "in range: " + v,
+    }
+}
+
+// Exhaustive patterns with catch-all
+fn direction_to_vector(string dir) -> string {
+    match trim(dir) {
+        "north" => "up",
+        "south" => "down",
+        "east" => "right",
+        "west" => "left",
+        "ne" => "up-right",
+        "nw" => "up-left",
+        "se" => "down-right",
+        "sw" => "down-left",
+        d => "unknown: " + d,
+    }
+}
+
+fn main() {
+    println("=== Literal Patterns ===");
+    let light = 1;
+    println("Traffic light " + light + ": " + next_light(light));
+
+    println("");
+    println("=== Guard Conditions on Ranges ===");
+    let temps = [5, 15, 25, 35, -5];
+    let i = 0;
+    for temp in temps {
+        println("Temp " + temp + "°C: " + classify_temperature(temp));
+        i = i + 1;
+    }
+
+    println("");
+    println("=== Binding Patterns with Guards ===");
+    let values = [-5, 0, 8, 50, 200];
+    for val in values {
+        println(describe_value(val));
+    }
+
+    println("");
+    println("=== HTTP Status Codes ===");
+    let codes = [200, 404, 500, 999];
+    for code in codes {
+        println(code + ": " + operation_result(code));
+    }
+
+    println("");
+    println("=== String Pattern Matching ===");
+    let commands = ["help", "exit", "status", "reload"];
+    for cmd in commands {
+        println("Command '" + cmd + "': " + parse_command(cmd));
+    }
+
+    println("");
+    println("=== Boolean Pattern ===");
+    let responses = [1, 0, 2];
+    for resp in responses {
+        println("Response " + resp + ": " + yes_no_response(resp));
+    }
+
+    println("");
+    println("=== Nested Pattern Matching ===");
+    let score1 = 85;
+    let cat1 = "error";
+    println("Score=" + score1 + ", Category=" + cat1 + " -> " + priority_level(score1, cat1));
+
+    let score2 = 75;
+    let cat2 = "warning";
+    println("Score=" + score2 + ", Category=" + cat2 + " -> " + priority_level(score2, cat2));
+
+    println("");
+    println("=== Range Validation with Guards ===");
+    let test_val = 50;
+    let min_val = 20;
+    let max_val = 100;
+    println("Value " + test_val + " in range [" + min_val + ", " + max_val + "]: " + evaluate_range(test_val, min_val, max_val));
+
+    println("");
+    println("=== Exhaustive Catch-All Patterns ===");
+    let directions = ["north", "southeast", "southwest", "invalid"];
+    for dir in directions {
+        println("Direction '" + dir + "': " + direction_to_vector(dir));
+    }
+
+    println("");
+    println("Pattern matching ensures type-safe exhaustive control flow");
+}
+
+main();
