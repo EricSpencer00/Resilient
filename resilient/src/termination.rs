@@ -65,9 +65,10 @@
 //! termination annotations under `--strict-termination`.
 //!
 //! **Algorithm**: Build a call graph from function definitions, then
-//! compute strongly-connected components (SCCs) using Tarjan's algorithm.
-//! Any SCC with size > 1 (or a self-loop for size == 1) requires all
-//! functions in it to declare `// @decreases` or `// @may_diverge`.
+//! compute strongly-connected components (SCCs) using Kosaraju's algorithm
+//! (see `mutual_recursion_scc` module). Any SCC with size > 1 (or a self-loop
+//! for size == 1) requires all functions in it to declare `// @decreases` or
+//! `// @may_diverge`.
 //!
 //! **Diagnostics**: When a mutually-recursive function lacks an annotation,
 //! the error message identifies the full cycle (e.g., "f → g → f") and
@@ -95,7 +96,8 @@
 //! ```
 
 use crate::Node;
-use std::collections::{HashMap, HashSet};
+use crate::mutual_recursion_scc::CallGraph;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// RES-398: process-wide flag controlling whether the termination
@@ -128,85 +130,72 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let source = std::fs::read_to_string(source_path).unwrap_or_default();
     let lines: Vec<&str> = source.lines().collect();
 
-    // Build call graph: fn_name -> set of functions it calls
-    let mut call_graph: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut fn_info: HashMap<String, (usize, usize)> = HashMap::new(); // name -> (line, col)
-
+    // Build function location map for error reporting
+    let mut fn_info: HashMap<String, (usize, usize)> = HashMap::new();
     for spanned in stmts {
-        if let Node::Function {
-            name, body, span, ..
-        } = &spanned.node
-        {
-            if name.is_empty() {
-                continue;
+        if let Node::Function { name, span, .. } = &spanned.node {
+            if !name.is_empty() {
+                fn_info.insert(name.clone(), (span.start.line, span.start.column));
             }
-            fn_info.insert(name.clone(), (span.start.line, span.start.column));
-            let mut callees = HashSet::new();
-            collect_calls(body, &mut callees);
-            call_graph.insert(name.clone(), callees);
         }
     }
 
-    // Find SCCs using Tarjan's algorithm
-    let sccs = find_sccs(&call_graph);
+    // Use mutual_recursion_scc module to build call graph and find cycles
+    let call_graph = CallGraph::build(program);
+    let cycles = call_graph.find_mutual_recursion_cycles();
 
-    // Check each SCC: if it has cycles, all functions in it need annotations
-    for scc in sccs {
-        if scc.len() == 1 {
-            // Single function: check if it has cycles (self-calls)
-            let name = &scc[0];
-            if !call_graph
-                .get(name)
-                .map(|calls| calls.contains(name))
-                .unwrap_or(false)
-            {
-                continue; // No recursion
-            }
-        } else {
-            // Multiple functions: check if any edge within SCC exists
-            let scc_set: HashSet<&str> = scc.iter().map(|s| s.as_str()).collect();
-            let has_cycle = scc.iter().any(|name| {
-                call_graph
-                    .get(name)
-                    .map(|calls| calls.iter().any(|c| scc_set.contains(c.as_str())))
-                    .unwrap_or(false)
-            });
-            if !has_cycle {
-                continue;
-            }
-        }
-
-        // This SCC is recursive; check annotations for all functions in it
-        for name in &scc {
+    // Check mutual recursion cycles
+    for cycle in cycles {
+        for name in &cycle {
             if let Some((fn_line, col)) = fn_info.get(name) {
                 if *fn_line < 2 {
-                    let recursion_type = if scc.len() == 1 {
-                        "directly recursive"
-                    } else {
-                        "mutually recursive"
-                    };
+                    let cycle_str = cycle.join(" → ");
                     return Err(format!(
-                        "{}:{}:{}: error: function `{}` is {} but has no termination annotation; \
-                         expected `// @decreases <metric>` or `// @may_diverge` on the line above",
-                        source_path, fn_line, col, name, recursion_type
+                        "{}:{}:{}: error: function `{}` is in mutual recursion cycle ({}) \
+                         but has no termination annotation; expected `// @decreases <metric>` \
+                         or `// @may_diverge` on the line above",
+                        source_path, fn_line, col, name, cycle_str
                     ));
                 }
                 let prev = lines.get(fn_line - 2).copied().unwrap_or("");
                 if !has_termination_annotation(prev) {
-                    let recursion_type = if scc.len() == 1 {
-                        "directly recursive"
-                    } else {
-                        "mutually recursive"
-                    };
+                    let cycle_str = cycle.join(" → ");
                     return Err(format!(
-                        "{}:{}:{}: error: function `{}` is {} but has no termination annotation; \
-                         expected `// @decreases <metric>` or `// @may_diverge` on the line above",
-                        source_path, fn_line, col, name, recursion_type
+                        "{}:{}:{}: error: function `{}` is in mutual recursion cycle ({}) \
+                         but has no termination annotation; expected `// @decreases <metric>` \
+                         or `// @may_diverge` on the line above",
+                        source_path, fn_line, col, name, cycle_str
                     ));
                 }
             }
         }
     }
+
+    // Check direct recursion (self-calls)
+    for (name, _) in &fn_info {
+        if call_graph.has_self_call(name) {
+            if let Some((fn_line, col)) = fn_info.get(name) {
+                if *fn_line < 2 {
+                    return Err(format!(
+                        "{}:{}:{}: error: function `{}` is directly recursive but has no \
+                         termination annotation; expected `// @decreases <metric>` or \
+                         `// @may_diverge` on the line above",
+                        source_path, fn_line, col, name
+                    ));
+                }
+                let prev = lines.get(fn_line - 2).copied().unwrap_or("");
+                if !has_termination_annotation(prev) {
+                    return Err(format!(
+                        "{}:{}:{}: error: function `{}` is directly recursive but has no \
+                         termination annotation; expected `// @decreases <metric>` or \
+                         `// @may_diverge` on the line above",
+                        source_path, fn_line, col, name
+                    ));
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -228,149 +217,6 @@ fn has_termination_annotation(line: &str) -> bool {
     false
 }
 
-/// RES-774: collect all function names called by a node, adding them to
-/// the `callees` set. Used to build the call graph for SCC analysis.
-fn collect_calls(node: &Node, callees: &mut HashSet<String>) {
-    match node {
-        Node::CallExpression {
-            function,
-            arguments,
-            ..
-        } => {
-            if let Node::Identifier { name, .. } = function.as_ref() {
-                callees.insert(name.clone());
-            }
-            collect_calls(function, callees);
-            for arg in arguments {
-                collect_calls(arg, callees);
-            }
-        }
-        Node::Block { stmts, .. } => {
-            for stmt in stmts {
-                collect_calls(stmt, callees);
-            }
-        }
-        Node::IfStatement {
-            condition,
-            consequence,
-            alternative,
-            ..
-        } => {
-            collect_calls(condition, callees);
-            collect_calls(consequence, callees);
-            if let Some(alt) = alternative {
-                collect_calls(alt, callees);
-            }
-        }
-        Node::WhileStatement {
-            condition, body, ..
-        } => {
-            collect_calls(condition, callees);
-            collect_calls(body, callees);
-        }
-        Node::ForInStatement { iterable, body, .. } => {
-            collect_calls(iterable, callees);
-            collect_calls(body, callees);
-        }
-        Node::LiveBlock { body, .. } => collect_calls(body, callees),
-        Node::ReturnStatement { value: Some(v), .. } => collect_calls(v, callees),
-        Node::ExpressionStatement { expr, .. } => collect_calls(expr, callees),
-        Node::LetStatement { value, .. } => collect_calls(value, callees),
-        Node::InfixExpression { left, right, .. } => {
-            collect_calls(left, callees);
-            collect_calls(right, callees);
-        }
-        Node::PrefixExpression { right, .. } => collect_calls(right, callees),
-        Node::FieldAccess { target, .. } => collect_calls(target, callees),
-        _ => {}
-    }
-}
-
-/// RES-774: Tarjan's algorithm for finding strongly connected components.
-/// Returns a Vec of SCCs (each SCC is a Vec of function names).
-fn find_sccs(graph: &HashMap<String, HashSet<String>>) -> Vec<Vec<String>> {
-    let mut index_counter = 0;
-    let mut stack: Vec<String> = Vec::new();
-    let mut indices: HashMap<String, usize> = HashMap::new();
-    let mut lowlinks: HashMap<String, usize> = HashMap::new();
-    let mut on_stack: HashSet<String> = HashSet::new();
-    let mut sccs: Vec<Vec<String>> = Vec::new();
-
-    for node in graph.keys() {
-        if !indices.contains_key(node) {
-            strongconnect(
-                node,
-                &mut index_counter,
-                &mut indices,
-                &mut lowlinks,
-                &mut stack,
-                &mut on_stack,
-                &mut sccs,
-                graph,
-            );
-        }
-    }
-    sccs
-}
-
-#[allow(clippy::too_many_arguments)]
-fn strongconnect(
-    node: &str,
-    index_counter: &mut usize,
-    indices: &mut HashMap<String, usize>,
-    lowlinks: &mut HashMap<String, usize>,
-    stack: &mut Vec<String>,
-    on_stack: &mut HashSet<String>,
-    sccs: &mut Vec<Vec<String>>,
-    graph: &HashMap<String, HashSet<String>>,
-) {
-    indices.insert(node.to_string(), *index_counter);
-    lowlinks.insert(node.to_string(), *index_counter);
-    *index_counter += 1;
-    stack.push(node.to_string());
-    on_stack.insert(node.to_string());
-
-    if let Some(successors) = graph.get(node) {
-        for successor in successors {
-            if !indices.contains_key(successor) {
-                strongconnect(
-                    successor,
-                    index_counter,
-                    indices,
-                    lowlinks,
-                    stack,
-                    on_stack,
-                    sccs,
-                    graph,
-                );
-                let succ_lowlink = *lowlinks.get(successor).unwrap_or(&0);
-                lowlinks.insert(
-                    node.to_string(),
-                    (*lowlinks.get(node).unwrap_or(&0)).min(succ_lowlink),
-                );
-            } else if on_stack.contains(successor) {
-                let succ_index = *indices.get(successor).unwrap_or(&0);
-                lowlinks.insert(
-                    node.to_string(),
-                    (*lowlinks.get(node).unwrap_or(&0)).min(succ_index),
-                );
-            }
-        }
-    }
-
-    if lowlinks.get(node) == indices.get(node) {
-        let mut scc = Vec::new();
-        loop {
-            let w = stack.pop().unwrap();
-            on_stack.remove(&w);
-            scc.push(w.clone());
-            if w == node {
-                break;
-            }
-        }
-        sccs.push(scc);
-    }
-}
 
 #[cfg(test)]
 mod tests {
