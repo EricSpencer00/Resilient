@@ -1,0 +1,20 @@
+trait T {
+    type X;
+    fn foo(self) -> int;
+}
+
+struct S {
+    int a,
+}
+
+impl T for S {
+    fn foo(self) -> int {
+        return 0;
+    }
+}
+
+fn main(int dummy) {
+    return 0;
+}
+
+main();

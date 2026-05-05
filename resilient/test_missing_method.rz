@@ -1,0 +1,16 @@
+trait T {
+    fn foo(self) -> int;
+}
+
+struct S {
+    int a,
+}
+
+impl T for S {
+}
+
+fn main(int dummy) {
+    return 0;
+}
+
+main();

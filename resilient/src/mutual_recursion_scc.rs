@@ -85,11 +85,11 @@ impl CallGraph {
         let mut transposed: HashMap<String, HashSet<String>> = HashMap::new();
 
         for (src, dests) in &self.graph {
-            transposed.entry(src.clone()).or_default();
+            transposed.entry(src.clone()).or_insert_with(HashSet::new);
             for dest in dests {
                 transposed
                     .entry(dest.clone())
-                    .or_default()
+                    .or_insert_with(HashSet::new)
                     .insert(src.clone());
             }
         }
@@ -140,7 +140,7 @@ fn collect_called_functions(
             if let Node::Identifier { name, .. } = function.as_ref() {
                 graph
                     .entry(current_fn.to_string())
-                    .or_default()
+                    .or_insert_with(HashSet::new)
                     .insert(name.clone());
             }
 

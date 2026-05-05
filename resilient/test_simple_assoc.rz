@@ -1,0 +1,16 @@
+trait T {
+    type X;
+}
+
+struct S {
+    int a,
+}
+
+impl T for S {
+}
+
+fn main(int dummy) {
+    return 0;
+}
+
+main();

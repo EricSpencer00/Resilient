@@ -1,0 +1,22 @@
+trait Transport {
+    type Message;
+    fn send(self) -> int;
+}
+
+struct Serial {
+    int x,
+}
+
+impl Transport for Serial {
+    type Message = int;
+
+    fn send(self) -> int {
+        return 0;
+    }
+}
+
+fn main(int dummy) {
+    return 0;
+}
+
+main();
