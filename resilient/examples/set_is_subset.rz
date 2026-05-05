@@ -1,0 +1,28 @@
+// RES-879 demo: set_is_subset(a, b) returns true when every element of `a`
+// is in `b`. First set-relation predicate after the algebra trio.
+
+fn main(int _d) {
+    let a = #{1, 2};
+    let b = #{1, 2, 3};
+    println(set_is_subset(a, b));    // true: a ⊆ b
+
+    // Mismatch on a single element flips it false.
+    let c = #{1, 99};
+    println(set_is_subset(c, b));    // false
+
+    // Self-subset and empty-subset are both true.
+    println(set_is_subset(b, b));    // true
+    println(set_is_subset(#{}, b));  // true (vacuous)
+
+    // Nonempty-set is not a subset of empty.
+    println(set_is_subset(a, #{}));  // false
+
+    // Permission-check use case: required ⊆ granted?
+    let required = #{"read", "write"};
+    let granted = #{"read", "write", "admin"};
+    println(set_is_subset(required, granted));  // true
+
+    return 0;
+}
+
+main(0);
