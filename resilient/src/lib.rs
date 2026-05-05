@@ -8894,6 +8894,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("log2", builtin_log2),
     ("log", builtin_log),
     ("exp", builtin_exp),
+    // RES-891.
+    ("exp2", builtin_exp2),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9708,6 +9710,19 @@ fn builtin_exp(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("exp: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-891: `exp2(x: Float) -> Float` — 2^x. Mirror of `exp` (e^x).
+/// Overflow propagates as `+inf` per `f64::exp2`.
+fn builtin_exp2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.exp2())),
+        [other] => Err(format!(
+            "exp2: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("exp2: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27120,6 +27135,52 @@ mod tests {
     #[test]
     fn log2_rejects_wrong_arity() {
         let err = builtin_log2(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn exp2_basic_powers() {
+        close(
+            as_float(builtin_exp2(&[Value::Float(0.0)]).unwrap()),
+            1.0,
+            "exp2(0)",
+        );
+        close(
+            as_float(builtin_exp2(&[Value::Float(1.0)]).unwrap()),
+            2.0,
+            "exp2(1)",
+        );
+        close(
+            as_float(builtin_exp2(&[Value::Float(8.0)]).unwrap()),
+            256.0,
+            "exp2(8)",
+        );
+        close(
+            as_float(builtin_exp2(&[Value::Float(-1.0)]).unwrap()),
+            0.5,
+            "exp2(-1)",
+        );
+    }
+
+    #[test]
+    fn exp2_log2_round_trip() {
+        // exp2(log2(x)) = x for any positive x.
+        let x = 17.5;
+        let v = builtin_log2(&[Value::Float(x)]).unwrap();
+        let back = builtin_exp2(&[v]).unwrap();
+        close(as_float(back), x, "exp2(log2(17.5))");
+    }
+
+    #[test]
+    fn exp2_rejects_int() {
+        let err = builtin_exp2(&[Value::Int(2)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn exp2_rejects_wrong_arity() {
+        let err = builtin_exp2(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
