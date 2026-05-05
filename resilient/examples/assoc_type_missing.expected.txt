@@ -1,1 +1,0 @@
-resilient/examples/assoc_type_missing.rz:14:6: impl `Transport` for `Serial` is missing associated type `Message` declared by trait `Transport`
