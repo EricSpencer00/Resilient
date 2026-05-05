@@ -1,0 +1,27 @@
+// RES-877 demo: set_intersection(a, b) returns a fresh set containing only
+// the elements present in both inputs. Companion to set_union (RES-876).
+
+fn main(int _d) {
+    let a = #{1, 2, 3, 4};
+    let b = #{3, 4, 5, 6};
+
+    println(set_items(set_intersection(a, b)));
+    println(set_len(set_intersection(a, b)));
+
+    // Disjoint sets intersect to empty.
+    let x = #{1, 2};
+    let y = #{3, 4};
+    println(set_len(set_intersection(x, y)));
+
+    // Self-intersection is the identity.
+    println(set_len(set_intersection(a, a)));
+
+    // String elements work too.
+    let names = #{"alice", "bob", "carol"};
+    let admins = #{"bob", "dave"};
+    println(set_items(set_intersection(names, admins)));
+
+    return 0;
+}
+
+main(0);

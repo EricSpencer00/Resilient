@@ -9313,6 +9313,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_items", builtin_set_items),
     // RES-876: set algebra primitives.
     ("set_union", builtin_set_union),
+    // RES-877.
+    ("set_intersection", builtin_set_intersection),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -16899,6 +16901,29 @@ fn builtin_set_union(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "set_union: expected 2 arguments (set, set), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-877: `set_intersection(a, b) -> Set` — return a new set containing only
+/// elements present in both inputs. Inputs are unchanged.
+fn builtin_set_intersection(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(a), Value::Set(b)] => {
+            let out: std::collections::HashSet<MapKey> = a.intersection(b).cloned().collect();
+            Ok(Value::Set(out))
+        }
+        [Value::Set(_), other] => Err(format!(
+            "set_intersection: second argument must be a Set, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "set_intersection: first argument must be a Set, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "set_intersection: expected 2 arguments (set, set), got {}",
             args.len()
         )),
     }
@@ -25922,6 +25947,78 @@ mod tests {
     #[test]
     fn set_union_rejects_wrong_arity() {
         let err = builtin_set_union(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_intersection_keeps_common_elements() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(3)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(4)]).unwrap();
+        let i = builtin_set_intersection(&[a, b]).unwrap();
+        assert_eq!(as_set_len(i), 2);
+    }
+
+    #[test]
+    fn set_intersection_disjoint_is_empty() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let i = builtin_set_intersection(&[a, b]).unwrap();
+        assert_eq!(as_set_len(i), 0);
+    }
+
+    #[test]
+    fn set_intersection_with_empty_is_empty() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::String("x".into())]).unwrap();
+        let i = builtin_set_intersection(&[empty.clone(), s.clone()]).unwrap();
+        assert_eq!(as_set_len(i), 0);
+        let i = builtin_set_intersection(&[s, empty]).unwrap();
+        assert_eq!(as_set_len(i), 0);
+    }
+
+    #[test]
+    fn set_intersection_self_is_self() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let i = builtin_set_intersection(&[s.clone(), s]).unwrap();
+        assert_eq!(as_set_len(i), 2);
+    }
+
+    #[test]
+    fn set_intersection_rejects_non_set_first_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_intersection(&[Value::Int(1), s]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_intersection_rejects_non_set_second_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_intersection(&[s, Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_intersection_rejects_wrong_arity() {
+        let err = builtin_set_intersection(&[]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
