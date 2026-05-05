@@ -1,0 +1,28 @@
+// RES-783 PR1: error case — impl missing associated type definition
+
+trait Transport {
+    type Message;
+    type Error;
+
+    fn send(self) -> int;
+}
+
+struct Serial {
+    int baudrate,
+}
+
+impl Transport for Serial {
+    // Missing: type Message = ...;
+    type Error = int;
+
+    fn send(self) -> int {
+        return self.baudrate;
+    }
+}
+
+fn main() {
+    let s = new Serial { baudrate: 115200 };
+    s.send();
+}
+
+main();
