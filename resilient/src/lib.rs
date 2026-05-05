@@ -4366,6 +4366,7 @@ impl Parser {
                     names.push(name.clone());
                     self.next_token();
                     // RES-290: optional `: Trait1 + Trait2` bound list.
+                    // RES-775: Also supports `: effect` for effect polymorphism.
                     let mut this_bounds: Vec<String> = Vec::new();
                     if self.current_token == Token::Colon {
                         self.next_token(); // skip `:`
@@ -4375,10 +4376,15 @@ impl Parser {
                                     this_bounds.push(bname.clone());
                                     self.next_token();
                                 }
+                                Token::Type => {
+                                    // RES-775: Special-case "effect" keyword (reuse Type token)
+                                    this_bounds.push("effect".to_string());
+                                    self.next_token();
+                                }
                                 other => {
                                     let tok = other.clone();
                                     self.record_error(format!(
-                                        "Expected trait name after `:` in type-parameter bound, found {}",
+                                        "Expected trait name or 'effect' after `:` in type-parameter bound, found {}",
                                         tok
                                     ));
                                     break;

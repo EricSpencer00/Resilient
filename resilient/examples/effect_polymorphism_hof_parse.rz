@@ -1,0 +1,25 @@
+// RES-775 PR1: Parser support for effect constraints in generic parameters
+// This example demonstrates that the parser accepts E: effect syntax
+// in generic type parameter lists. Runtime/typechecker not yet implemented.
+
+// Simple effect-polymorphic function with effect variable E
+fn apply_filter<T, E: effect>(int x) -> int {
+    // E: effect declares that this function is polymorphic over effect kinds
+    // At call sites, concrete effect is inferred from callback argument
+    return x;
+}
+
+// Multiple type parameters with mixed bounds:
+// T has trait bound, E has effect constraint
+fn process<T: Drawable, E: effect>(int value) -> int {
+    return value;
+}
+
+// Effect variable alone
+fn transform<E: effect>(int input) -> int {
+    return input;
+}
+
+fn main(int dummy) {
+    return 0;
+}
