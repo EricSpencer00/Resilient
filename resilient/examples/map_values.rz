@@ -1,0 +1,22 @@
+// RES-883 demo: map_values(m) returns the map's values as an array,
+// in the same key-sorted order as map_keys, so zip(keys, values)
+// reconstructs the entries.
+
+fn main(int _d) {
+    let m = map_new();
+    let m = map_insert(m, "carol", 42);
+    let m = map_insert(m, "alice", 17);
+    let m = map_insert(m, "bob", 23);
+
+    println(map_keys(m));      // ["alice", "bob", "carol"]
+    println(map_values(m));    // [17, 23, 42]
+    println(map_len(m));       // 3
+
+    // Empty map yields empty array.
+    let empty = map_new();
+    println(map_values(empty));  // []
+
+    return 0;
+}
+
+main(0);

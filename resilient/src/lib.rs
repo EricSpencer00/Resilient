@@ -9294,6 +9294,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("map_remove", builtin_map_remove),
     ("map_keys", builtin_map_keys),
     ("map_len", builtin_map_len),
+    // RES-883.
+    ("map_values", builtin_map_values),
     // RES-293: HashMap stdlib builtins. Surface the same `Value::Map`
     // backend under the user-facing `hashmap_*` names called out in
     // the language guide. `hashmap_contains` is genuinely new — it
@@ -16552,6 +16554,33 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
         [a] => Err(format!("map_len: expected a Map, got {}", a)),
         _ => Err(format!("map_len: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-883: `map_values(m) -> Array<V>` — values in the same key-sorted
+/// order as `map_keys`. Pairing `map_keys` with `map_values` reconstructs
+/// the map's entries deterministically.
+fn builtin_map_values(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m)] => {
+            let mut entries: Vec<(&MapKey, &Value)> = m.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| match (a, b) {
+                (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+            });
+            let out: Vec<Value> = entries.iter().map(|(_, v)| (*v).clone()).collect();
+            Ok(Value::Array(out))
+        }
+        [a] => Err(format!("map_values: expected a Map, got {}", a)),
+        _ => Err(format!(
+            "map_values: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -27344,6 +27373,64 @@ mod tests {
             Value::Int(2) => {}
             other => panic!("expected Int(2), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn map_values_returns_array_in_key_sort_order() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("b".into()), Value::Int(2)]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("c".into()), Value::Int(3)]).unwrap();
+        match builtin_map_values(&[m]).unwrap() {
+            Value::Array(items) => {
+                let ints: Vec<i64> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        other => panic!("expected Int value, got {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(ints, vec![1, 2, 3]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_values_empty_returns_empty_array() {
+        let m = builtin_map_new(&[]).unwrap();
+        match builtin_map_values(&[m]).unwrap() {
+            Value::Array(items) => assert!(items.is_empty()),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_values_single_entry() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::Int(42), Value::String("answer".into())]).unwrap();
+        match builtin_map_values(&[m]).unwrap() {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    Value::String(s) => assert_eq!(s, "answer"),
+                    other => panic!("expected String, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_values_rejects_non_map() {
+        let err = builtin_map_values(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected a Map"), "err was: {}", err);
+    }
+
+    #[test]
+    fn map_values_rejects_wrong_arity() {
+        let err = builtin_map_values(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
     #[test]
