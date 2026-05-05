@@ -357,6 +357,114 @@ let Foo { a, .. } = f;           // ok — ignores b, c
 Only one layer deep — nested struct patterns are a follow-up. The
 pattern struct name must match the value's struct name at runtime.
 
+## Traits
+
+Traits (RES-290) define interfaces — sets of methods that a type must implement.
+The trait system enables polymorphism without virtual tables; dispatch is
+monomorphic and type-specialized at compile time.
+
+### Trait Declaration
+
+Declare a trait with method signatures (no bodies):
+
+```rust
+trait Printable {
+    fn to_string(self) -> string;
+}
+
+trait Iterator {
+    fn next(self) -> int;
+    fn has_next(self) -> bool;
+}
+```
+
+Method signatures must include `self` (method receiver) as the first parameter.
+Method names must be unique within a trait. RES-779 (future) will add associated
+types.
+
+### Trait Implementation
+
+Implement a trait for a type using `impl Trait for Type { ... }`:
+
+```rust
+struct Point {
+    int x,
+    int y,
+}
+
+impl Printable for Point {
+    fn to_string(self) -> string {
+        return "(" + self.x + ", " + self.y + ")";
+    }
+}
+```
+
+The impl block must provide all methods declared in the trait, with matching
+names and arities. Method implementations use the same `fn` syntax as top-level
+functions, and can access struct fields via `self`.
+
+### Generic Bounds with Traits
+
+Use trait bounds to constrain generic type parameters:
+
+```rust
+fn announce<T: Printable>(item: T) {
+    println(item.to_string());
+}
+
+struct Container { }
+
+impl Printable for Container {
+    fn to_string(self) -> string { return "Container"; }
+}
+
+fn main() {
+    let c = new Container { };
+    announce(c);  // OK: Container implements Printable
+}
+```
+
+When a generic function is called with a type argument, the typechecker
+verifies that the type implements all required traits. If the type has an
+explicit `impl Trait for Type` block, that satisfies the bound. Otherwise,
+the type's plain `impl Type { ... }` methods must match the trait's
+signatures.
+
+### Structural vs. Nominal Typing
+
+Trait checking is **structural** — the typechecker examines method names
+and arities, not explicit `impl` declarations. If a type has all methods
+the trait requires (matching by name and parameter count), it satisfies the
+bound, even without an explicit `impl Trait for Type` block:
+
+```rust
+struct Pair { int a, int b, }
+
+impl Pair {
+    fn to_string(self) -> string {
+        return "Pair(" + self.a + ", " + self.b + ")";
+    }
+}
+
+fn main() {
+    let p = new Pair { a: 1, b: 2 };
+    announce(p);  // OK: Pair has to_string(self) -> string
+}
+```
+
+In this example, `Pair` is not explicitly declared to implement `Printable`,
+but the call succeeds because the method exists. An explicit `impl
+Printable for Pair` block is not required — it is useful mainly for
+documentation and to catch mistakes early if a required method is missing.
+
+### Limitations
+
+The current trait system does not support:
+- `dyn Trait` / virtual tables (RES-293)
+- Generic associated types (future)
+- Default method bodies (future)
+- Blanket impls or specialization (future)
+
 ## Data Types
 
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
