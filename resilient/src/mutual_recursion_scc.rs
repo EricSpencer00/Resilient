@@ -13,7 +13,6 @@ use std::collections::{HashMap, HashSet};
 
 /// Represents a function call graph where edges are function calls.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CallGraph {
     /// Map from function name to set of functions it calls.
     graph: HashMap<String, HashSet<String>>,
@@ -21,7 +20,6 @@ pub struct CallGraph {
 
 impl CallGraph {
     /// Build a call graph by walking all function definitions in the program.
-    #[allow(dead_code)]
     pub fn build(program: &Node) -> Self {
         let mut graph = HashMap::new();
         let Node::Program(stmts) = program else {
@@ -35,8 +33,15 @@ impl CallGraph {
         CallGraph { graph }
     }
 
+    /// Check if a function calls itself (direct recursion).
+    pub fn has_self_call(&self, fn_name: &str) -> bool {
+        self.graph
+            .get(fn_name)
+            .map(|calls| calls.contains(fn_name))
+            .unwrap_or(false)
+    }
+
     /// Find all strongly-connected components using Kosaraju's algorithm.
-    #[allow(dead_code)]
     pub fn find_sccs(&self) -> Vec<Vec<String>> {
         if self.graph.is_empty() {
             return vec![];
@@ -66,17 +71,25 @@ impl CallGraph {
         sccs
     }
 
+    /// Find mutual recursion cycles (non-trivial SCCs of size > 1).
+    /// Returns a list of cycles, where each cycle is a list of function names forming the cycle.
+    pub fn find_mutual_recursion_cycles(&self) -> Vec<Vec<String>> {
+        let sccs = self.find_sccs();
+        sccs.into_iter()
+            .filter(|scc| scc.len() > 1)
+            .collect()
+    }
+
     /// Return the transposed graph (edges reversed).
-    #[allow(dead_code)]
     fn transpose(&self) -> HashMap<String, HashSet<String>> {
         let mut transposed: HashMap<String, HashSet<String>> = HashMap::new();
 
         for (src, dests) in &self.graph {
-            transposed.entry(src.clone()).or_insert_with(HashSet::new);
+            transposed.entry(src.clone()).or_default();
             for dest in dests {
                 transposed
                     .entry(dest.clone())
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(src.clone());
             }
         }
@@ -87,7 +100,6 @@ impl CallGraph {
 
 /// Walk a node and record all function calls made within it.
 /// `current_fn` tracks which function we're currently analyzing.
-#[allow(dead_code)]
 fn build_graph_for_node(
     node: &Node,
     graph: &mut HashMap<String, HashSet<String>>,
@@ -115,7 +127,6 @@ fn build_graph_for_node(
 
 /// Collect all functions called within a node, recording them in the graph
 /// under the `current_fn` entry.
-#[allow(dead_code)]
 fn collect_called_functions(
     node: &Node,
     current_fn: &str,
@@ -129,7 +140,7 @@ fn collect_called_functions(
             if let Node::Identifier { name, .. } = function.as_ref() {
                 graph
                     .entry(current_fn.to_string())
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(name.clone());
             }
 
@@ -207,7 +218,6 @@ fn collect_called_functions(
 }
 
 /// DFS to establish finish order (first DFS pass of Kosaraju).
-#[allow(dead_code)]
 fn dfs_finish_order(
     node: &str,
     graph: &HashMap<String, HashSet<String>>,
