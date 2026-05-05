@@ -125,26 +125,41 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
     }
 
     let mut methods: Vec<TraitMethodSig> = Vec::new();
-    while parser.current_token != Token::RightBrace && parser.current_token != Token::Eof {
-        if parser.current_token != Token::Function {
-            let tok = parser.current_token.clone();
-            parser.record_error(format!("Expected 'fn' inside trait body, found {}", tok));
-            // Recover: jump to the closing brace.
-            while parser.current_token != Token::RightBrace && parser.current_token != Token::Eof {
-                parser.next_token();
-            }
-            break;
-        }
+    let mut associated_types: Vec<AssociatedTypeDecl> = Vec::new();
 
-        if let Some(sig) = parse_method_sig(parser) {
-            methods.push(sig);
+    while parser.current_token != Token::RightBrace && parser.current_token != Token::Eof {
+        match &parser.current_token {
+            Token::Function => {
+                if let Some(sig) = parse_method_sig(parser) {
+                    methods.push(sig);
+                }
+            }
+            Token::Type => {
+                if let Some(assoc_type) = parse_assoc_type_decl(parser) {
+                    associated_types.push(assoc_type);
+                }
+            }
+            _ => {
+                let tok = parser.current_token.clone();
+                parser.record_error(format!(
+                    "Expected 'fn' or 'type' inside trait body, found {}",
+                    tok
+                ));
+                // Recover: jump to the closing brace.
+                while parser.current_token != Token::RightBrace
+                    && parser.current_token != Token::Eof
+                {
+                    parser.next_token();
+                }
+                break;
+            }
         }
     }
 
     Node::TraitDecl {
         name,
         methods,
-        associated_types: Vec::new(), // RES-779: to be populated when parsing support is added
+        associated_types,
         span: trait_span,
     }
 }
@@ -264,6 +279,44 @@ fn parse_method_sig(parser: &mut Parser) -> Option<TraitMethodSig> {
     })
 }
 
+/// Parse a single associated type declaration inside a trait body:
+/// `type Name;`
+/// On entry, `current_token` is `Token::Type`; on exit, the cursor
+/// sits after the semicolon (matching the convention of parse_method_sig).
+fn parse_assoc_type_decl(parser: &mut Parser) -> Option<AssociatedTypeDecl> {
+    let type_span = parser.span_at_current();
+    parser.next_token(); // skip 'type'
+
+    let type_name = match &parser.current_token {
+        Token::Identifier(n) => n.clone(),
+        other => {
+            let tok = other.clone();
+            parser.record_error(format!(
+                "Expected type name after 'type' in trait body, found {}",
+                tok
+            ));
+            return None;
+        }
+    };
+    parser.next_token(); // skip type name
+
+    // Expect a semicolon after the type name
+    if parser.current_token != Token::Semicolon {
+        let tok = parser.current_token.clone();
+        parser.record_error(format!(
+            "Expected ';' after 'type {}' in trait body, found {}",
+            type_name, tok
+        ));
+    } else {
+        parser.next_token(); // skip ';'
+    }
+
+    Some(AssociatedTypeDecl {
+        name: type_name,
+        span: type_span,
+    })
+}
+
 /// Validate trait declarations, `impl Trait for Type` coverage, and
 /// `<T: Trait>` bound usage. Walks the program once collecting traits,
 /// then again validating impls and call sites.
@@ -274,13 +327,14 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     };
 
     // Pass 1: collect trait declarations.
-    let mut traits: HashMap<String, (Vec<TraitMethodSig>, Span)> = HashMap::new();
+    let mut traits: HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)> =
+        HashMap::new();
     for stmt in stmts {
         if let Node::TraitDecl {
             name,
             methods,
             span,
-            associated_types: _,
+            associated_types,
         } = &stmt.node
         {
             if name.is_empty() {
@@ -304,7 +358,24 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                     ));
                 }
             }
-            traits.insert(name.clone(), (methods.clone(), *span));
+            // Within a single trait, associated type names must be unique.
+            let mut type_seen = HashSet::new();
+            for at in associated_types {
+                if !type_seen.insert(at.name.as_str()) {
+                    return Err(format_err(
+                        source_path,
+                        at.span,
+                        &format!(
+                            "duplicate associated type `{}` in trait `{}`",
+                            at.name, name
+                        ),
+                    ));
+                }
+            }
+            traits.insert(
+                name.clone(),
+                (methods.clone(), associated_types.clone(), *span),
+            );
         }
     }
     // If no traits declared, there is nothing more to validate.
@@ -351,10 +422,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             struct_name,
             methods,
             span,
-            associated_type_impls: _,
+            associated_type_impls,
         } = &stmt.node
         {
-            let (trait_methods, _trait_span) = match traits.get(t) {
+            let (trait_methods, trait_assoc_types, _trait_span) = match traits.get(t) {
                 Some(v) => v,
                 None => {
                     return Err(format_err(
@@ -379,6 +450,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 }
             }
 
+            // Validate methods.
             for sig in trait_methods {
                 match provided.get(&sig.name) {
                     None => {
@@ -402,6 +474,26 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                         ));
                     }
                     Some(_) => {}
+                }
+            }
+
+            // Build the set of associated types this impl block defines.
+            let mut provided_types: HashSet<String> = HashSet::new();
+            for (type_name, _type_expr) in associated_type_impls {
+                provided_types.insert(type_name.clone());
+            }
+
+            // Validate that all trait-declared associated types are provided.
+            for at_decl in trait_assoc_types {
+                if !provided_types.contains(&at_decl.name) {
+                    return Err(format_err(
+                        source_path,
+                        *span,
+                        &format!(
+                            "impl `{}` for `{}` is missing associated type `{}` declared by trait `{}`",
+                            t, struct_name, at_decl.name, t
+                        ),
+                    ));
                 }
             }
         }
@@ -473,7 +565,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 fn walk_call_sites(
     node: &Node,
     fns_by_name: &HashMap<String, &Node>,
-    traits: &HashMap<String, (Vec<TraitMethodSig>, Span)>,
+    traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
     type_methods: &HashMap<String, HashMap<String, usize>>,
     explicit_impls: &HashSet<(String, String)>,
     source_path: &str,
@@ -682,11 +774,11 @@ fn walk_call_sites(
 fn trait_satisfied_structurally(
     trait_name: &str,
     type_name: &str,
-    traits: &HashMap<String, (Vec<TraitMethodSig>, Span)>,
+    traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
     type_methods: &HashMap<String, HashMap<String, usize>>,
 ) -> bool {
     let methods = match traits.get(trait_name) {
-        Some((m, _)) => m,
+        Some((m, _, _)) => m,
         None => return false,
     };
     let provided = match type_methods.get(type_name) {
@@ -881,5 +973,76 @@ mod tests {
         // Sanity: format_err with line == 0 returns the message verbatim.
         let s = format_err("x.rz", Span::default(), "oops");
         assert_eq!(s, "oops");
+    }
+
+    #[test]
+    fn trait_with_associated_type_parses() {
+        let prog = parse_program(
+            "trait Transport { type Message; fn send(self) -> int; }\nfn main(int dummy) {} main();",
+        );
+        let stmts = match &prog {
+            Node::Program(s) => s,
+            _ => panic!("expected program"),
+        };
+        let trait_decl = stmts
+            .iter()
+            .find_map(|s| match &s.node {
+                Node::TraitDecl {
+                    name,
+                    methods,
+                    associated_types,
+                    ..
+                } => Some((name.clone(), methods.len(), associated_types.len())),
+                _ => None,
+            })
+            .expect("trait decl");
+        assert_eq!(trait_decl.0, "Transport");
+        assert_eq!(trait_decl.1, 1);
+        assert_eq!(trait_decl.2, 1);
+    }
+
+    #[test]
+    fn trait_with_multiple_associated_types_parses() {
+        let prog = parse_program(
+            "trait Transport { type Message; type Error; fn send(self) -> int; }\nfn main(int dummy) {} main();",
+        );
+        let stmts = match &prog {
+            Node::Program(s) => s,
+            _ => panic!("expected program"),
+        };
+        let trait_decl = stmts
+            .iter()
+            .find_map(|s| match &s.node {
+                Node::TraitDecl {
+                    associated_types, ..
+                } => Some(associated_types.len()),
+                _ => None,
+            })
+            .expect("trait decl");
+        assert_eq!(trait_decl, 2);
+    }
+
+    #[test]
+    fn duplicate_associated_type_in_trait_errors() {
+        let prog = parse_program("trait T { type X; type X; }\nfn main(int dummy) {} main();");
+        let err = check(&prog, "test.rz").expect_err("expected duplicate-assoc-type error");
+        assert!(err.contains("duplicate associated type `X`"), "got: {err}");
+    }
+
+    #[test]
+    fn impl_missing_associated_type_errors() {
+        let prog = parse_program(
+            "trait Transport { type Message; fn send(self) -> int; }\n\
+             struct Serial { int x, }\n\
+             impl Transport for Serial { fn send(self) -> int { return 0; } }\n\
+             fn main(int dummy) {} main();",
+        );
+        let err = check(&prog, "test.rz").expect_err("expected missing-assoc-type error");
+        assert!(
+            err.contains("missing associated type `Message`"),
+            "got: {err}"
+        );
+        assert!(err.contains("Transport"), "got: {err}");
+        assert!(err.contains("Serial"), "got: {err}");
     }
 }
