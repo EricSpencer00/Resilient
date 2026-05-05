@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Represents a function call graph where edges are function calls.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CallGraph {
     /// Map from function name to set of functions it calls.
     graph: HashMap<String, HashSet<String>>,
@@ -20,6 +21,7 @@ pub struct CallGraph {
 
 impl CallGraph {
     /// Build a call graph by walking all function definitions in the program.
+    #[allow(dead_code)]
     pub fn build(program: &Node) -> Self {
         let mut graph = HashMap::new();
         let Node::Program(stmts) = program else {
@@ -34,6 +36,7 @@ impl CallGraph {
     }
 
     /// Find all strongly-connected components using Kosaraju's algorithm.
+    #[allow(dead_code)]
     pub fn find_sccs(&self) -> Vec<Vec<String>> {
         if self.graph.is_empty() {
             return vec![];
@@ -64,6 +67,7 @@ impl CallGraph {
     }
 
     /// Return the transposed graph (edges reversed).
+    #[allow(dead_code)]
     fn transpose(&self) -> HashMap<String, HashSet<String>> {
         let mut transposed: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -83,6 +87,7 @@ impl CallGraph {
 
 /// Walk a node and record all function calls made within it.
 /// `current_fn` tracks which function we're currently analyzing.
+#[allow(dead_code)]
 fn build_graph_for_node(
     node: &Node,
     graph: &mut HashMap<String, HashSet<String>>,
@@ -110,6 +115,7 @@ fn build_graph_for_node(
 
 /// Collect all functions called within a node, recording them in the graph
 /// under the `current_fn` entry.
+#[allow(dead_code)]
 fn collect_called_functions(
     node: &Node,
     current_fn: &str,
@@ -201,6 +207,7 @@ fn collect_called_functions(
 }
 
 /// DFS to establish finish order (first DFS pass of Kosaraju).
+#[allow(dead_code)]
 fn dfs_finish_order(
     node: &str,
     graph: &HashMap<String, HashSet<String>>,
