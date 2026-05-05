@@ -2501,6 +2501,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-879.
+        env.set(
+            "set_is_subset".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
 
         // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
         // `byte_at` returns Int — the language has no `u8` yet.
@@ -5615,6 +5623,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "set_union",
         "set_intersection",
         "set_difference",
+        "set_is_subset",
         "bytes_len",
         "bytes_slice",
         "byte_at",

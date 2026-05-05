@@ -9317,6 +9317,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_intersection", builtin_set_intersection),
     // RES-878.
     ("set_difference", builtin_set_difference),
+    // RES-879.
+    ("set_is_subset", builtin_set_is_subset),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -16949,6 +16951,26 @@ fn builtin_set_difference(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "set_difference: expected 2 arguments (set, set), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-879: `set_is_subset(a, b) -> Bool` — true iff every element of `a` is
+/// in `b`. Empty set is a subset of every set; a set is a subset of itself.
+fn builtin_set_is_subset(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(a), Value::Set(b)] => Ok(Value::Bool(a.is_subset(b))),
+        [Value::Set(_), other] => Err(format!(
+            "set_is_subset: second argument must be a Set, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "set_is_subset: first argument must be a Set, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "set_is_subset: expected 2 arguments (set, set), got {}",
             args.len()
         )),
     }
@@ -26123,6 +26145,85 @@ mod tests {
     #[test]
     fn set_difference_rejects_wrong_arity() {
         let err = builtin_set_difference(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_is_subset_empty_is_subset_of_everything() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        assert!(as_bool(builtin_set_is_subset(&[empty.clone(), s]).unwrap()));
+        assert!(as_bool(
+            builtin_set_is_subset(&[empty.clone(), empty]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn set_is_subset_self_is_true() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        assert!(as_bool(builtin_set_is_subset(&[s.clone(), s]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_subset_proper_subset_is_true() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(1)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        assert!(as_bool(builtin_set_is_subset(&[a, b]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_subset_missing_element_is_false() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(4)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(1)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        assert!(!as_bool(builtin_set_is_subset(&[a, b]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_subset_nonempty_subset_of_empty_is_false() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let empty = builtin_set_new(&[]).unwrap();
+        assert!(!as_bool(builtin_set_is_subset(&[s, empty]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_subset_rejects_non_set_first_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_is_subset(&[Value::Int(1), s]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_is_subset_rejects_non_set_second_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_is_subset(&[s, Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_is_subset_rejects_wrong_arity() {
+        let err = builtin_set_is_subset(&[]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
