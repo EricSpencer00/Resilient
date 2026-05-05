@@ -1,0 +1,14 @@
+// RES-895 demo: to_degrees(r) converts radians to degrees. Mirror of
+// to_radians (RES-894).
+
+fn main(int _d) {
+    println(to_degrees(0.0));     // 0
+    // π → 180
+    println(to_degrees(3.141592653589793));    // 180
+    // π/2 → 90
+    println(to_degrees(1.5707963267948966));   // 90
+
+    return 0;
+}
+
+main(0);

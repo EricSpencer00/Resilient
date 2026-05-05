@@ -8887,6 +8887,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("tan", builtin_tan),
     // RES-894.
     ("to_radians", builtin_to_radians),
+    // RES-895.
+    ("to_degrees", builtin_to_degrees),
     // RES-295: atan2(y, x) — angle of vector (x, y) in radians.
     ("atan2", builtin_atan2),
     // RES-892.
@@ -9607,6 +9609,21 @@ fn builtin_tan(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("tan: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-895: `to_degrees(r: Float) -> Float` — convert radians to degrees.
+fn builtin_to_degrees(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(r)] => Ok(Value::Float(r.to_degrees())),
+        [other] => Err(format!(
+            "to_degrees: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!(
+            "to_degrees: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -27336,6 +27353,37 @@ mod tests {
     #[test]
     fn to_radians_arity_check() {
         let err = builtin_to_radians(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn to_degrees_basic() {
+        close(
+            as_float(builtin_to_degrees(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "to_degrees(0)",
+        );
+        close(
+            as_float(builtin_to_degrees(&[Value::Float(std::f64::consts::PI)]).unwrap()),
+            180.0,
+            "to_degrees(π)",
+        );
+        close(
+            as_float(builtin_to_degrees(&[Value::Float(std::f64::consts::FRAC_PI_2)]).unwrap()),
+            90.0,
+            "to_degrees(π/2)",
+        );
+    }
+
+    #[test]
+    fn to_degrees_rejects_int() {
+        let err = builtin_to_degrees(&[Value::Int(180)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn to_degrees_arity_check() {
+        let err = builtin_to_degrees(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
