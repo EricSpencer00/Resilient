@@ -9339,6 +9339,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("byte_at", builtin_byte_at),
     // RES-887.
     ("bytes_concat", builtin_bytes_concat),
+    // RES-888.
+    ("bytes_eq", builtin_bytes_eq),
     // RES-385: explicit consumption of a linear value. At runtime
     // `drop(v)` simply evaluates and discards its argument; the
     // semantic weight lives in the type checker's linear-use pass,
@@ -16895,6 +16897,26 @@ fn builtin_bytes_concat(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "bytes_concat: expected 2 arguments (bytes, bytes), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-888: `bytes_eq(a, b) -> Bool` — true iff both Bytes values have the
+/// same length and identical bytes at every position.
+fn builtin_bytes_eq(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(a), Value::Bytes(b)] => Ok(Value::Bool(a == b)),
+        [Value::Bytes(_), other] => Err(format!(
+            "bytes_eq: second argument must be Bytes, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "bytes_eq: first argument must be Bytes, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "bytes_eq: expected 2 arguments (bytes, bytes), got {}",
             args.len()
         )),
     }
@@ -25822,6 +25844,58 @@ mod tests {
     #[test]
     fn bytes_concat_rejects_wrong_arity() {
         let err = builtin_bytes_concat(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn bytes_eq_empty_empty_is_true() {
+        let v = builtin_bytes_eq(&[Value::Bytes(vec![]), Value::Bytes(vec![])]).unwrap();
+        assert!(as_bool(v));
+    }
+
+    #[test]
+    fn bytes_eq_equal_nonempty_is_true() {
+        let v =
+            builtin_bytes_eq(&[Value::Bytes(vec![1, 2, 3]), Value::Bytes(vec![1, 2, 3])]).unwrap();
+        assert!(as_bool(v));
+    }
+
+    #[test]
+    fn bytes_eq_differing_length_is_false() {
+        let v = builtin_bytes_eq(&[Value::Bytes(vec![1, 2, 3]), Value::Bytes(vec![1, 2])]).unwrap();
+        assert!(!as_bool(v));
+    }
+
+    #[test]
+    fn bytes_eq_same_length_differing_content_is_false() {
+        let v =
+            builtin_bytes_eq(&[Value::Bytes(vec![1, 2, 3]), Value::Bytes(vec![1, 2, 4])]).unwrap();
+        assert!(!as_bool(v));
+    }
+
+    #[test]
+    fn bytes_eq_rejects_non_bytes_first_arg() {
+        let err = builtin_bytes_eq(&[Value::Int(1), Value::Bytes(vec![])]).unwrap_err();
+        assert!(
+            err.contains("first argument must be Bytes"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bytes_eq_rejects_non_bytes_second_arg() {
+        let err = builtin_bytes_eq(&[Value::Bytes(vec![]), Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be Bytes"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bytes_eq_rejects_wrong_arity() {
+        let err = builtin_bytes_eq(&[]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
