@@ -1,0 +1,27 @@
+// RES-884 demo: map_contains_key(m, k) returns true if k is a key in m.
+// Mirrors hashmap_contains for the map_* namespace.
+
+fn main(int _d) {
+    let m = map_new();
+    let m = map_insert(m, "alice", 1);
+    let m = map_insert(m, "bob", 2);
+
+    println(map_contains_key(m, "alice"));     // true
+    println(map_contains_key(m, "carol"));     // false
+    println(map_contains_key(map_new(), 0));   // false (empty map)
+
+    // Int and Bool keys also work.
+    let nums = map_new();
+    let nums = map_insert(nums, 42, "answer");
+    println(map_contains_key(nums, 42));       // true
+    println(map_contains_key(nums, 41));       // false
+
+    let flags = map_new();
+    let flags = map_insert(flags, true, "yes");
+    println(map_contains_key(flags, true));    // true
+    println(map_contains_key(flags, false));   // false
+
+    return 0;
+}
+
+main(0);
