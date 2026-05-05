@@ -2477,6 +2477,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-876: set algebra primitives.
+        env.set(
+            "set_union".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
 
         // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
         // `byte_at` returns Int — the language has no `u8` yet.
@@ -5588,6 +5596,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "set_has",
         "set_len",
         "set_items",
+        "set_union",
         "bytes_len",
         "bytes_slice",
         "byte_at",

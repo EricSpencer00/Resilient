@@ -220,6 +220,7 @@ the same immutable-value semantics (each mutation returns a new map).
 | `set_has(s, x)` | (set, T) → bool | membership test |
 | `set_len(s)` | set → int | element count |
 | `set_items(s)` | set → array | snapshot of items |
+| `set_union(a, b)` | (set, set) → set | RES-876: every element in either set; deduped |
 
 ### Bytes
 

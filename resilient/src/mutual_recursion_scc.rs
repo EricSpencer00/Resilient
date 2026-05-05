@@ -75,9 +75,7 @@ impl CallGraph {
     /// Returns a list of cycles, where each cycle is a list of function names forming the cycle.
     pub fn find_mutual_recursion_cycles(&self) -> Vec<Vec<String>> {
         let sccs = self.find_sccs();
-        sccs.into_iter()
-            .filter(|scc| scc.len() > 1)
-            .collect()
+        sccs.into_iter().filter(|scc| scc.len() > 1).collect()
     }
 
     /// Return the transposed graph (edges reversed).
@@ -85,11 +83,11 @@ impl CallGraph {
         let mut transposed: HashMap<String, HashSet<String>> = HashMap::new();
 
         for (src, dests) in &self.graph {
-            transposed.entry(src.clone()).or_insert_with(HashSet::new);
+            transposed.entry(src.clone()).or_default();
             for dest in dests {
                 transposed
                     .entry(dest.clone())
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(src.clone());
             }
         }
@@ -100,14 +98,9 @@ impl CallGraph {
 
 /// Walk a node and record all function calls made within it.
 /// `current_fn` tracks which function we're currently analyzing.
-fn build_graph_for_node(
-    node: &Node,
-    graph: &mut HashMap<String, HashSet<String>>,
-) {
+fn build_graph_for_node(node: &Node, graph: &mut HashMap<String, HashSet<String>>) {
     match node {
-        Node::Function {
-            name, body, ..
-        } => {
+        Node::Function { name, body, .. } => {
             let fn_name = name.clone();
             if !graph.contains_key(&fn_name) {
                 graph.insert(fn_name.clone(), HashSet::new());
@@ -134,13 +127,15 @@ fn collect_called_functions(
 ) {
     match node {
         Node::CallExpression {
-            function, arguments, ..
+            function,
+            arguments,
+            ..
         } => {
             // Extract function name from identifier or field access
             if let Node::Identifier { name, .. } = function.as_ref() {
                 graph
                     .entry(current_fn.to_string())
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(name.clone());
             }
 
@@ -166,17 +161,19 @@ fn collect_called_functions(
                 collect_called_functions(alt, current_fn, graph);
             }
         }
-        Node::WhileStatement { condition, body, .. } => {
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
             collect_called_functions(condition, current_fn, graph);
             collect_called_functions(body, current_fn, graph);
         }
-        Node::ForInStatement {
-            iterable, body, ..
-        } => {
+        Node::ForInStatement { iterable, body, .. } => {
             collect_called_functions(iterable, current_fn, graph);
             collect_called_functions(body, current_fn, graph);
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             collect_called_functions(scrutinee, current_fn, graph);
             for (_, guard, body) in arms {
                 if let Some(g) = guard {
