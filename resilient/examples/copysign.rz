@@ -1,0 +1,13 @@
+// RES-893 demo: copysign(x, y) returns the magnitude of x with the sign
+// of y. IEEE-754 standard primitive.
+
+fn main(int _d) {
+    println(copysign(3.0, -1.0));   // -3
+    println(copysign(-3.0, 1.0));   // 3
+    println(copysign(7.5, -2.0));   // -7.5
+    println(copysign(7.5, 2.0));    // 7.5
+
+    return 0;
+}
+
+main(0);
