@@ -9310,6 +9310,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("hashmap_keys", builtin_hashmap_keys),
     // RES-885.
     ("hashmap_len", builtin_hashmap_len),
+    // RES-886.
+    ("hashmap_values", builtin_hashmap_values),
     // RES-149: Set builtins.
     ("set_new", builtin_set_new),
     ("set_insert", builtin_set_insert),
@@ -16728,6 +16730,32 @@ fn builtin_hashmap_len(args: &[Value]) -> RResult<Value> {
         [a] => Err(format!("hashmap_len: expected a HashMap, got {}", a)),
         _ => Err(format!(
             "hashmap_len: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-886: `hashmap_values(m) -> Array<V>` — values in same key-sorted
+/// order as `hashmap_keys`. Mirrors `map_values` for the HashMap namespace.
+fn builtin_hashmap_values(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m)] => {
+            let mut entries: Vec<(&MapKey, &Value)> = m.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| match (a, b) {
+                (MapKey::Int(x), MapKey::Int(y)) => x.cmp(y),
+                (MapKey::Str(x), MapKey::Str(y)) => x.cmp(y),
+                (MapKey::Bool(x), MapKey::Bool(y)) => x.cmp(y),
+                (MapKey::Int(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Int(_)) => std::cmp::Ordering::Greater,
+                (MapKey::Str(_), _) => std::cmp::Ordering::Less,
+                (_, MapKey::Str(_)) => std::cmp::Ordering::Greater,
+            });
+            let out: Vec<Value> = entries.iter().map(|(_, v)| (*v).clone()).collect();
+            Ok(Value::Array(out))
+        }
+        [a] => Err(format!("hashmap_values: expected a HashMap, got {}", a)),
+        _ => Err(format!(
+            "hashmap_values: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -27729,6 +27757,64 @@ mod tests {
     #[test]
     fn hashmap_len_rejects_wrong_arity() {
         let err = builtin_hashmap_len(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn hashmap_values_returns_array_in_key_sort_order() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("b".into()), Value::Int(2)]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("a".into()), Value::Int(1)]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("c".into()), Value::Int(3)]).unwrap();
+        match builtin_hashmap_values(&[m]).unwrap() {
+            Value::Array(items) => {
+                let ints: Vec<i64> = items
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n,
+                        other => panic!("expected Int value, got {:?}", other),
+                    })
+                    .collect();
+                assert_eq!(ints, vec![1, 2, 3]);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_values_empty_returns_empty_array() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        match builtin_hashmap_values(&[m]).unwrap() {
+            Value::Array(items) => assert!(items.is_empty()),
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_values_single_entry() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(7), Value::String("seven".into())]).unwrap();
+        match builtin_hashmap_values(&[m]).unwrap() {
+            Value::Array(items) => {
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    Value::String(s) => assert_eq!(s, "seven"),
+                    other => panic!("expected String, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_values_rejects_non_hashmap() {
+        let err = builtin_hashmap_values(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected a HashMap"), "err was: {}", err);
+    }
+
+    #[test]
+    fn hashmap_values_rejects_wrong_arity() {
+        let err = builtin_hashmap_values(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 

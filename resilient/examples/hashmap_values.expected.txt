@@ -1,0 +1,5 @@
+["alice", "bob", "carol"]
+[17, 23, 42]
+3
+[]
+Program executed successfully

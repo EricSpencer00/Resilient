@@ -1,0 +1,20 @@
+// RES-886 demo: hashmap_values(m) returns the HashMap's values as an
+// array, in same key-sorted order as hashmap_keys.
+
+fn main(int _d) {
+    let m = hashmap_new();
+    let m = hashmap_insert(m, "carol", 42);
+    let m = hashmap_insert(m, "alice", 17);
+    let m = hashmap_insert(m, "bob", 23);
+
+    println(hashmap_keys(m));      // ["alice", "bob", "carol"]
+    println(hashmap_values(m));    // [17, 23, 42]
+    println(hashmap_len(m));       // 3
+
+    // Empty.
+    println(hashmap_values(hashmap_new()));  // []
+
+    return 0;
+}
+
+main(0);
