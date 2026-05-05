@@ -8887,6 +8887,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("tan", builtin_tan),
     // RES-295: atan2(y, x) — angle of vector (x, y) in radians.
     ("atan2", builtin_atan2),
+    // RES-892.
+    ("hypot", builtin_hypot),
     ("ln", builtin_ln),
     // RES-889.
     ("log10", builtin_log10),
@@ -9603,6 +9605,22 @@ fn builtin_atan2(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "atan2: expected 2 arguments (y, x), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-892: `hypot(x: Float, y: Float) -> Float` — sqrt(x² + y²) without
+/// intermediate overflow. Useful for 2-D distance / vector magnitude.
+fn builtin_hypot(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(x), Value::Float(y)] => Ok(Value::Float(x.hypot(*y))),
+        [a, b] => Err(format!(
+            "hypot: expected (Float, Float), got ({:?}, {:?}) — widen Ints via `to_float`",
+            a, b
+        )),
+        _ => Err(format!(
+            "hypot: expected 2 arguments (x, y), got {}",
             args.len()
         )),
     }
@@ -31725,6 +31743,50 @@ mod tests {
     fn atan2_arity_check() {
         let err = builtin_atan2(&[Value::Float(1.0)]).unwrap_err();
         assert!(err.contains("expected 2"), "err was: {}", err);
+    }
+
+    #[test]
+    fn hypot_3_4_5_pythagorean() {
+        close(
+            as_float(builtin_hypot(&[Value::Float(3.0), Value::Float(4.0)]).unwrap()),
+            5.0,
+            "hypot(3, 4)",
+        );
+    }
+
+    #[test]
+    fn hypot_origin_is_zero() {
+        close(
+            as_float(builtin_hypot(&[Value::Float(0.0), Value::Float(0.0)]).unwrap()),
+            0.0,
+            "hypot(0, 0)",
+        );
+    }
+
+    #[test]
+    fn hypot_axis_aligned() {
+        close(
+            as_float(builtin_hypot(&[Value::Float(0.0), Value::Float(5.0)]).unwrap()),
+            5.0,
+            "hypot(0, 5)",
+        );
+        close(
+            as_float(builtin_hypot(&[Value::Float(-7.0), Value::Float(0.0)]).unwrap()),
+            7.0,
+            "hypot(-7, 0)",
+        );
+    }
+
+    #[test]
+    fn hypot_rejects_int() {
+        let err = builtin_hypot(&[Value::Int(3), Value::Float(4.0)]).unwrap_err();
+        assert!(err.contains("expected (Float, Float)"), "err was: {}", err);
+    }
+
+    #[test]
+    fn hypot_arity_check() {
+        let err = builtin_hypot(&[Value::Float(1.0)]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
     #[test]
