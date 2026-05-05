@@ -212,6 +212,7 @@ the same immutable-value semantics (each mutation returns a new map).
 | `hashmap_contains(m, k)` | (hashmap, K) → bool | membership test |
 | `hashmap_keys(m)` | hashmap → array | keys, sorted for determinism |
 | `hashmap_len(m)` | hashmap → int | RES-885: entry count; mirrors `map_len` |
+| `hashmap_values(m)` | hashmap → array | RES-886: values in same key-sorted order as `hashmap_keys` |
 
 ### Sets
 
