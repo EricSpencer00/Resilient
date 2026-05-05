@@ -1,0 +1,14 @@
+// RES-890 demo: log2(x) returns the base-2 logarithm. Std-only.
+// Companion to log10 (RES-889).
+
+fn main(int _d) {
+    println(log2(1.0));     // 0
+    println(log2(2.0));     // 1
+    println(log2(4.0));     // 2
+    println(log2(8.0));     // 3
+    println(log2(0.5));     // -1
+
+    return 0;
+}
+
+main(0);
