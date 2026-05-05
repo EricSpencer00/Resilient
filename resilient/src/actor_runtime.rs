@@ -307,10 +307,16 @@ pub fn deregister_actor(pid: ActorPid) -> Result<(), MailboxError> {
     Ok(())
 }
 
-/// Mark the calling actor as blocked on receive. PR 3's scheduler
+/// Mark an actor as blocked on receive. PR 3's scheduler
 /// will resume it when a message lands or a deadlock is detected.
 pub fn mark_blocked(pid: ActorPid) {
     SCHEDULER.with(|s| s.borrow_mut().mark_blocked(pid));
+}
+
+/// Mark an actor as runnable. Used by supervisor crash handling to
+/// re-queue a restarted actor. RES-780 PR3.
+pub fn mark_runnable(pid: ActorPid) {
+    SCHEDULER.with(|s| s.borrow_mut().mark_runnable(pid));
 }
 
 // ---------------------------------------------------------------------------

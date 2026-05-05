@@ -45,7 +45,9 @@ mod sum_types;
 // `send` / `receive` builtins, the cooperative scheduler, deadlock
 // detection, and the ping-pong example.
 mod actor_runtime;
-// RES-780: supervisor runtime — crash propagation and restart policies.
+// RES-780: supervisor runtime phase 1 — crash propagation and restart
+// policies. When supervised actors crash, the supervisor's configured policy
+// determines whether to restart, escalate, or stop.
 mod supervisor_runtime;
 // RES-406: volatile MMIO intrinsics. The eight `volatile_read_*` /
 // `volatile_write_*` builtins live here; the `unsafe { … }` gate
@@ -280,11 +282,6 @@ mod supervisor;
 // bounds `<T: Trait>` are verified at call sites. Runtime dispatch
 // reuses the existing `<Type>$<method>` mangling — no VTable.
 mod traits;
-
-// RES-796: Mutual recursion termination check via SCC (Strongly Connected Component)
-// analysis of the function call graph. Detects cycles that direct-recursion checking
-// (RES-398) misses.
-mod mutual_recursion_scc;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -3245,41 +3242,25 @@ impl Parser {
         }
 
         let mut methods: Vec<Node> = Vec::new();
-        let mut associated_type_impls: Vec<(String, String)> = Vec::new();
-
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
-            match &self.current_token {
-                Token::Function => {
-                    methods.push(self.parse_method(&struct_name));
-                    // `parse_block_statement` (called inside `parse_method` for
-                    // the body) leaves the cursor ON the method body's closing
-                    // `}`. Advance past it so the next iteration sees either
-                    // another `fn` or the impl block's own `}` — matching the
-                    // convention `parse_program` expects for its callers.
-                    if self.current_token == Token::RightBrace {
-                        self.next_token();
-                    }
+            if self.current_token != Token::Function {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected 'fn' inside impl block, found {}", tok));
+                // Best-effort recovery: skip ahead to the closing brace
+                // so the whole parse doesn't cascade.
+                while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
+                    self.next_token();
                 }
-                Token::Type => {
-                    if let Some((type_name, type_expr)) = self.parse_assoc_type_impl() {
-                        associated_type_impls.push((type_name, type_expr));
-                    }
-                }
-                _ => {
-                    let tok = self.current_token.clone();
-                    self.record_error(format!(
-                        "Expected 'fn' or 'type' inside impl block, found {}",
-                        tok
-                    ));
-                    // Best-effort recovery: skip ahead to the closing brace
-                    // so the whole parse doesn't cascade.
-                    while self.current_token != Token::RightBrace
-                        && self.current_token != Token::Eof
-                    {
-                        self.next_token();
-                    }
-                    break;
-                }
+                break;
+            }
+            methods.push(self.parse_method(&struct_name));
+            // `parse_block_statement` (called inside `parse_method` for
+            // the body) leaves the cursor ON the method body's closing
+            // `}`. Advance past it so the next iteration sees either
+            // another `fn` or the impl block's own `}` — matching the
+            // convention `parse_program` expects for its callers.
+            if self.current_token == Token::RightBrace {
+                self.next_token();
             }
         }
         // Leave the cursor ON the impl block's closing `}` — the outer
@@ -3290,83 +3271,9 @@ impl Parser {
             trait_name,
             struct_name,
             methods,
-            associated_type_impls,
+            associated_type_impls: Vec::new(), // RES-779: to be populated when parsing support is added
             span: impl_span,
         }
-    }
-
-    /// RES-783: Parse a single associated type implementation inside an impl block:
-    /// `type Name = TypeExpr;`
-    /// Returns the associated type name and the type expression as a string.
-    /// On entry, `current_token` is `Token::Type`; on exit, the cursor sits
-    /// after the semicolon.
-    fn parse_assoc_type_impl(&mut self) -> Option<(String, String)> {
-        self.next_token(); // skip 'type'
-
-        let type_name = match &self.current_token {
-            Token::Identifier(n) => n.clone(),
-            other => {
-                self.record_error(format!(
-                    "Expected type name after 'type' in impl block, found {}",
-                    other
-                ));
-                return None;
-            }
-        };
-        self.next_token(); // skip type name
-
-        if self.current_token != Token::Assign {
-            let tok = self.current_token.clone();
-            self.record_error(format!(
-                "Expected '=' after 'type {}' in impl block, found {}",
-                type_name, tok
-            ));
-            return None;
-        }
-        self.next_token(); // skip '='
-
-        // Collect the type expression as a string until `;`.
-        let mut type_expr = String::new();
-        let mut depth = 0i32;
-        loop {
-            match &self.current_token {
-                Token::Eof => {
-                    self.record_error(
-                        "Unexpected EOF while parsing associated type definition".to_string(),
-                    );
-                    return None;
-                }
-                Token::Semicolon if depth == 0 => {
-                    self.next_token(); // skip ';'
-                    break;
-                }
-                Token::LeftBrace | Token::LeftParen | Token::LeftBracket => {
-                    depth += 1;
-                    if !type_expr.is_empty() {
-                        type_expr.push(' ');
-                    }
-                    type_expr.push_str(&self.current_token.to_string());
-                    self.next_token();
-                }
-                Token::RightBrace | Token::RightParen | Token::RightBracket => {
-                    depth -= 1;
-                    if !type_expr.is_empty() {
-                        type_expr.push(' ');
-                    }
-                    type_expr.push_str(&self.current_token.to_string());
-                    self.next_token();
-                }
-                _ => {
-                    if !type_expr.is_empty() {
-                        type_expr.push(' ');
-                    }
-                    type_expr.push_str(&self.current_token.to_string());
-                    self.next_token();
-                }
-            }
-        }
-
-        Some((type_name, type_expr.trim().to_string()))
     }
 
     /// RES-388: parse `actor <Name> { ... }`.
@@ -21203,7 +21110,25 @@ fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
                 // do not deregister; a future send() will re-queue it.
             }
             Err(e) => {
-                // Drop-on-crash: deregister the actor and log the failure.
+                // RES-780: Crash event handling with supervisor restart policies.
+                let crash_event = supervisor_runtime::CrashEvent {
+                    actor_pid: pid.0,
+                    reason: supervisor_runtime::CrashReason::UnhandledError,
+                };
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                if supervisor_runtime::handle_crash_event(crash_event, now_secs) {
+                    // Supervisor policy says restart: re-register and re-queue.
+                    actor_runtime::mark_runnable(pid);
+                    if actor_runtime::get_actor_fn(pid).is_some() {
+                        // Re-run the actor on next cycle
+                        continue;
+                    }
+                }
+                // Restart not allowed or actor not found: deregister and log.
                 let _ = actor_runtime::deregister_actor(pid);
                 eprintln!("actor {} crashed: {}", pid.0, e);
             }

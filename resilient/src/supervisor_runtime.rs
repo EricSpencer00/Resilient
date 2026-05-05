@@ -247,6 +247,67 @@ pub fn find_supervisor_for(child_pid: u64) -> Option<u64> {
     })
 }
 
+/// Handle a crash event for an actor. Returns whether to restart the actor.
+/// If restart is allowed by policy, updates the supervisor state and returns true.
+/// If restart is not allowed or limit exceeded, returns false.
+pub fn handle_crash_event(crash: CrashEvent, now_secs: u64) -> bool {
+    match find_supervisor_for(crash.actor_pid) {
+        None => {
+            // No supervisor for this actor; let it stay dead (drop on crash).
+            false
+        }
+        Some(sup_pid) => {
+            match get_supervisor(sup_pid) {
+                None => {
+                    // Supervisor not found in registry; can't restart.
+                    false
+                }
+                Some(mut supervisor) => {
+                    // Find the child_id for this PID
+                    let child_id = match supervisor
+                        .children
+                        .iter()
+                        .find(|(_, (pid, _))| *pid == crash.actor_pid)
+                    {
+                        Some((id, _)) => id.clone(),
+                        None => {
+                            // PID not found in supervisor's children; shouldn't happen
+                            return false;
+                        }
+                    };
+
+                    // Check if restart is allowed
+                    match supervisor.should_restart(&child_id, now_secs) {
+                        Err(_) => {
+                            // Restart limit exceeded; escalate to parent supervisor
+                            // (or drop if no parent). For now, just don't restart.
+                            false
+                        }
+                        Ok(false) => {
+                            // Policy says don't restart (transient)
+                            false
+                        }
+                        Ok(true) => {
+                            // Policy says restart; record the restart and return true
+                            match supervisor.record_restart(&child_id, now_secs) {
+                                Ok(()) => {
+                                    // Update the supervisor state in the registry
+                                    let _ = update_supervisor(sup_pid, supervisor);
+                                    true
+                                }
+                                Err(_) => {
+                                    // Shouldn't happen if should_restart succeeded
+                                    false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +430,80 @@ mod tests {
         register_supervisor(123, sup).unwrap();
         assert!(find_supervisor_for(999).is_none());
         deregister_supervisor(123);
+    }
+
+    #[test]
+    fn handle_crash_event_with_permanent_policy_restarts() {
+        let mut sup = SupervisorState::new("one_for_one");
+        sup.register_child("worker".to_string(), 456, RestartPolicy::Permanent)
+            .unwrap();
+        register_supervisor(123, sup).unwrap();
+
+        let crash = CrashEvent {
+            actor_pid: 456,
+            reason: CrashReason::UnhandledError,
+        };
+
+        // First crash should trigger restart
+        assert!(handle_crash_event(crash, 1000));
+
+        deregister_supervisor(123);
+    }
+
+    #[test]
+    fn handle_crash_event_with_transient_policy_no_restart() {
+        let mut sup = SupervisorState::new("one_for_one");
+        sup.register_child("worker".to_string(), 456, RestartPolicy::Transient)
+            .unwrap();
+        register_supervisor(123, sup).unwrap();
+
+        let crash = CrashEvent {
+            actor_pid: 456,
+            reason: CrashReason::UnhandledError,
+        };
+
+        // Transient policy should not restart
+        assert!(!handle_crash_event(crash, 1000));
+
+        deregister_supervisor(123);
+    }
+
+    #[test]
+    fn handle_crash_event_with_temporary_policy_respects_limit() {
+        let mut sup = SupervisorState::new("one_for_one");
+        sup.register_child(
+            "worker".to_string(),
+            456,
+            RestartPolicy::Temporary {
+                max_restarts: 1,
+                window_secs: 60,
+            },
+        )
+        .unwrap();
+        register_supervisor(123, sup).unwrap();
+
+        let crash = CrashEvent {
+            actor_pid: 456,
+            reason: CrashReason::UnhandledError,
+        };
+
+        // First crash should restart
+        assert!(handle_crash_event(crash, 1000));
+
+        // Second crash (still within window) should not restart due to limit
+        assert!(!handle_crash_event(crash, 1001));
+
+        deregister_supervisor(123);
+    }
+
+    #[test]
+    fn handle_crash_event_no_supervisor_no_restart() {
+        let crash = CrashEvent {
+            actor_pid: 999,
+            reason: CrashReason::UnhandledError,
+        };
+
+        // No supervisor registered; should not restart
+        assert!(!handle_crash_event(crash, 1000));
     }
 }
