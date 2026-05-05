@@ -1,0 +1,14 @@
+// RES-889 demo: log10(x) returns the base-10 logarithm. Std-only.
+// Runtime error on non-positive input, matching `ln` policy.
+
+fn main(int _d) {
+    println(log10(1.0));     // 0
+    println(log10(10.0));    // 1
+    println(log10(100.0));   // 2
+    println(log10(1000.0));  // 3
+    println(log10(0.1));     // -1
+
+    return 0;
+}
+
+main(0);

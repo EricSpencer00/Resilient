@@ -8888,6 +8888,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-295: atan2(y, x) — angle of vector (x, y) in radians.
     ("atan2", builtin_atan2),
     ("ln", builtin_ln),
+    // RES-889.
+    ("log10", builtin_log10),
     ("log", builtin_log),
     ("exp", builtin_exp),
     // RES-147: monotonic ms clock, std-only.
@@ -9621,6 +9623,24 @@ fn builtin_ln(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("ln: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-889: `log10(x: Float) -> Float` — base-10 logarithm. Runtime error on
+/// non-positive input, matching the policy of `ln` and `log`.
+fn builtin_log10(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => {
+            if *f <= 0.0 {
+                return Err(format!("log10: argument must be > 0, got {}", f));
+            }
+            Ok(Value::Float(f.log10()))
+        }
+        [other] => Err(format!(
+            "log10: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("log10: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -26996,6 +27016,46 @@ mod tests {
             "diagnostic must hint at `to_float` bridge: {}",
             err
         );
+    }
+
+    #[test]
+    fn log10_of_powers_of_ten() {
+        close(
+            as_float(builtin_log10(&[Value::Float(10.0)]).unwrap()),
+            1.0,
+            "log10(10)",
+        );
+        close(
+            as_float(builtin_log10(&[Value::Float(100.0)]).unwrap()),
+            2.0,
+            "log10(100)",
+        );
+        close(
+            as_float(builtin_log10(&[Value::Float(1.0)]).unwrap()),
+            0.0,
+            "log10(1)",
+        );
+    }
+
+    #[test]
+    fn log10_rejects_non_positive() {
+        let err = builtin_log10(&[Value::Float(0.0)]).unwrap_err();
+        assert!(err.contains("argument must be > 0"), "err was: {}", err);
+        let err = builtin_log10(&[Value::Float(-2.0)]).unwrap_err();
+        assert!(err.contains("argument must be > 0"), "err was: {}", err);
+    }
+
+    #[test]
+    fn log10_rejects_int() {
+        let err = builtin_log10(&[Value::Int(10)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn log10_rejects_wrong_arity() {
+        let err = builtin_log10(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
     #[test]
