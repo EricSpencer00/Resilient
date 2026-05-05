@@ -1,0 +1,25 @@
+// RES-882 demo: set_symmetric_difference(a, b) returns a fresh set of
+// elements in either set but not both (XOR). Equivalent to (a − b) ∪ (b − a).
+
+fn main(int _d) {
+    let a = #{1, 2, 3};
+    let b = #{2, 3, 4};
+
+    println(set_items(set_symmetric_difference(a, b)));   // [1, 4]
+    println(set_len(set_symmetric_difference(a, b)));     // 2
+
+    // Self XOR is empty.
+    println(set_len(set_symmetric_difference(a, a)));     // 0
+
+    // Disjoint XOR is the union.
+    let x = #{1, 2};
+    let y = #{3, 4};
+    println(set_len(set_symmetric_difference(x, y)));     // 4
+
+    // XOR with empty is the other set.
+    println(set_items(set_symmetric_difference(a, #{}))); // [1, 2, 3]
+
+    return 0;
+}
+
+main(0);
