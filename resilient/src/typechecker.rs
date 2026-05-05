@@ -2517,6 +2517,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-881.
+        env.set(
+            "set_is_disjoint".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
 
         // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
         // `byte_at` returns Int — the language has no `u8` yet.
@@ -5633,6 +5641,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "set_difference",
         "set_is_subset",
         "set_is_superset",
+        "set_is_disjoint",
         "bytes_len",
         "bytes_slice",
         "byte_at",

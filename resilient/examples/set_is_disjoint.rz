@@ -1,0 +1,27 @@
+// RES-881 demo: set_is_disjoint(a, b) returns true when the two sets
+// share no elements. Empty is disjoint with every set.
+
+fn main(int _d) {
+    let a = #{1, 2, 3};
+    let b = #{4, 5, 6};
+    println(set_is_disjoint(a, b));     // true
+
+    let c = #{3, 4, 5};
+    println(set_is_disjoint(a, c));     // false (shares 3)
+
+    // Empty set is disjoint with everything (including itself).
+    println(set_is_disjoint(a, #{}));   // true
+    println(set_is_disjoint(#{}, #{})); // true
+
+    // A non-empty set is not disjoint with itself.
+    println(set_is_disjoint(a, a));     // false
+
+    // Multi-tenant resource collision check.
+    let tenant1 = #{"db-shard-0", "db-shard-1"};
+    let tenant2 = #{"db-shard-2", "db-shard-3"};
+    println(set_is_disjoint(tenant1, tenant2));  // true: no overlap
+
+    return 0;
+}
+
+main(0);

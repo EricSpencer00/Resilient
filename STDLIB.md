@@ -225,6 +225,7 @@ the same immutable-value semantics (each mutation returns a new map).
 | `set_difference(a, b)` | (set, set) → set | RES-878: elements in `a` but not in `b` |
 | `set_is_subset(a, b)` | (set, set) → bool | RES-879: true iff every element of `a` is in `b`; empty is subset of all |
 | `set_is_superset(a, b)` | (set, set) → bool | RES-880: true iff every element of `b` is in `a` |
+| `set_is_disjoint(a, b)` | (set, set) → bool | RES-881: true iff the two sets share no elements |
 
 ### Bytes
 
