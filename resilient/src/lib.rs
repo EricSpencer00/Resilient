@@ -45,6 +45,8 @@ mod sum_types;
 // `send` / `receive` builtins, the cooperative scheduler, deadlock
 // detection, and the ping-pong example.
 mod actor_runtime;
+// RES-780: supervisor runtime — crash propagation and restart policies.
+mod supervisor_runtime;
 // RES-406: volatile MMIO intrinsics. The eight `volatile_read_*` /
 // `volatile_write_*` builtins live here; the `unsafe { … }` gate
 // (capability check at typecheck time) is in the typechecker
