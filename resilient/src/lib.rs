@@ -9311,6 +9311,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_has", builtin_set_has),
     ("set_len", builtin_set_len),
     ("set_items", builtin_set_items),
+    // RES-876: set algebra primitives.
+    ("set_union", builtin_set_union),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -16871,6 +16873,32 @@ fn builtin_set_items(args: &[Value]) -> RResult<Value> {
         [a] => Err(format!("set_items: expected a Set, got {}", a)),
         _ => Err(format!(
             "set_items: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-876: `set_union(a, b) -> Set` — return a new set containing every
+/// element from either input. Inputs are unchanged (immutable convention).
+fn builtin_set_union(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(a), Value::Set(b)] => {
+            let mut out = a.clone();
+            for k in b.iter() {
+                out.insert(k.clone());
+            }
+            Ok(Value::Set(out))
+        }
+        [Value::Set(_), other] => Err(format!(
+            "set_union: second argument must be a Set, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "set_union: first argument must be a Set, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "set_union: expected 2 arguments (set, set), got {}",
             args.len()
         )),
     }
@@ -25821,6 +25849,80 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn set_union_combines_disjoint_sets() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(4)]).unwrap();
+        let u = builtin_set_union(&[a, b]).unwrap();
+        assert_eq!(as_set_len(u), 4);
+    }
+
+    #[test]
+    fn set_union_dedupes_overlap() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        let u = builtin_set_union(&[a, b]).unwrap();
+        assert_eq!(as_set_len(u), 3);
+    }
+
+    #[test]
+    fn set_union_empty_identity() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::String("x".into())]).unwrap();
+        let u = builtin_set_union(&[empty.clone(), s.clone()]).unwrap();
+        assert_eq!(as_set_len(u), 1);
+        let u = builtin_set_union(&[s, empty.clone()]).unwrap();
+        assert_eq!(as_set_len(u), 1);
+        let u = builtin_set_union(&[empty.clone(), empty]).unwrap();
+        assert_eq!(as_set_len(u), 0);
+    }
+
+    #[test]
+    fn set_union_idempotent_on_self() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let u = builtin_set_union(&[s.clone(), s]).unwrap();
+        assert_eq!(as_set_len(u), 2);
+    }
+
+    #[test]
+    fn set_union_rejects_non_set_first_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_union(&[Value::Int(1), s]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_union_rejects_non_set_second_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_union(&[s, Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_union_rejects_wrong_arity() {
+        let err = builtin_set_union(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
     #[test]

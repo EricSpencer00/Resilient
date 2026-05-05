@@ -1,0 +1,27 @@
+// RES-876 demo: set_union(a, b) returns a fresh set containing every
+// element from either input. Inputs are unchanged; duplicates are
+// collapsed by set semantics.
+
+fn main(int _d) {
+    let a = #{1, 2, 3};
+    let b = #{3, 4, 5};
+
+    println(set_items(set_union(a, b)));
+    println(set_len(set_union(a, b)));
+
+    // Empty-set identity: union with empty leaves the other side intact.
+    let empty = #{};
+    println(set_items(set_union(a, empty)));
+
+    // Self-union is idempotent.
+    println(set_len(set_union(a, a)));
+
+    // String elements work too.
+    let names = #{"alice", "bob"};
+    let more = #{"bob", "carol"};
+    println(set_items(set_union(names, more)));
+
+    return 0;
+}
+
+main(0);

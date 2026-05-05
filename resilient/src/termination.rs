@@ -133,10 +133,10 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Build function location map for error reporting
     let mut fn_info: HashMap<String, (usize, usize)> = HashMap::new();
     for spanned in stmts {
-        if let Node::Function { name, span, .. } = &spanned.node {
-            if !name.is_empty() {
-                fn_info.insert(name.clone(), (span.start.line, span.start.column));
-            }
+        if let Node::Function { name, span, .. } = &spanned.node
+            && !name.is_empty()
+        {
+            fn_info.insert(name.clone(), (span.start.line, span.start.column));
         }
     }
 
@@ -172,26 +172,24 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
     }
 
     // Check direct recursion (self-calls)
-    for (name, _) in &fn_info {
+    for (name, (fn_line, col)) in &fn_info {
         if call_graph.has_self_call(name) {
-            if let Some((fn_line, col)) = fn_info.get(name) {
-                if *fn_line < 2 {
-                    return Err(format!(
-                        "{}:{}:{}: error: function `{}` is directly recursive but has no \
-                         termination annotation; expected `// @decreases <metric>` or \
-                         `// @may_diverge` on the line above",
-                        source_path, fn_line, col, name
-                    ));
-                }
-                let prev = lines.get(fn_line - 2).copied().unwrap_or("");
-                if !has_termination_annotation(prev) {
-                    return Err(format!(
-                        "{}:{}:{}: error: function `{}` is directly recursive but has no \
-                         termination annotation; expected `// @decreases <metric>` or \
-                         `// @may_diverge` on the line above",
-                        source_path, fn_line, col, name
-                    ));
-                }
+            if *fn_line < 2 {
+                return Err(format!(
+                    "{}:{}:{}: error: function `{}` is directly recursive but has no \
+                     termination annotation; expected `// @decreases <metric>` or \
+                     `// @may_diverge` on the line above",
+                    source_path, fn_line, col, name
+                ));
+            }
+            let prev = lines.get(fn_line - 2).copied().unwrap_or("");
+            if !has_termination_annotation(prev) {
+                return Err(format!(
+                    "{}:{}:{}: error: function `{}` is directly recursive but has no \
+                     termination annotation; expected `// @decreases <metric>` or \
+                     `// @may_diverge` on the line above",
+                    source_path, fn_line, col, name
+                ));
             }
         }
     }
@@ -216,7 +214,6 @@ fn has_termination_annotation(line: &str) -> bool {
     }
     false
 }
-
 
 #[cfg(test)]
 mod tests {
