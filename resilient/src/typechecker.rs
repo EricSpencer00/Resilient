@@ -1087,6 +1087,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Float),
             },
         );
+        // RES-893.
+        env.set(
+            "copysign".to_string(),
+            Type::Function {
+                params: vec![Type::Float, Type::Float],
+                return_type: Box::new(Type::Float),
+            },
+        );
 
         // RES-147: monotonic ms-clock builtin. std-only.
         env.set(
@@ -5319,6 +5327,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "clamp",
         "atan2",
         "hypot",
+        "copysign",
         "sqrt",
         "pow",
         "floor",

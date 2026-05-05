@@ -8889,6 +8889,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("atan2", builtin_atan2),
     // RES-892.
     ("hypot", builtin_hypot),
+    // RES-893.
+    ("copysign", builtin_copysign),
     ("ln", builtin_ln),
     // RES-889.
     ("log10", builtin_log10),
@@ -9621,6 +9623,22 @@ fn builtin_hypot(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "hypot: expected 2 arguments (x, y), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-893: `copysign(x: Float, y: Float) -> Float` — value with the
+/// magnitude of `x` and the sign of `y`. IEEE-754 standard primitive.
+fn builtin_copysign(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(x), Value::Float(y)] => Ok(Value::Float(x.copysign(*y))),
+        [a, b] => Err(format!(
+            "copysign: expected (Float, Float), got ({:?}, {:?}) — widen Ints via `to_float`",
+            a, b
+        )),
+        _ => Err(format!(
+            "copysign: expected 2 arguments (magnitude, sign), got {}",
             args.len()
         )),
     }
@@ -31786,6 +31804,37 @@ mod tests {
     #[test]
     fn hypot_arity_check() {
         let err = builtin_hypot(&[Value::Float(1.0)]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn copysign_takes_magnitude_from_first_sign_from_second() {
+        close(
+            as_float(builtin_copysign(&[Value::Float(3.0), Value::Float(-1.0)]).unwrap()),
+            -3.0,
+            "copysign(3, -1)",
+        );
+        close(
+            as_float(builtin_copysign(&[Value::Float(-3.0), Value::Float(1.0)]).unwrap()),
+            3.0,
+            "copysign(-3, 1)",
+        );
+        close(
+            as_float(builtin_copysign(&[Value::Float(0.0), Value::Float(-1.0)]).unwrap()),
+            -0.0,
+            "copysign(0, -1)",
+        );
+    }
+
+    #[test]
+    fn copysign_rejects_int() {
+        let err = builtin_copysign(&[Value::Int(1), Value::Float(-1.0)]).unwrap_err();
+        assert!(err.contains("expected (Float, Float)"), "err was: {}", err);
+    }
+
+    #[test]
+    fn copysign_arity_check() {
+        let err = builtin_copysign(&[Value::Float(1.0)]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 

@@ -41,6 +41,7 @@ This document is a human-facing summary grouped by category.
 | `sin(x)` `cos(x)` `tan(x)` | float → float | std-only |
 | `atan2(y, x)` | (float, float) → float | std-only; returns angle of `(x, y)` in `(-π, π]` (note `y` first, matching IEEE / C) |
 | `hypot(x, y)` | (float, float) → float | RES-892: sqrt(x² + y²) without overflow; std-only |
+| `copysign(x, y)` | (float, float) → float | RES-893: magnitude of x with sign of y; std-only |
 | `ln(x)` `log(x)` `exp(x)` | float → float | std-only; `ln`/`log` runtime error on non-positive args |
 | `log10(x)` | float → float | RES-889: base-10 logarithm; std-only; runtime error on non-positive |
 | `log2(x)` | float → float | RES-890: base-2 logarithm; std-only; runtime error on non-positive |
