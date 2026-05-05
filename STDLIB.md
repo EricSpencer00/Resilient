@@ -43,6 +43,7 @@ This document is a human-facing summary grouped by category.
 | `ln(x)` `log(x)` `exp(x)` | float → float | std-only; `ln`/`log` runtime error on non-positive args |
 | `log10(x)` | float → float | RES-889: base-10 logarithm; std-only; runtime error on non-positive |
 | `log2(x)` | float → float | RES-890: base-2 logarithm; std-only; runtime error on non-positive |
+| `exp2(x)` | float → float | RES-891: 2^x; std-only; mirror of `exp` (e^x) |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
 | `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |

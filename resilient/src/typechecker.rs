@@ -1062,6 +1062,8 @@ impl TypeChecker {
         // RES-890.
         env.set("log2".to_string(), fn_float_to_float());
         env.set("exp".to_string(), fn_float_to_float());
+        // RES-891.
+        env.set("exp2".to_string(), fn_float_to_float());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -5322,6 +5324,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "log2",
         "log",
         "exp",
+        "exp2",
         // String/collection.
         "len",
         "push",
