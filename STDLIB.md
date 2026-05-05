@@ -240,6 +240,7 @@ the same immutable-value semantics (each mutation returns a new map).
 | `bytes_slice(b, start, end)` | (bytes, int, int) → bytes | half-open range |
 | `byte_at(b, i)` | (bytes, int) → int | byte at index |
 | `bytes_concat(a, b)` | (bytes, bytes) → bytes | RES-887: a followed by b; inputs unchanged |
+| `bytes_eq(a, b)` | (bytes, bytes) → bool | RES-888: byte-equality of two Bytes values |
 
 ## Bitwise (RES-440)
 

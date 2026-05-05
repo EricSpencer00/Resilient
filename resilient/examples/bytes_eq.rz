@@ -1,0 +1,14 @@
+// RES-888 demo: bytes_eq(a, b) returns true iff both Bytes values have the
+// same length and identical bytes at every position.
+
+fn main(int _d) {
+    println(bytes_eq(b"hello", b"hello"));   // true
+    println(bytes_eq(b"hello", b"world"));   // false
+    println(bytes_eq(b"hello", b"hell"));    // false (length mismatch)
+    println(bytes_eq(b"", b""));             // true (empty == empty)
+    println(bytes_eq(b"\x00", b"\x01"));     // false (raw-byte difference)
+
+    return 0;
+}
+
+main(0);

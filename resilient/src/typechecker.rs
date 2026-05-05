@@ -2597,6 +2597,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bytes),
             },
         );
+        // RES-888.
+        env.set(
+            "bytes_eq".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Bytes],
+                return_type: Box::new(Type::Bool),
+            },
+        );
 
         // Result builtins
         env.set("Ok".to_string(), fn_any_to_result());
@@ -5699,6 +5707,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bytes_slice",
         "byte_at",
         "bytes_concat",
+        "bytes_eq",
     ];
     PURE_BUILTINS.contains(&name)
 }
