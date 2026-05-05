@@ -19,6 +19,13 @@
 
 use std::collections::HashMap;
 
+/// Global supervisor registry: maps supervisor PID to its SupervisorState.
+/// Used by the scheduler to look up restart policies when supervised actors crash.
+use std::cell::RefCell;
+thread_local! {
+    static SUPERVISOR_REGISTRY: RefCell<HashMap<u64, SupervisorState>> = RefCell::new(HashMap::new());
+}
+
 /// Restart policy for a supervised actor.
 /// Determines behavior when the actor crashes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +186,67 @@ impl SupervisorState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scheduler Integration (RES-780 PR2)
+// ---------------------------------------------------------------------------
+
+/// Register a supervisor in the global registry.
+/// Called by the scheduler when a supervisor actor is spawned.
+pub fn register_supervisor(supervisor_pid: u64, supervisor: SupervisorState) -> Result<(), String> {
+    SUPERVISOR_REGISTRY.with(|reg| {
+        let mut r = reg.borrow_mut();
+        if r.contains_key(&supervisor_pid) {
+            return Err(format!("Supervisor {} already registered", supervisor_pid));
+        }
+        r.insert(supervisor_pid, supervisor);
+        Ok(())
+    })
+}
+
+/// Look up a supervisor by PID.
+/// Called by the scheduler when a supervised actor crashes.
+pub fn get_supervisor(supervisor_pid: u64) -> Option<SupervisorState> {
+    SUPERVISOR_REGISTRY.with(|reg| reg.borrow().get(&supervisor_pid).cloned())
+}
+
+/// Update a supervisor's state (e.g., after recording a restart).
+/// Called by the scheduler after checking restart policy.
+pub fn update_supervisor(supervisor_pid: u64, supervisor: SupervisorState) -> Result<(), String> {
+    SUPERVISOR_REGISTRY.with(|reg| {
+        let mut r = reg.borrow_mut();
+        if !r.contains_key(&supervisor_pid) {
+            return Err(format!("Supervisor {} not registered", supervisor_pid));
+        }
+        r.insert(supervisor_pid, supervisor);
+        Ok(())
+    })
+}
+
+/// Deregister a supervisor when it crashes or exits.
+pub fn deregister_supervisor(supervisor_pid: u64) {
+    SUPERVISOR_REGISTRY.with(|reg| {
+        reg.borrow_mut().remove(&supervisor_pid);
+    })
+}
+
+/// Check all registered supervisors to find who supervises a given actor.
+/// Returns the supervisor PID if found.
+pub fn find_supervisor_for(child_pid: u64) -> Option<u64> {
+    SUPERVISOR_REGISTRY.with(|reg| {
+        let r = reg.borrow();
+        for (&sup_pid, supervisor) in r.iter() {
+            if supervisor
+                .children
+                .values()
+                .any(|(pid, _)| *pid == child_pid)
+            {
+                return Some(sup_pid);
+            }
+        }
+        None
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +331,43 @@ mod tests {
         assert!(sup.should_restart("worker", 1001).is_err());
         // But after window (1000 + 60 = 1060), it resets
         assert!(sup.should_restart("worker", 1061).unwrap());
+    }
+
+    #[test]
+    fn register_and_get_supervisor() {
+        let sup = SupervisorState::new("one_for_one");
+        register_supervisor(123, sup.clone()).unwrap();
+        let retrieved = get_supervisor(123).unwrap();
+        assert_eq!(retrieved.strategy, "one_for_one");
+    }
+
+    #[test]
+    fn duplicate_supervisor_registration_fails() {
+        let sup = SupervisorState::new("one_for_one");
+        register_supervisor(123, sup.clone()).unwrap();
+        let result = register_supervisor(123, sup);
+        assert!(result.is_err());
+        deregister_supervisor(123);
+    }
+
+    #[test]
+    fn find_supervisor_for_child() {
+        let mut sup = SupervisorState::new("one_for_one");
+        sup.register_child("worker".to_string(), 456, RestartPolicy::Permanent)
+            .unwrap();
+        register_supervisor(123, sup).unwrap();
+
+        let found = find_supervisor_for(456).unwrap();
+        assert_eq!(found, 123);
+
+        deregister_supervisor(123);
+    }
+
+    #[test]
+    fn find_supervisor_nonexistent_child_returns_none() {
+        let sup = SupervisorState::new("one_for_one");
+        register_supervisor(123, sup).unwrap();
+        assert!(find_supervisor_for(999).is_none());
+        deregister_supervisor(123);
     }
 }
