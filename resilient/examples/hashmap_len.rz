@@ -1,0 +1,24 @@
+// RES-885 demo: hashmap_len(m) returns entry count. Mirrors map_len for
+// the HashMap stdlib namespace.
+
+fn main(int _d) {
+    let m = hashmap_new();
+    println(hashmap_len(m));    // 0
+
+    let m = hashmap_insert(m, "alice", 1);
+    let m = hashmap_insert(m, "bob", 2);
+    let m = hashmap_insert(m, "carol", 3);
+    println(hashmap_len(m));    // 3
+
+    // Reinserting an existing key updates the value but doesn't grow len.
+    let m = hashmap_insert(m, "alice", 99);
+    println(hashmap_len(m));    // 3
+
+    // Removing shrinks len.
+    let m = hashmap_remove(m, "alice");
+    println(hashmap_len(m));    // 2
+
+    return 0;
+}
+
+main(0);

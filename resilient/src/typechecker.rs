@@ -2448,6 +2448,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-885.
+        env.set(
+            "hashmap_len".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
 
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
@@ -5656,6 +5664,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "hashmap_remove",
         "hashmap_contains",
         "hashmap_keys",
+        "hashmap_len",
         "set_new",
         "set_insert",
         "set_remove",
