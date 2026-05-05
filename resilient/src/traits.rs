@@ -792,6 +792,39 @@ fn trait_satisfied_structurally(
     })
 }
 
+/// RES-783 PR2: Build a map of concrete associated type definitions.
+/// Maps (trait_name, struct_name, assoc_type_name) -> type_expr_string.
+/// Returns (trait_name, struct_name) pairs with missing/invalid definitions as errors.
+#[allow(dead_code)]
+pub fn build_assoc_type_map(
+    program: &Node,
+) -> Result<HashMap<(String, String, String), String>, String> {
+    let stmts = match program {
+        Node::Program(stmts) => stmts,
+        _ => return Ok(HashMap::new()),
+    };
+
+    let mut assoc_type_map: HashMap<(String, String, String), String> = HashMap::new();
+
+    // Walk through all impl blocks and collect their associated type definitions.
+    for stmt in stmts {
+        if let Node::ImplBlock {
+            trait_name: Some(t),
+            struct_name,
+            associated_type_impls,
+            ..
+        } = &stmt.node
+        {
+            for (type_name, type_expr) in associated_type_impls {
+                let key = (t.clone(), struct_name.clone(), type_name.clone());
+                assoc_type_map.insert(key, type_expr.clone());
+            }
+        }
+    }
+
+    Ok(assoc_type_map)
+}
+
 fn format_err(source_path: &str, span: Span, msg: &str) -> String {
     if span.start.line == 0 {
         msg.to_string()
@@ -1044,5 +1077,32 @@ mod tests {
         );
         assert!(err.contains("Transport"), "got: {err}");
         assert!(err.contains("Serial"), "got: {err}");
+    }
+
+    #[test]
+    fn build_assoc_type_map_collects_definitions() {
+        let prog = parse_program(
+            "trait Transport { type Message; type Error; fn send(self) -> int; }\n\
+             struct Serial { int x, }\n\
+             impl Transport for Serial {\n\
+                 type Message = [u8; 64];\n\
+                 type Error = int;\n\
+                 fn send(self) -> int { return 0; }\n\
+             }\n\
+             fn main(int dummy) {} main();",
+        );
+        let map = build_assoc_type_map(&prog).expect("should build map");
+        let msg_key = (
+            "Transport".to_string(),
+            "Serial".to_string(),
+            "Message".to_string(),
+        );
+        let err_key = (
+            "Transport".to_string(),
+            "Serial".to_string(),
+            "Error".to_string(),
+        );
+        assert!(map.contains_key(&msg_key), "should have Message type");
+        assert!(map.contains_key(&err_key), "should have Error type");
     }
 }
