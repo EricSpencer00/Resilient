@@ -1056,6 +1056,8 @@ impl TypeChecker {
         env.set("sin".to_string(), fn_float_to_float());
         env.set("cos".to_string(), fn_float_to_float());
         env.set("tan".to_string(), fn_float_to_float());
+        // RES-894.
+        env.set("to_radians".to_string(), fn_float_to_float());
         env.set("ln".to_string(), fn_float_to_float());
         // RES-889.
         env.set("log10".to_string(), fn_float_to_float());
@@ -5337,6 +5339,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "sin",
         "cos",
         "tan",
+        "to_radians",
         "ln",
         "log10",
         "log2",

@@ -8885,6 +8885,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("sin", builtin_sin),
     ("cos", builtin_cos),
     ("tan", builtin_tan),
+    // RES-894.
+    ("to_radians", builtin_to_radians),
     // RES-295: atan2(y, x) — angle of vector (x, y) in radians.
     ("atan2", builtin_atan2),
     // RES-892.
@@ -9577,6 +9579,21 @@ fn builtin_cos(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("cos: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-894: `to_radians(d: Float) -> Float` — convert degrees to radians.
+fn builtin_to_radians(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(d)] => Ok(Value::Float(d.to_radians())),
+        [other] => Err(format!(
+            "to_radians: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!(
+            "to_radians: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -27289,6 +27306,37 @@ mod tests {
                 .unwrap_err()
                 .contains("expected 2")
         );
+    }
+
+    #[test]
+    fn to_radians_basic() {
+        close(
+            as_float(builtin_to_radians(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "to_radians(0)",
+        );
+        close(
+            as_float(builtin_to_radians(&[Value::Float(180.0)]).unwrap()),
+            std::f64::consts::PI,
+            "to_radians(180)",
+        );
+        close(
+            as_float(builtin_to_radians(&[Value::Float(90.0)]).unwrap()),
+            std::f64::consts::FRAC_PI_2,
+            "to_radians(90)",
+        );
+    }
+
+    #[test]
+    fn to_radians_rejects_int() {
+        let err = builtin_to_radians(&[Value::Int(180)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn to_radians_arity_check() {
+        let err = builtin_to_radians(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
     // --- RES-145: string builtins — replace / to_upper / to_lower / format ---
