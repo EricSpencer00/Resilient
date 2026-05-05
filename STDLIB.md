@@ -194,6 +194,7 @@ match r {
 | `map_keys(m)` | map → array | all keys, sorted for determinism |
 | `map_len(m)` | map → int | entry count |
 | `map_values(m)` | map → array | RES-883: all values in same key-sorted order as `map_keys` |
+| `map_contains_key(m, k)` | (map, K) → bool | RES-884: membership test; mirrors `hashmap_contains` |
 
 ### HashMap (RES-293)
 

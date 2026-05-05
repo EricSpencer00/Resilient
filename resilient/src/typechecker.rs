@@ -2394,6 +2394,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Array),
             },
         );
+        // RES-884.
+        env.set(
+            "map_contains_key".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
 
         // RES-293: HashMap stdlib builtins. Same permissive-Any
         // shape as the Map builtins above — once G7 inference lands
@@ -5639,6 +5647,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "map_keys",
         "map_len",
         "map_values",
+        "map_contains_key",
         // RES-293: HashMap stdlib builtins (purely functional —
         // each returns a new map / scalar; no IO).
         "hashmap_new",

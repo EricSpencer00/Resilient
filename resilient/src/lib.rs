@@ -9296,6 +9296,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("map_len", builtin_map_len),
     // RES-883.
     ("map_values", builtin_map_values),
+    // RES-884.
+    ("map_contains_key", builtin_map_contains_key),
     // RES-293: HashMap stdlib builtins. Surface the same `Value::Map`
     // backend under the user-facing `hashmap_*` names called out in
     // the language guide. `hashmap_contains` is genuinely new — it
@@ -16554,6 +16556,25 @@ fn builtin_map_len(args: &[Value]) -> RResult<Value> {
         [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
         [a] => Err(format!("map_len: expected a Map, got {}", a)),
         _ => Err(format!("map_len: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-884: `map_contains_key(m, k) -> Bool` — true iff `m` contains `k`.
+/// Mirrors `hashmap_contains` for the `map_*` namespace.
+fn builtin_map_contains_key(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k] => {
+            let key = MapKey::from_value(k)?;
+            Ok(Value::Bool(m.contains_key(&key)))
+        }
+        [a, _] => Err(format!(
+            "map_contains_key: first argument must be a Map, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "map_contains_key: expected 2 arguments (map, key), got {}",
+            args.len()
+        )),
     }
 }
 
@@ -27431,6 +27452,59 @@ mod tests {
     fn map_values_rejects_wrong_arity() {
         let err = builtin_map_values(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn map_contains_key_present_is_true() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("hello".into()), Value::Int(1)]).unwrap();
+        assert!(as_bool(
+            builtin_map_contains_key(&[m, Value::String("hello".into())]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn map_contains_key_absent_is_false() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("hello".into()), Value::Int(1)]).unwrap();
+        assert!(!as_bool(
+            builtin_map_contains_key(&[m, Value::String("missing".into())]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn map_contains_key_empty_is_false() {
+        let m = builtin_map_new(&[]).unwrap();
+        assert!(!as_bool(
+            builtin_map_contains_key(&[m, Value::Int(0)]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn map_contains_key_rejects_non_map_first_arg() {
+        let err = builtin_map_contains_key(&[Value::Int(1), Value::Int(0)]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Map"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn map_contains_key_rejects_non_hashable_key() {
+        let m = builtin_map_new(&[]).unwrap();
+        let err = builtin_map_contains_key(&[m, Value::Float(1.5)]).unwrap_err();
+        assert!(
+            err.contains("Map key must be Int, String, or Bool"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn map_contains_key_rejects_wrong_arity() {
+        let err = builtin_map_contains_key(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
     #[test]
