@@ -193,6 +193,7 @@ match r {
 | `map_remove(m, k)` | (map, K) → map | new map with key removed |
 | `map_keys(m)` | map → array | all keys, sorted for determinism |
 | `map_len(m)` | map → int | entry count |
+| `map_values(m)` | map → array | RES-883: all values in same key-sorted order as `map_keys` |
 
 ### HashMap (RES-293)
 
