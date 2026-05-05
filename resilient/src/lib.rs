@@ -9323,6 +9323,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_is_superset", builtin_set_is_superset),
     // RES-881.
     ("set_is_disjoint", builtin_set_is_disjoint),
+    // RES-882.
+    ("set_symmetric_difference", builtin_set_symmetric_difference),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -17015,6 +17017,31 @@ fn builtin_set_is_disjoint(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "set_is_disjoint: expected 2 arguments (set, set), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-882: `set_symmetric_difference(a, b) -> Set` — return a new set with
+/// elements in either input but not both (XOR). Mathematically equivalent to
+/// `(a - b) ∪ (b - a)`. Inputs are unchanged.
+fn builtin_set_symmetric_difference(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(a), Value::Set(b)] => {
+            let out: std::collections::HashSet<MapKey> =
+                a.symmetric_difference(b).cloned().collect();
+            Ok(Value::Set(out))
+        }
+        [Value::Set(_), other] => Err(format!(
+            "set_symmetric_difference: second argument must be a Set, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "set_symmetric_difference: first argument must be a Set, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "set_symmetric_difference: expected 2 arguments (set, set), got {}",
             args.len()
         )),
     }
@@ -26421,6 +26448,80 @@ mod tests {
     #[test]
     fn set_is_disjoint_rejects_wrong_arity() {
         let err = builtin_set_is_disjoint(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_symmetric_difference_xors_overlap() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(3)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(4)]).unwrap();
+        let s = builtin_set_symmetric_difference(&[a, b]).unwrap();
+        // {1, 4}
+        assert_eq!(as_set_len(s), 2);
+    }
+
+    #[test]
+    fn set_symmetric_difference_self_is_empty() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let d = builtin_set_symmetric_difference(&[s.clone(), s]).unwrap();
+        assert_eq!(as_set_len(d), 0);
+    }
+
+    #[test]
+    fn set_symmetric_difference_disjoint_unions() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let d = builtin_set_symmetric_difference(&[a, b]).unwrap();
+        assert_eq!(as_set_len(d), 2);
+    }
+
+    #[test]
+    fn set_symmetric_difference_with_empty_returns_other() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let d = builtin_set_symmetric_difference(&[empty.clone(), s.clone()]).unwrap();
+        assert_eq!(as_set_len(d), 2);
+        let d = builtin_set_symmetric_difference(&[s, empty]).unwrap();
+        assert_eq!(as_set_len(d), 2);
+    }
+
+    #[test]
+    fn set_symmetric_difference_rejects_non_set_first_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_symmetric_difference(&[Value::Int(1), s]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_symmetric_difference_rejects_non_set_second_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_symmetric_difference(&[s, Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_symmetric_difference_rejects_wrong_arity() {
+        let err = builtin_set_symmetric_difference(&[]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
