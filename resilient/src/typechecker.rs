@@ -2485,6 +2485,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-877.
+        env.set(
+            "set_intersection".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
 
         // RES-152: Bytes builtins. `bytes_slice` returns new Bytes;
         // `byte_at` returns Int — the language has no `u8` yet.
@@ -5597,6 +5605,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "set_len",
         "set_items",
         "set_union",
+        "set_intersection",
         "bytes_len",
         "bytes_slice",
         "byte_at",

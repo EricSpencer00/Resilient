@@ -1,0 +1,6 @@
+[3, 4]
+2
+0
+4
+["bob"]
+Program executed successfully
