@@ -9308,6 +9308,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("hashmap_remove", builtin_hashmap_remove),
     ("hashmap_contains", builtin_hashmap_contains),
     ("hashmap_keys", builtin_hashmap_keys),
+    // RES-885.
+    ("hashmap_len", builtin_hashmap_len),
     // RES-149: Set builtins.
     ("set_new", builtin_set_new),
     ("set_insert", builtin_set_insert),
@@ -16713,6 +16715,19 @@ fn builtin_hashmap_contains(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "hashmap_contains: expected 2 arguments (hashmap, key), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-885: `hashmap_len(m) -> Int` — number of entries. Mirrors
+/// `map_len` for the HashMap stdlib namespace.
+fn builtin_hashmap_len(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m)] => Ok(Value::Int(m.len() as i64)),
+        [a] => Err(format!("hashmap_len: expected a HashMap, got {}", a)),
+        _ => Err(format!(
+            "hashmap_len: expected 1 argument, got {}",
             args.len()
         )),
     }
@@ -27670,6 +27685,51 @@ mod tests {
             Value::Array(items) => assert!(items.is_empty()),
             other => panic!("expected Array, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn hashmap_len_counts_entries() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(1), Value::String("one".into())]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(2), Value::String("two".into())]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(3), Value::String("three".into())]).unwrap();
+        match builtin_hashmap_len(&[m]).unwrap() {
+            Value::Int(3) => {}
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_len_on_empty_is_zero() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        match builtin_hashmap_len(&[m]).unwrap() {
+            Value::Int(0) => {}
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_len_dedupes_overwrites() {
+        // Reinserting the same key updates the existing entry; len stays at 1.
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(1), Value::String("a".into())]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::Int(1), Value::String("b".into())]).unwrap();
+        match builtin_hashmap_len(&[m]).unwrap() {
+            Value::Int(1) => {}
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn hashmap_len_rejects_non_hashmap() {
+        let err = builtin_hashmap_len(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected a HashMap"), "err was: {}", err);
+    }
+
+    #[test]
+    fn hashmap_len_rejects_wrong_arity() {
+        let err = builtin_hashmap_len(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
     #[test]
