@@ -1,0 +1,58 @@
+// RES-829: Generic type bounds with traits example
+// Demonstrates how generic type bounds enable polymorphic functions
+// that accept any type implementing a given trait.
+
+trait Drawable {
+    fn draw(self) -> int;
+}
+
+struct Circle {
+    int radius,
+}
+
+struct Square {
+    int side,
+}
+
+impl Drawable for Circle {
+    fn draw(self) -> int {
+        println("Drawing circle");
+        return self.radius;
+    }
+}
+
+impl Drawable for Square {
+    fn draw(self) -> int {
+        println("Drawing square");
+        return self.side;
+    }
+}
+
+struct Rectangle {
+    int width,
+    int height,
+}
+
+impl Drawable for Rectangle {
+    fn draw(self) -> int {
+        println("Drawing rectangle");
+        return self.width;
+    }
+}
+
+// Generic function with trait bound: accepts any type implementing Drawable
+fn render<T: Drawable>(T shape) -> int {
+    return shape.draw();
+}
+
+fn main(int dummy) {
+    let c = new Circle { radius: 5 };
+    let s = new Square { side: 10 };
+    let r = new Rectangle { width: 20, height: 15 };
+
+    render(c);
+    render(s);
+    render(r);
+
+    return 0;
+}

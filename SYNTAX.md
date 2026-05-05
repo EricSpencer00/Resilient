@@ -457,9 +457,47 @@ but the call succeeds because the method exists. An explicit `impl
 Printable for Pair` block is not required — it is useful mainly for
 documentation and to catch mistakes early if a required method is missing.
 
+### Associated Types (RES-783)
+
+Traits can declare associated types — type members that each implementation must define:
+
+```rust
+trait Transport {
+    type Message;      // Each impl defines what Message means
+    type Error;        // Each impl defines its error type
+    
+    fn send(self, message: Self::Message) -> Result<int, Self::Error>;
+}
+
+struct UART { }
+
+impl Transport for UART {
+    type Message = [int];  // UART sends arrays of ints
+    type Error = string;   // UART errors are strings
+    
+    fn send(self, message: [int]) -> Result<int, string> {
+        return Ok(0);
+    }
+}
+
+struct TCP { }
+
+impl Transport for TCP {
+    type Message = string; // TCP sends strings
+    type Error = int;      // TCP errors are ints
+    
+    fn send(self, message: string) -> Result<int, int> {
+        return Ok(0);
+    }
+}
+```
+
+Associated types enable polymorphic interfaces where each implementation can specify its own concrete types for `Message` and `Error`, making embedded driver abstractions type-safe without explicit generics at every call site.
+
 ### Limitations
 
 The current trait system does not support:
+- Projection syntax (`T::AssocType`) in generic bounds (RES-779 follow-up)
 - `dyn Trait` / virtual tables (RES-293)
 - Generic associated types (future)
 - Default method bodies (future)

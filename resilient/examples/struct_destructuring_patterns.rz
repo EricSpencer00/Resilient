@@ -1,0 +1,41 @@
+// RES-826: Struct destructuring patterns
+// Demonstrates full destructuring and partial destructuring with ..
+
+struct Point {
+    int x,
+    int y,
+}
+
+struct Color {
+    int red,
+    int green,
+    int blue,
+}
+
+// Full destructuring - extract all fields
+fn sum_point(Point p) -> int {
+    let Point { x: a, y: b } = p;
+    return a + b;
+}
+
+// Partial destructuring with .. - extract only needed fields
+fn get_red(Color c) -> int {
+    let Color { red: r, .. } = c;
+    return r;
+}
+
+fn main(int dummy) {
+    let pt = new Point { x: 5, y: 10 };
+    let clr = new Color { red: 255, green: 128, blue: 0 };
+
+    // Full destructuring - both x and y extracted
+    let Point { x: px, y: py } = pt;
+    println(px);
+    println(py);
+
+    // Partial with .. - only red extracted, others ignored
+    let Color { red: r, .. } = clr;
+    println(r);
+
+    return 0;
+}
