@@ -45,6 +45,10 @@ mod sum_types;
 // `send` / `receive` builtins, the cooperative scheduler, deadlock
 // detection, and the ping-pong example.
 mod actor_runtime;
+// RES-780: supervisor runtime phase 1 — crash propagation and restart
+// policies. When supervised actors crash, the supervisor's configured policy
+// determines whether to restart, escalate, or stop.
+mod supervisor_runtime;
 // RES-406: volatile MMIO intrinsics. The eight `volatile_read_*` /
 // `volatile_write_*` builtins live here; the `unsafe { … }` gate
 // (capability check at typecheck time) is in the typechecker
@@ -21106,7 +21110,25 @@ fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
                 // do not deregister; a future send() will re-queue it.
             }
             Err(e) => {
-                // Drop-on-crash: deregister the actor and log the failure.
+                // RES-780: Crash event handling with supervisor restart policies.
+                let crash_event = supervisor_runtime::CrashEvent {
+                    actor_pid: pid.0,
+                    reason: supervisor_runtime::CrashReason::UnhandledError,
+                };
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                if supervisor_runtime::handle_crash_event(crash_event, now_secs) {
+                    // Supervisor policy says restart: re-register and re-queue.
+                    actor_runtime::mark_runnable(pid);
+                    if actor_runtime::get_actor_fn(pid).is_some() {
+                        // Re-run the actor on next cycle
+                        continue;
+                    }
+                }
+                // Restart not allowed or actor not found: deregister and log.
                 let _ = actor_runtime::deregister_actor(pid);
                 eprintln!("actor {} crashed: {}", pid.0, e);
             }
