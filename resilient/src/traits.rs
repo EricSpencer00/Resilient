@@ -85,6 +85,17 @@ pub(crate) struct TraitMethodSig {
     pub span: Span,
 }
 
+/// Associated type declaration in a trait.
+/// RES-779: `type Name;` inside a trait declares a type member that each
+/// impl must define.
+#[derive(Debug, Clone)]
+pub(crate) struct AssociatedTypeDecl {
+    #[allow(dead_code)]
+    pub name: String,
+    #[allow(dead_code)]
+    pub span: Span,
+}
+
 /// Parse a `trait` declaration. Called from `parse_statement` when the
 /// current token is `Token::Trait`. On entry, `current_token` is
 /// `Token::Trait`; on a successful exit the cursor sits on the closing
@@ -133,6 +144,7 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
     Node::TraitDecl {
         name,
         methods,
+        associated_types: Vec::new(), // RES-779: to be populated when parsing support is added
         span: trait_span,
     }
 }
@@ -268,6 +280,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             name,
             methods,
             span,
+            associated_types: _,
         } = &stmt.node
         {
             if name.is_empty() {
@@ -338,6 +351,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             struct_name,
             methods,
             span,
+            associated_type_impls: _,
         } = &stmt.node
         {
             let (trait_methods, _trait_span) = match traits.get(t) {

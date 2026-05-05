@@ -2040,10 +2040,14 @@ enum Node {
     /// trait-impl blocks; the methods still mangle to `<StructName>$<method>`,
     /// so runtime dispatch is unchanged. The trait name is consulted only by
     /// `crate::traits::check` to validate signature coverage.
+    /// RES-779: ImplBlock also carries associated type definitions
+    /// (`type Name = ConcreteType;`) that implement the trait's associated types.
     ImplBlock {
         trait_name: Option<String>,
         struct_name: String,
         methods: Vec<Node>,
+        #[allow(dead_code)]
+        associated_type_impls: Vec<(String, String)>, // (name, type_expr)
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2052,9 +2056,13 @@ enum Node {
     /// signatures are validated against `impl Trait for Type` blocks by
     /// `crate::traits::check`. Trait dispatch reuses the existing
     /// `<Type>$<method>` mangling; there is no VTable.
+    /// RES-779: TraitDecl also carries associated type declarations
+    /// (`type Name;`) that must be defined in each impl.
     TraitDecl {
         name: String,
         methods: Vec<crate::traits::TraitMethodSig>,
+        #[allow(dead_code)]
+        associated_types: Vec<crate::traits::AssociatedTypeDecl>,
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -3259,6 +3267,7 @@ impl Parser {
             trait_name,
             struct_name,
             methods,
+            associated_type_impls: Vec::new(), // RES-779: to be populated when parsing support is added
             span: impl_span,
         }
     }

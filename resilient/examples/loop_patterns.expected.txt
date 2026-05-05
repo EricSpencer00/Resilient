@@ -1,0 +1,20 @@
+=== For Loop with Array ===
+Sum of array: 150
+
+=== For Loop with Range (Half-Open) ===
+Product 1*2*3*4: 24
+
+=== For Loop with Inclusive Range ===
+Counted 1 to 3: 3 iterations
+
+=== While Loop with Counter ===
+Sum from 10 down to 1: 55
+
+=== Nested Loops ===
+Nested loops (2x2): 4 iterations
+
+=== Array Accumulation Pattern ===
+Minimum value: 5
+
+Loops enable iteration, accumulation, and complex control flow
+Program executed successfully

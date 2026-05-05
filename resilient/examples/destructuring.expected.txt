@@ -1,0 +1,31 @@
+=== Full Destructuring ===
+Point: x=3, y=4
+Distance from origin: 25
+
+=== Field Renaming During Destructuring ===
+Point as (col, row): (5, 7)
+After coordinate swap: x=7, y=5
+
+=== Partial Destructuring with .. ===
+Config mode=1, timeout=5000
+
+=== Nested Struct Extraction ===
+Rectangle center: (5, 5)
+
+=== Match with Destructuring ===
+Point (0, 0): origin
+Point (0, 5): on y-axis: 5
+Point (3, 4): quadrant 1
+Point (-2, 3): quadrant 2
+
+=== Selective Field Extraction ===
+custom (mode=2)
+production (mode=0)
+
+=== Extracting Multiple Values ===
+Extracted: a=8, b=6
+Sum: 14
+Difference: 2
+
+Destructuring provides safe and concise field access
+Program executed successfully

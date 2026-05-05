@@ -1,0 +1,19 @@
+=== Option Pattern Matching ===
+success: 5
+no value
+
+=== Result Pattern Matching ===
+parsed: 42
+error: invalid format: contains non-digit characters
+error: invalid format: empty string
+
+=== Error Propagation with ? ===
+operation success: 20
+operation failed: division by zero
+
+=== Fallback/Default Patterns ===
+divide with fallback: -1
+parse with fallback: 5
+
+Error handling patterns demonstrated
+Program executed successfully

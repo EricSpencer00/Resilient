@@ -1,0 +1,10 @@
+=== Serial ===
+Serial@9600 send: 72
+Transmitted successfully
+
+=== DirectMemory ===
+DirectMemory@8192 send: 88
+Transmitted successfully
+
+Same function works with different transport types
+Program executed successfully

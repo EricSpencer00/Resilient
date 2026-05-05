@@ -1,0 +1,108 @@
+// RES-837: Demonstrate Option and Result types for error handling.
+// Shows pattern matching, error propagation, and fallback strategies.
+
+// Option<T> represents either Some(T) or None
+fn safe_divide(int a, int b) -> Option<int> {
+    if b == 0 {
+        return None;
+    }
+    return Some(a / b);
+}
+
+// Result<T, E> represents either Ok(T) or Err(E)
+fn parse_int_from_string(string s) -> Result {
+    // Use built-in parse_int which already validates format
+    let str_len = len(s);
+    if str_len == 0 {
+        return Err("invalid format: empty string");
+    }
+
+    // parse_int returns Result<int, string>
+    let parsed = parse_int(s);
+    if is_err(parsed) {
+        return Err("invalid format: contains non-digit characters");
+    }
+    return parsed;
+}
+
+// Demonstrate Option pattern matching with Some/None
+fn describe_option(Option<int> opt) -> string {
+    match opt {
+        Option::Some(v) => "success: " + v,
+        Option::None => "no value",
+    }
+}
+
+// Demonstrate Result checking with helper functions
+fn describe_result(Result r) -> string {
+    if is_err(r) {
+        return "error: " + unwrap_err(r);
+    }
+    return "parsed: " + unwrap(r);
+}
+
+// Error propagation with ? operator: if Result is Err, return it immediately
+fn safe_operation(int a, int b) -> Result {
+    let ratio_opt = safe_divide(a, b);
+    match ratio_opt {
+        Option::Some(v) => Ok(v * 2),
+        Option::None => Err("division by zero"),
+    }
+}
+
+fn main() {
+    println("=== Option Pattern Matching ===");
+    let opt1 = safe_divide(10, 2);
+    println(describe_option(opt1));
+
+    let opt2 = safe_divide(10, 0);
+    println(describe_option(opt2));
+
+    println("");
+    println("=== Result Pattern Matching ===");
+    let res1 = parse_int_from_string("42");
+    println(describe_result(res1));
+
+    let res2 = parse_int_from_string("abc");
+    println(describe_result(res2));
+
+    let res3 = parse_int_from_string("");
+    println(describe_result(res3));
+
+    println("");
+    println("=== Error Propagation with ? ===");
+    let prop1 = safe_operation(20, 2);
+    if is_err(prop1) {
+        println("operation failed: " + unwrap_err(prop1));
+    } else {
+        println("operation success: " + unwrap(prop1));
+    }
+
+    let prop2 = safe_operation(20, 0);
+    if is_err(prop2) {
+        println("operation failed: division by zero");
+    } else {
+        println("operation success: " + unwrap(prop2));
+    }
+
+    println("");
+    println("=== Fallback/Default Patterns ===");
+    // Unwrap with default
+    let fallback_result = match safe_divide(10, 0) {
+        Option::Some(v) => v,
+        Option::None => -1,
+    };
+    println("divide with fallback: " + fallback_result);
+
+    // Chain operations
+    let num = match parse_int_from_string("5") {
+        Result::Ok(v) => v,
+        Result::Err(_) => 0,
+    };
+    println("parse with fallback: " + num);
+
+    println("");
+    println("Error handling patterns demonstrated");
+}
+
+main();

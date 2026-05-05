@@ -1,0 +1,16 @@
+=== Basic Live Block with Retry ===
+sensor reading: 42
+live block retried successfully
+
+=== Bounded Counter with Invariant ===
+count = 1
+
+=== Transaction with Automatic Retry ===
+transaction succeeded with balance: 100
+
+=== Resource Allocation Invariant ===
+allocated: 3 / 10
+freed: 1, remaining: 2
+
+Live blocks ensure system recovery and invariant preservation
+Program executed successfully
