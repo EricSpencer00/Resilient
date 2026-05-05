@@ -1,0 +1,27 @@
+// RES-878 demo: set_difference(a, b) returns a fresh set of elements
+// in `a` but not in `b`. Companion to set_union (RES-876) and
+// set_intersection (RES-877).
+
+fn main(int _d) {
+    let a = #{1, 2, 3, 4};
+    let b = #{2, 4};
+
+    println(set_items(set_difference(a, b)));
+    println(set_len(set_difference(a, b)));
+
+    // Disjoint b means everything in a survives.
+    let c = #{99, 100};
+    println(set_len(set_difference(a, c)));
+
+    // Self-difference is the empty set.
+    println(set_len(set_difference(a, a)));
+
+    // String elements: filter out a known suspended-account list.
+    let active = #{"alice", "bob", "carol"};
+    let suspended = #{"bob"};
+    println(set_items(set_difference(active, suspended)));
+
+    return 0;
+}
+
+main(0);
