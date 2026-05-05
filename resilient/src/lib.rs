@@ -8890,6 +8890,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("ln", builtin_ln),
     // RES-889.
     ("log10", builtin_log10),
+    // RES-890.
+    ("log2", builtin_log2),
     ("log", builtin_log),
     ("exp", builtin_exp),
     // RES-147: monotonic ms clock, std-only.
@@ -9641,6 +9643,24 @@ fn builtin_log10(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("log10: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-890: `log2(x: Float) -> Float` — base-2 logarithm. Std-only;
+/// runtime error on non-positive input, matching `ln`/`log10` policy.
+fn builtin_log2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => {
+            if *f <= 0.0 {
+                return Err(format!("log2: argument must be > 0, got {}", f));
+            }
+            Ok(Value::Float(f.log2()))
+        }
+        [other] => Err(format!(
+            "log2: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("log2: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27055,6 +27075,51 @@ mod tests {
     #[test]
     fn log10_rejects_wrong_arity() {
         let err = builtin_log10(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn log2_of_powers_of_two() {
+        close(
+            as_float(builtin_log2(&[Value::Float(2.0)]).unwrap()),
+            1.0,
+            "log2(2)",
+        );
+        close(
+            as_float(builtin_log2(&[Value::Float(8.0)]).unwrap()),
+            3.0,
+            "log2(8)",
+        );
+        close(
+            as_float(builtin_log2(&[Value::Float(1.0)]).unwrap()),
+            0.0,
+            "log2(1)",
+        );
+        close(
+            as_float(builtin_log2(&[Value::Float(0.5)]).unwrap()),
+            -1.0,
+            "log2(0.5)",
+        );
+    }
+
+    #[test]
+    fn log2_rejects_non_positive() {
+        let err = builtin_log2(&[Value::Float(0.0)]).unwrap_err();
+        assert!(err.contains("argument must be > 0"), "err was: {}", err);
+        let err = builtin_log2(&[Value::Float(-2.0)]).unwrap_err();
+        assert!(err.contains("argument must be > 0"), "err was: {}", err);
+    }
+
+    #[test]
+    fn log2_rejects_int() {
+        let err = builtin_log2(&[Value::Int(2)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn log2_rejects_wrong_arity() {
+        let err = builtin_log2(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
