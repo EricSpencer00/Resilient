@@ -9315,6 +9315,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_union", builtin_set_union),
     // RES-877.
     ("set_intersection", builtin_set_intersection),
+    // RES-878.
+    ("set_difference", builtin_set_difference),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -16924,6 +16926,29 @@ fn builtin_set_intersection(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "set_intersection: expected 2 arguments (set, set), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-878: `set_difference(a, b) -> Set` — return a new set with elements in
+/// `a` and not in `b`. Inputs are unchanged.
+fn builtin_set_difference(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(a), Value::Set(b)] => {
+            let out: std::collections::HashSet<MapKey> = a.difference(b).cloned().collect();
+            Ok(Value::Set(out))
+        }
+        [Value::Set(_), other] => Err(format!(
+            "set_difference: second argument must be a Set, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "set_difference: first argument must be a Set, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "set_difference: expected 2 arguments (set, set), got {}",
             args.len()
         )),
     }
@@ -26019,6 +26044,85 @@ mod tests {
     #[test]
     fn set_intersection_rejects_wrong_arity() {
         let err = builtin_set_intersection(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_difference_removes_elements_in_b() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(3)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        let d = builtin_set_difference(&[a, b]).unwrap();
+        assert_eq!(as_set_len(d), 2);
+    }
+
+    #[test]
+    fn set_difference_disjoint_returns_a() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        let d = builtin_set_difference(&[a, b]).unwrap();
+        assert_eq!(as_set_len(d), 2);
+    }
+
+    #[test]
+    fn set_difference_self_is_empty() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        let d = builtin_set_difference(&[s.clone(), s]).unwrap();
+        assert_eq!(as_set_len(d), 0);
+    }
+
+    #[test]
+    fn set_difference_empty_minus_anything_is_empty() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let d = builtin_set_difference(&[empty, s]).unwrap();
+        assert_eq!(as_set_len(d), 0);
+    }
+
+    #[test]
+    fn set_difference_minus_empty_is_a() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::String("x".into())]).unwrap();
+        let a = builtin_set_insert(&[a, Value::String("y".into())]).unwrap();
+        let empty = builtin_set_new(&[]).unwrap();
+        let d = builtin_set_difference(&[a, empty]).unwrap();
+        assert_eq!(as_set_len(d), 2);
+    }
+
+    #[test]
+    fn set_difference_rejects_non_set_first_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_difference(&[Value::Int(1), s]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_difference_rejects_non_set_second_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_difference(&[s, Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_difference_rejects_wrong_arity() {
+        let err = builtin_set_difference(&[]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 

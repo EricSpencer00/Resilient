@@ -222,6 +222,7 @@ the same immutable-value semantics (each mutation returns a new map).
 | `set_items(s)` | set → array | snapshot of items |
 | `set_union(a, b)` | (set, set) → set | RES-876: every element in either set; deduped |
 | `set_intersection(a, b)` | (set, set) → set | RES-877: only elements present in both inputs |
+| `set_difference(a, b)` | (set, set) → set | RES-878: elements in `a` but not in `b` |
 
 ### Bytes
 
