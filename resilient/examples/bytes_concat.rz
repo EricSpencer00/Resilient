@@ -1,0 +1,23 @@
+// RES-887 demo: bytes_concat(a, b) returns a fresh Bytes value containing
+// `a` followed by `b`. Inputs are unchanged.
+
+fn main(int _d) {
+    let header = b"Hello, ";
+    let body = b"world!";
+
+    let combined = bytes_concat(header, body);
+    println(bytes_len(combined));    // 13
+
+    // Empty + nonempty.
+    let empty = b"";
+    println(bytes_len(bytes_concat(empty, body)));   // 6
+
+    // Roundtrip via byte indices.
+    let pair = bytes_concat(b"ab", b"cd");
+    println(byte_at(pair, 0));    // 97 ('a')
+    println(byte_at(pair, 3));    // 100 ('d')
+
+    return 0;
+}
+
+main(0);

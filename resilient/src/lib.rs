@@ -9337,6 +9337,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
     ("byte_at", builtin_byte_at),
+    // RES-887.
+    ("bytes_concat", builtin_bytes_concat),
     // RES-385: explicit consumption of a linear value. At runtime
     // `drop(v)` simply evaluates and discards its argument; the
     // semantic weight lives in the type checker's linear-use pass,
@@ -16869,6 +16871,30 @@ fn builtin_byte_at(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "byte_at: expected 2 arguments (bytes, index), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-887: `bytes_concat(a, b) -> Bytes` — return a fresh Bytes
+/// containing `a` followed by `b`. Inputs are unchanged.
+fn builtin_bytes_concat(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(a), Value::Bytes(b)] => {
+            let mut out = a.clone();
+            out.extend_from_slice(b);
+            Ok(Value::Bytes(out))
+        }
+        [Value::Bytes(_), other] => Err(format!(
+            "bytes_concat: second argument must be Bytes, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "bytes_concat: first argument must be Bytes, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "bytes_concat: expected 2 arguments (bytes, bytes), got {}",
             args.len()
         )),
     }
@@ -25746,6 +25772,57 @@ mod tests {
     fn byte_at_rejects_non_bytes_first_arg() {
         let err = builtin_byte_at(&[Value::Int(1), Value::Int(0)]).unwrap_err();
         assert!(err.contains("expected (Bytes, Int)"), "err was: {}", err);
+    }
+
+    #[test]
+    fn bytes_concat_appends_b_to_a() {
+        let v = builtin_bytes_concat(&[Value::Bytes(vec![1, 2, 3]), Value::Bytes(vec![4, 5, 6])])
+            .unwrap();
+        assert_eq!(as_bytes(v), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn bytes_concat_empty_first_returns_b() {
+        let v = builtin_bytes_concat(&[Value::Bytes(vec![]), Value::Bytes(vec![7, 8])]).unwrap();
+        assert_eq!(as_bytes(v), vec![7, 8]);
+    }
+
+    #[test]
+    fn bytes_concat_empty_second_returns_a() {
+        let v = builtin_bytes_concat(&[Value::Bytes(vec![9, 10]), Value::Bytes(vec![])]).unwrap();
+        assert_eq!(as_bytes(v), vec![9, 10]);
+    }
+
+    #[test]
+    fn bytes_concat_empty_empty_returns_empty() {
+        let v = builtin_bytes_concat(&[Value::Bytes(vec![]), Value::Bytes(vec![])]).unwrap();
+        assert_eq!(as_bytes(v), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn bytes_concat_rejects_non_bytes_first_arg() {
+        let err = builtin_bytes_concat(&[Value::Int(1), Value::Bytes(vec![1])]).unwrap_err();
+        assert!(
+            err.contains("first argument must be Bytes"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bytes_concat_rejects_non_bytes_second_arg() {
+        let err = builtin_bytes_concat(&[Value::Bytes(vec![1]), Value::Int(2)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be Bytes"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn bytes_concat_rejects_wrong_arity() {
+        let err = builtin_bytes_concat(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
     #[test]
