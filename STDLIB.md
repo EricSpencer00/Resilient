@@ -40,6 +40,7 @@ This document is a human-facing summary grouped by category.
 | `ceil(x)` | number → float | toward +∞ |
 | `sin(x)` `cos(x)` `tan(x)` | float → float | std-only |
 | `to_radians(d)` | float → float | RES-894: convert degrees to radians; std-only |
+| `to_degrees(r)` | float → float | RES-895: convert radians to degrees; std-only |
 | `atan2(y, x)` | (float, float) → float | std-only; returns angle of `(x, y)` in `(-π, π]` (note `y` first, matching IEEE / C) |
 | `hypot(x, y)` | (float, float) → float | RES-892: sqrt(x² + y²) without overflow; std-only |
 | `copysign(x, y)` | (float, float) → float | RES-893: magnitude of x with sign of y; std-only |
