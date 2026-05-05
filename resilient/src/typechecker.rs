@@ -1057,6 +1057,8 @@ impl TypeChecker {
         env.set("cos".to_string(), fn_float_to_float());
         env.set("tan".to_string(), fn_float_to_float());
         env.set("ln".to_string(), fn_float_to_float());
+        // RES-889.
+        env.set("log10".to_string(), fn_float_to_float());
         env.set("exp".to_string(), fn_float_to_float());
         env.set(
             "log".to_string(),
@@ -5314,6 +5316,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "cos",
         "tan",
         "ln",
+        "log10",
         "log",
         "exp",
         // String/collection.
