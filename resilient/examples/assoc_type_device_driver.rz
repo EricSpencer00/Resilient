@@ -1,0 +1,35 @@
+// RES-783 PR3: Device driver using associated types
+// Shows how associated types provide type safety for embedded drivers
+
+trait Device {
+    type Config;
+    type Status;
+
+    fn init(self) -> int;
+    fn check_status(self) -> int;
+}
+
+struct UARTDevice {
+    int base_addr,
+}
+
+impl Device for UARTDevice {
+    type Config = int;
+    type Status = int;
+
+    fn init(self) -> int {
+        return 0;
+    }
+
+    fn check_status(self) -> int {
+        return 1;
+    }
+}
+
+fn main() {
+    let uart = new UARTDevice { base_addr: 65536 };
+    uart.init();
+    uart.check_status();
+}
+
+main();
