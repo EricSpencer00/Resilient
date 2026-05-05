@@ -9319,6 +9319,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("set_difference", builtin_set_difference),
     // RES-879.
     ("set_is_subset", builtin_set_is_subset),
+    // RES-880.
+    ("set_is_superset", builtin_set_is_superset),
     // RES-152: Bytes builtins.
     ("bytes_len", builtin_bytes_len),
     ("bytes_slice", builtin_bytes_slice),
@@ -16971,6 +16973,26 @@ fn builtin_set_is_subset(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "set_is_subset: expected 2 arguments (set, set), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-880: `set_is_superset(a, b) -> Bool` — true iff every element of `b`
+/// is in `a`. Mirror of `set_is_subset`.
+fn builtin_set_is_superset(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Set(a), Value::Set(b)] => Ok(Value::Bool(a.is_superset(b))),
+        [Value::Set(_), other] => Err(format!(
+            "set_is_superset: second argument must be a Set, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "set_is_superset: first argument must be a Set, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "set_is_superset: expected 2 arguments (set, set), got {}",
             args.len()
         )),
     }
@@ -26224,6 +26246,86 @@ mod tests {
     #[test]
     fn set_is_subset_rejects_wrong_arity() {
         let err = builtin_set_is_subset(&[]).unwrap_err();
+        assert!(err.contains("expected 2 arguments"), "err was: {}", err);
+    }
+
+    #[test]
+    fn set_is_superset_self_is_true() {
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(2)]).unwrap();
+        assert!(as_bool(builtin_set_is_superset(&[s.clone(), s]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_superset_of_empty_is_always_true() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        assert!(as_bool(
+            builtin_set_is_superset(&[s, empty.clone()]).unwrap()
+        ));
+        assert!(as_bool(
+            builtin_set_is_superset(&[empty.clone(), empty]).unwrap()
+        ));
+    }
+
+    #[test]
+    fn set_is_superset_proper_superset_is_true() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(3)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(1)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(2)]).unwrap();
+        assert!(as_bool(builtin_set_is_superset(&[a, b]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_superset_missing_element_is_false() {
+        let a = builtin_set_new(&[]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(1)]).unwrap();
+        let a = builtin_set_insert(&[a, Value::Int(2)]).unwrap();
+        let b = builtin_set_new(&[]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(1)]).unwrap();
+        let b = builtin_set_insert(&[b, Value::Int(3)]).unwrap();
+        assert!(!as_bool(builtin_set_is_superset(&[a, b]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_superset_empty_of_nonempty_is_false() {
+        let empty = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_new(&[]).unwrap();
+        let s = builtin_set_insert(&[s, Value::Int(1)]).unwrap();
+        assert!(!as_bool(builtin_set_is_superset(&[empty, s]).unwrap()));
+    }
+
+    #[test]
+    fn set_is_superset_rejects_non_set_first_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_is_superset(&[Value::Int(1), s]).unwrap_err();
+        assert!(
+            err.contains("first argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_is_superset_rejects_non_set_second_arg() {
+        let s = builtin_set_new(&[]).unwrap();
+        let err = builtin_set_is_superset(&[s, Value::Int(1)]).unwrap_err();
+        assert!(
+            err.contains("second argument must be a Set"),
+            "err was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn set_is_superset_rejects_wrong_arity() {
+        let err = builtin_set_is_superset(&[]).unwrap_err();
         assert!(err.contains("expected 2 arguments"), "err was: {}", err);
     }
 
