@@ -1,0 +1,61 @@
+// RES-783 PR3: Embedded driver abstraction using associated types
+// Demonstrates how associated types enable writing generic device drivers
+// that work across different hardware implementations.
+
+trait Device {
+    type Config;
+    type Status;
+
+    fn init(self) -> int;
+    fn status(self) -> int;
+}
+
+struct UARTDevice {
+    int base_addr,
+}
+
+impl Device for UARTDevice {
+    type Config = int;
+    type Status = int;
+
+    fn init(self) -> int {
+        return 0;
+    }
+
+    fn status(self) -> int {
+        return 1;
+    }
+}
+
+struct GPIODevice {
+    int pin_count,
+}
+
+impl Device for GPIODevice {
+    type Config = int;
+    type Status = int;
+
+    fn init(self) -> int {
+        return 0;
+    }
+
+    fn status(self) -> int {
+        return 1;
+    }
+}
+
+fn setup_device<T: Device>(T device) -> int {
+    device.init();
+    device.status();
+    return 0;
+}
+
+fn main() {
+    let uart = new UARTDevice { base_addr: 65536 };
+    setup_device(uart);
+
+    let gpio = new GPIODevice { pin_count: 32 };
+    setup_device(gpio);
+}
+
+main();
