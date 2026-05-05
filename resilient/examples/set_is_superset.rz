@@ -1,0 +1,26 @@
+// RES-880 demo: set_is_superset(a, b) returns true when every element of `b`
+// is in `a`. Mirror of set_is_subset (RES-879).
+
+fn main(int _d) {
+    let big = #{1, 2, 3, 4};
+    let small = #{1, 2};
+    println(set_is_superset(big, small));    // true
+
+    // Mismatch flips it false.
+    let small2 = #{1, 99};
+    println(set_is_superset(big, small2));   // false
+
+    // Self and empty cases.
+    println(set_is_superset(big, big));      // true
+    println(set_is_superset(big, #{}));      // true (every set is superset of empty)
+    println(set_is_superset(#{}, big));      // false
+
+    // Capability check: granted ⊇ required?
+    let granted = #{"read", "write", "admin"};
+    let required = #{"read", "write"};
+    println(set_is_superset(granted, required));  // true
+
+    return 0;
+}
+
+main(0);
