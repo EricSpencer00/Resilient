@@ -8912,6 +8912,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("tanh", builtin_tanh),
     // RES-899.
     ("asinh", builtin_asinh),
+    // RES-900.
+    ("acosh", builtin_acosh),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9850,6 +9852,19 @@ fn builtin_asinh(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("asinh: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-900: `acosh(x: Float) -> Float` — inverse hyperbolic cosine. Inverse
+/// of `cosh`; domain is `x >= 1` (returns NaN for `x < 1` per `f64::acosh`).
+fn builtin_acosh(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.acosh())),
+        [other] => Err(format!(
+            "acosh: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("acosh: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27452,6 +27467,38 @@ mod tests {
     #[test]
     fn asinh_arity_check() {
         let err = builtin_asinh(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn acosh_basic() {
+        // acosh(1) = 0.
+        close(
+            as_float(builtin_acosh(&[Value::Float(1.0)]).unwrap()),
+            0.0,
+            "acosh(1)",
+        );
+        // cosh(acosh(x)) = x for x >= 1 — round-trip identity.
+        close(
+            as_float(builtin_cosh(&[builtin_acosh(&[Value::Float(2.5)]).unwrap()]).unwrap()),
+            2.5,
+            "cosh(acosh(2.5))",
+        );
+        // x < 1 is out of domain — NaN.
+        let nan = as_float(builtin_acosh(&[Value::Float(0.5)]).unwrap());
+        assert!(nan.is_nan(), "acosh(0.5) was {}", nan);
+    }
+
+    #[test]
+    fn acosh_rejects_int() {
+        let err = builtin_acosh(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn acosh_arity_check() {
+        let err = builtin_acosh(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
