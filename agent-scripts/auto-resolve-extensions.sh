@@ -33,6 +33,10 @@ if [[ $# -eq 0 ]]; then
 fi
 
 ALLOWED=(
+    # RES-929: lib.rs is the real extension-block file (1.8 MB);
+    # main.rs is a 463-byte binary entry. Keep main.rs allowlisted
+    # for legacy compatibility; lib.rs is now the primary path.
+    "resilient/src/lib.rs"
     "resilient/src/main.rs"
     "resilient/src/typechecker.rs"
     "resilient/src/lexer_logos.rs"

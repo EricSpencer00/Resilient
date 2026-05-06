@@ -138,18 +138,24 @@ Include a `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` trailer.
 
 **This is the single most important rule for parallel agent work.**
 
+> **Heads up (RES-929):** historical references in this file say
+> `src/main.rs` for the big core file. The actual file is now
+> `src/lib.rs` (1.8 MB; `main.rs` is a 463-byte binary entry).
+> The append-only allowlist in `agent-scripts/auto-resolve-extensions.sh`
+> and `agent-scripts/sync-integration.sh` covers both.
+
 Every language feature MUST follow this layout:
 
 ```
 resilient/src/my_feature.rs   ← ALL feature logic lives here
-resilient/src/main.rs         ← minimal: token + AST variant + dispatch call (~5 lines total)
+resilient/src/lib.rs          ← minimal: token + AST variant + dispatch call (~5 lines total)
 resilient/src/typechecker.rs  ← minimal: one function call in the <EXTENSION_PASSES> block
 resilient/src/lexer_logos.rs  ← minimal: one token arm
 ```
 
 ### Core files have designated extension points
 
-`main.rs`, `typechecker.rs`, and `lexer_logos.rs` contain comment markers:
+`lib.rs`, `typechecker.rs`, and `lexer_logos.rs` contain comment markers:
 
 ```rust
 // <EXTENSION_TOKENS>    ← add Token variants here
