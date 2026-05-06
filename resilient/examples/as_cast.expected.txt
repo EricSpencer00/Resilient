@@ -1,0 +1,6 @@
+3
+42
+true
+3
+3
+Program executed successfully

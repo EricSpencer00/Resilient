@@ -1,0 +1,28 @@
+// RES-934 demo: `as` cast operator. Sugar over the existing
+// `to_int` / `to_float` / `to_string` builtins; produces clean,
+// idiomatic conversions in expression position.
+
+fn main(int _d) -> int {
+    // Float → int truncates toward zero.
+    let f = 3.7;
+    println(f as int);                  // 3
+
+    // Int → float widens.
+    let n = 42;
+    println(n as float);                // 42
+
+    // Anything → string.
+    println(true as string);            // true
+
+    // Chains compose left-to-right.
+    let s = 3.5 as int as float as string;
+    println(s);                         // 3
+
+    // Cast binds tightly — parens needed to cast a sum.
+    let sum_cast = (1 + 2) as float;
+    println(sum_cast);                  // 3
+
+    return 0;
+}
+
+main(0);

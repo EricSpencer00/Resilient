@@ -7347,6 +7347,52 @@ impl Parser {
                         span: q_span,
                     })
                 }
+                // RES-934: postfix `as TYPE` cast — desugar to the
+                // matching `to_<type>` builtin call so the rest of the
+                // pipeline (typechecker, interpreter, JIT) sees a plain
+                // `CallExpression` and needs no per-feature knowledge.
+                // High precedence (11) mirrors Rust: `1 + 2 as float`
+                // means `1 + (2 as float)`.
+                Token::As => {
+                    let as_span = self.span_at_current();
+                    self.next_token(); // current = `as`
+                    self.next_token(); // current = type identifier
+                    let type_name = match &self.current_token {
+                        Token::Identifier(n) => n.clone(),
+                        // `as int` / `as float` / etc. lex `int` as a
+                        // bare identifier already, but if a future
+                        // change introduces a Token::IntKw or similar,
+                        // accept it via display_syntax fallback.
+                        other => {
+                            let tok = other.clone();
+                            self.record_error(format!(
+                                "Expected target type after `as`, found {}",
+                                tok
+                            ));
+                            return Some(current_left);
+                        }
+                    };
+                    let builtin = match type_name.as_str() {
+                        "int" | "Int" | "Int64" => "to_int",
+                        "float" | "Float" => "to_float",
+                        "string" | "String" => "to_string",
+                        other => {
+                            self.record_error(format!(
+                                "Cannot cast to `{}` — `as` supports int / float / string",
+                                other
+                            ));
+                            return Some(current_left);
+                        }
+                    };
+                    Some(Node::CallExpression {
+                        function: Box::new(Node::Identifier {
+                            name: builtin.to_string(),
+                            span: as_span,
+                        }),
+                        arguments: vec![current_left],
+                        span: as_span,
+                    })
+                }
                 Token::QuestionDot => {
                     // RES-363: `?.` — optional chaining. `peek_token` is
                     // `QuestionDot`. Advance twice: first to make `?.` the
@@ -9198,6 +9244,10 @@ impl Parser {
             Token::Dot => 11,
             Token::Question => 12,
             Token::QuestionDot => 12,
+            // RES-934: `as` postfix cast binds tightly, mirroring Rust —
+            // `1 + 2 as float` parses as `1 + (2 as float)`. Use parens
+            // around the sum to cast the whole expression.
+            Token::As => 11,
             _ => 0,
         }
     }
@@ -27776,6 +27826,81 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 300),
             other => panic!("expected Int(300), got {:?}", other),
         }
+    }
+
+    /// RES-934: `as int` desugars to `to_int(_)` and truncates floats.
+    #[test]
+    fn as_cast_float_to_int_truncates() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let f = 3.7;\n\
+                return f as int;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-934: `as float` widens an int.
+    #[test]
+    fn as_cast_int_to_float_widens() {
+        let src = "\
+            fn main(int _d) -> float {\n\
+                return 42 as float;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Float(f) => assert!((f - 42.0).abs() < 1e-9),
+            other => panic!("expected Float(42.0), got {:?}", other),
+        }
+    }
+
+    /// RES-934: `as string` formats any value to its string repr.
+    #[test]
+    fn as_cast_to_string() {
+        let src = "\
+            fn main(int _d) -> string {\n\
+                return 7 as string;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "7"),
+            other => panic!("expected String(\"7\"), got {:?}", other),
+        }
+    }
+
+    /// RES-934: an unsupported target type produces a parse-time
+    /// "cannot cast" diagnostic.
+    #[test]
+    fn as_cast_unsupported_type_errors() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let n = 3.5 as foo;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (_program, errs) = parse(src);
+        let combined = errs.join("\n");
+        assert!(
+            combined.contains("Cannot cast to `foo`"),
+            "expected cast diagnostic, got: {}",
+            combined
+        );
     }
 
     /// RES-928: out-of-range positional index errors with a clear
