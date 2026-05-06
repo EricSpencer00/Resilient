@@ -1,0 +1,29 @@
+// RES-907 demo: bit-counting integer builtins. All four operate on the
+// 64-bit two's-complement representation, so negative inputs are
+// well-defined.
+
+fn main(int _d) {
+    // count_ones is the population count (Hamming weight).
+    println(count_ones(0));               // 0
+    println(count_ones(7));               // 3   (0b111)
+    println(count_ones(-1));              // 64  (all bits set)
+
+    // count_zeros + count_ones = 64 for every input.
+    println(count_zeros(0));              // 64
+    println(count_zeros(-1));             // 0
+
+    // leading_zeros: log₂-of-power-of-two probe. 63 - leading_zeros(x)
+    // gives the bit index of the highest set bit.
+    println(leading_zeros(0));            // 64
+    println(leading_zeros(1));            // 63
+    println(63 - leading_zeros(256));     // 8   (256 = 1 << 8)
+
+    // trailing_zeros: lowest set bit. Bit-mask iteration primitive.
+    println(trailing_zeros(0));           // 64
+    println(trailing_zeros(1));           // 0
+    println(trailing_zeros(160));         // 5   (0b10100000)
+
+    return 0;
+}
+
+main(0);
