@@ -261,6 +261,8 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
         // RES-375: `Some(inner)` forwards to inner; `None` has no bindings.
         Pattern::Some(inner) => collect_pattern_bindings(inner.as_ref()),
         Pattern::None => vec![],
+        // RES-923: Result patterns mirror Option's behaviour.
+        Pattern::Ok(inner) | Pattern::Err(inner) => collect_pattern_bindings(inner.as_ref()),
         // RES-915: range patterns bind no names.
         Pattern::Range { .. } => vec![],
         // RES-400: enum-variant pattern bindings.
@@ -641,7 +643,7 @@ fn pattern_is_default_for_lint(p: &Pattern) -> bool {
             .iter()
             .all(|(_, sub)| pattern_is_default_for_lint(sub.as_ref())),
         // RES-375: Option patterns are never catch-alls by themselves.
-        Pattern::Some(_) | Pattern::None => false,
+        Pattern::Some(_) | Pattern::None | Pattern::Ok(_) | Pattern::Err(_) => false,
         // RES-400: enum-variant patterns are never catch-alls — each
         // matches one specific variant.
         Pattern::EnumVariant { .. } => false,

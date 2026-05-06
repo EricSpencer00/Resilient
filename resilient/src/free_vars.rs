@@ -547,6 +547,8 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
         // RES-375: `Some(inner)` — forwards into inner; `None` — no bindings.
         Pattern::Some(inner) => bind_pattern(inner.as_ref(), bound),
         Pattern::None => {}
+        // RES-923: Result patterns recurse like Option's Some.
+        Pattern::Ok(inner) | Pattern::Err(inner) => bind_pattern(inner.as_ref(), bound),
         // RES-400: enum-variant pattern bindings.
         Pattern::EnumVariant { payload, .. } => match payload {
             crate::EnumPatternPayload::None => {}

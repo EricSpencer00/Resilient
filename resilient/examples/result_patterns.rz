@@ -1,0 +1,31 @@
+// RES-923 demo: `Ok(v)` / `Err(e)` patterns destructure `Result`
+// values in match arms. Symmetric with the existing `Some(v)` /
+// `None` patterns for Option.
+
+fn safe_double(string s) -> int {
+    return match parse_int(s) {
+        Ok(n) => n * 2,
+        Err(_) => -1,
+    };
+}
+
+fn classify(string s) -> string {
+    return match parse_int(s) {
+        Ok(0) => "zero",
+        Ok(_) => "non-zero number",
+        Err(_) => "not a number",
+    };
+}
+
+fn main(int _d) {
+    println(safe_double("21"));        // 42
+    println(safe_double("abc"));       // -1
+
+    println(classify("0"));            // zero
+    println(classify("5"));            // non-zero number
+    println(classify("nope"));         // not a number
+
+    return 0;
+}
+
+main(0);

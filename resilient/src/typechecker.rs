@@ -193,6 +193,8 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
         // pattern binds; `None` introduces nothing.
         Pattern::Some(inner) => pattern_bindings(inner.as_ref()),
         Pattern::None => Vec::new(),
+        // RES-923: same shape for Ok / Err.
+        Pattern::Ok(inner) | Pattern::Err(inner) => pattern_bindings(inner.as_ref()),
         // RES-400: enum-variant pattern bindings.
         // None: no payload, no bindings.
         // Named: each declared field carries a sub-pattern; recurse.
@@ -232,7 +234,9 @@ fn pattern_is_default(p: &Pattern) -> bool {
                     .all(|(_, sub)| pattern_is_default(sub.as_ref()))
         }
         // RES-375: `Some(_)` / `None` are not defaults by themselves.
-        Pattern::Some(_) | Pattern::None => false,
+        // RES-923: `Ok(_)` / `Err(_)` likewise — each only matches
+        // half of `Result`.
+        Pattern::Some(_) | Pattern::None | Pattern::Ok(_) | Pattern::Err(_) => false,
         // RES-400: an enum-variant pattern is *not* a default — it
         // matches only one variant. Exhaustiveness over enums is
         // handled by enumerating variants in a future PR.
@@ -289,8 +293,9 @@ fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: 
             }
             true
         }
-        // RES-375: Option patterns don't match struct-nominal types.
-        Pattern::Some(_) | Pattern::None => false,
+        // RES-375 / RES-923: Option / Result patterns don't match
+        // struct-nominal types.
+        Pattern::Some(_) | Pattern::None | Pattern::Ok(_) | Pattern::Err(_) => false,
         // RES-400: enum-variant patterns don't match struct-nominal types.
         Pattern::EnumVariant { .. } => false,
     }
@@ -3088,6 +3093,10 @@ impl TypeChecker {
             // `None` introduces no bindings.
             Pattern::Some(inner) => self.match_pattern_binding_types(inner.as_ref(), &Type::Any),
             Pattern::None => Ok(vec![]),
+            // RES-923: Result patterns recurse same way.
+            Pattern::Ok(inner) | Pattern::Err(inner) => {
+                self.match_pattern_binding_types(inner.as_ref(), &Type::Any)
+            }
             // RES-400: enum-variant pattern. The dynamic typechecker
             // doesn't track variant payload types yet, so bound names
             // are typed as `Any` — the runtime evaluator validates the

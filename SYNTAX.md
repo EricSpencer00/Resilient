@@ -781,6 +781,21 @@ identifier: `let default = 3;` is a parse error
 No other `_` synonyms (`otherwise`, `else`, ...) are planned
 — one alias is plenty.
 
+### Result patterns (RES-923)
+
+Match arms can destructure a `Result<T, E>` directly:
+
+```rust
+match parse_int(input) {
+    Ok(n)  => use_value(n),
+    Err(e) => report(e),
+}
+```
+
+`Ok(<inner>)` and `Err(<inner>)` mirror `Some(<inner>)` /
+`None` for `Option`. Inner pattern can be a wildcard,
+identifier-binding, literal, range, or another nested pattern.
+
 ### Range patterns (RES-915)
 
 Match arms accept integer range patterns:

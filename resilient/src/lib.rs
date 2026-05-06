@@ -1503,6 +1503,12 @@ pub(crate) enum Pattern {
     Some(Box<Pattern>),
     /// RES-375: `None` — matches an absent Option.
     None,
+    /// RES-923: `Ok(<inner>)` — matches `Value::Result { ok: true,
+    /// payload }` and recurses against `payload`.
+    Ok(Box<Pattern>),
+    /// RES-923: `Err(<inner>)` — matches `Value::Result { ok: false,
+    /// payload }` and recurses against `payload`.
+    Err(Box<Pattern>),
     /// RES-400: tagged-enum-variant pattern.
     ///   * `Color::Red`               — payload-less.
     ///   * `Shape::Circle { r }`      — named-field; binds each
@@ -8170,6 +8176,22 @@ impl Parser {
                     let inner = self.parse_pattern_atom();
                     self.next_token(); // current = `)`
                     return Pattern::Some(Box::new(inner));
+                }
+                // RES-923: `Ok(inner_pattern)` / `Err(inner_pattern)` —
+                // Result destructuring patterns. Same shape as Some(_).
+                if name == "Ok" && self.peek_token == Token::LeftParen {
+                    self.next_token(); // current = `(`
+                    self.next_token(); // current = start of inner pattern
+                    let inner = self.parse_pattern_atom();
+                    self.next_token(); // current = `)`
+                    return Pattern::Ok(Box::new(inner));
+                }
+                if name == "Err" && self.peek_token == Token::LeftParen {
+                    self.next_token();
+                    self.next_token();
+                    let inner = self.parse_pattern_atom();
+                    self.next_token();
+                    return Pattern::Err(Box::new(inner));
                 }
                 // RES-375: `None` — Option absence pattern.
                 if name == "None" {
@@ -21342,6 +21364,15 @@ impl Interpreter {
                 Value::Option(None) => Ok(Some(vec![])),
                 _ => Ok(None),
             },
+            // RES-923: `Ok(inner)` / `Err(inner)` — Result destructuring.
+            Pattern::Ok(inner_pat) => match value {
+                Value::Result { ok: true, payload } => self.match_pattern(inner_pat, payload),
+                _ => Ok(None),
+            },
+            Pattern::Err(inner_pat) => match value {
+                Value::Result { ok: false, payload } => self.match_pattern(inner_pat, payload),
+                _ => Ok(None),
+            },
             // RES-400: tagged-enum-variant pattern. Three shapes
             // dispatched off the value's payload kind. The pattern's
             // optional `type_name` qualifier must match the value's
@@ -26783,10 +26814,105 @@ mod tests {
         );
     }
 
+    /// RES-923: `Ok(v)` / `Err(e)` patterns destructure Result values
+    /// in match arms. Wildcard, identifier, literal, and nested
+    /// patterns all work as inner sub-patterns.
+    #[test]
+    fn ok_err_patterns_match_result_correctly() {
+        let src = "\
+            fn classify(int x) -> string {\n\
+                if x > 0 { return \"pos\"; }\n\
+                let parsed = parse_int(\"42\");\n\
+                return match parsed {\n\
+                    Ok(_) => \"ok\",\n\
+                    Err(_) => \"err\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> string {\n\
+                return classify(0);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "ok"),
+            other => panic!("expected String(\"ok\"), got {:?}", other),
+        }
+    }
+
+    /// RES-923: identifier inner pattern binds the unwrapped value.
+    #[test]
+    fn ok_pattern_binds_inner_value() {
+        let src = "\
+            fn parse_or_default(string s, int dflt) -> int {\n\
+                return match parse_int(s) {\n\
+                    Ok(n) => n,\n\
+                    Err(_) => dflt,\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                return parse_or_default(\"42\", -1);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    /// RES-923: Err arm fires when the Result is an error.
+    #[test]
+    fn err_pattern_matches_err_value() {
+        let src = "\
+            fn parse_or_default(string s, int dflt) -> int {\n\
+                return match parse_int(s) {\n\
+                    Ok(n) => n,\n\
+                    Err(_) => dflt,\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                return parse_or_default(\"not a number\", -7);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, -7),
+            other => panic!("expected Int(-7), got {:?}", other),
+        }
+    }
+
+    /// RES-923: an Ok arm doesn't fire on Err (first-match wins).
+    #[test]
+    fn ok_pattern_does_not_match_err_value() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                return match parse_int(\"abc\") {\n\
+                    Ok(_) => 1,\n\
+                    _ => 0,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 0),
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
     /// RES-922: `let mut x = ...` is now accepted as syntactic sugar
-    /// for `let x = ...`. Resilient bindings have always been
-    /// reassignable, so the `mut` marker is purely for Rust-user
-    /// ergonomics — silently dropped at parse time.
+    /// for `let x = ...`.
     #[test]
     fn let_mut_keyword_is_accepted() {
         let src = "\
