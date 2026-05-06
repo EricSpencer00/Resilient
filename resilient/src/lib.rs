@@ -480,6 +480,20 @@ enum Token {
     Less,
     GreaterEqual,
     LessEqual,
+    /// RES-912: compound assignment operators — `x += expr` etc. The
+    /// parser desugars these at statement position into a plain
+    /// `Assignment { name, value: InfixExpression { left: name, op,
+    /// right: expr } }` so no new AST is needed.
+    PlusAssign,
+    MinusAssign,
+    StarAssign,
+    SlashAssign,
+    PercentAssign,
+    AmpAssign,
+    PipeAssign,
+    CaretAssign,
+    ShlAssign,
+    ShrAssign,
 
     // Delimiters
     LeftParen,
@@ -593,6 +607,16 @@ impl Token {
             Token::DoubleQuestion => "`??`".to_string(),
             Token::QuestionDot => "`?.`".to_string(),
             Token::Plus => "`+`".to_string(),
+            Token::PlusAssign => "`+=`".to_string(),
+            Token::MinusAssign => "`-=`".to_string(),
+            Token::StarAssign => "`*=`".to_string(),
+            Token::SlashAssign => "`/=`".to_string(),
+            Token::PercentAssign => "`%=`".to_string(),
+            Token::AmpAssign => "`&=`".to_string(),
+            Token::PipeAssign => "`|=`".to_string(),
+            Token::CaretAssign => "`^=`".to_string(),
+            Token::ShlAssign => "`<<=`".to_string(),
+            Token::ShrAssign => "`>>=`".to_string(),
             Token::Minus => "`-`".to_string(),
             Token::Multiply => "`*`".to_string(),
             Token::Divide => "`/`".to_string(),
@@ -810,21 +834,53 @@ impl Lexer {
                     Token::Assign
                 }
             }
-            '+' => Token::Plus,
+            '+' => {
+                // RES-912: `+=` compound assignment.
+                if self.peek_char() == '=' {
+                    self.read_char();
+                    Token::PlusAssign
+                } else {
+                    Token::Plus
+                }
+            }
             '-' => {
                 if self.peek_char() == '>' {
                     self.read_char();
                     Token::Arrow
+                } else if self.peek_char() == '=' {
+                    // RES-912: `-=`.
+                    self.read_char();
+                    Token::MinusAssign
                 } else {
                     Token::Minus
                 }
             }
-            '*' => Token::Multiply,
-            '%' => Token::Modulo,
+            '*' => {
+                // RES-912: `*=`.
+                if self.peek_char() == '=' {
+                    self.read_char();
+                    Token::StarAssign
+                } else {
+                    Token::Multiply
+                }
+            }
+            '%' => {
+                // RES-912: `%=`.
+                if self.peek_char() == '=' {
+                    self.read_char();
+                    Token::PercentAssign
+                } else {
+                    Token::Modulo
+                }
+            }
             '&' => {
                 if self.peek_char() == '&' {
                     self.read_char();
                     Token::And
+                } else if self.peek_char() == '=' {
+                    // RES-912: `&=`.
+                    self.read_char();
+                    Token::AmpAssign
                 } else {
                     Token::BitAnd
                 }
@@ -833,11 +889,23 @@ impl Lexer {
                 if self.peek_char() == '|' {
                     self.read_char();
                     Token::Or
+                } else if self.peek_char() == '=' {
+                    // RES-912: `|=`.
+                    self.read_char();
+                    Token::PipeAssign
                 } else {
                     Token::BitOr
                 }
             }
-            '^' => Token::BitXor,
+            '^' => {
+                // RES-912: `^=`.
+                if self.peek_char() == '=' {
+                    self.read_char();
+                    Token::CaretAssign
+                } else {
+                    Token::BitXor
+                }
+            }
             '/' => {
                 if self.peek_char() == '/' {
                     // Line comment: skip to newline.
@@ -863,6 +931,10 @@ impl Lexer {
                         self.read_char();
                     }
                     return self.next_token();
+                } else if self.peek_char() == '=' {
+                    // RES-912: `/=`.
+                    self.read_char();
+                    Token::SlashAssign
                 } else {
                     Token::Divide
                 }
@@ -873,7 +945,13 @@ impl Lexer {
                     Token::GreaterEqual
                 } else if self.peek_char() == '>' {
                     self.read_char();
-                    Token::ShiftRight
+                    // RES-912: `>>=` shift-right assign.
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::ShrAssign
+                    } else {
+                        Token::ShiftRight
+                    }
                 } else {
                     Token::Greater
                 }
@@ -884,7 +962,13 @@ impl Lexer {
                     Token::LessEqual
                 } else if self.peek_char() == '<' {
                     self.read_char();
-                    Token::ShiftLeft
+                    // RES-912: `<<=` shift-left assign.
+                    if self.peek_char() == '=' {
+                        self.read_char();
+                        Token::ShlAssign
+                    } else {
+                        Token::ShiftLeft
+                    }
                 } else {
                     Token::Less
                 }
@@ -2786,6 +2870,26 @@ impl Parser {
             Token::Identifier(_) if self.peek_token == Token::Assign => {
                 Some(self.parse_assignment())
             }
+            // RES-912: compound assignment — `IDENT OP= EXPR;`. Same
+            // disambiguation as plain assignment but the dispatched
+            // parser desugars to `IDENT = IDENT OP EXPR;`.
+            Token::Identifier(_)
+                if matches!(
+                    self.peek_token,
+                    Token::PlusAssign
+                        | Token::MinusAssign
+                        | Token::StarAssign
+                        | Token::SlashAssign
+                        | Token::PercentAssign
+                        | Token::AmpAssign
+                        | Token::PipeAssign
+                        | Token::CaretAssign
+                        | Token::ShlAssign
+                        | Token::ShrAssign
+                ) =>
+            {
+                Some(self.parse_compound_assignment())
+            }
             // Index / field assignment: `IDENT[...] = EXPR;` or
             // `IDENT.field.more = EXPR;`. We let the expression parser
             // build the full LHS, then disambiguate at the `=`.
@@ -2876,6 +2980,58 @@ impl Parser {
         Node::Assignment {
             name,
             value: Box::new(value),
+            span: stmt_span,
+        }
+    }
+
+    /// RES-912: parse `IDENT OP= EXPR;` (`+=`, `-=`, `*=`, `/=`, `%=`,
+    /// `&=`, `|=`, `^=`, `<<=`, `>>=`) as syntactic sugar for
+    /// `IDENT = IDENT OP EXPR;`. Caller has verified the lookahead;
+    /// `current_token` is the identifier on entry.
+    fn parse_compound_assignment(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        let name = match &self.current_token {
+            Token::Identifier(n) => n.clone(),
+            _ => unreachable!("parse_compound_assignment only dispatched for Identifier"),
+        };
+        let ident_span = self.span_at_current();
+        self.next_token(); // move onto the OP= token
+        let op_str = match &self.current_token {
+            Token::PlusAssign => "+",
+            Token::MinusAssign => "-",
+            Token::StarAssign => "*",
+            Token::SlashAssign => "/",
+            Token::PercentAssign => "%",
+            Token::AmpAssign => "&",
+            Token::PipeAssign => "|",
+            Token::CaretAssign => "^",
+            Token::ShlAssign => "<<",
+            Token::ShrAssign => ">>",
+            other => unreachable!("compound-assign with non-OP= token: {:?}", other),
+        }
+        .to_string();
+        self.next_token(); // skip the OP= token to first token of RHS
+        let rhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+            value: 0,
+            span: span::Span::default(),
+        });
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+        // Desugar: `name = name OP rhs`.
+        let lhs_read = Node::Identifier {
+            name: name.clone(),
+            span: ident_span,
+        };
+        let combined = Node::InfixExpression {
+            left: Box::new(lhs_read),
+            operator: op_str,
+            right: Box::new(rhs),
+            span: stmt_span,
+        };
+        Node::Assignment {
+            name,
+            value: Box::new(combined),
             span: stmt_span,
         }
     }
@@ -26042,6 +26198,60 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-912: each compound-assignment operator desugars correctly
+    /// to `x = x OP rhs`. Test each via a single program that exercises
+    /// every variant; assertion is on the final value of an accumulator
+    /// to keep the failure point localized when something regresses.
+    #[test]
+    fn compound_assignment_operators_desugar_correctly() {
+        // Arithmetic operators on Int.
+        for (op, rhs, start, expected) in [
+            ("+=", 5, 1, 6),
+            ("-=", 3, 10, 7),
+            ("*=", 4, 3, 12),
+            ("/=", 2, 12, 6),
+            ("%=", 4, 14, 2),
+            ("&=", 0b1100, 0b1010, 0b1000),
+            ("|=", 0b0001, 0b1010, 0b1011),
+            ("^=", 0b1111, 0b1010, 0b0101),
+            ("<<=", 2, 3, 12),
+            (">>=", 1, 12, 6),
+        ] {
+            let src = format!(
+                "fn main(int _d) -> int {{ let x = {start}; x {op} {rhs}; return x; }} main(0);"
+            );
+            let (program, errs) = parse(&src);
+            assert!(errs.is_empty(), "{op}: parse errors: {:?}", errs);
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::Int(n) => assert_eq!(n, expected, "{op}: x {op} {rhs} from {start}"),
+                other => panic!("{op}: expected Int({expected}), got {:?}", other),
+            }
+        }
+    }
+
+    /// RES-912: compound-assignment is a left-to-right desugar, not a
+    /// repeated read — verify by using the LHS in the RHS expression
+    /// (`x += x` doubles `x`).
+    #[test]
+    fn compound_assignment_lhs_visible_in_rhs() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let x = 7;\n\
+                x += x;\n\
+                return x;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 14),
+            other => panic!("expected Int(14), got {:?}", other),
         }
     }
 

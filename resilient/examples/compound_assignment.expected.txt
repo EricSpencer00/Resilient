@@ -1,0 +1,12 @@
+6
+4
+12
+6
+2
+8
+9
+6
+24
+12
+55
+Program executed successfully

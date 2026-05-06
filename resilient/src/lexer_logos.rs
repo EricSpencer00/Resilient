@@ -73,6 +73,29 @@ enum Tok {
     DoubleQuestion,
 
     // --- single-char operators & punctuation ---
+    // RES-912: compound-assignment forms must outrank their bare
+    // counterparts so logos picks the longer match.
+    #[token("+=", priority = 4)]
+    PlusAssign,
+    #[token("-=", priority = 4)]
+    MinusAssign,
+    #[token("*=", priority = 4)]
+    StarAssign,
+    #[token("/=", priority = 4)]
+    SlashAssign,
+    #[token("%=", priority = 4)]
+    PercentAssign,
+    #[token("&=", priority = 4)]
+    AmpAssign,
+    #[token("|=", priority = 4)]
+    PipeAssign,
+    #[token("^=", priority = 4)]
+    CaretAssign,
+    #[token("<<=", priority = 5)]
+    ShlAssign,
+    #[token(">>=", priority = 5)]
+    ShrAssign,
+
     #[token("+")]
     Plus,
     #[token("-")]
@@ -683,6 +706,17 @@ fn convert(t: Tok) -> Token {
         Tok::Arrow => Token::Arrow,
         Tok::Plus => Token::Plus,
         Tok::Minus => Token::Minus,
+        // RES-912.
+        Tok::PlusAssign => Token::PlusAssign,
+        Tok::MinusAssign => Token::MinusAssign,
+        Tok::StarAssign => Token::StarAssign,
+        Tok::SlashAssign => Token::SlashAssign,
+        Tok::PercentAssign => Token::PercentAssign,
+        Tok::AmpAssign => Token::AmpAssign,
+        Tok::PipeAssign => Token::PipeAssign,
+        Tok::CaretAssign => Token::CaretAssign,
+        Tok::ShlAssign => Token::ShlAssign,
+        Tok::ShrAssign => Token::ShrAssign,
         Tok::Star => Token::Multiply,
         Tok::Slash => Token::Divide,
         Tok::Percent => Token::Modulo,
