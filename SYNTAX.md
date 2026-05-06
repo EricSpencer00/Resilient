@@ -622,6 +622,32 @@ Equivalent to `while true { ... }` and shares the same 1M-iteration
 runaway guard. `loop` is a statement, not an expression — `let x =
 loop { break v; }` (loop-with-value) is a future enhancement.
 
+### `while let` (RES-914)
+
+Iterate while a pattern matches the (re-evaluated each iteration)
+scrutinee. Pure parser-level sugar over `loop { match ... }`:
+
+```rust
+while let Some(item) = pop_next() {
+    use_item(item);
+}
+```
+
+desugars to
+
+```rust
+loop {
+    match pop_next() {
+        Some(item) => { use_item(item); }
+        _          => { break; }
+    }
+}
+```
+
+All `match` patterns work (literal, identifier-binding, struct,
+tuple, variant, wildcard). Identifier patterns always match — so
+`while let x = ...` is unconditional unless the body breaks.
+
 ### `break` and `continue` (RES-910)
 
 Both statements affect the **innermost** enclosing `while` or

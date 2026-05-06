@@ -1,0 +1,38 @@
+// RES-914 demo: `while let` keeps iterating while a pattern matches
+// the scrutinee. Re-evaluates the scrutinee each iteration so it
+// works with mutating "drain" patterns.
+
+fn main(int _d) -> int {
+    // Drain a counter using a literal-pattern while-let.
+    // The body fires only when counter == 5; once the counter
+    // changes, the wildcard fallthrough breaks out.
+    let counter = 5;
+    let runs = 0;
+    while let 5 = counter {
+        runs += 1;
+        counter -= 1;
+    }
+    println(runs);                       // 1
+
+    // Identifier pattern always matches; combined with `break` this
+    // is the idiomatic "do {} while" pattern.
+    let i = 0;
+    let last = 0;
+    while let n = i {
+        last = n;
+        if n >= 4 { break; }
+        i += 1;
+    }
+    println(last);                       // 4
+
+    // Pattern that doesn't match on the first iteration: zero runs.
+    let zeros = 0;
+    while let 99 = 1 {
+        zeros += 1;
+    }
+    println(zeros);                      // 0
+
+    return 0;
+}
+
+main(0);

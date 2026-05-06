@@ -5039,6 +5039,14 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'while'
 
+        // RES-914: `while let <pattern> = <scrutinee> { body }` is
+        // parser-level sugar over `loop { match scrutinee { pattern =>
+        // body, _ => break } }`. Both prerequisites — `loop` (RES-913)
+        // and `break` (RES-910) — landed, so the desugar is now safe.
+        if self.current_token == Token::Let {
+            return self.parse_while_let_statement(stmt_span);
+        }
+
         let condition = if self.current_token == Token::LeftParen {
             self.next_token();
             let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
@@ -6033,6 +6041,106 @@ impl Parser {
             self.next_token();
         }
         Node::Continue { span: stmt_span }
+    }
+
+    /// RES-914: parse `while let <pattern> = <scrutinee> { body }` and
+    /// desugar to `loop { match <scrutinee> { <pattern> => { body }, _ =>
+    /// { break; } } }`. The scrutinee is re-evaluated on every iteration
+    /// because the synthesized `Match` lives inside the `loop` body.
+    ///
+    /// Caller has already consumed `while`; on entry `current_token`
+    /// must be `Token::Let`. No new AST variant — the desugar uses only
+    /// existing nodes.
+    fn parse_while_let_statement(&mut self, stmt_span: span::Span) -> Node {
+        debug_assert!(matches!(self.current_token, Token::Let));
+        self.next_token(); // skip `let`
+
+        let pattern = self.parse_pattern();
+        self.next_token(); // advance past last pattern token
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after pattern in `while let`, found {}",
+                tok
+            ));
+            // Recover with an empty `loop` that breaks immediately so
+            // the rest of the file still parses.
+            return Node::WhileStatement {
+                condition: Box::new(Node::BooleanLiteral {
+                    value: true,
+                    span: stmt_span,
+                }),
+                body: Box::new(Node::Block {
+                    stmts: vec![Node::Break { span: stmt_span }],
+                    span: stmt_span,
+                }),
+                invariants: Vec::new(),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `=`
+
+        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+            value: false,
+            span: stmt_span,
+        });
+        self.next_token(); // advance past last scrutinee token
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' after `while let` scrutinee, found {}",
+                tok
+            ));
+            return Node::WhileStatement {
+                condition: Box::new(Node::BooleanLiteral {
+                    value: true,
+                    span: stmt_span,
+                }),
+                body: Box::new(Node::Block {
+                    stmts: vec![Node::Break { span: stmt_span }],
+                    span: stmt_span,
+                }),
+                invariants: Vec::new(),
+                span: stmt_span,
+            };
+        }
+
+        let body = self.parse_block_statement();
+
+        // Synthesize the desugared body:
+        //
+        //   match <scrutinee> {
+        //       <pattern> => <body-block>,
+        //       _         => { break; },
+        //   }
+        let break_block = Node::Block {
+            stmts: vec![Node::Break { span: stmt_span }],
+            span: stmt_span,
+        };
+        let arms = vec![
+            (pattern, None, body),
+            (Pattern::Wildcard, None, break_block),
+        ];
+        let match_expr = Node::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span: stmt_span,
+        };
+        let loop_body = Node::Block {
+            stmts: vec![match_expr],
+            span: stmt_span,
+        };
+        Node::WhileStatement {
+            condition: Box::new(Node::BooleanLiteral {
+                value: true,
+                span: stmt_span,
+            }),
+            body: Box::new(loop_body),
+            invariants: Vec::new(),
+            span: stmt_span,
+        }
     }
 
     /// RES-913: parse `loop { body }` and desugar to `while true { body }`.
@@ -26242,6 +26350,85 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-914: `while let <pattern> = <scrutinee>` keeps iterating
+    /// while the pattern matches; the first non-match breaks out.
+    /// Literal patterns are the cleanest way to test the
+    /// pattern-stops-matching case.
+    #[test]
+    fn while_let_iterates_while_pattern_matches() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let counter = 5;\n\
+                let runs = 0;\n\
+                while let 5 = counter {\n\
+                    runs += 1;\n\
+                    counter -= 1;\n\
+                }\n\
+                return runs;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 1),
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    /// RES-914: when the pattern doesn't match on the first iteration,
+    /// the loop body runs zero times — same as `while false { ... }`.
+    #[test]
+    fn while_let_zero_iterations_on_initial_no_match() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let runs = 0;\n\
+                while let 99 = 1 {\n\
+                    runs += 1;\n\
+                }\n\
+                return runs;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 0),
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    /// RES-914: identifier-pattern always matches, so `while let x =
+    /// scrutinee` is unconditional unless something inside the body
+    /// breaks. Behaves exactly like `loop { let x = scrutinee; body }`
+    /// — useful when you want to capture the freshly-evaluated value
+    /// each iteration.
+    #[test]
+    fn while_let_identifier_pattern_acts_like_loop() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let counter = 0;\n\
+                let captured = 0;\n\
+                while let x = counter {\n\
+                    captured = x;\n\
+                    if counter >= 5 { break; }\n\
+                    counter += 1;\n\
+                }\n\
+                return captured;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
         }
     }
 
