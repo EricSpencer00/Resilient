@@ -8949,6 +8949,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("atan", builtin_atan),
     // RES-905.
     ("cbrt", builtin_cbrt),
+    // RES-907: bit-counting integer builtins. Useful for register-bit
+    // decoding, bit-mask iteration, and log₂-of-power-of-two probes.
+    ("count_ones", builtin_count_ones),
+    ("count_zeros", builtin_count_zeros),
+    ("leading_zeros", builtin_leading_zeros),
+    ("trailing_zeros", builtin_trailing_zeros),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9967,6 +9973,60 @@ fn builtin_cbrt(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("cbrt: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-907: `count_ones(x: Int) -> Int` — population count (Hamming weight)
+/// of the 64-bit two's-complement representation. `count_ones(-1) == 64`.
+fn builtin_count_ones(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.count_ones() as i64)),
+        [other] => Err(format!("count_ones: expected Int, got {}", other)),
+        _ => Err(format!(
+            "count_ones: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-907: `count_zeros(x: Int) -> Int` — bits **not** set in the 64-bit
+/// representation. Equivalent to `64 - count_ones(x)`. `count_zeros(0) == 64`.
+fn builtin_count_zeros(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.count_zeros() as i64)),
+        [other] => Err(format!("count_zeros: expected Int, got {}", other)),
+        _ => Err(format!(
+            "count_zeros: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-907: `leading_zeros(x: Int) -> Int` — count of leading-zero bits in
+/// the 64-bit representation; `leading_zeros(0) == 64`. Useful as a fast
+/// log₂-of-power-of-two probe (`63 - leading_zeros(x)`).
+fn builtin_leading_zeros(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.leading_zeros() as i64)),
+        [other] => Err(format!("leading_zeros: expected Int, got {}", other)),
+        _ => Err(format!(
+            "leading_zeros: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-907: `trailing_zeros(x: Int) -> Int` — count of trailing-zero bits;
+/// `trailing_zeros(0) == 64`. Useful for bit-mask iteration (find lowest
+/// set bit).
+fn builtin_trailing_zeros(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.trailing_zeros() as i64)),
+        [other] => Err(format!("trailing_zeros: expected Int, got {}", other)),
+        _ => Err(format!(
+            "trailing_zeros: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -27799,6 +27859,125 @@ mod tests {
     fn cbrt_arity_check() {
         let err = builtin_cbrt(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    /// RES-907: bit-counting builtins map to i64 two's-complement, so all
+    /// edge cases (zero, all-ones, single-bit) are well-defined.
+    #[test]
+    fn count_ones_basic() {
+        let f = |x: i64| match builtin_count_ones(&[Value::Int(x)]).unwrap() {
+            Value::Int(i) => i,
+            _ => panic!(),
+        };
+        assert_eq!(f(0), 0);
+        assert_eq!(f(1), 1);
+        assert_eq!(f(0b1011), 3);
+        // -1 in two's-complement is all 64 bits set.
+        assert_eq!(f(-1), 64);
+        // Population count is symmetric across i64::MAX vs MIN+1: both
+        // have exactly 63 set bits (sign bit differs only on i64::MIN).
+        assert_eq!(f(i64::MAX), 63);
+        assert_eq!(f(i64::MIN), 1);
+    }
+
+    #[test]
+    fn count_zeros_complements_count_ones() {
+        let ones = match builtin_count_ones(&[Value::Int(0b1011)]).unwrap() {
+            Value::Int(i) => i,
+            _ => panic!(),
+        };
+        let zeros = match builtin_count_zeros(&[Value::Int(0b1011)]).unwrap() {
+            Value::Int(i) => i,
+            _ => panic!(),
+        };
+        assert_eq!(ones + zeros, 64);
+        // count_zeros(0) is all 64 bits.
+        assert_eq!(
+            match builtin_count_zeros(&[Value::Int(0)]).unwrap() {
+                Value::Int(i) => i,
+                _ => panic!(),
+            },
+            64
+        );
+        // count_zeros(-1) is 0.
+        assert_eq!(
+            match builtin_count_zeros(&[Value::Int(-1)]).unwrap() {
+                Value::Int(i) => i,
+                _ => panic!(),
+            },
+            0
+        );
+    }
+
+    #[test]
+    fn leading_zeros_basic() {
+        let f = |x: i64| match builtin_leading_zeros(&[Value::Int(x)]).unwrap() {
+            Value::Int(i) => i,
+            _ => panic!(),
+        };
+        // Zero is all leading zeros.
+        assert_eq!(f(0), 64);
+        // 1 has 63 leading zeros.
+        assert_eq!(f(1), 63);
+        // High bit set (i64::MIN) has 0 leading zeros.
+        assert_eq!(f(i64::MIN), 0);
+        // log₂-of-power-of-two probe: 63 - leading_zeros(x) for x > 0.
+        for shift in 0..63 {
+            let x = 1i64 << shift;
+            assert_eq!(63 - f(x), shift, "x = 1 << {}", shift);
+        }
+    }
+
+    #[test]
+    fn trailing_zeros_basic() {
+        let f = |x: i64| match builtin_trailing_zeros(&[Value::Int(x)]).unwrap() {
+            Value::Int(i) => i,
+            _ => panic!(),
+        };
+        // Zero is all trailing zeros.
+        assert_eq!(f(0), 64);
+        // 1 has 0 trailing zeros.
+        assert_eq!(f(1), 0);
+        // Bit-mask iteration: trailing_zeros isolates the lowest set bit.
+        assert_eq!(f(0b1010_0000), 5);
+        // i64::MIN: only the sign bit is set → 63 trailing zeros.
+        assert_eq!(f(i64::MIN), 63);
+    }
+
+    #[test]
+    fn bit_counting_rejects_non_int() {
+        for (name, builder) in [
+            ("count_ones", builtin_count_ones as fn(&[Value]) -> _),
+            ("count_zeros", builtin_count_zeros),
+            ("leading_zeros", builtin_leading_zeros),
+            ("trailing_zeros", builtin_trailing_zeros),
+        ] {
+            let err = builder(&[Value::Float(0.5)]).unwrap_err();
+            assert!(
+                err.starts_with(name) && err.contains("expected Int"),
+                "{}: err was: {}",
+                name,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn bit_counting_arity_check() {
+        for (name, builder) in [
+            ("count_ones", builtin_count_ones as fn(&[Value]) -> _),
+            ("count_zeros", builtin_count_zeros),
+            ("leading_zeros", builtin_leading_zeros),
+            ("trailing_zeros", builtin_trailing_zeros),
+        ] {
+            let err = builder(&[]).unwrap_err();
+            assert!(
+                err.starts_with(name) && err.contains("expected 1 argument"),
+                "{}: err was: {}",
+                name,
+                err
+            );
+        }
     }
 
     #[test]

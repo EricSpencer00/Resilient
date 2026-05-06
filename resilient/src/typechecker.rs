@@ -1088,6 +1088,15 @@ impl TypeChecker {
         env.set("atan".to_string(), fn_float_to_float());
         // RES-905.
         env.set("cbrt".to_string(), fn_float_to_float());
+        // RES-907: bit-counting integer builtins (Int -> Int).
+        let fn_int_to_int = || Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("count_ones".to_string(), fn_int_to_int());
+        env.set("count_zeros".to_string(), fn_int_to_int());
+        env.set("leading_zeros".to_string(), fn_int_to_int());
+        env.set("trailing_zeros".to_string(), fn_int_to_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -5379,6 +5388,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "acos",
         "atan",
         "cbrt",
+        "count_ones",
+        "count_zeros",
+        "leading_zeros",
+        "trailing_zeros",
         // String/collection.
         "len",
         "push",
