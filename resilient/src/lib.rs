@@ -6805,7 +6805,12 @@ impl Parser {
             self.next_token(); // Move to 'else'
             self.next_token(); // Skip 'else'
 
-            if self.current_token != Token::LeftBrace {
+            // RES-925: `else if cond { ... }` chains. Recurse into a
+            // fresh `parse_if_statement` so the chain produces a
+            // right-leaning IfStatement tree — same desugar Rust uses.
+            if self.current_token == Token::If {
+                Some(Box::new(self.parse_if_statement()))
+            } else if self.current_token != Token::LeftBrace {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected '{{' after 'else', found {}", tok));
                 None
@@ -7044,6 +7049,12 @@ impl Parser {
             Token::HashLeftBrace => Some(self.parse_set_literal()),
             Token::New => Some(self.parse_struct_literal()),
             Token::Match => Some(self.parse_match_expression()),
+            // RES-925: `if` as expression. Reuses `parse_if_statement`
+            // which already produces a `Node::IfStatement` whose
+            // evaluator returns the value of the chosen block. Inside
+            // the consequence / alternative blocks, a trailing bare
+            // expression statement is what carries the block's value.
+            Token::If => Some(self.parse_if_statement()),
             Token::Function => Some(self.parse_function_literal()),
             // RES-330: quantifier expressions delegate parsing entirely
             // to the quantifiers module so the prefix dispatch stays
@@ -26926,6 +26937,82 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 0),
             other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    /// RES-925: `if` works in expression position; the chosen
+    /// branch's last bare expression is the value.
+    #[test]
+    fn if_as_expression_returns_branch_value() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let x = if true { 100 } else { 200 };\n\
+                return x;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 100),
+            other => panic!("expected Int(100), got {:?}", other),
+        }
+    }
+
+    /// RES-925: `else if` chains parse as a recursive IfStatement on
+    /// the alternative branch. Verify the value flows out of the
+    /// matching arm.
+    #[test]
+    fn if_else_if_chain_picks_correct_arm() {
+        let src = "\
+            fn classify(int n) -> string {\n\
+                return if n > 0 {\n\
+                    \"pos\"\n\
+                } else if n < 0 {\n\
+                    \"neg\"\n\
+                } else {\n\
+                    \"zero\"\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                let a = classify(5);\n\
+                let b = classify(-3);\n\
+                let c = classify(0);\n\
+                return len(a) + len(b) + len(c);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 10), // pos(3) + neg(3) + zero(4) = 10
+            other => panic!("expected Int(11), got {:?}", other),
+        }
+    }
+
+    /// RES-925: `if` without `else` in expression position evaluates
+    /// to `Void` on the not-taken branch. Sanity check that the
+    /// statement form continues to work.
+    #[test]
+    fn if_statement_form_still_works() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let x = 0;\n\
+                if true {\n\
+                    x = 42;\n\
+                }\n\
+                return x;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected Int(42), got {:?}", other),
         }
     }
 

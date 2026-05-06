@@ -1,0 +1,35 @@
+// RES-925 demo: `if` works in expression position. Each branch is
+// a block; the trailing bare expression (no semicolon) is the
+// block's value. `else if` chains parse correctly.
+
+fn classify(int n) -> string {
+    return if n > 0 {
+        "positive"
+    } else if n < 0 {
+        "negative"
+    } else {
+        "zero"
+    };
+}
+
+fn abs_diff(int a, int b) -> int {
+    // Inline if-expression as the operand to a binary op.
+    return if a > b { a - b } else { b - a };
+}
+
+fn main(int _d) {
+    println(classify(5));            // positive
+    println(classify(-3));           // negative
+    println(classify(0));            // zero
+
+    println(abs_diff(7, 3));         // 4
+    println(abs_diff(3, 7));         // 4
+
+    // Bind the result of an if-expression directly.
+    let max = if 100 > 50 { 100 } else { 50 };
+    println(max);                    // 100
+
+    return 0;
+}
+
+main(0);
