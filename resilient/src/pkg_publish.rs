@@ -524,6 +524,26 @@ fn describe_auth(source: &AuthSource) -> String {
 mod tests {
     use super::*;
 
+    /// RES-935: serialize tests that mutate process-global env vars
+    /// (`RESILIENT_TOKEN`, `HOME`). `cargo test` runs threads in
+    /// parallel by default, so two such tests racing on the same env
+    /// var produce flaky failures (`set_var` from one test gets
+    /// `remove_var`'d by another between read and assert). All tests
+    /// in this module that touch env state must hold this lock for
+    /// the full read-mutate-assert window.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        // Even if another test panicked while holding the lock, the
+        // poisoned guard is still safe to use here — the env-var
+        // state we're guarding is observed only inside the critical
+        // section of each test, and each test restores its own
+        // before-state in `Drop`-equivalent tail code.
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
     #[test]
     fn manifest_round_trip() {
         let tmp = std::env::temp_dir().join("res-pub-test-1");
@@ -647,6 +667,9 @@ mod tests {
 
     #[test]
     fn auth_env_var_takes_precedence() {
+        // RES-935: serialize against any other env-mutating test in
+        // this module so we don't race on `RESILIENT_TOKEN`.
+        let _g = env_lock();
         // Save/restore env so concurrent tests don't see leakage.
         let prev = env::var("RESILIENT_TOKEN").ok();
         unsafe {
@@ -665,6 +688,8 @@ mod tests {
 
     #[test]
     fn auth_returns_none_when_neither_source_present() {
+        // RES-935: same env-lock as auth_env_var_takes_precedence.
+        let _g = env_lock();
         let prev = env::var("RESILIENT_TOKEN").ok();
         let prev_home = env::var("HOME").ok();
         let tmp = std::env::temp_dir().join("res-pub-no-creds");
