@@ -1,0 +1,23 @@
+// RES-906 demo: scientific-notation float literals. The lexer accepts
+// `[mantissa][eE][+-]?digits` where mantissa is an integer or a regular
+// decimal-point float. Embedded code routinely needs constants like
+// 1e6 (clock dividers, sensor scaling) — without this rule the
+// workaround was the awkward `1000000.0`.
+
+fn main(int _d) {
+    // Bare integer mantissa.
+    println(1e3);                // 1000
+    println(2E10);               // 20000000000
+    // Decimal mantissa, signed exponent.
+    println(1.5e-3);             // 0.0015
+    println(2.5e+2);             // 250
+    // Trailing-dot mantissa.
+    println(1.e3);               // 1000
+
+    // Scientific notation flows through arithmetic just like any float.
+    println(1e3 + 1.0);          // 1001
+
+    return 0;
+}
+
+main(0);

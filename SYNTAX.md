@@ -508,7 +508,10 @@ The current trait system does not support:
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
   and binary (`0b1010`) literals. Underscore separators allowed:
   `0xDEAD_BEEF`.
-- `float`: 64-bit floating point
+- `float`: 64-bit floating point. Accepts decimal-point literals
+  (`1.5`, `42.`) and RES-906 scientific notation (`1e9`, `2E10`,
+  `1.5e-3`, `1.e3`). Exponent body (`+`/`-` optional, then ≥1 digit)
+  must follow `e`/`E` — bare `1e` lexes as `Int(1) Ident("e")`.
 - `string`: UTF-8 text; `len(s)` returns scalar count
 - `bytes`: raw byte sequence, `b"\x00\x01abc"` literal (RES-152)
 - `bool`: `true` / `false`
