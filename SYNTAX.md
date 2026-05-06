@@ -666,6 +666,34 @@ identifier: `let default = 3;` is a parse error
 No other `_` synonyms (`otherwise`, `else`, ...) are planned
 — one alias is plenty.
 
+### `if let` (RES-908)
+
+`if let` is parser-level sugar over `match`. It is the idiomatic way
+to bind a pattern conditionally without spelling out the full match:
+
+```rust
+if let Some(x) = optional {
+    use_value(x);
+} else {
+    fallback();
+}
+```
+
+desugars to
+
+```rust
+match optional {
+    Some(x) => { use_value(x); }
+    _       => { fallback(); }
+}
+```
+
+All `match` patterns are supported (literal, identifier, struct,
+tuple, variant, wildcard). Without an `else` branch, the no-match
+arm is an empty block. `else if let` chaining is **not** sugar in
+this PR — write it as nested `if let`s or fall back to a full
+`match`.
+
 ```rust
 // line comment
 /* block comment, can

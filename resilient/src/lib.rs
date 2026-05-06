@@ -6243,6 +6243,15 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'if'
 
+        // RES-908: `if let <pattern> = <scrutinee> { ... } [else { ... }]`
+        // is parser-level sugar over `match`. We detect the `let` keyword
+        // immediately after `if` and dispatch to the dedicated path so the
+        // resulting `Node::Match` flows through the unchanged typechecker
+        // / interpreter / VM paths — no new AST variant needed.
+        if self.current_token == Token::Let {
+            return self.parse_if_let_statement(stmt_span);
+        }
+
         // Handle both `if (condition)` and `if condition` forms.
         //
         // RES-014 invariant note: `parse_expression` leaves `current_token`
@@ -6309,6 +6318,102 @@ impl Parser {
             condition: Box::new(condition),
             consequence: Box::new(consequence),
             alternative,
+            span: stmt_span,
+        }
+    }
+
+    /// RES-908: parse `if let <pattern> = <scrutinee> { <body> }
+    /// [else { <else_body> }]` as syntactic sugar over `match`.
+    ///
+    /// The desugaring pairs the user's pattern with a wildcard fallthrough:
+    ///
+    /// ```text
+    /// match <scrutinee> {
+    ///     <pattern> => { <body> },
+    ///     _         => { <else_body or empty block> },
+    /// }
+    /// ```
+    ///
+    /// Caller must have already consumed the `if` token; `current_token`
+    /// must be `Token::Let`.
+    fn parse_if_let_statement(&mut self, stmt_span: span::Span) -> Node {
+        debug_assert!(matches!(self.current_token, Token::Let));
+        self.next_token(); // skip `let`
+
+        let pattern = self.parse_pattern();
+        self.next_token(); // advance past last pattern token
+
+        if self.current_token != Token::Assign {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '=' after pattern in `if let`, found {}",
+                tok
+            ));
+            // Recover with an empty match so the rest of the file still parses.
+            return Node::Match {
+                scrutinee: Box::new(Node::BooleanLiteral {
+                    value: false,
+                    span: stmt_span,
+                }),
+                arms: Vec::new(),
+                span: stmt_span,
+            };
+        }
+        self.next_token(); // skip `=`
+
+        let scrutinee = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
+            value: false,
+            span: stmt_span,
+        });
+        self.next_token(); // advance past last scrutinee token
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected '{{' after `if let` scrutinee, found {}",
+                tok
+            ));
+            return Node::Match {
+                scrutinee: Box::new(scrutinee),
+                arms: Vec::new(),
+                span: stmt_span,
+            };
+        }
+
+        let body = self.parse_block_statement();
+
+        let else_body = if self.peek_token == Token::Else {
+            self.next_token(); // move to `else`
+            self.next_token(); // skip `else`
+            if self.current_token != Token::LeftBrace {
+                let tok = self.current_token.clone();
+                self.record_error(format!("Expected '{{' after 'else', found {}", tok));
+                None
+            } else {
+                Some(self.parse_block_statement())
+            }
+        } else {
+            None
+        };
+
+        // Build the two match arms. The else arm uses Pattern::Wildcard;
+        // when there is no `else`, an empty block matches today's `match`
+        // semantics for the unmatched-arm case.
+        let arms = vec![
+            (pattern, None, body),
+            (
+                Pattern::Wildcard,
+                None,
+                else_body.unwrap_or(Node::Block {
+                    stmts: Vec::new(),
+                    span: stmt_span,
+                }),
+            ),
+        ];
+
+        Node::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
             span: stmt_span,
         }
     }
@@ -25432,6 +25537,123 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 3), // "big" length
             other => panic!("expected Int(3), got {:?}", other),
         }
+    }
+
+    /// RES-908: `if let <pattern> = <expr> { body }` desugars to
+    /// `match <expr> { <pattern> => <body>, _ => {} }`. With an int
+    /// scrutinee and a literal pattern, the body fires only on equality.
+    #[test]
+    fn if_let_matches_int_literal_pattern() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let hit = 0;\n\
+                if let 7 = 7 {\n\
+                    hit = 1;\n\
+                }\n\
+                return hit;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 1),
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    /// RES-908: when the pattern doesn't match, the body must NOT
+    /// fire and (without `else`) the desugared empty arm runs.
+    #[test]
+    fn if_let_skips_body_when_pattern_does_not_match() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let hit = 0;\n\
+                if let 7 = 99 {\n\
+                    hit = 1;\n\
+                }\n\
+                return hit;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 0),
+            other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    /// RES-908: identifier patterns bind the scrutinee in the body.
+    /// This is the main ergonomic win — pulling a value out without a
+    /// full `match` block.
+    #[test]
+    fn if_let_identifier_pattern_binds_scrutinee() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let captured = 0;\n\
+                if let x = 42 {\n\
+                    captured = x;\n\
+                }\n\
+                return captured;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 42),
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    /// RES-908: `else` body fires when the pattern does not match.
+    #[test]
+    fn if_let_else_branch_fires_on_no_match() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let tag = 0;\n\
+                if let 1 = 99 {\n\
+                    tag = 1;\n\
+                } else {\n\
+                    tag = 2;\n\
+                }\n\
+                return tag;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2),
+            other => panic!("expected Int(2), got {:?}", other),
+        }
+    }
+
+    /// RES-908: missing `=` after the pattern is a clean parse error,
+    /// not a panic.
+    #[test]
+    fn if_let_missing_equals_emits_diagnostic() {
+        let src = "\
+            fn main(int _d) {\n\
+                if let x 42 {\n\
+                    return 1;\n\
+                }\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (_p, errs) = parse(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("Expected '='") && e.contains("`if let`")),
+            "expected an `if let` `=` diagnostic, got: {:?}",
+            errs
+        );
     }
 
     #[test]
