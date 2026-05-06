@@ -2067,6 +2067,22 @@ enum Node {
         #[allow(dead_code)]
         span: span::Span,
     },
+    /// RES-911: array slicing — `arr[lo..hi]`, `arr[lo..=hi]`, `arr[lo..]`,
+    /// `arr[..hi]`, `arr[..]`. `lo` and `hi` are both `Option` so a single
+    /// AST variant covers every endpoint combination. The interpreter
+    /// clamps bounds against `0..=len` and returns a fresh `Array<T>`.
+    Slice {
+        target: Box<Node>,
+        /// `None` → start at 0.
+        lo: Option<Box<Node>>,
+        /// `None` → end at `len(target)`.
+        hi: Option<Box<Node>>,
+        /// `true` for `..=`, `false` for `..`. Only meaningful when
+        /// `hi` is `Some`.
+        inclusive: bool,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
     /// RES-032: `a[i] = expr` write.
     IndexAssignment {
         target: Box<Node>,
@@ -8122,7 +8138,23 @@ impl Parser {
         // RES-085: span covers the `[` at current_token on entry.
         let bracket_span = self.span_at_current();
         self.next_token(); // skip '['
-        let index = self.parse_expression(0)?;
+
+        // RES-911: leading `..` — `arr[..]`, `arr[..hi]`, `arr[..=hi]`.
+        // No lower-bound expression at all; dispatch straight to the
+        // slice-tail parser.
+        if matches!(self.current_token, Token::DotDot) {
+            return self.parse_slice_tail(target, bracket_span, None);
+        }
+
+        let lo = self.parse_expression(0)?;
+
+        // RES-911: `lo..hi` / `lo..=hi` / `lo..` slice forms — peek for
+        // `..` after the first expression.
+        if self.peek_token == Token::DotDot {
+            self.next_token(); // step past last token of `lo`
+            return self.parse_slice_tail(target, bracket_span, Some(lo));
+        }
+
         if self.peek_token != Token::RightBracket {
             let tok = self.peek_token.clone();
             self.record_error(format!(
@@ -8131,14 +8163,62 @@ impl Parser {
             ));
             return Some(Node::IndexExpression {
                 target: Box::new(target),
-                index: Box::new(index),
+                index: Box::new(lo),
                 span: bracket_span,
             });
         }
         self.next_token(); // to ]
         Some(Node::IndexExpression {
             target: Box::new(target),
-            index: Box::new(index),
+            index: Box::new(lo),
+            span: bracket_span,
+        })
+    }
+
+    /// RES-911: parse the tail of a slice — entry condition is that
+    /// `current_token == Token::DotDot`. The optional lower-bound
+    /// expression has already been consumed by the caller (`None` for
+    /// `arr[..]` / `arr[..hi]`, `Some(lo)` for `arr[lo..]` /
+    /// `arr[lo..hi]` / `arr[lo..=hi]`). On exit, `current_token` sits
+    /// on the closing `]`.
+    fn parse_slice_tail(
+        &mut self,
+        target: Node,
+        bracket_span: span::Span,
+        lo: Option<Node>,
+    ) -> Option<Node> {
+        debug_assert!(matches!(self.current_token, Token::DotDot));
+        self.next_token(); // skip `..`
+
+        // `..=` — lexer emits `..` + `=`, mirroring `parse_range_tail`.
+        let inclusive = if matches!(self.current_token, Token::Assign) {
+            self.next_token(); // skip `=`
+            true
+        } else {
+            false
+        };
+
+        let hi = if matches!(self.current_token, Token::RightBracket) {
+            // `arr[lo..]` / `arr[..]` — open upper bound. The interpreter
+            // substitutes `len(target)`.
+            None
+        } else {
+            let h = self.parse_expression(0)?;
+            self.next_token(); // step past last token of hi
+            Some(h)
+        };
+
+        if !matches!(self.current_token, Token::RightBracket) {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected ']' to close slice, found {}", tok));
+        }
+        // current_token is on `]`; caller will advance past it.
+
+        Some(Node::Slice {
+            target: Box::new(target),
+            lo: lo.map(Box::new),
+            hi: hi.map(Box::new),
+            inclusive,
             span: bracket_span,
         })
     }
@@ -19208,6 +19288,61 @@ impl Interpreter {
                     (other, _) => Err(format!("Cannot index {:?}", other)),
                 }
             }
+            // RES-911: array slicing — `target[lo..hi]` (etc.) returns a
+            // fresh `Value::Array`. Bounds clamp against `0..=len`; `lo
+            // > hi` and negative endpoints are runtime errors.
+            Node::Slice {
+                target,
+                lo,
+                hi,
+                inclusive,
+                ..
+            } => {
+                let target_val = self.eval(target)?;
+                let items = match target_val {
+                    Value::Array(v) => v,
+                    other => return Err(format!("Cannot slice non-array: {}", other)),
+                };
+                let len = items.len() as i64;
+                let lo_i: i64 = match lo {
+                    Some(n) => match self.eval(n)? {
+                        Value::Int(i) => i,
+                        other => {
+                            return Err(format!("slice lower bound must be Int, got {}", other));
+                        }
+                    },
+                    None => 0,
+                };
+                let hi_raw: i64 = match hi {
+                    Some(n) => match self.eval(n)? {
+                        Value::Int(i) => i,
+                        other => {
+                            return Err(format!("slice upper bound must be Int, got {}", other));
+                        }
+                    },
+                    None => len,
+                };
+                if lo_i < 0 {
+                    return Err(format!("slice lower bound must be >= 0, got {}", lo_i));
+                }
+                if hi_raw < 0 {
+                    return Err(format!("slice upper bound must be >= 0, got {}", hi_raw));
+                }
+                // RES-911: convert inclusive-end into the half-open form
+                // `[lo, hi+1)`. We do this BEFORE clamping so `arr[..=hi]`
+                // with `hi == len-1` yields the full array.
+                let hi_excl = if *inclusive { hi_raw + 1 } else { hi_raw };
+                if lo_i > hi_excl {
+                    return Err(format!(
+                        "slice lower bound {} exceeds upper bound {}",
+                        lo_i, hi_raw
+                    ));
+                }
+                // Clamp both endpoints against the array length.
+                let lo_clamp = lo_i.min(len) as usize;
+                let hi_clamp = hi_excl.min(len) as usize;
+                Ok(Value::Array(items[lo_clamp..hi_clamp].to_vec()))
+            }
             Node::IndexAssignment {
                 target,
                 index,
@@ -25907,6 +26042,170 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-911: half-open slicing — `arr[lo..hi]` includes `lo`,
+    /// excludes `hi`.
+    #[test]
+    fn slice_half_open_excludes_upper_bound() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [10, 20, 30, 40, 50];\n\
+                let s = arr[1..3];\n\
+                return len(s);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2), // [20, 30]
+            other => panic!("expected Int(2), got {:?}", other),
+        }
+    }
+
+    /// RES-911: inclusive slicing — `arr[lo..=hi]` includes both ends.
+    #[test]
+    fn slice_inclusive_includes_upper_bound() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [10, 20, 30, 40, 50];\n\
+                let s = arr[1..=3];\n\
+                return len(s);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3), // [20, 30, 40]
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-911: open lower / upper bounds — `arr[lo..]`, `arr[..hi]`,
+    /// `arr[..]`. The interpreter substitutes 0 / `len` as appropriate.
+    #[test]
+    fn slice_open_bounds() {
+        let cases = [
+            ("arr[2..]", 3), // tail of length 3 (30, 40, 50)
+            ("arr[..3]", 3), // head of length 3 (10, 20, 30)
+            ("arr[..]", 5),  // full copy
+        ];
+        for (slice_expr, expected_len) in cases {
+            let src = format!(
+                "fn main(int _d) -> int {{ let arr = [10, 20, 30, 40, 50]; let s = {}; return len(s); }} main(0);",
+                slice_expr
+            );
+            let (program, errs) = parse(&src);
+            assert!(
+                errs.is_empty(),
+                "parse errors for {}: {:?}",
+                slice_expr,
+                errs
+            );
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::Int(n) => {
+                    assert_eq!(
+                        n, expected_len,
+                        "{} expected len {}",
+                        slice_expr, expected_len
+                    )
+                }
+                other => panic!("{}: expected Int, got {:?}", slice_expr, other),
+            }
+        }
+    }
+
+    /// RES-911: out-of-range upper bound clamps to `len`. `arr[..99]`
+    /// returns the whole array, not an error.
+    #[test]
+    fn slice_upper_bound_clamps_to_len() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3];\n\
+                let s = arr[..99];\n\
+                return len(s);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-911: `lo > hi` (after inclusivity normalisation) is a runtime
+    /// error, not silently truncated to empty.
+    #[test]
+    fn slice_lo_greater_than_hi_is_runtime_error() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3];\n\
+                let s = arr[2..1];\n\
+                return len(s);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("lower bound") && err.contains("exceeds"),
+            "expected lo>hi error, got: {}",
+            err
+        );
+    }
+
+    /// RES-911: negative lower bound is rejected at runtime, mirroring
+    /// today's strict integer-index policy.
+    #[test]
+    fn slice_negative_bound_is_runtime_error() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3];\n\
+                let s = arr[-1..2];\n\
+                return len(s);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains(">= 0"),
+            "expected negative-bound error, got: {}",
+            err
+        );
+    }
+
+    /// RES-911: regular indexing still works alongside the new slice
+    /// path — we didn't accidentally route `arr[i]` through the slice
+    /// AST node.
+    #[test]
+    fn regular_indexing_still_works() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [10, 20, 30];\n\
+                return arr[1];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 20),
+            other => panic!("expected Int(20), got {:?}", other),
         }
     }
 
@@ -33347,8 +33646,16 @@ mod tests {
 
     #[test]
     fn deep_linear_recursion_returns_runtime_error_before_host_overflow() {
+        // RES-911 grew the Node enum (Slice variant) which pushed the
+        // per-eval-frame stack footprint up enough that 8 MiB stopped
+        // being a comfortable margin. 16 MiB is still well within any
+        // hosted environment and gives the interpreter's call-depth
+        // guard (`MAX_INTERPRETER_CALL_DEPTH = 32`) plenty of runway to
+        // fire before the host stack runs out. This test asserts the
+        // *safety property* — that runaway recursion returns an error
+        // rather than crashing — not the absolute frame size.
         let handle = std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
+            .stack_size(16 * 1024 * 1024)
             .spawn(|| {
                 let src = r#"
                     fn count(int n) {

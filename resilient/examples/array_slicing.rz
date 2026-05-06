@@ -1,0 +1,29 @@
+// RES-911 demo: array slicing. Five forms cover every endpoint
+// combination — half-open, inclusive, open-on-either-side, full.
+
+fn main(int _d) {
+    let xs = [10, 20, 30, 40, 50];
+
+    // Half-open: includes lo, excludes hi.
+    println(xs[1..3]);                   // [20, 30]
+    // Inclusive: includes both.
+    println(xs[1..=3]);                  // [20, 30, 40]
+    // Open upper bound — to the end.
+    println(xs[2..]);                    // [30, 40, 50]
+    // Open lower bound — from the start.
+    println(xs[..3]);                    // [10, 20, 30]
+    // Open both sides — full copy.
+    println(xs[..]);                     // [10, 20, 30, 40, 50]
+
+    // Out-of-range upper bound clamps to len.
+    println(xs[..99]);                   // [10, 20, 30, 40, 50]
+
+    // Slicing produces a fresh array — modifications elsewhere
+    // wouldn't reach back into the source.
+    let head = xs[..2];
+    println(len(head));                  // 2
+
+    return 0;
+}
+
+main(0);
