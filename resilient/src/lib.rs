@@ -8906,6 +8906,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("exp2", builtin_exp2),
     // RES-896.
     ("sinh", builtin_sinh),
+    // RES-897.
+    ("cosh", builtin_cosh),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9807,6 +9809,18 @@ fn builtin_sinh(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("sinh: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-897: `cosh(x: Float) -> Float` — hyperbolic cosine. Mirror of `cos`.
+fn builtin_cosh(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.cosh())),
+        [other] => Err(format!(
+            "cosh: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("cosh: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27298,6 +27312,40 @@ mod tests {
     #[test]
     fn sinh_arity_check() {
         let err = builtin_sinh(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn cosh_basic() {
+        // cosh(0) = 1.
+        close(
+            as_float(builtin_cosh(&[Value::Float(0.0)]).unwrap()),
+            1.0,
+            "cosh(0)",
+        );
+        close(
+            as_float(builtin_cosh(&[Value::Float(1.0)]).unwrap()),
+            1.5430806348152437,
+            "cosh(1)",
+        );
+        // cosh is even: cosh(-x) = cosh(x).
+        close(
+            as_float(builtin_cosh(&[Value::Float(-2.0)]).unwrap()),
+            as_float(builtin_cosh(&[Value::Float(2.0)]).unwrap()),
+            "cosh even-symmetry",
+        );
+    }
+
+    #[test]
+    fn cosh_rejects_int() {
+        let err = builtin_cosh(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn cosh_arity_check() {
+        let err = builtin_cosh(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
