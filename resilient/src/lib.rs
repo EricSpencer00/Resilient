@@ -8916,6 +8916,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("acosh", builtin_acosh),
     // RES-901.
     ("atanh", builtin_atanh),
+    // RES-902.
+    ("asin", builtin_asin),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9881,6 +9883,19 @@ fn builtin_atanh(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("atanh: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-902: `asin(x: Float) -> Float` — inverse sine (radians). Inverse of
+/// `sin`; domain is `[-1, 1]`; `|x| > 1` yields NaN. Range `[-π/2, π/2]`.
+fn builtin_asin(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.asin())),
+        [other] => Err(format!(
+            "asin: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("asin: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27556,6 +27571,44 @@ mod tests {
     #[test]
     fn atanh_arity_check() {
         let err = builtin_atanh(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn asin_basic() {
+        // asin(0) = 0.
+        close(
+            as_float(builtin_asin(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "asin(0)",
+        );
+        // asin(1) = π/2.
+        close(
+            as_float(builtin_asin(&[Value::Float(1.0)]).unwrap()),
+            std::f64::consts::FRAC_PI_2,
+            "asin(1)",
+        );
+        // asin is odd: asin(-x) = -asin(x).
+        close(
+            as_float(builtin_asin(&[Value::Float(-0.5)]).unwrap()),
+            -as_float(builtin_asin(&[Value::Float(0.5)]).unwrap()),
+            "asin odd-symmetry",
+        );
+        // |x| > 1 → NaN.
+        let nan = as_float(builtin_asin(&[Value::Float(1.5)]).unwrap());
+        assert!(nan.is_nan(), "asin(1.5) was {}", nan);
+    }
+
+    #[test]
+    fn asin_rejects_int() {
+        let err = builtin_asin(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn asin_arity_check() {
+        let err = builtin_asin(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 

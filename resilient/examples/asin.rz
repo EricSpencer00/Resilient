@@ -1,0 +1,16 @@
+// RES-902 demo: asin(x) is the inverse sine (radians). Inverse of
+// sin (RES-146). std-only; float-in / float-out per RES-130. Domain
+// is [-1, 1]; |x|>1 yields NaN. Range [-π/2, π/2].
+
+fn main(int _d) {
+    println(asin(0.0));                  // 0
+    // sin(asin(x)) = x for x in [-1, 1].
+    println(sin(asin(0.5)));             // 0.5
+    // asin is odd: asin(x) + asin(-x) cancels.
+    println(asin(0.7) + asin(-0.7));     // 0
+    println(asin(1.0) > 0.0);            // true (= π/2)
+
+    return 0;
+}
+
+main(0);
