@@ -2914,16 +2914,35 @@ impl Parser {
         }
     }
 
-    /// Parse either `IDENT[...] = EXPR;` (index assignment) or fall
-    /// through to a plain expression statement if no `=` follows the
-    /// index. Entered with current_token = the leading Identifier.
+    /// Parse either `IDENT[...] = EXPR;` (index assignment), the
+    /// RES-917 compound forms `IDENT[...] OP= EXPR;`, or fall through
+    /// to a plain expression statement if no assignment-style operator
+    /// follows the LHS. Entered with `current_token` = the leading
+    /// Identifier.
     fn parse_maybe_index_assignment(&mut self) -> Node {
-        // Parse the index expression (which consumes IDENT, [, index, ]).
+        // Parse the index/field expression (which consumes IDENT, [, …, ]).
         let lhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
             value: 0,
             span: span::Span::default(),
         });
-        // If this is an assignment, peek should be `=`.
+        // RES-917: detect compound-assign on a path LHS (`arr[i] += rhs`,
+        // `obj.field -= rhs`, etc.). Desugar to `LHS = LHS OP rhs`. The
+        // LHS read happens twice in the AST — fine for pure paths today;
+        // documented as a footgun for paths with side effects.
+        let compound_op: Option<&'static str> = match self.peek_token {
+            Token::PlusAssign => Some("+"),
+            Token::MinusAssign => Some("-"),
+            Token::StarAssign => Some("*"),
+            Token::SlashAssign => Some("/"),
+            Token::PercentAssign => Some("%"),
+            Token::AmpAssign => Some("&"),
+            Token::PipeAssign => Some("|"),
+            Token::CaretAssign => Some("^"),
+            Token::ShlAssign => Some("<<"),
+            Token::ShrAssign => Some(">>"),
+            _ => None,
+        };
+        // Plain `=` assignment.
         if self.peek_token == Token::Assign {
             self.next_token(); // move onto '='
             self.next_token(); // skip '=' to first token of RHS
@@ -2937,7 +2956,7 @@ impl Parser {
             // Destructure the LHS to pick the right assignment shape.
             // RES-085: pull span through so the Assignment node
             // inherits the LHS expression's span.
-            match lhs {
+            return match lhs {
                 Node::IndexExpression {
                     target,
                     index,
@@ -2962,14 +2981,95 @@ impl Parser {
                     expr: Box::new(lhs),
                     span: span::Span::default(),
                 },
-            }
-        } else {
+            };
+        }
+        // RES-917: compound-assign path.
+        if let Some(op) = compound_op {
+            self.next_token(); // step onto the OP= token
+            self.next_token(); // skip OP= to first token of RHS
+            let rhs = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
             if self.peek_token == Token::Semicolon {
                 self.next_token();
             }
-            Node::ExpressionStatement {
-                expr: Box::new(lhs),
-                span: span::Span::default(),
+            return self.build_compound_lvalue_assignment(lhs, op, rhs);
+        }
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+        Node::ExpressionStatement {
+            expr: Box::new(lhs),
+            span: span::Span::default(),
+        }
+    }
+
+    /// RES-917: build the desugared assignment node for
+    /// `LHS OP= RHS`. The LHS is cloned for the read-side of the
+    /// generated `InfixExpression`.
+    fn build_compound_lvalue_assignment(&mut self, lhs: Node, op: &str, rhs: Node) -> Node {
+        let stmt_span = match &lhs {
+            Node::IndexExpression { span, .. } => *span,
+            Node::FieldAccess { span, .. } => *span,
+            _ => span::Span::default(),
+        };
+        match lhs {
+            Node::IndexExpression {
+                target,
+                index,
+                span,
+            } => {
+                let read = Node::IndexExpression {
+                    target: target.clone(),
+                    index: index.clone(),
+                    span,
+                };
+                let combined = Node::InfixExpression {
+                    left: Box::new(read),
+                    operator: op.to_string(),
+                    right: Box::new(rhs),
+                    span: stmt_span,
+                };
+                Node::IndexAssignment {
+                    target,
+                    index,
+                    value: Box::new(combined),
+                    span,
+                }
+            }
+            Node::FieldAccess {
+                target,
+                field,
+                span,
+            } => {
+                let read = Node::FieldAccess {
+                    target: target.clone(),
+                    field: field.clone(),
+                    span,
+                };
+                let combined = Node::InfixExpression {
+                    left: Box::new(read),
+                    operator: op.to_string(),
+                    right: Box::new(rhs),
+                    span: stmt_span,
+                };
+                Node::FieldAssignment {
+                    target,
+                    field,
+                    value: Box::new(combined),
+                    span,
+                }
+            }
+            other => {
+                self.record_error(format!(
+                    "Compound assignment requires an identifier, index, or field LHS — got {:?}",
+                    other
+                ));
+                Node::ExpressionStatement {
+                    expr: Box::new(other),
+                    span: stmt_span,
+                }
             }
         }
     }
@@ -26446,6 +26546,76 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-917 regression: before this PR, `arr[i] += rhs` was a
+    /// silent no-op — the parser produced an `InfixExpression`
+    /// statement with no side effect. This test pins the new
+    /// working behaviour so a future regression would surface.
+    #[test]
+    fn index_compound_assign_is_no_longer_silent_noop() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [10, 20, 30];\n\
+                arr[1] += 5;\n\
+                return arr[1];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 25, "the no-op bug is back"),
+            other => panic!("expected Int(25), got {:?}", other),
+        }
+    }
+
+    /// RES-917: every compound-assign operator works on an index LHS.
+    /// Table-driven so the failure point is localized.
+    #[test]
+    fn index_compound_assign_all_operators() {
+        for (op, rhs, start, expected) in [
+            ("+=", 5, 1, 6),
+            ("-=", 3, 10, 7),
+            ("*=", 4, 3, 12),
+            ("/=", 2, 12, 6),
+            ("%=", 4, 14, 2),
+        ] {
+            let src = format!(
+                "fn main(int _d) -> int {{ let arr = [{start}]; arr[0] {op} {rhs}; return arr[0]; }} main(0);"
+            );
+            let (program, errs) = parse(&src);
+            assert!(errs.is_empty(), "{op}: parse errors: {:?}", errs);
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::Int(n) => assert_eq!(n, expected, "{op}"),
+                other => panic!("{op}: expected Int({expected}), got {:?}", other),
+            }
+        }
+    }
+
+    /// RES-917: compound-assign through field LHS — `obj.field += rhs`.
+    #[test]
+    fn field_compound_assign() {
+        let src = "\
+            struct Counter {\n\
+                int n,\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                let c = new Counter { n: 7 };\n\
+                c.n += 3;\n\
+                return c.n;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 10),
+            other => panic!("expected Int(10), got {:?}", other),
         }
     }
 
