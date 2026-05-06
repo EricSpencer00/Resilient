@@ -1,0 +1,15 @@
+// RES-897 demo: cosh(x) is hyperbolic cosine. Mirror of cos (RES-146).
+// std-only; float-in / float-out per RES-130.
+
+fn main(int _d) {
+    println(cosh(0.0));                  // 1
+    // cosh is even, so cosh(x) - cosh(-x) cancels exactly.
+    println(cosh(2.0) - cosh(-2.0));     // 0
+    // cosh ≥ 1 for all real x.
+    println(cosh(0.0) >= 1.0);           // true
+    println(cosh(3.0) >= 1.0);           // true
+
+    return 0;
+}
+
+main(0);

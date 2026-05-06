@@ -49,6 +49,7 @@ This document is a human-facing summary grouped by category.
 | `log2(x)` | float → float | RES-890: base-2 logarithm; std-only; runtime error on non-positive |
 | `exp2(x)` | float → float | RES-891: 2^x; std-only; mirror of `exp` (e^x) |
 | `sinh(x)` | float → float | RES-896: hyperbolic sine; std-only; mirror of `sin` |
+| `cosh(x)` | float → float | RES-897: hyperbolic cosine; std-only; mirror of `cos` |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
 | `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |
