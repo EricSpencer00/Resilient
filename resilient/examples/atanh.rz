@@ -1,0 +1,15 @@
+// RES-901 demo: atanh(x) is the inverse hyperbolic tangent. Inverse of
+// tanh (RES-898). std-only; float-in / float-out per RES-130. Domain
+// is (-1, 1); |x|=1 yields ±∞; |x|>1 yields NaN.
+
+fn main(int _d) {
+    println(atanh(0.0));                  // 0
+    // atanh is odd: atanh(x) + atanh(-x) cancels exactly.
+    println(atanh(0.5) + atanh(-0.5));    // 0
+    println(atanh(0.5) > 0.0);            // true
+    println(atanh(-0.5) < 0.0);           // true
+
+    return 0;
+}
+
+main(0);

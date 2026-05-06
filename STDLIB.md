@@ -53,6 +53,7 @@ This document is a human-facing summary grouped by category.
 | `tanh(x)` | float → float | RES-898: hyperbolic tangent; std-only; mirror of `tan`; saturates to ±1 |
 | `asinh(x)` | float → float | RES-899: inverse hyperbolic sine; std-only; total domain (no NaN cases) |
 | `acosh(x)` | float → float | RES-900: inverse hyperbolic cosine; std-only; domain `x ≥ 1` (NaN otherwise) |
+| `atanh(x)` | float → float | RES-901: inverse hyperbolic tangent; std-only; domain `(-1, 1)`; `±1` → ±∞; `|x|>1` → NaN |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
 | `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |
