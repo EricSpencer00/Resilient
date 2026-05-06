@@ -1,0 +1,7 @@
+positive
+negative
+zero
+4
+4
+100
+Program executed successfully

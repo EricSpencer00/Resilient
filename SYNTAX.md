@@ -632,6 +632,26 @@ while condition {
 Parentheses around conditions are optional. `while` has a built-in
 1,000,000-iteration runaway guard.
 
+### `if` as expression (RES-925)
+
+`if` works in expression position. Each branch is a block; the
+block's value is its trailing bare expression (no semicolon).
+`else if` chains parse as a recursive IfStatement on the
+alternative branch.
+
+```rust
+let label = if n > 0 {
+    "positive"
+} else if n < 0 {
+    "negative"
+} else {
+    "zero"
+};
+```
+
+The statement form (`if cond { stmts; }` with no value, no `else`)
+continues to work alongside.
+
 ### `loop { ... }` (RES-913)
 
 Unconditional infinite loop — exit only via `break` (or `return`):
