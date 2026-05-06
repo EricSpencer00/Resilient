@@ -1,0 +1,26 @@
+// RES-917 demo: compound assign through index and field LHS. Was a
+// silent no-op before this PR; now `arr[i] += rhs` and `obj.field
+// OP= rhs` actually mutate.
+
+struct Counter {
+    int n,
+}
+
+fn main(int _d) {
+    // Index LHS — every operator works.
+    let nums = [10, 20, 30];
+    nums[0] += 5;       println(nums[0]);   // 15
+    nums[1] -= 4;       println(nums[1]);   // 16
+    nums[2] *= 2;       println(nums[2]);   // 60
+
+    // Field LHS.
+    let c = new Counter { n: 0 };
+    c.n += 7;
+    println(c.n);                            // 7
+    c.n *= 3;
+    println(c.n);                            // 21
+
+    return 0;
+}
+
+main(0);
