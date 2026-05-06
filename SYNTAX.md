@@ -575,6 +575,39 @@ let value = "Pi: " + 3.14;              // "Pi: 3.14"
 | Array index | `arr[i]` — single element |
 | Array slice | `arr[lo..hi]`, `arr[lo..=hi]`, `arr[lo..]`, `arr[..hi]`, `arr[..]` (RES-911) — returns a fresh array |
 | Compound assign | `+= -= *= /= %= &= \|= ^= <<= >>=` (RES-912) — `x OP= rhs` desugars to `x = x OP rhs` for plain identifiers |
+| Cast | `<expr> as int` / `as float` / `as string` (RES-934) — postfix sugar over `to_int`, `to_float`, `to_string` builtins; high precedence (`1 + 2 as float` is `1 + (2 as float)`) |
+
+## `as` cast (RES-934)
+
+`as` is a postfix cast that desugars to the matching numeric/string
+conversion builtin:
+
+```rust
+let n = 3.7 as int;           // to_int(3.7)   → 3 (truncates)
+let f = 42 as float;          // to_float(42)  → 42.0
+let s = true as string;       // to_string(true) → "true"
+
+let chained = 3.5 as int as float as string;   // "3"
+let sum_cast = (1 + 2) as float;               // parens to cast a sum
+```
+
+Supported targets are `int` (also `Int` / `Int64`), `float` (also
+`Float`), and `string` (also `String`). An unsupported target name
+(`as MyStruct`) is a parse error: *"Cannot cast to `MyStruct` — `as`
+supports int / float / string"*. The runtime semantics match the
+underlying builtin, including its error policy — `to_int(NaN)`,
+`to_int(∞)`, and out-of-range floats raise runtime errors rather
+than silently saturating.
+
+`as` binds tightly (precedence 11, same as `.`/`?`), mirroring Rust:
+
+```rust
+let x = 1 + 2 as float;       // means 1 + (2 as float)
+let y = (1 + 2) as float;     // explicit parens cast the whole sum
+```
+
+`use "file" as alias;` (RES-360) continues to parse — the postfix-cast
+form only fires in expression position.
 
 ## Array slicing (RES-911)
 
