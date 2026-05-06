@@ -8914,6 +8914,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("asinh", builtin_asinh),
     // RES-900.
     ("acosh", builtin_acosh),
+    // RES-901.
+    ("atanh", builtin_atanh),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9865,6 +9867,20 @@ fn builtin_acosh(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("acosh: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-901: `atanh(x: Float) -> Float` — inverse hyperbolic tangent. Inverse
+/// of `tanh`; domain is `(-1, 1)`. `|x| = 1` yields ±∞; `|x| > 1` yields NaN
+/// per `f64::atanh`.
+fn builtin_atanh(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.atanh())),
+        [other] => Err(format!(
+            "atanh: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("atanh: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27499,6 +27515,47 @@ mod tests {
     #[test]
     fn acosh_arity_check() {
         let err = builtin_acosh(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn atanh_basic() {
+        // atanh(0) = 0.
+        close(
+            as_float(builtin_atanh(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "atanh(0)",
+        );
+        // tanh(atanh(x)) = x for x in (-1, 1) — round-trip identity.
+        close(
+            as_float(builtin_tanh(&[builtin_atanh(&[Value::Float(0.5)]).unwrap()]).unwrap()),
+            0.5,
+            "tanh(atanh(0.5))",
+        );
+        // atanh is odd: atanh(-x) = -atanh(x).
+        close(
+            as_float(builtin_atanh(&[Value::Float(-0.7)]).unwrap()),
+            -as_float(builtin_atanh(&[Value::Float(0.7)]).unwrap()),
+            "atanh odd-symmetry",
+        );
+        // |x| > 1 → NaN.
+        let nan = as_float(builtin_atanh(&[Value::Float(1.5)]).unwrap());
+        assert!(nan.is_nan(), "atanh(1.5) was {}", nan);
+        // |x| = 1 → ±∞.
+        let inf = as_float(builtin_atanh(&[Value::Float(1.0)]).unwrap());
+        assert!(inf.is_infinite() && inf > 0.0, "atanh(1) was {}", inf);
+    }
+
+    #[test]
+    fn atanh_rejects_int() {
+        let err = builtin_atanh(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn atanh_arity_check() {
+        let err = builtin_atanh(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
