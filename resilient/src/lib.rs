@@ -1135,6 +1135,31 @@ impl Lexer {
             self.read_char();
         }
 
+        // RES-906: scientific-notation exponent — `1e9`, `1.5e-3`, `2E+10`.
+        // We only consume `[eE]` if a digit (optionally preceded by `+`/`-`)
+        // follows; this avoids ambiguity with hex digits in non-prefixed
+        // contexts and produces a clean lex error if the exponent body is
+        // empty.
+        if self.ch == 'e' || self.ch == 'E' {
+            let next = self.peek_char();
+            let exp_starts_here = self.is_digit(next)
+                || ((next == '+' || next == '-') && {
+                    // Look one further: only consume `e±` if a digit follows.
+                    let after_sign_idx = self.position + 2;
+                    after_sign_idx < self.input.len() && self.is_digit(self.input[after_sign_idx])
+                });
+            if exp_starts_here {
+                is_float = true;
+                self.read_char(); // consume `e`/`E`
+                if self.ch == '+' || self.ch == '-' {
+                    self.read_char();
+                }
+                while self.is_digit(self.ch) {
+                    self.read_char();
+                }
+            }
+        }
+
         let number_str: String = self.input[position..self.position].iter().collect();
 
         if is_float {
@@ -29138,6 +29163,99 @@ mod tests {
         match interp.env.get("n").unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-906: scientific notation (`1e9`, `1.5e-3`, `2E+10`) lexes as
+    /// `FloatLiteral`, never as `Int` followed by an identifier. This
+    /// is the user-facing fix that lets safety-critical embedded code
+    /// write clock-divider and sensor-scaling constants directly.
+    #[test]
+    fn lexer_scientific_notation_floats() {
+        // Bare integer mantissa.
+        let toks = tokenize("1e9");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 1.0e9).abs() < 1e-3),
+            "expected FloatLiteral(1e9), got {:?}",
+            toks[0]
+        );
+        // Capital E.
+        let toks = tokenize("2E10");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 2.0e10).abs() < 1e-2),
+            "expected FloatLiteral(2e10), got {:?}",
+            toks[0]
+        );
+        // Mantissa with decimal + signed exponent.
+        let toks = tokenize("1.5e-3");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 1.5e-3).abs() < 1e-9),
+            "expected FloatLiteral(1.5e-3), got {:?}",
+            toks[0]
+        );
+        let toks = tokenize("1.5e+3");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 1500.0).abs() < 1e-6),
+            "expected FloatLiteral(1.5e+3), got {:?}",
+            toks[0]
+        );
+        // Trailing `.` mantissa with exponent.
+        let toks = tokenize("1.e3");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 1000.0).abs() < 1e-6),
+            "expected FloatLiteral(1.e3), got {:?}",
+            toks[0]
+        );
+    }
+
+    /// RES-906: a bare `e` not followed by a digit (or signed digit) must
+    /// not be consumed by the number scanner — it has to remain available
+    /// as the start of an identifier so `1` ` ` `e` lexes as int / ident.
+    #[test]
+    fn lexer_bare_e_after_int_is_not_exponent() {
+        // `1e` (no digits after `e`) — the `e` is not consumed; lexes as
+        // `IntLiteral(1) Ident("e")`.
+        let toks = tokenize("1e");
+        assert!(
+            matches!(toks[0], Token::IntLiteral(1)),
+            "expected IntLiteral(1), got {:?}",
+            toks[0]
+        );
+        assert!(
+            matches!(&toks[1], Token::Identifier(s) if s == "e"),
+            "expected Identifier(\"e\"), got {:?}",
+            toks[1]
+        );
+        // `1ea` — `e` followed by a non-digit. Same split.
+        let toks = tokenize("1ea");
+        assert!(matches!(toks[0], Token::IntLiteral(1)));
+        assert!(matches!(&toks[1], Token::Identifier(s) if s == "ea"));
+        // `1e+` — `e+` without trailing digit; `e` stays an identifier.
+        let toks = tokenize("1e+");
+        assert!(matches!(toks[0], Token::IntLiteral(1)));
+        assert!(matches!(&toks[1], Token::Identifier(s) if s == "e"));
+        assert!(matches!(toks[2], Token::Plus));
+    }
+
+    /// RES-906 end-to-end: a program using scientific notation parses,
+    /// type-checks, and evaluates to the same value as the long-form
+    /// literal, proving the new lexer rule plumbed through the rest of
+    /// the pipeline correctly.
+    #[test]
+    fn scientific_notation_evaluates_correctly() {
+        let (p, _e) = parse("let a = 1e3; let b = 1000.0; let c = a - b;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("c").unwrap() {
+            Value::Float(v) => assert!((v - 0.0).abs() < 1e-9, "c = {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        let (p, _e) = parse("let x = 1.5e-3;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("x").unwrap() {
+            Value::Float(v) => assert!((v - 0.0015).abs() < 1e-9, "x = {}", v),
+            other => panic!("expected Float, got {:?}", other),
         }
     }
 

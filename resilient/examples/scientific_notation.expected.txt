@@ -1,0 +1,7 @@
+1000
+20000000000
+0.0015
+250
+1000
+1001
+Program executed successfully

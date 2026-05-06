@@ -139,9 +139,15 @@ enum Tok {
     HexInt(i64),
     #[regex(r"0[bB][01_]+", bin_int, priority = 3)]
     BinInt(i64),
-    // Float literal — `1.2`, `1.`. Must outrank `Int` for inputs with
-    // a trailing `.` so logos picks the float arm.
-    #[regex(r"[0-9]+\.[0-9]*", |lex| lex.slice().parse::<f64>().ok(), priority = 2)]
+    // Float literal — `1.2`, `1.`, plus RES-906 scientific notation
+    // `1e9`, `1.5e-3`, `2E+10`. Must outrank `Int` for inputs with
+    // a trailing `.` or an `[eE]±?[0-9]+` exponent so logos picks the
+    // float arm.
+    #[regex(
+        r"[0-9]+\.[0-9]*([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+",
+        |lex| lex.slice().parse::<f64>().ok(),
+        priority = 2
+    )]
     Float(f64),
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
     Int(i64),
