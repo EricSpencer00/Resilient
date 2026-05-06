@@ -291,6 +291,14 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
             }
             names
         }
+        // RES-932: anonymous tuple destructure — recurse positionally.
+        Pattern::Tuple(items) => {
+            let mut names = Vec::new();
+            for sub in items {
+                names.extend(collect_pattern_bindings(sub));
+            }
+            names
+        }
     }
 }
 
@@ -659,6 +667,9 @@ fn pattern_is_default_for_lint(p: &Pattern) -> bool {
         // positional sub-pattern is itself a default — `Pair(_, _)`
         // catches every `Pair`, but `Pair(0, _)` does not.
         Pattern::TupleStruct { fields, .. } => fields.iter().all(pattern_is_default_for_lint),
+        // RES-932: same shape — `(_, _)` is a catch-all over 2-tuples;
+        // `(0, _)` is not.
+        Pattern::Tuple(items) => items.iter().all(pattern_is_default_for_lint),
     }
 }
 

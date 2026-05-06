@@ -1,0 +1,51 @@
+// RES-932 demo: anonymous tuple match patterns.
+// Anonymous tuple values (RES-401) destructure positionally inside
+// `match` arms — `(p1, p2, ...)` matches a `Value::Tuple` of the
+// same length and recurses into each sub-pattern.
+
+fn classify(int _d) -> int {
+    // Pair: literal sub-pattern + identifier sub-pattern.
+    let p = (10, 20);
+    let r1 = match p {
+        (1, 2) => 0,
+        (a, b) => a + b,
+    };
+    println(r1);                    // 30
+
+    // Wildcard sub-patterns.
+    let q = (0, 5);
+    let r2 = match q {
+        (0, x) => x * 100,
+        (_, _) => -1,
+    };
+    println(r2);                    // 500
+
+    // Nested tuple — the inner pattern is just another tuple pattern.
+    let nested = (1, (2, 3));
+    let r3 = match nested {
+        (1, (a, b)) => a + b,
+        (_, _)      => 0,
+    };
+    println(r3);                    // 5
+
+    // 3-tuple.
+    let triple = (1, 2, 3);
+    let r4 = match triple {
+        (1, 2, n) => n,
+        (_, _, _) => 0,
+    };
+    println(r4);                    // 3
+
+    // 1-tuple uses a trailing comma to disambiguate from a
+    // parenthesized scalar pattern.
+    let one = (42,);
+    let r5 = match one {
+        (42,) => 1,
+        (_,)  => 0,
+    };
+    println(r5);                    // 1
+
+    return 0;
+}
+
+classify(0);

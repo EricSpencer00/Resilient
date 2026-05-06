@@ -1537,6 +1537,11 @@ pub(crate) enum Pattern {
     /// The arity is checked against the struct registry by the
     /// typechecker.
     TupleStruct { name: String, fields: Vec<Pattern> },
+    /// RES-932: anonymous tuple destructure — `(1, 2)`, `(a, b)`,
+    /// `()`. Matches `Value::Tuple` of the same length; sub-patterns
+    /// match by position. A bare `(p)` parses to `p` (parenthesized
+    /// pattern); `(p,)` is a 1-tuple pattern.
+    Tuple(Vec<Pattern>),
 }
 
 /// RES-400: payload portion of a `Pattern::EnumVariant`. Mirrors the
@@ -8430,12 +8435,69 @@ impl Parser {
                     Pattern::Identifier(name)
                 }
             }
+            // RES-932: anonymous tuple pattern — `(1, 2)`, `(a, b)`,
+            // `()`. Single-element parens are parenthesized patterns
+            // (return the inner directly); a trailing comma `(p,)`
+            // forces a 1-tuple.
+            Token::LeftParen => self.parse_tuple_pattern(),
             other => {
                 let tok = other.clone();
                 self.record_error(format!("Unsupported match pattern starting with {:?}", tok));
                 Pattern::Wildcard
             }
         }
+    }
+
+    /// RES-932: parse `(p1, p2, ...)` or `()`. On entry
+    /// `current_token == LeftParen`. On exit `current_token == RightParen`.
+    /// Disambiguation: `(p)` (single inner with no trailing comma)
+    /// returns `p` directly (parenthesized pattern); `(p,)` returns
+    /// a 1-tuple `Pattern::Tuple([p])`; `()` returns the empty
+    /// tuple pattern.
+    fn parse_tuple_pattern(&mut self) -> Pattern {
+        debug_assert!(matches!(self.current_token, Token::LeftParen));
+        // Empty tuple `()`.
+        if self.peek_token == Token::RightParen {
+            self.next_token(); // current = `)`
+            return Pattern::Tuple(Vec::new());
+        }
+        self.next_token(); // current = start of first sub-pattern
+        let first = self.parse_pattern();
+        // Bare `(p)` — parenthesized pattern, no trailing comma.
+        if self.peek_token == Token::RightParen {
+            self.next_token(); // current = `)`
+            return first;
+        }
+        let mut items: Vec<Pattern> = vec![first];
+        loop {
+            match self.peek_token {
+                Token::Comma => {
+                    self.next_token(); // current = `,`
+                    if self.peek_token == Token::RightParen {
+                        // Trailing comma — single-element forces tuple,
+                        // multi-element keeps tuple.
+                        self.next_token(); // current = `)`
+                        break;
+                    }
+                    self.next_token(); // current = start of next sub-pattern
+                    let p = self.parse_pattern();
+                    items.push(p);
+                }
+                Token::RightParen => {
+                    self.next_token(); // current = `)`
+                    break;
+                }
+                _ => {
+                    let tok = self.peek_token.clone();
+                    self.record_error(format!(
+                        "Expected `,` or `)` in tuple pattern, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            }
+        }
+        Pattern::Tuple(items)
     }
 
     /// RES-931: parse a tuple-struct pattern body — `(p1, p2, ...)`.
@@ -21703,6 +21765,25 @@ impl Interpreter {
                 Value::Result { ok: false, payload } => self.match_pattern(inner_pat, payload),
                 _ => Ok(None),
             },
+            // RES-932: anonymous tuple destructure. Matches
+            // `Value::Tuple` of the same length; sub-patterns match
+            // by position. Length mismatch is a no-match.
+            Pattern::Tuple(pat_items) => {
+                let Value::Tuple(val_items) = value else {
+                    return Ok(None);
+                };
+                if pat_items.len() != val_items.len() {
+                    return Ok(None);
+                }
+                let mut bindings = Vec::new();
+                for (sub, fv) in pat_items.iter().zip(val_items.iter()) {
+                    match self.match_pattern(sub, fv)? {
+                        None => return Ok(None),
+                        Some(mut b) => bindings.append(&mut b),
+                    }
+                }
+                Ok(Some(bindings))
+            }
             // RES-931: tuple-struct destructure. The runtime stores
             // tuple-struct values as Value::Struct with field names
             // "0", "1", ... — so the match peels off positional
@@ -27422,6 +27503,74 @@ mod tests {
             "expected arity diagnostic, got: {}",
             err
         );
+    }
+
+    /// RES-932: anonymous tuple match patterns destructure
+    /// positionally. Identifier sub-patterns bind the matched element.
+    #[test]
+    fn anonymous_tuple_match_pattern_binds_positionally() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let p = (10, 20);\n\
+                return match p {\n\
+                    (1, 2) => 0,\n\
+                    (a, b) => a + b,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 30),
+            other => panic!("expected Int(30), got {:?}", other),
+        }
+    }
+
+    /// RES-932: nested tuple pattern recurses into the inner tuple.
+    #[test]
+    fn anonymous_tuple_match_pattern_nests() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let nested = (1, (2, 3));\n\
+                return match nested {\n\
+                    (1, (a, b)) => a + b,\n\
+                    (_, _)      => 0,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    /// RES-932: arity mismatch is a no-match (falls through to the
+    /// catch-all arm).
+    #[test]
+    fn anonymous_tuple_match_pattern_arity_mismatch_falls_through() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let p = (1, 2, 3);\n\
+                return match p {\n\
+                    (a, b)    => a + b,\n\
+                    (_, _, c) => c,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
+        }
     }
 
     /// RES-928: out-of-range positional index errors with a clear
