@@ -55,6 +55,7 @@ This document is a human-facing summary grouped by category.
 | `acosh(x)` | float → float | RES-900: inverse hyperbolic cosine; std-only; domain `x ≥ 1` (NaN otherwise) |
 | `atanh(x)` | float → float | RES-901: inverse hyperbolic tangent; std-only; domain `(-1, 1)`; `±1` → ±∞; `|x|>1` → NaN |
 | `asin(x)` | float → float | RES-902: inverse sine (radians); std-only; domain `[-1, 1]`; `|x|>1` → NaN; range `[-π/2, π/2]` |
+| `acos(x)` | float → float | RES-903: inverse cosine (radians); std-only; domain `[-1, 1]`; `|x|>1` → NaN; range `[0, π]` |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
 | `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |
