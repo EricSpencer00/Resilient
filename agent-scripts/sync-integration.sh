@@ -83,6 +83,10 @@ else
     printf '  %s\n' $unresolved
 
     allowlist=(
+        # RES-929: lib.rs is the real extension-block file (1.8 MB);
+        # main.rs is a 463-byte binary entry that doesn't see overlaps.
+        # Keep main.rs allowlisted for legacy paths; lib.rs is primary.
+        "resilient/src/lib.rs"
         "resilient/src/main.rs"
         "resilient/src/typechecker.rs"
         "resilient/src/lexer_logos.rs"
