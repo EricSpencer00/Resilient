@@ -8904,6 +8904,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("exp", builtin_exp),
     // RES-891.
     ("exp2", builtin_exp2),
+    // RES-896.
+    ("sinh", builtin_sinh),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9793,6 +9795,18 @@ fn builtin_exp2(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("exp2: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-896: `sinh(x: Float) -> Float` — hyperbolic sine. Mirror of `sin`.
+fn builtin_sinh(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.sinh())),
+        [other] => Err(format!(
+            "sinh: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("sinh: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27251,6 +27265,39 @@ mod tests {
     #[test]
     fn exp2_rejects_wrong_arity() {
         let err = builtin_exp2(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn sinh_basic() {
+        close(
+            as_float(builtin_sinh(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "sinh(0)",
+        );
+        close(
+            as_float(builtin_sinh(&[Value::Float(1.0)]).unwrap()),
+            1.1752011936438014,
+            "sinh(1)",
+        );
+        // sinh is odd: sinh(-x) = -sinh(x).
+        close(
+            as_float(builtin_sinh(&[Value::Float(-2.0)]).unwrap()),
+            -as_float(builtin_sinh(&[Value::Float(2.0)]).unwrap()),
+            "sinh odd-symmetry",
+        );
+    }
+
+    #[test]
+    fn sinh_rejects_int() {
+        let err = builtin_sinh(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn sinh_arity_check() {
+        let err = builtin_sinh(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
