@@ -8920,6 +8920,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("asin", builtin_asin),
     // RES-903.
     ("acos", builtin_acos),
+    // RES-904.
+    ("atan", builtin_atan),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9911,6 +9913,20 @@ fn builtin_acos(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("acos: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-904: `atan(x: Float) -> Float` — inverse tangent (radians, single
+/// argument). Inverse of `tan`. Total domain; range `(-π/2, π/2)`. Sibling
+/// of `atan2(y, x)` (RES-295) — pick `atan2` when you need the full circle.
+fn builtin_atan(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.atan())),
+        [other] => Err(format!(
+            "atan: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("atan: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27662,6 +27678,48 @@ mod tests {
     #[test]
     fn acos_arity_check() {
         let err = builtin_acos(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn atan_basic() {
+        // atan(0) = 0.
+        close(
+            as_float(builtin_atan(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "atan(0)",
+        );
+        // atan(1) = π/4.
+        close(
+            as_float(builtin_atan(&[Value::Float(1.0)]).unwrap()),
+            std::f64::consts::FRAC_PI_4,
+            "atan(1)",
+        );
+        // atan is odd: atan(-x) = -atan(x).
+        close(
+            as_float(builtin_atan(&[Value::Float(-3.0)]).unwrap()),
+            -as_float(builtin_atan(&[Value::Float(3.0)]).unwrap()),
+            "atan odd-symmetry",
+        );
+        // Saturates strictly below π/2 for finite x.
+        let large = as_float(builtin_atan(&[Value::Float(1e9)]).unwrap());
+        assert!(
+            large < std::f64::consts::FRAC_PI_2,
+            "atan(1e9) was {}",
+            large
+        );
+    }
+
+    #[test]
+    fn atan_rejects_int() {
+        let err = builtin_atan(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn atan_arity_check() {
+        let err = builtin_atan(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
