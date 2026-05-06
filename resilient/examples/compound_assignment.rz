@@ -1,0 +1,42 @@
+// RES-912 demo: compound assignment operators. Each `x OP= rhs`
+// desugars at the parser layer to `x = x OP rhs` — same semantics
+// as the long form, much less line noise.
+
+fn main(int _d) {
+    // Arithmetic.
+    let x = 1;
+    x += 5;
+    println(x);                          // 6
+    x -= 2;
+    println(x);                          // 4
+    x *= 3;
+    println(x);                          // 12
+    x /= 2;
+    println(x);                          // 6
+    x %= 4;
+    println(x);                          // 2
+
+    // Bitwise / shift.
+    let bits = 0b1010;
+    bits &= 0b1100;
+    println(bits);                       // 8
+    bits |= 0b0001;
+    println(bits);                       // 9
+    bits ^= 0b1111;
+    println(bits);                       // 6
+    bits <<= 2;
+    println(bits);                       // 24
+    bits >>= 1;
+    println(bits);                       // 12
+
+    // Accumulator pattern in a loop.
+    let total = 0;
+    for i in 1..=10 {
+        total += i;
+    }
+    println(total);                      // 55
+
+    return 0;
+}
+
+main(0);
