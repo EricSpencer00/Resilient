@@ -1,0 +1,6 @@
+[2, 4, 6, 8, 10]
+[2, 4]
+15
+[100, 200, 300, 400, 500]
+12
+Program executed successfully

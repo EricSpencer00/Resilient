@@ -1,0 +1,34 @@
+// RES-927 demo: `map`, `filter`, `reduce` on arrays. The callback
+// is any callable Resilient value — closures with captures work.
+
+fn main(int _d) {
+    let arr = [1, 2, 3, 4, 5];
+
+    // map — apply f to each element.
+    let doubled = arr.map(fn(int x) -> int { return x * 2; });
+    println(doubled);                                            // [2, 4, 6, 8, 10]
+
+    // filter — keep elements where pred(x) is true.
+    let evens = arr.filter(fn(int x) -> bool { return x % 2 == 0; });
+    println(evens);                                              // [2, 4]
+
+    // reduce — left fold.
+    let sum = arr.reduce(0, fn(int acc, int x) -> int { return acc + x; });
+    println(sum);                                                // 15
+
+    // Closure capture: the callback closes over `factor`.
+    let factor = 100;
+    let scaled = arr.map(fn(int x) -> int { return x * factor; });
+    println(scaled);                                             // [100, 200, 300, 400, 500]
+
+    // Chain: filter even, double, sum.
+    let result = arr
+        .filter(fn(int x) -> bool { return x % 2 == 0; })
+        .map(fn(int x) -> int { return x * 2; })
+        .reduce(0, fn(int acc, int x) -> int { return acc + x; });
+    println(result);                                             // (2+4)*2 = 12
+
+    return 0;
+}
+
+main(0);
