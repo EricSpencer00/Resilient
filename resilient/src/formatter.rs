@@ -1291,6 +1291,18 @@ impl Formatter {
                     }
                 }
             }
+            // RES-931: tuple-struct destructure — `Pair(0, _)`.
+            Pattern::TupleStruct { name, fields } => {
+                self.write(name);
+                self.write("(");
+                for (i, sub) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_pattern(sub);
+                }
+                self.write(")");
+            }
         }
     }
 }

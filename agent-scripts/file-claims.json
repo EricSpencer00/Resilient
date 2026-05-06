@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-820-typechecker-associated-types",
-      "claimed_at": "2026-05-04T03:00:54Z"
+      "branch": "res-931-tuple-struct-patterns",
+      "claimed_at": "2026-05-06T05:25:02Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-820-typechecker-associated-types",
-      "claimed_at": "2026-05-04T03:00:54Z"
+      "branch": "res-931-tuple-struct-patterns",
+      "claimed_at": "2026-05-06T05:25:02Z"
     }
   }
 }

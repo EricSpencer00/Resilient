@@ -818,6 +818,32 @@ match parse_int(input) {
 `None` for `Option`. Inner pattern can be a wildcard,
 identifier-binding, literal, range, or another nested pattern.
 
+### Tuple-struct patterns (RES-931)
+
+A tuple-struct value (declared with `struct Pair(int, string);`)
+destructures positionally — the pattern's sub-patterns line up with
+the struct's positional fields in declaration order:
+
+```rust
+struct Pair(int, string);
+
+let p = new Pair(42, "hi");
+match p {
+    Pair(0, _) => "zero",
+    Pair(n, s) => s + ":" + n,
+}
+```
+
+Sub-patterns can be any other pattern atom — wildcard, identifier,
+literal, range, nested `Some(_)` / `Ok(_)` / `Err(_)`, or another
+tuple-struct pattern. The arity must match the struct's declared
+field count; a mismatched count is a typecheck error
+(`tuple-struct pattern \`Pair\` expects 2 field(s), got 1`).
+
+`Pair(_, _)` is a catch-all for `Pair`-typed scrutinees and counts
+toward exhaustiveness; `Pair(0, _)` does not (it misses every
+non-zero `Pair`).
+
 ### Range patterns (RES-915)
 
 Match arms accept integer range patterns:

@@ -563,6 +563,12 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
                 }
             }
         },
+        // RES-931: tuple-struct destructure — recurse into each field pattern.
+        Pattern::TupleStruct { fields, .. } => {
+            for sub in fields {
+                bind_pattern(sub, bound);
+            }
+        }
     }
 }
 

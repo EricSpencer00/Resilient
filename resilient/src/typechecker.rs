@@ -209,6 +209,9 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
                 subs.iter().flat_map(pattern_bindings).collect()
             }
         },
+        // RES-931: tuple-struct destructure binds whatever each
+        // positional sub-pattern binds.
+        Pattern::TupleStruct { fields, .. } => fields.iter().flat_map(pattern_bindings).collect(),
     }
 }
 
@@ -241,6 +244,12 @@ fn pattern_is_default(p: &Pattern) -> bool {
         // matches only one variant. Exhaustiveness over enums is
         // handled by enumerating variants in a future PR.
         Pattern::EnumVariant { .. } => false,
+        // RES-931: a tuple-struct pattern is a default iff every
+        // positional sub-pattern is a default. (`Pair(_, _)` is
+        // default; `Pair(0, _)` is not.) The struct itself is the
+        // sole inhabitant of the nominal type, so name-mismatch is
+        // caught upstream.
+        Pattern::TupleStruct { fields, .. } => fields.iter().all(pattern_is_default),
     }
 }
 
@@ -298,6 +307,12 @@ fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: 
         Pattern::Some(_) | Pattern::None | Pattern::Ok(_) | Pattern::Err(_) => false,
         // RES-400: enum-variant patterns don't match struct-nominal types.
         Pattern::EnumVariant { .. } => false,
+        // RES-931: tuple-struct pattern covers the nominal type iff
+        // it names the same struct AND every positional sub-pattern
+        // is a default (`Pair(_, _)` covers; `Pair(0, _)` does not).
+        Pattern::TupleStruct { name, fields } => {
+            name == sname && fields.len() == decl.len() && fields.iter().all(pattern_is_default)
+        }
     }
 }
 
@@ -3120,6 +3135,49 @@ impl TypeChecker {
                     Ok(out)
                 }
             },
+            // RES-931: tuple-struct destructure. Verify the scrutinee
+            // is a struct with this name, the registered field count
+            // matches the pattern arity, then recurse with each
+            // declared field's type as the sub-scrutinee. Field names
+            // in the registry are "0", "1", ... ordered by index.
+            Pattern::TupleStruct { name, fields } => {
+                let Type::Struct(sname) = scrut_ty else {
+                    return Err(format!(
+                        "tuple-struct pattern `{}(..)` used where scrutinee is not a struct (got {})",
+                        name, scrut_ty
+                    ));
+                };
+                if name != sname {
+                    return Err(format!(
+                        "tuple-struct pattern `{}(..)` does not match scrutinee struct `{}`",
+                        name, sname
+                    ));
+                }
+                let decl = self.struct_fields.get(sname).cloned().ok_or_else(|| {
+                    format!("unknown struct `{}` in tuple-struct match pattern", sname)
+                })?;
+                if decl.len() != fields.len() {
+                    return Err(format!(
+                        "tuple-struct pattern `{}` expects {} field(s), got {}",
+                        name,
+                        decl.len(),
+                        fields.len()
+                    ));
+                }
+                let mut out = Vec::new();
+                for (i, sub) in fields.iter().enumerate() {
+                    let key = i.to_string();
+                    let Some((_, fty)) = decl.iter().find(|(n, _)| n == &key) else {
+                        return Err(format!(
+                            "tuple-struct `{}` has no positional field `.{}`",
+                            sname, i
+                        ));
+                    };
+                    let sub_bt = self.match_pattern_binding_types(sub, fty)?;
+                    out.extend(sub_bt);
+                }
+                Ok(out)
+            }
         }
     }
 
