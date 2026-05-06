@@ -475,6 +475,9 @@ enum Token {
     NotEqual,
     And,
     Or,
+    /// RES-926: `|>` pipe operator. Left-associative, very low
+    /// precedence. `x |> f` desugars to `f(x)`.
+    PipeArrow,
     BitAnd,
     BitOr,
     BitXor,
@@ -631,6 +634,7 @@ impl Token {
             Token::NotEqual => "`!=`".to_string(),
             Token::And => "`&&`".to_string(),
             Token::Or => "`||`".to_string(),
+            Token::PipeArrow => "`|>`".to_string(),
             Token::BitAnd => "`&`".to_string(),
             Token::BitOr => "`|`".to_string(),
             Token::BitXor => "`^`".to_string(),
@@ -898,6 +902,10 @@ impl Lexer {
                     // RES-912: `|=`.
                     self.read_char();
                     Token::PipeAssign
+                } else if self.peek_char() == '>' {
+                    // RES-926: `|>` pipe operator.
+                    self.read_char();
+                    Token::PipeArrow
                 } else {
                     Token::BitOr
                 }
@@ -7120,6 +7128,35 @@ impl Parser {
                     self.next_token();
                     self.parse_infix_expression(current_left)
                 }
+                // RES-926: pipe operator. `x |> f` desugars to `f(x)`;
+                // `x |> f(args)` to `f(x, args)`. Left-associative
+                // (chains parse top-down).
+                Token::PipeArrow => {
+                    let span = self.span_at_current();
+                    self.next_token(); // current_token = `|>`
+                    self.next_token(); // step onto the RHS expression
+                    let rhs = self.parse_expression(1)?;
+                    let call = match rhs {
+                        Node::CallExpression {
+                            function,
+                            mut arguments,
+                            span: call_span,
+                        } => {
+                            arguments.insert(0, current_left);
+                            Node::CallExpression {
+                                function,
+                                arguments,
+                                span: call_span,
+                            }
+                        }
+                        bare => Node::CallExpression {
+                            function: Box::new(bare),
+                            arguments: vec![current_left],
+                            span,
+                        },
+                    };
+                    Some(call)
+                }
                 // RES-375: `opt ?? default` — Option coalescing.
                 Token::DoubleQuestion => {
                     let op_span = self.span_at_current();
@@ -8735,6 +8772,8 @@ impl Parser {
             // at level 1 itself to satisfy the > 0 parse-loop invariant;
             // we never call current_precedence on `??` as an infix
             // operator (it's handled in its own branch).
+            // RES-926: `|>` is the lowest infix precedence.
+            Token::PipeArrow => 1,
             Token::DoubleQuestion => 1,
             Token::Or => 1,
             Token::And => 2,
@@ -8760,6 +8799,8 @@ impl Parser {
     fn peek_precedence(&self) -> u8 {
         match &self.peek_token {
             // RES-375: `??` has very low precedence — see current_precedence.
+            // RES-926: `|>` is the lowest infix precedence.
+            Token::PipeArrow => 1,
             Token::DoubleQuestion => 1,
             Token::Or => 1,
             Token::And => 2,
@@ -26937,6 +26978,61 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 0),
             other => panic!("expected Int(0), got {:?}", other),
+        }
+    }
+
+    /// RES-926: `|>` pipe operator. `x |> f` desugars to `f(x)`,
+    /// `x |> f(args)` to `f(x, args)`. Left-associative chains.
+    #[test]
+    fn pipe_operator_bare_function_call() {
+        let src = "fn main(int _d) -> int { return 5 |> abs; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    /// RES-926: `x |> f(args)` inserts `x` as the first argument.
+    #[test]
+    fn pipe_operator_with_extra_args() {
+        let src = "fn main(int _d) -> string { return \"ab\" |> repeat(3); } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "ababab"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    /// RES-926: chained pipes are left-associative — `x |> f |> g`
+    /// is `g(f(x))`, not `(f |> g)(x)`.
+    #[test]
+    fn pipe_operator_chains_left_associatively() {
+        let src = "fn main(int _d) -> string { return \"  hi  \" |> trim |> to_upper; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "HI"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    /// RES-926: pipe has lower precedence than every other infix
+    /// operator. `-5 + 1 |> abs` is `abs(-5 + 1) = 4`, never `-5 + abs(1)`.
+    #[test]
+    fn pipe_operator_lower_than_arithmetic() {
+        let src = "fn main(int _d) -> int { return -5 + 1 |> abs; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 4),
+            other => panic!("expected Int(4), got {:?}", other),
         }
     }
 
