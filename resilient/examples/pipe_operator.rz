@@ -1,0 +1,24 @@
+// RES-926 demo: `|>` pipe operator. `x |> f` desugars to `f(x)`;
+// `x |> f(args)` to `f(x, args)`. Left-associative chains read
+// top-down rather than from the inside out.
+
+fn main(int _d) {
+    // Bare-function pipes — same as `to_upper(trim("..."))`.
+    println("  hello  " |> trim |> to_upper);     // HELLO
+
+    // Pipe with extra args — `x` becomes the first positional.
+    println("ab" |> repeat(3));                    // ababab
+
+    // Mixed with arithmetic — pipe has the lowest precedence.
+    println(-5 + 1 |> abs);                        // 4   (abs(-4))
+
+    // Builds nicely with method chaining (RES-920).
+    let cleaned = "  RuST  " |> trim |> to_lower;
+    println(cleaned);                              // rust
+
+    // Numeric pipelines.
+    println(7 |> abs |> to_float);                 // 7
+    return 0;
+}
+
+main(0);

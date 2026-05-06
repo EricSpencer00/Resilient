@@ -89,6 +89,10 @@ enum Tok {
     AmpAssign,
     #[token("|=", priority = 4)]
     PipeAssign,
+    /// RES-926: `|>` pipe operator. Higher priority than bare `|`
+    /// so logos prefers the longer match.
+    #[token("|>", priority = 4)]
+    PipeArrow,
     #[token("^=", priority = 4)]
     CaretAssign,
     #[token("<<=", priority = 5)]
@@ -719,6 +723,7 @@ fn convert(t: Tok) -> Token {
         Tok::PercentAssign => Token::PercentAssign,
         Tok::AmpAssign => Token::AmpAssign,
         Tok::PipeAssign => Token::PipeAssign,
+        Tok::PipeArrow => Token::PipeArrow,
         Tok::CaretAssign => Token::CaretAssign,
         Tok::ShlAssign => Token::ShlAssign,
         Tok::ShrAssign => Token::ShrAssign,
