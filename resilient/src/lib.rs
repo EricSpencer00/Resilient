@@ -5041,6 +5041,19 @@ impl Parser {
     fn parse_for_in_statement(&mut self) -> Node {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'for'
+
+        // RES-933: tuple-destructuring binding — `for (a, b) in iter { ... }`.
+        // Parser-level desugar to:
+        //   for $for_tup$N in iter {
+        //       let (a, b) = $for_tup$N;
+        //       <body>
+        //   }
+        // which keeps the existing ForInStatement AST unchanged and reuses
+        // the RES-401 LetTupleDestructure path.
+        if self.current_token == Token::LeftParen {
+            return self.parse_for_tuple_in_statement(stmt_span);
+        }
+
         let name = match &self.current_token {
             Token::Identifier(n) => n.clone(),
             _ => {
@@ -5112,6 +5125,128 @@ impl Parser {
             name,
             iterable: Box::new(iterable),
             body: Box::new(body),
+            invariants,
+            span: stmt_span,
+        }
+    }
+
+    /// RES-933: parse `for (a, b, ...) in iter { body }` and desugar
+    /// into a `ForInStatement` with a fresh loop binding plus a
+    /// `LetTupleDestructure` injected at the head of the body. On
+    /// entry `current_token == LeftParen`.
+    fn parse_for_tuple_in_statement(&mut self, stmt_span: span::Span) -> Node {
+        debug_assert!(matches!(self.current_token, Token::LeftParen));
+        self.next_token(); // skip `(`
+
+        let mut names: Vec<String> = Vec::new();
+        let mut first = true;
+        loop {
+            if self.current_token == Token::RightParen {
+                break;
+            }
+            if !first {
+                if self.current_token != Token::Comma {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected `,` or `)` in for-tuple binding, found {}",
+                        tok
+                    ));
+                    break;
+                }
+                self.next_token(); // skip `,`
+                if self.current_token == Token::RightParen {
+                    break;
+                }
+            }
+            match &self.current_token {
+                Token::Identifier(n) => names.push(n.clone()),
+                Token::Underscore => names.push("_".to_string()),
+                other => {
+                    let tok = other.clone();
+                    self.record_error(format!(
+                        "Expected identifier or `_` in for-tuple binding, found {}",
+                        tok
+                    ));
+                }
+            }
+            self.next_token();
+            first = false;
+        }
+        // current_token == `)` after the loop — advance past it.
+        self.next_token();
+
+        if self.current_token != Token::In {
+            let tok = self.current_token.clone();
+            self.record_error(format!(
+                "Expected `in` after `for (...)` binding, found {}",
+                tok
+            ));
+        } else {
+            self.next_token(); // skip `in`
+        }
+
+        let lo_or_iter = self.parse_expression(0).unwrap_or(Node::ArrayLiteral {
+            items: Vec::new(),
+            span: span::Span::default(),
+        });
+        self.next_token(); // advance past expression tail (RES-014 invariant)
+
+        let iterable = if let Some(range) =
+            crate::ranges::parse_range_tail(self, lo_or_iter.clone(), stmt_span)
+        {
+            self.next_token();
+            range
+        } else {
+            lo_or_iter
+        };
+
+        let invariants = self.parse_loop_invariants();
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after for-iterable, found {}", tok));
+            return Node::ForInStatement {
+                name: String::new(),
+                iterable: Box::new(iterable),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
+                invariants,
+                span: stmt_span,
+            };
+        }
+
+        let user_body = self.parse_block_statement();
+
+        // Synthesize the desugared body:
+        //   { let (a, b, ...) = $for_tup$N; <user_body...>; }
+        let tmp = format!("$for_tup${}", self.comprehension_counter);
+        self.comprehension_counter += 1;
+
+        let destructure = Node::LetTupleDestructure {
+            names,
+            value: Box::new(Node::Identifier {
+                name: tmp.clone(),
+                span: stmt_span,
+            }),
+            span: stmt_span,
+        };
+
+        let mut new_stmts: Vec<Node> = vec![destructure];
+        if let Node::Block { stmts, .. } = user_body {
+            new_stmts.extend(stmts);
+        }
+
+        let body_block = Node::Block {
+            stmts: new_stmts,
+            span: stmt_span,
+        };
+
+        Node::ForInStatement {
+            name: tmp,
+            iterable: Box::new(iterable),
+            body: Box::new(body_block),
             invariants,
             span: stmt_span,
         }
@@ -27570,6 +27705,76 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-933: `for (a, b) in iter` destructures each tuple element
+    /// into the named bindings.
+    #[test]
+    fn for_tuple_binding_destructures_pairs() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let pairs = [(1, 10), (2, 20), (3, 30)];\n\
+                let total = 0;\n\
+                for (k, v) in pairs {\n\
+                    total = total + k * v;\n\
+                }\n\
+                return total;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            // 1*10 + 2*20 + 3*30 = 140
+            Value::Int(n) => assert_eq!(n, 140),
+            other => panic!("expected Int(140), got {:?}", other),
+        }
+    }
+
+    /// RES-933: bare-identifier `for x in iter` continues to parse —
+    /// the tuple form only fires when `(` immediately follows `for`.
+    #[test]
+    fn for_simple_binding_still_parses() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let total = 0;\n\
+                for x in [10, 20, 30] {\n\
+                    total = total + x;\n\
+                }\n\
+                return total;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 60),
+            other => panic!("expected Int(60), got {:?}", other),
+        }
+    }
+
+    /// RES-933: wildcard `_` is accepted in any binding position.
+    #[test]
+    fn for_tuple_binding_accepts_wildcard() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let total = 0;\n\
+                for (_, v) in [(1, 100), (2, 200)] {\n\
+                    total = total + v;\n\
+                }\n\
+                return total;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 300),
+            other => panic!("expected Int(300), got {:?}", other),
         }
     }
 

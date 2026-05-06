@@ -695,6 +695,26 @@ All `match` patterns work (literal, identifier-binding, struct,
 tuple, variant, wildcard). Identifier patterns always match — so
 `while let x = ...` is unconditional unless the body breaks.
 
+### Tuple-destructuring `for` binding (RES-933)
+
+Anywhere a value is destructurable in `let` (RES-401) or `match`
+(RES-932), it now is in `for` too:
+
+```rust
+let pairs = [(1, 10), (2, 20), (3, 30)];
+let total = 0;
+for (k, v) in pairs {
+    total = total + k * v;
+}
+```
+
+Wildcards `_` are accepted in any position. The single-binding form
+`for x in iter { ... }` continues to work unchanged — the tuple form
+only fires when `(` immediately follows `for`. The desugar is
+parser-level — the binding is the body's first `let (...)`
+destructure of a fresh per-loop iteration variable, so anything that
+worked with `let (a, b) = ...` works in this position too.
+
 ### `break` and `continue` (RES-910)
 
 Both statements affect the **innermost** enclosing `while` or

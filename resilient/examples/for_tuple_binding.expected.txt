@@ -1,0 +1,13 @@
+1
+10
+2
+20
+3
+30
+60
+1
+2
+3
+6
+15
+Program executed successfully
