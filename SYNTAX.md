@@ -587,7 +587,23 @@ xs[..];       // [10, 20, 30, 40, 50] — full copy
 
 Bounds clamp against `len(xs)` so `xs[..99]` returns the whole
 array, **not** an error. `lo > hi` and negative endpoints **are**
-runtime errors. String slicing is not yet supported.
+runtime errors.
+
+## String slicing (RES-916)
+
+Same five forms as array slicing, but indices are **Unicode-scalar
+indices** (matching `len(s)` semantics) so multi-byte UTF-8 strings
+slice on codepoint boundaries:
+
+```rust
+let s = "héllo";
+s[0..3];     // "hél"     — 3 scalars, 4 bytes
+s[2..=4];   // "llo"
+s[..]; s[..3]; s[3..];
+```
+
+Out-of-range upper bound clamps to scalar length. `lo > hi` and
+negative endpoints are runtime errors.
 
 ## Control Flow
 

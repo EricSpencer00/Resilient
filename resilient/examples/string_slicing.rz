@@ -1,0 +1,23 @@
+// RES-916 demo: string slicing — same five forms as array slicing,
+// but indices are Unicode-scalar (codepoint) indices, not bytes.
+
+fn main(int _d) {
+    let s = "hello";
+    println(s[0..3]);                    // hel  — half-open
+    println(s[2..=4]);                   // llo  — inclusive
+    println(s[..2]);                     // he   — open lower
+    println(s[3..]);                     // lo   — open upper
+    println(s[..]);                      // hello — full copy
+
+    // UTF-8: each `é` is 2 bytes but counts as 1 scalar.
+    let utf = "héllo";
+    println(utf[0..2]);                  // hé   — 2 scalars
+    println(utf[2..]);                   // llo
+
+    // Out-of-range upper bound clamps to scalar length.
+    println("hi"[..99]);                 // hi
+
+    return 0;
+}
+
+main(0);
