@@ -1,0 +1,7 @@
+42
+answer
+255
+128
+0
+383
+Program executed successfully

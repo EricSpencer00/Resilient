@@ -192,6 +192,23 @@ pub(crate) fn eval_tuple_index(
                 items.len()
             )
         }),
+        // RES-928: tuple-struct constructors produce a `Value::Struct`
+        // with synthesized field names "0", "1", ..., so `.N` against a
+        // struct should look up the field with that name rather than
+        // erroring as "non-tuple".
+        Value::Struct { name, fields } => {
+            let key = index.to_string();
+            fields
+                .into_iter()
+                .find(|(n, _)| n == &key)
+                .map(|(_, v)| v)
+                .ok_or_else(|| {
+                    format!(
+                        "{}:{}: struct {} has no positional field `.{}`",
+                        span.start.line, span.start.column, name, index
+                    )
+                })
+        }
         other => Err(format!(
             "{}:{}: cannot index `.{}` on non-tuple value `{}`",
             span.start.line, span.start.column, index, other

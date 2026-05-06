@@ -7458,9 +7458,19 @@ impl Parser {
             }
         };
         self.next_token();
+        // RES-928: tuple-struct form — `struct Name(Type1, Type2);`.
+        // Synthesize field names "0", "1", ... so the rest of the
+        // pipeline (typechecker, interpreter, formatter) treats this
+        // as an ordinary struct with positional names.
+        if self.current_token == Token::LeftParen {
+            return self.parse_tuple_struct_decl_tail(name, repr_c);
+        }
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after struct name, found {}", tok));
+            self.record_error(format!(
+                "Expected '{{' or '(' after struct name, found {}",
+                tok
+            ));
             return Node::StructDecl {
                 name,
                 fields: Vec::new(),
@@ -7502,6 +7512,59 @@ impl Parser {
                 ));
                 break;
             }
+        }
+        Node::StructDecl {
+            name,
+            fields,
+            repr_c,
+            span: self.span_at_current(),
+        }
+    }
+
+    /// RES-928: parse the body of a tuple struct after the leading
+    /// `(`. Caller has consumed `struct NAME` and `current_token ==
+    /// Token::LeftParen`. Returns a `StructDecl` whose fields use
+    /// the synthesized positional names "0", "1", … so downstream
+    /// passes need no extra branching.
+    fn parse_tuple_struct_decl_tail(&mut self, name: String, repr_c: bool) -> Node {
+        debug_assert!(matches!(self.current_token, Token::LeftParen));
+        self.next_token(); // skip `(`
+        let mut fields: Vec<(String, String)> = Vec::new();
+        let mut idx: usize = 0;
+        while self.current_token != Token::RightParen && self.current_token != Token::Eof {
+            let ty = match self.parse_type_annotation("for tuple-struct field") {
+                Some(t) => t,
+                None => break,
+            };
+            // current_token now sits on the token AFTER the type
+            // (per the helper's convention) — typically `,` or `)`.
+            fields.push((ty, idx.to_string()));
+            idx += 1;
+            if self.current_token == Token::Comma {
+                self.next_token();
+            } else if self.current_token != Token::RightParen {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ',' or ')' in tuple-struct fields, found {}",
+                    tok
+                ));
+                break;
+            }
+        }
+        // Consume the closing `)` if we landed on it.
+        if self.current_token == Token::RightParen {
+            self.next_token();
+        }
+        // Optional trailing `;` matches Rust's tuple-struct grammar.
+        if self.current_token == Token::Semicolon {
+            // current_token sits on `;`; the surrounding statement
+            // dispatcher expects the StructDecl to end with the
+            // closing punctuation already consumed by the parser, so
+            // we step past `;` here.
+            // (`parse_program` re-calls `next_token` after each
+            // statement; leaving current on `;` is also fine, but
+            // matching the pattern is cleaner.)
+            // (No-op for now — leaving it cleanly handled by the outer loop.)
         }
         Node::StructDecl {
             name,
@@ -7870,9 +7933,19 @@ impl Parser {
                 }
             }
         }
+        // RES-928: tuple-struct constructor — `new Pair(arg1, arg2)`.
+        // We synthesize positional field names "0", "1", ... so the
+        // result is an ordinary StructLiteral that flows through the
+        // unchanged interpreter.
+        if self.current_token == Token::LeftParen {
+            return self.parse_tuple_struct_literal_tail(name);
+        }
         if self.current_token != Token::LeftBrace {
             let tok = self.current_token.clone();
-            self.record_error(format!("Expected '{{' after struct name, found {}", tok));
+            self.record_error(format!(
+                "Expected '{{' or '(' after struct name, found {}",
+                tok
+            ));
             return Node::StructLiteral {
                 name,
                 fields: Vec::new(),
@@ -8158,6 +8231,50 @@ impl Parser {
         Pattern::Range { lo, hi, inclusive }
     }
 
+    /// RES-928: parse the body of a tuple-struct literal after the
+    /// leading `(`. Caller has set `current_token = LeftParen` and
+    /// already chose the constructor name. Synthesizes positional
+    /// field names "0", "1", … so the result is an ordinary
+    /// StructLiteral.
+    fn parse_tuple_struct_literal_tail(&mut self, name: String) -> Node {
+        let span = self.span_at_current();
+        debug_assert!(matches!(self.current_token, Token::LeftParen));
+        self.next_token(); // skip `(`
+        let mut fields: Vec<(String, Node)> = Vec::new();
+        let mut idx: usize = 0;
+        if self.current_token == Token::RightParen {
+            // empty body — `new Unit()` style.
+            return Node::StructLiteral { name, fields, span };
+        }
+        loop {
+            let value = self.parse_expression(0).unwrap_or(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            });
+            fields.push((idx.to_string(), value));
+            idx += 1;
+            self.next_token(); // step past last token of value
+            if self.current_token == Token::Comma {
+                self.next_token();
+                if self.current_token == Token::RightParen {
+                    break;
+                }
+            } else if self.current_token == Token::RightParen {
+                break;
+            } else {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "Expected ',' or ')' in tuple-struct literal, found {}",
+                    tok
+                ));
+                break;
+            }
+        }
+        // current_token is on `)`. Caller's span is on `(`; rest of
+        // pipeline sees the standard `StructLiteral` shape.
+        Node::StructLiteral { name, fields, span }
+    }
+
     pub(crate) fn parse_pattern(&mut self) -> Pattern {
         let first = self.parse_pattern_atom();
         // RES-160: collect `| <pattern>` tails. `|` is
@@ -8325,6 +8442,11 @@ impl Parser {
         }
         let field = match &self.current_token {
             Token::Identifier(n) => n.clone(),
+            // RES-928: tuple-struct positional access — `p.0`, `p.1`, etc.
+            // The lexer emits `IntLiteral(N)`; we coerce to a string field
+            // name so the rest of the pipeline (typechecker, interpreter)
+            // sees a regular FieldAccess by name.
+            Token::IntLiteral(n) if *n >= 0 => n.to_string(),
             _ => {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected field name after '.', found {}", tok));
@@ -27110,6 +27232,49 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 4),
             other => panic!("expected Int(4), got {:?}", other),
         }
+    }
+
+    /// RES-928: tuple struct decl + constructor + positional access.
+    #[test]
+    fn tuple_struct_construction_and_access() {
+        let src = "\
+            struct Pair(int, string);\n\
+            fn main(int _d) -> int {\n\
+                let p = new Pair(42, \"hello\");\n\
+                return p.0 + len(p.1);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 42 + 5),
+            other => panic!("expected Int(47), got {:?}", other),
+        }
+    }
+
+    /// RES-928: out-of-range positional index errors with a clear
+    /// diagnostic.
+    #[test]
+    fn tuple_struct_out_of_range_index_errors() {
+        let src = "\
+            struct One(int);\n\
+            fn main(int _d) -> int {\n\
+                let x = new One(7);\n\
+                return x.5;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("no positional field"),
+            "expected positional-field error, got: {}",
+            err
+        );
     }
 
     /// RES-925: `if` works in expression position; the chosen
