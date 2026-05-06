@@ -169,7 +169,9 @@ fn compatible(a: &Type, b: &Type) -> bool {
 fn pattern_bindings(p: &Pattern) -> Vec<String> {
     match p {
         Pattern::Identifier(n) => vec![n.clone()],
-        Pattern::Wildcard | Pattern::Literal(_) => Vec::new(),
+        // RES-915: range patterns bind no names (today; `1..=5 @ x`
+        // binding is queued as a follow-up).
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => Vec::new(),
         Pattern::Or(branches) => {
             // By induction (checked at each arm) every branch
             // introduces the same names — pick the first branch's
@@ -215,7 +217,9 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
 fn pattern_is_default(p: &Pattern) -> bool {
     match p {
         Pattern::Wildcard | Pattern::Identifier(_) => true,
-        Pattern::Literal(_) => false,
+        // RES-915: a range pattern does not match every Int — `1..=5`
+        // misses 0, 6, etc. — so it is never a default arm.
+        Pattern::Literal(_) | Pattern::Range { .. } => false,
         Pattern::Or(branches) => branches.iter().any(pattern_is_default),
         // `x @ inner` is default iff the inner pattern is default.
         Pattern::Bind(_, inner) => pattern_is_default(inner),
@@ -252,7 +256,8 @@ fn pattern_covers_bool(p: &Pattern, want: bool) -> bool {
 fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: &Pattern) -> bool {
     match p {
         Pattern::Wildcard | Pattern::Identifier(_) => true,
-        Pattern::Literal(_) => false,
+        // RES-915: range patterns never match a struct; they're Int-only.
+        Pattern::Literal(_) | Pattern::Range { .. } => false,
         Pattern::Or(branches) => branches
             .iter()
             .any(|b| struct_pattern_matches_nominal_type(sname, decl, b)),
@@ -3015,7 +3020,8 @@ impl TypeChecker {
         scrut_ty: &Type,
     ) -> Result<Vec<(String, Type)>, String> {
         match pattern {
-            Pattern::Wildcard | Pattern::Literal(_) => Ok(vec![]),
+            // RES-915: range patterns bind no names today.
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => Ok(vec![]),
             Pattern::Identifier(n) => Ok(vec![(n.clone(), scrut_ty.clone())]),
             Pattern::Or(branches) => {
                 let first = self.match_pattern_binding_types(&branches[0], scrut_ty)?;

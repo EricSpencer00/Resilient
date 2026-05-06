@@ -261,6 +261,8 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
         // RES-375: `Some(inner)` forwards to inner; `None` has no bindings.
         Pattern::Some(inner) => collect_pattern_bindings(inner.as_ref()),
         Pattern::None => vec![],
+        // RES-915: range patterns bind no names.
+        Pattern::Range { .. } => vec![],
         // RES-400: enum-variant pattern bindings.
         Pattern::EnumVariant { payload, .. } => match payload {
             crate::EnumPatternPayload::None => vec![],
@@ -630,7 +632,9 @@ fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<
 fn pattern_is_default_for_lint(p: &Pattern) -> bool {
     match p {
         Pattern::Wildcard | Pattern::Identifier(_) => true,
-        Pattern::Literal(_) => false,
+        // RES-915: range patterns never catch every Int (e.g. `1..=5`
+        // misses 0, 6, …).
+        Pattern::Literal(_) | Pattern::Range { .. } => false,
         Pattern::Or(branches) => branches.iter().any(pattern_is_default_for_lint),
         Pattern::Bind(_, inner) => pattern_is_default_for_lint(inner),
         Pattern::Struct { fields, .. } => fields

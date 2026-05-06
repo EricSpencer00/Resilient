@@ -1,0 +1,10 @@
+small
+medium
+large
+other
+other
+true
+true
+false
+false
+Program executed successfully
