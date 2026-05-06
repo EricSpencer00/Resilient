@@ -1,0 +1,26 @@
+// RES-909 demo: underscore separators in decimal int and float
+// literals. Already worked in hex / binary; this PR extends the same
+// rule to decimal mantissas and the RES-906 scientific-notation
+// exponent.
+
+fn main(int _d) {
+    // Decimal int with separators.
+    let million = 1_000_000;
+    println(million);                    // 1000000
+
+    // Float mantissa with separators.
+    let euler = 2_71828.18284_5;
+    println(euler);                      // 271828.182845
+
+    // Scientific notation with separators in BOTH mantissa and exponent.
+    let big = 1_234.5e0_1;
+    println(big);                        // 12345
+
+    // Hex / binary still work — separators were already accepted there.
+    let mask = 0xDEAD_BEEF;
+    println(mask);                       // 3735928559
+
+    return 0;
+}
+
+main(0);
