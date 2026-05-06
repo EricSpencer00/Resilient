@@ -1,0 +1,16 @@
+// RES-904 demo: atan(x) is the single-argument inverse tangent (radians).
+// Inverse of tan (RES-146). std-only; float-in / float-out per RES-130.
+// Total domain; range (-π/2, π/2). Use atan2(y, x) for the full circle.
+
+fn main(int _d) {
+    println(atan(0.0));                  // 0
+    // atan is odd: atan(x) + atan(-x) = 0.
+    println(atan(3.0) + atan(-3.0));     // 0
+    // |atan(x)| < π/2 (≈ 1.5707963…) for finite x.
+    println(atan(1000000000.0) < 1.58);   // true
+    println(atan(-1000000000.0) > -1.58); // true
+
+    return 0;
+}
+
+main(0);
