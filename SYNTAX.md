@@ -570,6 +570,7 @@ let value = "Pi: " + 3.14;              // "Pi: 3.14"
 | Bitwise | `&` `\|` `^` `<<` `>>` |
 | Prefix | `!x` (logical-not), `-x` (negate) |
 | String | `+` (concat); int/float/bool coerce to string when concatenated |
+| String × Int | `*` (RES-924) — `"-" * 10` repeats the string; both operand orders work |
 | Array index | `arr[i]` — single element |
 | Array slice | `arr[lo..hi]`, `arr[lo..=hi]`, `arr[lo..]`, `arr[..hi]`, `arr[..]` (RES-911) — returns a fresh array |
 | Compound assign | `+= -= *= /= %= &= \|= ^= <<= >>=` (RES-912) — `x OP= rhs` desugars to `x = x OP rhs` for plain identifiers |
