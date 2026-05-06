@@ -140,16 +140,18 @@ enum Tok {
     #[regex(r"0[bB][01_]+", bin_int, priority = 3)]
     BinInt(i64),
     // Float literal — `1.2`, `1.`, plus RES-906 scientific notation
-    // `1e9`, `1.5e-3`, `2E+10`. Must outrank `Int` for inputs with
-    // a trailing `.` or an `[eE]±?[0-9]+` exponent so logos picks the
-    // float arm.
+    // `1e9`, `1.5e-3`, `2E+10`, plus RES-909 underscore separators
+    // (`1_000.5e1_0`). Must outrank `Int` for inputs with a trailing
+    // `.` or an `[eE]±?[0-9]+` exponent so logos picks the float arm.
+    // The `_`-stripping callback (`float_lit`) handles separators.
     #[regex(
-        r"[0-9]+\.[0-9]*([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+",
-        |lex| lex.slice().parse::<f64>().ok(),
+        r"[0-9][0-9_]*\.[0-9_]*([eE][+-]?[0-9][0-9_]*)?|[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*",
+        float_lit,
         priority = 2
     )]
     Float(f64),
-    #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
+    // RES-909: decimal int literals also accept `_` between digits.
+    #[regex(r"[0-9][0-9_]*", int_lit)]
     Int(i64),
     // String literal — `"([^"\\]|\\[\s\S])*"` matches any non-quote
     // non-backslash char OR a backslash followed by any char
@@ -312,6 +314,27 @@ fn hex_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
 fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     let body = lex.slice()[2..].replace('_', "");
     Some(i64::from_str_radix(&body, 2).unwrap_or(0))
+}
+
+/// RES-909: decimal int literal with optional `_` separators.
+fn int_lit(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
+    let slice = lex.slice();
+    if slice.contains('_') {
+        slice.replace('_', "").parse::<i64>().ok()
+    } else {
+        slice.parse::<i64>().ok()
+    }
+}
+
+/// RES-909: float literal with optional `_` separators in mantissa
+/// or exponent body (`1_000.5e1_0`).
+fn float_lit(lex: &mut logos::Lexer<Tok>) -> Option<f64> {
+    let slice = lex.slice();
+    if slice.contains('_') {
+        slice.replace('_', "").parse::<f64>().ok()
+    } else {
+        slice.parse::<f64>().ok()
+    }
 }
 
 fn bytes_lit(lex: &mut logos::Lexer<Tok>) -> Vec<u8> {

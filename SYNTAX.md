@@ -506,12 +506,16 @@ The current trait system does not support:
 ## Data Types
 
 - `int`: 64-bit signed integer. Accepts decimal (`42`), hex (`0xFF`),
-  and binary (`0b1010`) literals. Underscore separators allowed:
-  `0xDEAD_BEEF`.
+  and binary (`0b1010`) literals. Underscore separators allowed in all
+  three forms: `0xDEAD_BEEF`, `0b1010_0001`, `1_000_000` (RES-909).
 - `float`: 64-bit floating point. Accepts decimal-point literals
-  (`1.5`, `42.`) and RES-906 scientific notation (`1e9`, `2E10`,
-  `1.5e-3`, `1.e3`). Exponent body (`+`/`-` optional, then ≥1 digit)
-  must follow `e`/`E` — bare `1e` lexes as `Int(1) Ident("e")`.
+  (`1.5`, `42.`), RES-906 scientific notation (`1e9`, `2E10`,
+  `1.5e-3`, `1.e3`), and RES-909 underscore separators in mantissa
+  and exponent body (`1_000.5e1_0`). Exponent body (`+`/`-` optional,
+  then ≥1 digit) must follow `e`/`E` — bare `1e` lexes as
+  `Int(1) Ident("e")`. An underscore must sit between two digits;
+  `1_a` lexes as `Int(1) Ident("_a")`, never silently swallowing the
+  separator.
 - `string`: UTF-8 text; `len(s)` returns scalar count
 - `bytes`: raw byte sequence, `b"\x00\x01abc"` literal (RES-152)
 - `bool`: `true` / `false`

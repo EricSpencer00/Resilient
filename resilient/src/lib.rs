@@ -1121,7 +1121,14 @@ impl Lexer {
         let position = self.position;
         let mut is_float = false;
 
-        while self.is_digit(self.ch) || self.ch == '.' {
+        // RES-909: accept `_` *between* digits in decimal mantissas. The
+        // lookahead-protected rule keeps `1_a` lexing as `Int(1) Ident("_a")`
+        // — we only consume an underscore when a digit immediately follows,
+        // never one that should start an identifier.
+        while self.is_digit(self.ch)
+            || self.ch == '.'
+            || (self.ch == '_' && self.is_digit(self.peek_char()))
+        {
             if self.ch == '.' {
                 // RES-330: stop on the range operator `..` so quantifier
                 // ranges like `0..n` lex as IntLiteral(0), DotDot, IDENT.
@@ -1136,6 +1143,7 @@ impl Lexer {
         }
 
         // RES-906: scientific-notation exponent — `1e9`, `1.5e-3`, `2E+10`.
+        // RES-909: also accept `_` between exponent digits (`1e1_0`).
         // We only consume `[eE]` if a digit (optionally preceded by `+`/`-`)
         // follows; this avoids ambiguity with hex digits in non-prefixed
         // contexts and produces a clean lex error if the exponent body is
@@ -1154,13 +1162,21 @@ impl Lexer {
                 if self.ch == '+' || self.ch == '-' {
                     self.read_char();
                 }
-                while self.is_digit(self.ch) {
+                while self.is_digit(self.ch) || (self.ch == '_' && self.is_digit(self.peek_char()))
+                {
                     self.read_char();
                 }
             }
         }
 
-        let number_str: String = self.input[position..self.position].iter().collect();
+        // RES-909: f64::from_str / i64::from_str do not strip `_`; we
+        // collect the slice and remove separators before parsing.
+        let raw: String = self.input[position..self.position].iter().collect();
+        let number_str = if raw.contains('_') {
+            raw.replace('_', "")
+        } else {
+            raw
+        };
 
         if is_float {
             Token::FloatLiteral(number_str.parse::<f64>().unwrap_or(0.0))
@@ -29656,6 +29672,74 @@ mod tests {
         interp.eval(&p).unwrap();
         match interp.env.get("x").unwrap() {
             Value::Float(v) => assert!((v - 0.0015).abs() < 1e-9, "x = {}", v),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    /// RES-909: `_` between digits in decimal int / float literals is
+    /// stripped before parsing. Hex / binary already had this; we extend
+    /// it to the decimal path and to the RES-906 exponent body.
+    #[test]
+    fn lexer_underscore_separators_in_decimals() {
+        // Plain int with separators.
+        let toks = tokenize("1_000_000");
+        assert!(
+            matches!(toks[0], Token::IntLiteral(1_000_000)),
+            "expected IntLiteral(1_000_000), got {:?}",
+            toks[0]
+        );
+        // Float mantissa with separators.
+        let toks = tokenize("1_000.5");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 1000.5).abs() < 1e-9),
+            "expected FloatLiteral(1_000.5), got {:?}",
+            toks[0]
+        );
+        // Both mantissa and exponent with separators.
+        let toks = tokenize("1_000.5e1_0");
+        assert!(
+            matches!(toks[0], Token::FloatLiteral(f) if (f - 1.0005e13).abs() < 1.0),
+            "expected FloatLiteral(1.0005e13), got {:?}",
+            toks[0]
+        );
+    }
+
+    /// RES-909: an underscore that's NOT between two digits stays
+    /// available to start an identifier. `1_a` must lex as
+    /// `Int(1) Ident("_a")`, not as `Int(1_a)` and not as
+    /// `Int(1_) Ident("a")` (which would silently swallow the `_`).
+    #[test]
+    fn lexer_trailing_underscore_starts_identifier() {
+        let toks = tokenize("1_a");
+        assert!(matches!(toks[0], Token::IntLiteral(1)));
+        assert!(matches!(&toks[1], Token::Identifier(s) if s == "_a"));
+        // Trailing `_` at end of input — bare `_` is the wildcard token.
+        let toks = tokenize("42_");
+        assert!(matches!(toks[0], Token::IntLiteral(42)));
+        assert!(matches!(toks[1], Token::Underscore));
+        // Float mantissa: `1.5_` must end the float, leaving `_` as the
+        // start of the next token (the wildcard).
+        let toks = tokenize("1.5_");
+        assert!(matches!(toks[0], Token::FloatLiteral(f) if (f - 1.5).abs() < 1e-9));
+        assert!(matches!(toks[1], Token::Underscore));
+    }
+
+    /// RES-909 end-to-end: a program with `_`-separated literals
+    /// evaluates to the same value as the un-separated form.
+    #[test]
+    fn underscore_separators_evaluate_correctly() {
+        let (p, _e) = parse("let a = 1_000_000; let b = 1000000; let c = a - b;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("c").unwrap() {
+            Value::Int(n) => assert_eq!(n, 0),
+            other => panic!("expected Int, got {:?}", other),
+        }
+        let (p, _e) = parse("let f = 1_234.5e1_0;");
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("f").unwrap() {
+            Value::Float(v) => assert!((v - 1234.5e10).abs() < 1.0, "f = {}", v),
             other => panic!("expected Float, got {:?}", other),
         }
     }
