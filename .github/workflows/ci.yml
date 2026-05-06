@@ -89,6 +89,11 @@ jobs:
     name: build / test with --features z3
     needs: [changes]
     runs-on: ubuntu-latest
+    # RES-918: hard 30-minute cap so a stuck z3 query (or a runaway
+    # bindgen / linker cache miss) doesn't wedge the runner for the
+    # default 6 hours. Surfaces as a normal CI failure, so auto-merge
+    # continues to refuse the PR until the job is fixed.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: resilient
