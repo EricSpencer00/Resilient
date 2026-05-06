@@ -606,6 +606,22 @@ while condition {
 Parentheses around conditions are optional. `while` has a built-in
 1,000,000-iteration runaway guard.
 
+### `loop { ... }` (RES-913)
+
+Unconditional infinite loop — exit only via `break` (or `return`):
+
+```rust
+let i = 0;
+loop {
+    if i >= 10 { break; }
+    i += 1;
+}
+```
+
+Equivalent to `while true { ... }` and shares the same 1M-iteration
+runaway guard. `loop` is a statement, not an expression — `let x =
+loop { break v; }` (loop-with-value) is a future enhancement.
+
 ### `break` and `continue` (RES-910)
 
 Both statements affect the **innermost** enclosing `while` or

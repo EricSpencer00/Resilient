@@ -217,6 +217,10 @@ enum Tok {
     Break,
     #[token("continue")]
     Continue,
+    /// RES-913: `loop { ... }` — unconditional loop. Desugars to
+    /// `while true { body }` at the parser layer.
+    #[token("loop")]
+    Loop,
     #[token("requires")]
     Requires,
     #[token("ensures")]
@@ -649,6 +653,7 @@ fn convert(t: Tok) -> Token {
         Tok::In => Token::In,
         Tok::Break => Token::Break,
         Tok::Continue => Token::Continue,
+        Tok::Loop => Token::Loop,
         Tok::Requires => Token::Requires,
         Tok::Ensures => Token::Ensures,
         Tok::RecoversTo => Token::RecoversTo,
