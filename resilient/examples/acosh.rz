@@ -1,0 +1,15 @@
+// RES-900 demo: acosh(x) is the inverse hyperbolic cosine. Inverse of
+// cosh (RES-897). std-only; float-in / float-out per RES-130. Domain
+// is x >= 1; out-of-domain yields NaN.
+
+fn main(int _d) {
+    println(acosh(1.0));                  // 0
+    // cosh(acosh(x)) ≈ x for x >= 1 (subject to fp rounding).
+    println(cosh(acosh(2.5)) > 2.49);     // true
+    println(cosh(acosh(2.5)) < 2.51);     // true
+    println(acosh(2.0) > 0.0);            // true
+
+    return 0;
+}
+
+main(0);
