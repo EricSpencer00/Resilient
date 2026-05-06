@@ -1,0 +1,31 @@
+// RES-928 demo: tuple structs — `struct Name(T1, T2);` with
+// positional `.0` / `.1` field access.
+
+struct Pair(int, string);
+struct RGB(int, int, int);
+
+fn describe(int color, int level) -> string {
+    let c = new RGB(255, 128, 0);
+    return c.0 + " " + c.1 + " " + c.2;
+}
+
+fn main(int _d) {
+    // Construct with positional args.
+    let p = new Pair(42, "answer");
+    println(p.0);                // 42
+    println(p.1);                // answer
+
+    // Multi-field tuple struct.
+    let orange = new RGB(255, 128, 0);
+    println(orange.0);           // 255
+    println(orange.1);           // 128
+    println(orange.2);           // 0
+
+    // Mix into expressions.
+    let sum = orange.0 + orange.1 + orange.2;
+    println(sum);                // 383
+
+    return 0;
+}
+
+main(0);
