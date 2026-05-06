@@ -57,6 +57,7 @@ This document is a human-facing summary grouped by category.
 | `asin(x)` | float → float | RES-902: inverse sine (radians); std-only; domain `[-1, 1]`; `|x|>1` → NaN; range `[-π/2, π/2]` |
 | `acos(x)` | float → float | RES-903: inverse cosine (radians); std-only; domain `[-1, 1]`; `|x|>1` → NaN; range `[0, π]` |
 | `atan(x)` | float → float | RES-904: inverse tangent (radians, single arg); std-only; total domain; range `(-π/2, π/2)`; sibling of `atan2(y, x)` |
+| `cbrt(x)` | float → float | RES-905: cube root; std-only; total domain (handles negatives, unlike `sqrt`); odd |
 | `to_float(x)` | int → float | explicit coercion |
 | `to_int(x)` | float → int | explicit coercion |
 | `as_int8/16/32/64(x)` | int → int | wrapping truncation to signed width |

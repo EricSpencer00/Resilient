@@ -8922,6 +8922,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("acos", builtin_acos),
     // RES-904.
     ("atan", builtin_atan),
+    // RES-905.
+    ("cbrt", builtin_cbrt),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9927,6 +9929,19 @@ fn builtin_atan(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("atan: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-905: `cbrt(x: Float) -> Float` — cube root. Sibling of `sqrt` but with
+/// total domain (defined for negative inputs); `cbrt` is odd.
+fn builtin_cbrt(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.cbrt())),
+        [other] => Err(format!(
+            "cbrt: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("cbrt: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27720,6 +27735,44 @@ mod tests {
     #[test]
     fn atan_arity_check() {
         let err = builtin_atan(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn cbrt_basic() {
+        // cbrt(0) = 0.
+        close(
+            as_float(builtin_cbrt(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "cbrt(0)",
+        );
+        // cbrt(8) = 2.
+        close(
+            as_float(builtin_cbrt(&[Value::Float(8.0)]).unwrap()),
+            2.0,
+            "cbrt(8)",
+        );
+        // cbrt is odd: cbrt(-27) = -3.
+        close(
+            as_float(builtin_cbrt(&[Value::Float(-27.0)]).unwrap()),
+            -3.0,
+            "cbrt(-27)",
+        );
+        // cbrt(cbrt(x)^3) = x for x = 7.
+        let c = as_float(builtin_cbrt(&[Value::Float(7.0)]).unwrap());
+        close(c * c * c, 7.0, "cbrt(7)^3");
+    }
+
+    #[test]
+    fn cbrt_rejects_int() {
+        let err = builtin_cbrt(&[Value::Int(8)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn cbrt_arity_check() {
+        let err = builtin_cbrt(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
