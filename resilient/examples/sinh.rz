@@ -1,0 +1,14 @@
+// RES-896 demo: sinh(x) is hyperbolic sine. Mirror of sin (RES-146).
+// std-only; float-in / float-out per RES-130.
+
+fn main(int _d) {
+    println(sinh(0.0));                  // 0
+    // sinh is odd, so sinh(x) + sinh(-x) cancels exactly.
+    println(sinh(2.0) + sinh(-2.0));     // 0
+    println(sinh(1.0) > 0.0);            // true
+    println(sinh(-1.0) < 0.0);           // true
+
+    return 0;
+}
+
+main(0);
