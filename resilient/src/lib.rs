@@ -19356,6 +19356,82 @@ impl Interpreter {
                             other => Err(format!("Cell has no method `{}`", other)),
                         };
                     }
+                    // RES-927: array functional methods — `map`,
+                    // `filter`, `reduce`. These can't go through the
+                    // stateless `apply_builtin_by_name` route because
+                    // the callback dispatch needs the interpreter's
+                    // `&mut self`, so handle them inline here before
+                    // the generic builtin dispatch.
+                    if let Value::Array(items) = &target_val {
+                        let extra_args = self.eval_expressions(arguments)?;
+                        match field.as_str() {
+                            "map" => match extra_args.as_slice() {
+                                [callback] => {
+                                    let mut out = Vec::with_capacity(items.len());
+                                    for item in items.clone() {
+                                        let v =
+                                            self.apply_function(callback.clone(), vec![item])?;
+                                        out.push(v);
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "map: expected 1 callback argument, got {}",
+                                        other.len()
+                                    ));
+                                }
+                            },
+                            "filter" => match extra_args.as_slice() {
+                                [predicate] => {
+                                    let mut out = Vec::new();
+                                    for item in items.clone() {
+                                        let keep = self.apply_function(
+                                            predicate.clone(),
+                                            vec![item.clone()],
+                                        )?;
+                                        match keep {
+                                            Value::Bool(true) => out.push(item),
+                                            Value::Bool(false) => {}
+                                            other => {
+                                                return Err(format!(
+                                                    "filter: predicate must return Bool, got {}",
+                                                    other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    return Ok(Value::Array(out));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "filter: expected 1 predicate argument, got {}",
+                                        other.len()
+                                    ));
+                                }
+                            },
+                            "reduce" => match extra_args.as_slice() {
+                                [init, callback] => {
+                                    let mut acc = init.clone();
+                                    for item in items.clone() {
+                                        acc =
+                                            self.apply_function(callback.clone(), vec![acc, item])?;
+                                    }
+                                    return Ok(acc);
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "reduce: expected 2 arguments (init, callback), got {}",
+                                        other.len()
+                                    ));
+                                }
+                            },
+                            _ => {
+                                // Fall through to the RES-920 generic
+                                // builtin dispatch below.
+                            }
+                        }
+                    }
                     // RES-920: method-call sugar on built-in String /
                     // Array. Forward to the existing builtin with the
                     // target prepended as the first argument so prefix
@@ -27013,6 +27089,89 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 42),
             other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    /// RES-927: `arr.map(f)` applies `f` to each element and returns
+    /// a fresh array. Closure captures work because the dispatch goes
+    /// through the interpreter's existing `apply_function`.
+    #[test]
+    fn array_map_method() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                let doubled = arr.map(fn(int x) -> int { return x * 2; });\n\
+                return len(doubled) + doubled[0] + doubled[4];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5 + 2 + 10),
+            other => panic!("expected Int(17), got {:?}", other),
+        }
+    }
+
+    /// RES-927: `arr.filter(pred)` keeps elements where pred returns
+    /// `true`.
+    #[test]
+    fn array_filter_method() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                let evens = arr.filter(fn(int x) -> bool { return x % 2 == 0; });\n\
+                return evens[0] + evens[1];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 6), // 2 + 4
+            other => panic!("expected Int(6), got {:?}", other),
+        }
+    }
+
+    /// RES-927: `arr.reduce(init, f)` left-folds.
+    #[test]
+    fn array_reduce_method() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3, 4, 5];\n\
+                return arr.reduce(0, fn(int acc, int x) -> int { return acc + x; });\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 15),
+            other => panic!("expected Int(15), got {:?}", other),
+        }
+    }
+
+    /// RES-927: closure captures flow through the callback dispatch.
+    #[test]
+    fn array_map_with_closure_capture() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let arr = [1, 2, 3];\n\
+                let factor = 10;\n\
+                let scaled = arr.map(fn(int x) -> int { return x * factor; });\n\
+                return scaled[0] + scaled[1] + scaled[2];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 60), // 10+20+30
+            other => panic!("expected Int(60), got {:?}", other),
         }
     }
 

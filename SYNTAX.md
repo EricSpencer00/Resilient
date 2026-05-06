@@ -884,7 +884,8 @@ words.split(",").len()
 Methods available today:
 - String: `len`, `trim`, `to_upper`, `to_lower`, `contains(sub)`,
   `starts_with(p)`, `ends_with(p)`, `split(sep)`, `repeat(n)`.
-- Array: `len`, `push(x)`, `pop`.
+- Array: `len`, `push(x)`, `pop`, plus the RES-927 functional trio
+  `map(fn)`, `filter(pred)`, `reduce(init, fn)`.
 
 The prefix forms (`len(s)` etc.) continue to work; this is additive
 sugar, not a rename.
