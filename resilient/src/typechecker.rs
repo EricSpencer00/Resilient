@@ -4308,6 +4308,21 @@ impl TypeChecker {
                 Ok(Type::Any)
             }
 
+            // RES-911: slicing — `target[lo..hi]` returns `Array` with
+            // the same element type as `target`. Endpoints must be `Int`.
+            // The MVP `Type::Array` is unparameterized, so the result is
+            // a plain `Array` regardless of element type.
+            Node::Slice { target, lo, hi, .. } => {
+                let _ = self.check_node(target)?;
+                if let Some(lo) = lo {
+                    let _ = self.check_node(lo)?;
+                }
+                if let Some(hi) = hi {
+                    let _ = self.check_node(hi)?;
+                }
+                Ok(Type::Array)
+            }
+
             Node::IndexAssignment {
                 target,
                 index,

@@ -918,6 +918,26 @@ impl Formatter {
                 self.fmt_expr(index);
                 self.write("]");
             }
+            // RES-911: slicing — `target[lo..hi]` / `target[lo..=hi]` /
+            // `target[lo..]` / `target[..hi]` / `target[..]`.
+            Node::Slice {
+                target,
+                lo,
+                hi,
+                inclusive,
+                ..
+            } => {
+                self.fmt_expr(target);
+                self.write("[");
+                if let Some(lo) = lo {
+                    self.fmt_expr(lo);
+                }
+                self.write(if *inclusive { "..=" } else { ".." });
+                if let Some(hi) = hi {
+                    self.fmt_expr(hi);
+                }
+                self.write("]");
+            }
             Node::IndexAssignment {
                 target,
                 index,

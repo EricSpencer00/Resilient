@@ -1108,7 +1108,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::Continue { span, .. }
         | Node::IfStatement { span, .. }
         | Node::WhileStatement { span, .. }
-        | Node::ForInStatement { span, .. } => span.start.line as u32,
+        | Node::ForInStatement { span, .. }
+        | Node::Slice { span, .. } => span.start.line as u32,
 
         // Block + ExpressionStatement (RES-087, tuple→struct).
         Node::Block { span, .. } | Node::ExpressionStatement { span, .. } => span.start.line as u32,

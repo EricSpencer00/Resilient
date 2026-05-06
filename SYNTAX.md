@@ -570,6 +570,23 @@ let value = "Pi: " + 3.14;              // "Pi: 3.14"
 | Bitwise | `&` `\|` `^` `<<` `>>` |
 | Prefix | `!x` (logical-not), `-x` (negate) |
 | String | `+` (concat); int/float/bool coerce to string when concatenated |
+| Array index | `arr[i]` — single element |
+| Array slice | `arr[lo..hi]`, `arr[lo..=hi]`, `arr[lo..]`, `arr[..hi]`, `arr[..]` (RES-911) — returns a fresh array |
+
+## Array slicing (RES-911)
+
+```rust
+let xs = [10, 20, 30, 40, 50];
+xs[1..3];     // [20, 30]            — half-open
+xs[1..=3];    // [20, 30, 40]        — inclusive
+xs[2..];      // [30, 40, 50]        — open upper
+xs[..3];      // [10, 20, 30]        — open lower
+xs[..];       // [10, 20, 30, 40, 50] — full copy
+```
+
+Bounds clamp against `len(xs)` so `xs[..99]` returns the whole
+array, **not** an error. `lo > hi` and negative endpoints **are**
+runtime errors. String slicing is not yet supported.
 
 ## Control Flow
 

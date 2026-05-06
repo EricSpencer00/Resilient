@@ -95,6 +95,17 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         // no names, so they contribute nothing to free vars.
         | Node::Break { .. }
         | Node::Continue { .. } => {}
+        // RES-911: slicing — walk the target plus both endpoints; binds
+        // no names of its own.
+        Node::Slice { target, lo, hi, .. } => {
+            walk(target, bound, free);
+            if let Some(lo) = lo {
+                walk(lo, bound, free);
+            }
+            if let Some(hi) = hi {
+                walk(hi, bound, free);
+            }
+        }
         // RES-221: walk each Expr part; literals have no free variables.
         Node::InterpolatedString { parts, .. } => {
             for part in parts {
