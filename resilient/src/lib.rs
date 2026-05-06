@@ -314,6 +314,10 @@ enum Token {
     /// RES-910: early-exit / skip-iteration control flow.
     Break,
     Continue,
+    /// RES-913: `loop { ... }` — unconditional loop, exit only via
+    /// `break` or `return`. The parser desugars to `while true { body }`
+    /// so the runtime path is unchanged.
+    Loop,
     Requires,
     Ensures,
     /// RES-392/RES-387: `recovers_to` — crash-recovery postcondition.
@@ -563,6 +567,7 @@ impl Token {
             Token::In => "`in`".to_string(),
             Token::Break => "`break`".to_string(),
             Token::Continue => "`continue`".to_string(),
+            Token::Loop => "`loop`".to_string(),
             Token::Requires => "`requires`".to_string(),
             Token::Ensures => "`ensures`".to_string(),
             Token::RecoversTo => "`recovers_to`".to_string(),
@@ -1094,6 +1099,7 @@ impl Lexer {
                         "in" => Token::In,
                         "break" => Token::Break,
                         "continue" => Token::Continue,
+                        "loop" => Token::Loop,
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
                         "recovers_to" => Token::RecoversTo,
@@ -2819,6 +2825,7 @@ impl Parser {
             Token::Return => Some(self.parse_return_statement()),
             Token::Break => Some(self.parse_break_statement()),
             Token::Continue => Some(self.parse_continue_statement()),
+            Token::Loop => Some(self.parse_loop_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
             Token::Assume => Some(self.parse_assume()),
@@ -6026,6 +6033,43 @@ impl Parser {
             self.next_token();
         }
         Node::Continue { span: stmt_span }
+    }
+
+    /// RES-913: parse `loop { body }` and desugar to `while true { body }`.
+    /// No new AST variant — the synthetic `BooleanLiteral{true}` condition
+    /// flows through the unchanged `WhileStatement` evaluator (including
+    /// the 1M-iteration runaway guard and `break`/`continue` interception).
+    fn parse_loop_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `loop`
+
+        if self.current_token != Token::LeftBrace {
+            let tok = self.current_token.clone();
+            self.record_error(format!("Expected '{{' after `loop`, found {}", tok));
+            return Node::WhileStatement {
+                condition: Box::new(Node::BooleanLiteral {
+                    value: true,
+                    span: stmt_span,
+                }),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: stmt_span,
+                }),
+                invariants: Vec::new(),
+                span: stmt_span,
+            };
+        }
+
+        let body = self.parse_block_statement();
+        Node::WhileStatement {
+            condition: Box::new(Node::BooleanLiteral {
+                value: true,
+                span: stmt_span,
+            }),
+            body: Box::new(body),
+            invariants: Vec::new(),
+            span: stmt_span,
+        }
     }
 
     fn parse_live_block(&mut self) -> Node {
@@ -26198,6 +26242,84 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-913: `loop { body }` desugars to `while true { body }` and
+    /// must require a `break` (or other escape) to terminate. The 1M
+    /// runaway guard from RES-023 still applies.
+    #[test]
+    fn loop_keyword_iterates_until_break() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let i = 0;\n\
+                loop {\n\
+                    if i >= 5 { break; }\n\
+                    i += 1;\n\
+                }\n\
+                return i;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    /// RES-913: a `loop` with no `break` (and no other escape) hits the
+    /// 1M-iteration runaway guard and surfaces the existing diagnostic
+    /// — proving the desugar reuses the WhileStatement safety net.
+    #[test]
+    fn unbounded_loop_hits_runaway_guard() {
+        let src = "\
+            fn main(int _d) {\n\
+                let counter = 0;\n\
+                loop {\n\
+                    counter += 1;\n\
+                }\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("runaway") || err.contains("exceeded"),
+            "expected runaway guard, got: {}",
+            err
+        );
+    }
+
+    /// RES-913: `continue` inside `loop` works exactly as inside
+    /// `while` — the desugar didn't break the existing semantics.
+    #[test]
+    fn continue_inside_loop() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let i = 0;\n\
+                let sum = 0;\n\
+                loop {\n\
+                    i += 1;\n\
+                    if i > 10 { break; }\n\
+                    if i < 5 { continue; }\n\
+                    sum += i;\n\
+                }\n\
+                return sum;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5 + 6 + 7 + 8 + 9 + 10),
+            other => panic!("expected Int(45), got {:?}", other),
         }
     }
 

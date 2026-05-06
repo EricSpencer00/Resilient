@@ -1,0 +1,34 @@
+// RES-913 demo: `loop { body }` is the dedicated unconditional-loop
+// keyword — exit via `break` (or `return`). Same runtime path as
+// `while true { body }` so the 1M runaway guard still applies.
+
+fn main(int _d) -> int {
+    // Find the smallest power of two greater than 100.
+    let p = 1;
+    loop {
+        if p > 100 {
+            break;
+        }
+        p *= 2;
+    }
+    println(p);                          // 128
+
+    // `continue` inside `loop` works the same as inside `while`.
+    let i = 0;
+    let evens_sum = 0;
+    loop {
+        i += 1;
+        if i > 10 {
+            break;
+        }
+        if i % 2 == 1 {
+            continue;
+        }
+        evens_sum += i;
+    }
+    println(evens_sum);                  // 2+4+6+8+10 = 30
+
+    return 0;
+}
+
+main(0);
