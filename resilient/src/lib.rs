@@ -20886,6 +20886,24 @@ impl Interpreter {
             return Ok(Value::Array(l));
         }
 
+        // RES-924: `"-" * 3` → `"---"` and `3 * "-"` → `"---"`.
+        // Repetition only fires for `*` with one String and one Int
+        // operand. Negative `n` errors per the existing `repeat`
+        // builtin policy.
+        if operator == "*" {
+            let str_int = match (&left, &right) {
+                (Value::String(s), Value::Int(n)) => Some((s.clone(), *n)),
+                (Value::Int(n), Value::String(s)) => Some((s.clone(), *n)),
+                _ => None,
+            };
+            if let Some((s, n)) = str_int {
+                if n < 0 {
+                    return Err(format!("string repetition count must be >= 0, got {}", n));
+                }
+                return Ok(Value::String(s.repeat(n as usize)));
+            }
+        }
+
         match (left.clone(), right.clone()) {
             (Value::Int(l), Value::Int(r)) => self.eval_integer_infix_expression(operator, l, r),
             (Value::Float(l), Value::Float(r)) => self.eval_float_infix_expression(operator, l, r),
@@ -26909,6 +26927,39 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 0),
             other => panic!("expected Int(0), got {:?}", other),
         }
+    }
+
+    /// RES-924: `String * Int` repetition operator. Both operand
+    /// orders work; negative count errors at runtime.
+    #[test]
+    fn string_repetition_operator() {
+        let cases = [
+            ("\"-\" * 10", "----------"),
+            ("3 * \"ab\"", "ababab"),
+            ("\"x\" * 0", ""),
+        ];
+        for (expr, expected) in cases {
+            let src = format!("fn main(int _d) -> string {{ return {}; }} main(0);", expr);
+            let (program, errs) = parse(&src);
+            assert!(errs.is_empty(), "{}: parse errors: {:?}", expr, errs);
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::String(s) => assert_eq!(s, expected, "{}", expr),
+                other => panic!("{}: expected String({:?}), got {:?}", expr, expected, other),
+            }
+        }
+    }
+
+    /// RES-924: negative repetition count is a runtime error matching
+    /// the `repeat` builtin's existing policy.
+    #[test]
+    fn string_repetition_negative_count_errors() {
+        let src = "fn main(int _d) -> string { return \"x\" * -1; } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(err.contains(">= 0"), "got: {}", err);
     }
 
     /// RES-922: `let mut x = ...` is now accepted as syntactic sugar

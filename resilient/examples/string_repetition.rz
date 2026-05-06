@@ -1,0 +1,25 @@
+// RES-924 demo: `String * Int` (and `Int * String`) repeats the
+// string. Equivalent to the existing `repeat(s, n)` builtin / the
+// RES-920 `s.repeat(n)` method, but in operator form.
+
+fn main(int _d) {
+    println("-" * 20);                   // --------------------
+    println(3 * "ab");                   // ababab
+    println("hi " * 3);                  // hi hi hi
+    println("x" * 0);                    // (empty)
+
+    // Common patterns: aligned section headers.
+    let header = "=" * 30;
+    println(header);
+    println("Important section");
+    println(header);
+
+    // Stairs: lines of increasing indentation.
+    for i in 0..5 {
+        println(" " * i + "*");
+    }
+
+    return 0;
+}
+
+main(0);
