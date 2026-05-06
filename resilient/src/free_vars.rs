@@ -527,7 +527,8 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
         Pattern::Identifier(name) => {
             bound.insert(name.clone());
         }
-        Pattern::Wildcard | Pattern::Literal(_) => {}
+        // RES-915: range patterns bind no names today.
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
         Pattern::Or(branches) => {
             for b in branches {
                 bind_pattern(b, bound);

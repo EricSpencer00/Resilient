@@ -1186,6 +1186,12 @@ impl Formatter {
             Pattern::Wildcard => self.write("_"),
             Pattern::Identifier(name) => self.write(name),
             Pattern::Literal(node) => self.fmt_expr(node),
+            // RES-915: range patterns — `lo..hi` / `lo..=hi`.
+            Pattern::Range { lo, hi, inclusive } => {
+                self.write(&lo.to_string());
+                self.write(if *inclusive { "..=" } else { ".." });
+                self.write(&hi.to_string());
+            }
             Pattern::Or(branches) => {
                 for (i, b) in branches.iter().enumerate() {
                     if i > 0 {

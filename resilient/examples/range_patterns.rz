@@ -1,0 +1,36 @@
+// RES-915 demo: integer range patterns in match arms.
+
+fn classify(int n) -> string {
+    return match n {
+        1..=5 => "small",
+        6..=10 => "medium",
+        11..=100 => "large",
+        _ => "other",
+    };
+}
+
+fn is_in_range(int n) -> bool {
+    // Half-open range — excludes upper bound.
+    return match n {
+        5..10 => true,
+        _ => false,
+    };
+}
+
+fn main(int _d) -> int {
+    println(classify(3));                // small
+    println(classify(8));                // medium
+    println(classify(50));               // large
+    println(classify(0));                // other
+    println(classify(101));              // other
+
+    // Half-open boundaries.
+    println(is_in_range(5));             // true   (5 is included)
+    println(is_in_range(9));             // true   (9 is included)
+    println(is_in_range(10));            // false  (10 is excluded)
+    println(is_in_range(4));             // false
+
+    return 0;
+}
+
+main(0);

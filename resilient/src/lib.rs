@@ -1481,6 +1481,11 @@ pub(crate) enum Pattern {
     /// reliably reference bindings regardless of which branch
     /// fired.
     Or(Vec<Pattern>),
+    /// RES-915: integer range pattern — `lo..hi` (half-open) or
+    /// `lo..=hi` (inclusive). Only Int scrutinees are supported at
+    /// MVP precision; `lo` and `hi` are stored as `i64` (after
+    /// parser-side resolution of optional `Minus` prefix).
+    Range { lo: i64, hi: i64, inclusive: bool },
     /// RES-161a: `name @ inner` — bind the whole scrutinee to `name`
     /// AND apply `inner` pattern. Both bindings are in scope in the
     /// guard and arm body. Inner pattern is restricted to atoms that
@@ -7949,6 +7954,48 @@ impl Parser {
     /// (RES-160). On exit, `current_token` is the last token of the
     /// last atom (so the caller's `next_token()` advances past the
     /// pattern as a whole).
+    /// RES-915: parse the tail of an integer range pattern after the
+    /// lower bound has been recognised. Caller's `current_token` is the
+    /// `IntLiteral` for `lo`; on entry `peek_token == Token::DotDot`.
+    /// On exit `current_token` sits on the upper bound's last token,
+    /// per the standard "leave on the last consumed token" invariant
+    /// of `parse_pattern_atom`.
+    fn parse_int_range_pattern_tail(&mut self, lo: i64) -> Pattern {
+        // Step past `lo` onto `..`.
+        self.next_token();
+        debug_assert!(matches!(self.current_token, Token::DotDot));
+        // Step past `..` onto either `=` (inclusive) or the upper bound.
+        self.next_token();
+        let inclusive = if matches!(self.current_token, Token::Assign) {
+            self.next_token(); // skip `=`
+            true
+        } else {
+            false
+        };
+        // Upper bound: optional unary minus then an integer literal.
+        let negate = if matches!(self.current_token, Token::Minus) {
+            self.next_token();
+            true
+        } else {
+            false
+        };
+        let hi = match &self.current_token {
+            Token::IntLiteral(v) => {
+                let v = *v;
+                if negate { -v } else { v }
+            }
+            other => {
+                let tok = other.clone();
+                self.record_error(format!(
+                    "Expected integer literal as range-pattern upper bound, found {}",
+                    tok
+                ));
+                lo // recover with a degenerate single-element range
+            }
+        };
+        Pattern::Range { lo, hi, inclusive }
+    }
+
     pub(crate) fn parse_pattern(&mut self) -> Pattern {
         let first = self.parse_pattern_atom();
         // RES-160: collect `| <pattern>` tails. `|` is
@@ -7981,10 +8028,19 @@ impl Parser {
             // unexpected-token error since `Token::Default` isn't
             // accepted anywhere else in the grammar.
             Token::Default => Pattern::Wildcard,
-            Token::IntLiteral(n) => Pattern::Literal(Node::IntegerLiteral {
-                value: *n,
-                span: tok_span,
-            }),
+            Token::IntLiteral(n) => {
+                let n = *n;
+                // RES-915: integer range pattern — `lo..hi` / `lo..=hi`.
+                // Detect by peeking past the literal for `..`. If absent
+                // we fall through to the plain literal-pattern case.
+                if self.peek_token == Token::DotDot {
+                    return self.parse_int_range_pattern_tail(n);
+                }
+                Pattern::Literal(Node::IntegerLiteral {
+                    value: n,
+                    span: tok_span,
+                })
+            }
             Token::FloatLiteral(f) => Pattern::Literal(Node::FloatLiteral {
                 value: *f,
                 span: tok_span,
@@ -21016,6 +21072,22 @@ impl Interpreter {
                 };
                 Ok(if is_equal { Some(vec![]) } else { None })
             }
+            // RES-915: integer range pattern. Half-open matches `lo
+            // <= x < hi`; inclusive matches `lo <= x <= hi`. Only Int
+            // scrutinees match — anything else falls through to no-match
+            // rather than erroring (consistent with the literal branch).
+            Pattern::Range { lo, hi, inclusive } => {
+                let matches = if let Value::Int(x) = value {
+                    if *inclusive {
+                        *x >= *lo && *x <= *hi
+                    } else {
+                        *x >= *lo && *x < *hi
+                    }
+                } else {
+                    false
+                };
+                Ok(if matches { Some(vec![]) } else { None })
+            }
             // RES-160: first-match wins.
             Pattern::Or(branches) => {
                 for b in branches {
@@ -26350,6 +26422,118 @@ mod tests {
         match interp.eval(&program).unwrap() {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    /// RES-915: integer range patterns in match arms. Half-open
+    /// `lo..hi` matches `lo <= x < hi`; inclusive `lo..=hi` matches
+    /// `lo <= x <= hi`. The matcher is exact about endpoints so we
+    /// test both edges.
+    #[test]
+    fn match_range_pattern_inclusive() {
+        let src = "\
+            fn classify(int n) -> string {\n\
+                return match n {\n\
+                    1..=5 => \"small\",\n\
+                    6..=10 => \"medium\",\n\
+                    _ => \"other\",\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                let a = classify(1);\n\
+                let b = classify(5);\n\
+                let c = classify(6);\n\
+                let d = classify(0);\n\
+                return len(a) + len(b) + len(c) + len(d);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        // small(5) + small(5) + medium(6) + other(5) = 21
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 21),
+            other => panic!("expected Int(21), got {:?}", other),
+        }
+    }
+
+    /// RES-915: half-open range pattern excludes the upper bound. `5..10`
+    /// must match 5, 9 but NOT 10.
+    #[test]
+    fn match_range_pattern_half_open_excludes_upper() {
+        let src = "\
+            fn matches(int n) -> bool {\n\
+                return match n {\n\
+                    5..10 => true,\n\
+                    _ => false,\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                let r = 0;\n\
+                if matches(5) { r += 1; }\n\
+                if matches(9) { r += 1; }\n\
+                if matches(10) { r += 100; }\n\
+                if matches(4) { r += 100; }\n\
+                return r;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 2),
+            other => panic!("expected Int(2), got {:?}", other),
+        }
+    }
+
+    /// RES-915: negative upper bound — `1..=-3` is degenerate (lo > hi)
+    /// and matches nothing; the wildcard arm fires.
+    #[test]
+    fn match_range_pattern_with_negative_upper() {
+        let src = "\
+            fn main(int _d) -> string {\n\
+                return match 0 {\n\
+                    1..=-3 => \"hit\",\n\
+                    _ => \"miss\",\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "miss"),
+            other => panic!("expected String(\"miss\"), got {:?}", other),
+        }
+    }
+
+    /// RES-915: range pattern only fires on Int scrutinees. A Float or
+    /// String falls through to the wildcard.
+    #[test]
+    fn range_pattern_does_not_match_non_int() {
+        let src = "\
+            fn matches(string s) -> bool {\n\
+                return match s {\n\
+                    \"hi\" => true,\n\
+                    _ => false,\n\
+                };\n\
+            }\n\
+            fn main(int _d) -> bool {\n\
+                return matches(\"hi\");\n\
+            }\n\
+            main(0);\n\
+        ";
+        // Just make sure non-Int match still works, doesn't accidentally
+        // try to apply a range pattern.
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Bool(b) => assert!(b),
+            other => panic!("expected Bool(true), got {:?}", other),
         }
     }
 

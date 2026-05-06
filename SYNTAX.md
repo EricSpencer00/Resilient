@@ -756,6 +756,24 @@ identifier: `let default = 3;` is a parse error
 No other `_` synonyms (`otherwise`, `else`, ...) are planned
 — one alias is plenty.
 
+### Range patterns (RES-915)
+
+Match arms accept integer range patterns:
+
+```rust
+match n {
+    1..=5  => "small",        // inclusive: 1, 2, 3, 4, 5
+    6..10  => "medium",       // half-open: 6, 7, 8, 9
+    _      => "other",
+}
+```
+
+Both endpoints must be integer literals (negative `hi` allowed:
+`1..=-3` is degenerate and matches nothing). Range patterns only
+fire on `Int` scrutinees; non-Int values fall through to the
+wildcard. Range patterns bind no names today (`1..=5 @ x` binding
+is a future enhancement).
+
 ### `if let` (RES-908)
 
 `if let` is parser-level sugar over `match`. It is the idiomatic way
