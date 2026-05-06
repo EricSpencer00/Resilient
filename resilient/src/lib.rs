@@ -6900,7 +6900,12 @@ impl Parser {
         let else_body = if self.peek_token == Token::Else {
             self.next_token(); // move to `else`
             self.next_token(); // skip `else`
-            if self.current_token != Token::LeftBrace {
+            // RES-930: `else if` and `else if let` chaining. Recurse so
+            // the else arm is itself a Match (or a desugared if-let
+            // Match), giving a right-leaning tree of pattern arms.
+            if self.current_token == Token::If {
+                Some(self.parse_if_statement())
+            } else if self.current_token != Token::LeftBrace {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected '{{' after 'else', found {}", tok));
                 None
@@ -27275,6 +27280,41 @@ mod tests {
             "expected positional-field error, got: {}",
             err
         );
+    }
+
+    /// RES-930: `if let` accepts `else if` / `else if let` chains.
+    /// Right-leaning Match tree dispatches first match wins.
+    #[test]
+    fn if_let_else_if_let_chain() {
+        let src = "\
+            fn classify(int n) -> string {\n\
+                if let 1 = n {\n\
+                    return \"one\";\n\
+                } else if let 2 = n {\n\
+                    return \"two\";\n\
+                } else if n > 2 {\n\
+                    return \"many\";\n\
+                } else {\n\
+                    return \"few\";\n\
+                }\n\
+            }\n\
+            fn main(int _d) -> int {\n\
+                let a = classify(1);\n\
+                let b = classify(2);\n\
+                let c = classify(5);\n\
+                let d = classify(0);\n\
+                return len(a) + len(b) + len(c) + len(d);\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            // one(3)+two(3)+many(4)+few(3) = 13
+            Value::Int(n) => assert_eq!(n, 13),
+            other => panic!("expected Int(13), got {:?}", other),
+        }
     }
 
     /// RES-925: `if` works in expression position; the chosen
