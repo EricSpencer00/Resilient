@@ -8910,6 +8910,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("cosh", builtin_cosh),
     // RES-898.
     ("tanh", builtin_tanh),
+    // RES-899.
+    ("asinh", builtin_asinh),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9835,6 +9837,19 @@ fn builtin_tanh(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("tanh: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-899: `asinh(x: Float) -> Float` — inverse hyperbolic sine. Inverse
+/// of `sinh`; total domain (defined for every real input — no NaN cases).
+fn builtin_asinh(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.asinh())),
+        [other] => Err(format!(
+            "asinh: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("asinh: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27402,6 +27417,41 @@ mod tests {
     #[test]
     fn tanh_arity_check() {
         let err = builtin_tanh(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn asinh_basic() {
+        // asinh(0) = 0.
+        close(
+            as_float(builtin_asinh(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "asinh(0)",
+        );
+        // sinh(asinh(x)) = x — round-trip identity.
+        close(
+            as_float(builtin_sinh(&[builtin_asinh(&[Value::Float(2.5)]).unwrap()]).unwrap()),
+            2.5,
+            "sinh(asinh(2.5))",
+        );
+        // asinh is odd: asinh(-x) = -asinh(x).
+        close(
+            as_float(builtin_asinh(&[Value::Float(-3.0)]).unwrap()),
+            -as_float(builtin_asinh(&[Value::Float(3.0)]).unwrap()),
+            "asinh odd-symmetry",
+        );
+    }
+
+    #[test]
+    fn asinh_rejects_int() {
+        let err = builtin_asinh(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn asinh_arity_check() {
+        let err = builtin_asinh(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
