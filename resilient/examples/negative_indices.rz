@@ -1,0 +1,26 @@
+// RES-921 demo: negative array / string indices and slice endpoints
+// wrap from the end. -1 is the last element, -len is the first.
+
+fn main(int _d) {
+    let arr = [10, 20, 30, 40, 50];
+
+    // Single-element negative indexing.
+    println(arr[-1]);                   // 50
+    println(arr[-2]);                   // 40
+    println(arr[-5]);                   // 10  (== arr[0])
+
+    // Negative slice endpoints.
+    println(arr[-2..]);                 // [40, 50]
+    println(arr[..-1]);                 // [10, 20, 30, 40]
+    println(arr[-3..-1]);               // [30, 40]
+    println(arr[-3..=-1]);              // [30, 40, 50]
+
+    // Strings work the same way.
+    let s = "hello";
+    println(s[-3..]);                   // llo
+    println(s[..-1]);                   // hell
+
+    return 0;
+}
+
+main(0);

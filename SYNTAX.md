@@ -586,8 +586,17 @@ xs[..];       // [10, 20, 30, 40, 50] — full copy
 ```
 
 Bounds clamp against `len(xs)` so `xs[..99]` returns the whole
-array, **not** an error. `lo > hi` and negative endpoints **are**
-runtime errors.
+array, **not** an error. RES-921: negative endpoints wrap from the
+end (`-1` is the last element):
+
+```rust
+xs[-1];        // last element
+xs[-2..];      // last two
+xs[..-1];      // everything except the last
+xs[-3..-1];    // inner two from the end
+```
+
+`lo > hi` after wrapping is still a runtime error.
 
 ## String slicing (RES-916)
 
