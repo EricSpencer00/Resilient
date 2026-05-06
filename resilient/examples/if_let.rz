@@ -1,0 +1,29 @@
+// RES-908 demo: `if let` is parser-level sugar over `match`. It binds
+// a pattern conditionally without the noise of a full match block.
+
+fn classify(int n) -> string {
+    // Single-arm pattern — bind only on equality, fall through otherwise.
+    if let 0 = n {
+        return "zero";
+    }
+    if let 1 = n {
+        return "one";
+    }
+    // `else` arm fires when no pattern matches.
+    if let 2 = n {
+        return "two";
+    } else {
+        return "many";
+    }
+}
+
+fn main(int _d) {
+    println(classify(0));    // zero
+    println(classify(1));    // one
+    println(classify(2));    // two
+    println(classify(99));   // many
+
+    return 0;
+}
+
+main(0);
