@@ -1,0 +1,31 @@
+// RES-920 demo: method-call sugar for built-in String / Array methods.
+// `s.method(args)` dispatches to the existing `method(s, args...)`
+// builtin so prefix and dot notation share semantics.
+
+fn main(int _d) {
+    // String methods.
+    let s = "  Hello, World!  ";
+    println(s.len());                     // 17
+    println(s.trim());                    // Hello, World!
+    println(s.trim().to_upper());         // HELLO, WORLD!
+    println("hello".contains("ell"));     // true
+    println("hello".starts_with("he"));   // true
+    println("hello".ends_with("lo"));     // true
+    println("ab".repeat(3));              // ababab
+    println(len("a,b,c".split(",")));     // 3
+
+    // Array methods.
+    let arr = [1, 2, 3];
+    println(arr.len());                   // 3
+    let arr2 = arr.push(4);
+    println(arr2.len());                  // 4
+    println(arr2.pop().len());            // 3
+
+    // Method chains read naturally now.
+    let result = "  HELLO  ".trim().to_lower();
+    println(result);                      // hello
+
+    return 0;
+}
+
+main(0);
