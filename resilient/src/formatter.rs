@@ -475,6 +475,15 @@ impl Formatter {
                     self.newline();
                 }
             },
+            // RES-910: terminator statements with no payload.
+            Node::Break { .. } => {
+                self.write("break;");
+                self.newline();
+            }
+            Node::Continue { .. } => {
+                self.write("continue;");
+                self.newline();
+            }
             Node::IfStatement {
                 condition,
                 consequence,
@@ -1097,6 +1106,8 @@ impl Formatter {
             | Node::Const { .. }
             | Node::Assignment { .. }
             | Node::ReturnStatement { .. }
+            | Node::Break { .. }
+            | Node::Continue { .. }
             | Node::ExpressionStatement { .. }
             | Node::Function { .. }
             | Node::StructDecl { .. }

@@ -189,6 +189,11 @@ enum Tok {
     For,
     #[token("in")]
     In,
+    /// RES-910: early-exit / skip-iteration control flow.
+    #[token("break")]
+    Break,
+    #[token("continue")]
+    Continue,
     #[token("requires")]
     Requires,
     #[token("ensures")]
@@ -619,6 +624,8 @@ fn convert(t: Tok) -> Token {
         Tok::While => Token::While,
         Tok::For => Token::For,
         Tok::In => Token::In,
+        Tok::Break => Token::Break,
+        Tok::Continue => Token::Continue,
         Tok::Requires => Token::Requires,
         Tok::Ensures => Token::Ensures,
         Tok::RecoversTo => Token::RecoversTo,

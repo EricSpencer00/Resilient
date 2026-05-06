@@ -1104,6 +1104,8 @@ fn node_line(n: &Node) -> Option<u32> {
         | Node::Const { span, .. }
         | Node::Assignment { span, .. }
         | Node::ReturnStatement { span, .. }
+        | Node::Break { span, .. }
+        | Node::Continue { span, .. }
         | Node::IfStatement { span, .. }
         | Node::WhileStatement { span, .. }
         | Node::ForInStatement { span, .. } => span.start.line as u32,

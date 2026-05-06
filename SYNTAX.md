@@ -588,6 +588,32 @@ while condition {
 Parentheses around conditions are optional. `while` has a built-in
 1,000,000-iteration runaway guard.
 
+### `break` and `continue` (RES-910)
+
+Both statements affect the **innermost** enclosing `while` or
+`for-in` loop:
+
+```rust
+let i = 0;
+while i < 100 {
+    if i == 5 {
+        break;       // exit the loop now; post-loop block runs
+    }
+    if i < 0 {
+        continue;    // skip to the next iteration
+    }
+    i = i + 1;
+}
+```
+
+Both are typechecker-rejected outside any loop:
+
+    'break' outside of a loop — `break` is only valid inside
+    a `while` or `for-in` body
+
+Labelled `break` (`break 'outer;`) and `break <value>;` are not
+yet supported. Inside nested loops, `break` only exits one level.
+
 ## Match expressions
 
 `match` picks the first arm whose pattern matches the scrutinee.
