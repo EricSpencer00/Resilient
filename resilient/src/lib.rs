@@ -9570,6 +9570,18 @@ fn parse_checked_failure_signal(err: &str) -> Option<&str> {
     Some(variant)
 }
 
+/// RES-920: lookup-and-apply a builtin by name. Used by the
+/// method-call dispatch (`s.len()`, `arr.push(x)`) to share semantics
+/// with the prefix form. Returns `None` only when the name is not in
+/// the BUILTINS table; per-builtin argument errors flow through the
+/// inner `RResult` exactly as for prefix calls.
+fn apply_builtin_by_name(name: &str, args: &[Value]) -> Option<RResult<Value>> {
+    BUILTINS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, f)| f(args))
+}
+
 /// Canonical list of every native function visible in a fresh
 /// Resilient program.
 const BUILTINS: &[(&str, BuiltinFn)] = &[
@@ -19303,6 +19315,40 @@ impl Interpreter {
                             other => Err(format!("Cell has no method `{}`", other)),
                         };
                     }
+                    // RES-920: method-call sugar on built-in String /
+                    // Array. Forward to the existing builtin with the
+                    // target prepended as the first argument so prefix
+                    // and dot-notation share semantics.
+                    if matches!(target_val, Value::String(_) | Value::Array(_)) {
+                        let allowed = match &target_val {
+                            Value::String(_) => &[
+                                "len",
+                                "trim",
+                                "to_upper",
+                                "to_lower",
+                                "contains",
+                                "starts_with",
+                                "ends_with",
+                                "split",
+                                "repeat",
+                            ][..],
+                            Value::Array(_) => &["len", "push", "pop"][..],
+                            _ => unreachable!(),
+                        };
+                        if allowed.contains(&field.as_str()) {
+                            let extra_args = self.eval_expressions(arguments)?;
+                            let mut args = Vec::with_capacity(extra_args.len() + 1);
+                            args.push(target_val);
+                            args.extend(extra_args);
+                            return apply_builtin_by_name(field, &args).ok_or_else(|| {
+                                format!("Builtin method `{}` is not registered", field)
+                            })?;
+                        }
+                        // Fall through to the original "Cannot access
+                        // field on non-struct" error path so misspelled
+                        // methods get the same diagnostic shape as
+                        // before.
+                    }
                     // RES-353: StringBuilder method dispatch — intercept before
                     // the generic impl-block lookup so these builtins can write
                     // the mutated struct back to the caller's binding.
@@ -27035,6 +27081,98 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 14),
             other => panic!("expected Int(14), got {:?}", other),
         }
+    }
+
+    /// RES-920: built-in String / Array method-call sugar dispatches to
+    /// the existing prefix builtins. Verify both shapes return the same
+    /// value so the prefix form continues to work alongside the new dot
+    /// form.
+    #[test]
+    fn builtin_methods_match_prefix_form_for_strings() {
+        let cases = [
+            ("\"hello\".len()", "len(\"hello\")"),
+            ("\"  hi  \".trim()", "trim(\"  hi  \")"),
+            ("\"hello\".to_upper()", "to_upper(\"hello\")"),
+            ("\"HELLO\".to_lower()", "to_lower(\"HELLO\")"),
+            (
+                "\"hello\".contains(\"ell\")",
+                "contains(\"hello\", \"ell\")",
+            ),
+            (
+                "\"hello\".starts_with(\"he\")",
+                "starts_with(\"hello\", \"he\")",
+            ),
+            (
+                "\"hello\".ends_with(\"lo\")",
+                "ends_with(\"hello\", \"lo\")",
+            ),
+            ("\"abab\".repeat(2)", "repeat(\"abab\", 2)"),
+        ];
+        for (method_form, prefix_form) in cases {
+            let m_src = format!("fn main(int _d) {{ return {}; }} main(0);", method_form);
+            let p_src = format!("fn main(int _d) {{ return {}; }} main(0);", prefix_form);
+            let (mp, m_errs) = parse(&m_src);
+            let (pp, p_errs) = parse(&p_src);
+            assert!(m_errs.is_empty(), "method form parse: {:?}", m_errs);
+            assert!(p_errs.is_empty(), "prefix form parse: {:?}", p_errs);
+            let mut mi = Interpreter::new();
+            let mut pi = Interpreter::new();
+            let mv = mi.eval(&mp).unwrap();
+            let pv = pi.eval(&pp).unwrap();
+            assert_eq!(format!("{}", mv), format!("{}", pv), "{}", method_form);
+        }
+    }
+
+    /// RES-920: array method-call dispatches.
+    #[test]
+    fn builtin_methods_match_prefix_form_for_arrays() {
+        // arr.len() — easy comparison.
+        let src_method =
+            "fn main(int _d) -> int { let a = [10, 20, 30]; return a.len(); } main(0);";
+        let src_prefix = "fn main(int _d) -> int { let a = [10, 20, 30]; return len(a); } main(0);";
+        for src in [src_method, src_prefix] {
+            let (program, errs) = parse(src);
+            assert!(errs.is_empty(), "parse errors: {:?}", errs);
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::Int(n) => assert_eq!(n, 3),
+                other => panic!("expected Int(3), got {:?}", other),
+            }
+        }
+
+        // arr.push(x) returns a longer array; arr.pop() returns shorter.
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let a = [1, 2, 3];\n\
+                let b = a.push(4);\n\
+                let c = b.pop();\n\
+                return b.len() - c.len();\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 1),
+            other => panic!("expected Int(1), got {:?}", other),
+        }
+    }
+
+    /// RES-920: misspelled method on a String surfaces a clear error
+    /// rather than silently doing the wrong thing.
+    #[test]
+    fn unknown_string_method_errors() {
+        let src = "fn main(int _d) { return \"hi\".bogus(); } main(0);";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("Cannot access field") || err.contains("bogus"),
+            "expected clear error, got: {}",
+            err
+        );
     }
 
     /// RES-911: half-open slicing — `arr[lo..hi]` includes `lo`,

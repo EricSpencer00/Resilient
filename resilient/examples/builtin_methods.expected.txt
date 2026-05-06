@@ -1,0 +1,13 @@
+17
+Hello, World!
+HELLO, WORLD!
+true
+true
+true
+ababab
+3
+3
+4
+3
+hello
+Program executed successfully

@@ -826,6 +826,24 @@ this PR — write it as nested `if let`s or fall back to a full
 
 ## Built-in Functions
 
+For Strings and Arrays, the most common builtins also accept
+**method-call sugar** (RES-920). `target.method(args)` dispatches
+to `method(target, args...)` — same semantics, less typing:
+
+```rust
+"  hi  ".trim().to_upper()        // "HI"
+[1, 2, 3].push(4).len()           // 4
+words.split(",").len()
+```
+
+Methods available today:
+- String: `len`, `trim`, `to_upper`, `to_lower`, `contains(sub)`,
+  `starts_with(p)`, `ends_with(p)`, `split(sep)`, `repeat(n)`.
+- Array: `len`, `push(x)`, `pop`.
+
+The prefix forms (`len(s)` etc.) continue to work; this is additive
+sugar, not a rename.
+
 | Name | Signature | Notes |
 |---|---|---|
 | `println(x)` | any → void | prints, trailing newline |
