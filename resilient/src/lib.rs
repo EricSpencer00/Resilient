@@ -19652,9 +19652,12 @@ impl Interpreter {
                     (other, _) => Err(format!("Cannot index {:?}", other)),
                 }
             }
-            // RES-911: array slicing — `target[lo..hi]` (etc.) returns a
-            // fresh `Value::Array`. Bounds clamp against `0..=len`; `lo
-            // > hi` and negative endpoints are runtime errors.
+            // RES-911 / RES-916: slicing — `target[lo..hi]` (etc.) returns
+            // a fresh `Value::Array` for array targets and a fresh
+            // `Value::String` for string targets. Bounds clamp against
+            // `0..=len`; `lo > hi` and negative endpoints are runtime
+            // errors. String slicing operates on **Unicode-scalar
+            // indices**, not bytes — matches `len(s)` semantics.
             Node::Slice {
                 target,
                 lo,
@@ -19663,11 +19666,6 @@ impl Interpreter {
                 ..
             } => {
                 let target_val = self.eval(target)?;
-                let items = match target_val {
-                    Value::Array(v) => v,
-                    other => return Err(format!("Cannot slice non-array: {}", other)),
-                };
-                let len = items.len() as i64;
                 let lo_i: i64 = match lo {
                     Some(n) => match self.eval(n)? {
                         Value::Int(i) => i,
@@ -19677,35 +19675,61 @@ impl Interpreter {
                     },
                     None => 0,
                 };
-                let hi_raw: i64 = match hi {
+                let hi_raw_opt: Option<i64> = match hi {
                     Some(n) => match self.eval(n)? {
-                        Value::Int(i) => i,
+                        Value::Int(i) => Some(i),
                         other => {
                             return Err(format!("slice upper bound must be Int, got {}", other));
                         }
                     },
-                    None => len,
+                    None => None,
                 };
                 if lo_i < 0 {
                     return Err(format!("slice lower bound must be >= 0, got {}", lo_i));
                 }
-                if hi_raw < 0 {
+                if let Some(hi_raw) = hi_raw_opt
+                    && hi_raw < 0
+                {
                     return Err(format!("slice upper bound must be >= 0, got {}", hi_raw));
                 }
-                // RES-911: convert inclusive-end into the half-open form
-                // `[lo, hi+1)`. We do this BEFORE clamping so `arr[..=hi]`
-                // with `hi == len-1` yields the full array.
-                let hi_excl = if *inclusive { hi_raw + 1 } else { hi_raw };
-                if lo_i > hi_excl {
-                    return Err(format!(
-                        "slice lower bound {} exceeds upper bound {}",
-                        lo_i, hi_raw
-                    ));
+                match target_val {
+                    Value::Array(items) => {
+                        let len = items.len() as i64;
+                        let hi_raw = hi_raw_opt.unwrap_or(len);
+                        let hi_excl = if *inclusive { hi_raw + 1 } else { hi_raw };
+                        if lo_i > hi_excl {
+                            return Err(format!(
+                                "slice lower bound {} exceeds upper bound {}",
+                                lo_i, hi_raw
+                            ));
+                        }
+                        let lo_clamp = lo_i.min(len) as usize;
+                        let hi_clamp = hi_excl.min(len) as usize;
+                        Ok(Value::Array(items[lo_clamp..hi_clamp].to_vec()))
+                    }
+                    Value::String(s) => {
+                        // RES-916: index by Unicode scalar, not bytes.
+                        // Materialize the scalar list once so both bounds
+                        // and the slice itself agree on the same units.
+                        let scalars: Vec<char> = s.chars().collect();
+                        let len = scalars.len() as i64;
+                        let hi_raw = hi_raw_opt.unwrap_or(len);
+                        let hi_excl = if *inclusive { hi_raw + 1 } else { hi_raw };
+                        if lo_i > hi_excl {
+                            return Err(format!(
+                                "slice lower bound {} exceeds upper bound {}",
+                                lo_i, hi_raw
+                            ));
+                        }
+                        let lo_clamp = lo_i.min(len) as usize;
+                        let hi_clamp = hi_excl.min(len) as usize;
+                        Ok(Value::String(scalars[lo_clamp..hi_clamp].iter().collect()))
+                    }
+                    other => Err(format!(
+                        "Cannot slice {}: only Array and String supported",
+                        other
+                    )),
                 }
-                // Clamp both endpoints against the array length.
-                let lo_clamp = lo_i.min(len) as usize;
-                let hi_clamp = hi_excl.min(len) as usize;
-                Ok(Value::Array(items[lo_clamp..hi_clamp].to_vec()))
             }
             Node::IndexAssignment {
                 target,
@@ -26423,6 +26447,101 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 3),
             other => panic!("expected Int(3), got {:?}", other),
         }
+    }
+
+    /// RES-916: string slicing returns a fresh String built from the
+    /// matching scalar range. ASCII path — same shape as array slicing
+    /// but on string targets.
+    #[test]
+    fn string_slice_ascii_basic() {
+        let cases = [
+            ("\"hello\"[0..3]", "hel"),
+            ("\"hello\"[2..=4]", "llo"),
+            ("\"hello\"[..2]", "he"),
+            ("\"hello\"[3..]", "lo"),
+            ("\"hello\"[..]", "hello"),
+        ];
+        for (slice_expr, expected) in cases {
+            let src = format!(
+                "fn main(int _d) -> string {{ return {}; }} main(0);",
+                slice_expr
+            );
+            let (program, errs) = parse(&src);
+            assert!(
+                errs.is_empty(),
+                "parse errors for {}: {:?}",
+                slice_expr,
+                errs
+            );
+            let mut interp = Interpreter::new();
+            match interp.eval(&program).unwrap() {
+                Value::String(s) => assert_eq!(s, expected, "{}", slice_expr),
+                other => panic!(
+                    "{}: expected String({:?}), got {:?}",
+                    slice_expr, expected, other
+                ),
+            }
+        }
+    }
+
+    /// RES-916: indices are by Unicode scalar, not bytes. `"héllo"[0..2]`
+    /// must yield `"hé"` (2 scalars), not `"h\xc3"` (2 bytes).
+    #[test]
+    fn string_slice_is_unicode_scalar_aware() {
+        let src = "\
+            fn main(int _d) -> string {\n\
+                let utf = \"héllo\";\n\
+                return utf[0..2];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "hé"),
+            other => panic!("expected String(\"hé\"), got {:?}", other),
+        }
+    }
+
+    /// RES-916: out-of-range upper bound clamps to scalar length —
+    /// `"hi"[..99]` returns `"hi"`, not an error.
+    #[test]
+    fn string_slice_upper_bound_clamps() {
+        let src = "\
+            fn main(int _d) -> string {\n\
+                return \"hi\"[..99];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "hi"),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    /// RES-916: `lo > hi` is a runtime error, same as the array-slice
+    /// path.
+    #[test]
+    fn string_slice_lo_greater_than_hi_is_runtime_error() {
+        let src = "\
+            fn main(int _d) -> string {\n\
+                return \"hello\"[3..1];\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        let err = interp.eval(&program).unwrap_err();
+        assert!(
+            err.contains("lower bound") && err.contains("exceeds"),
+            "expected lo>hi error, got: {}",
+            err
+        );
     }
 
     /// RES-915: integer range patterns in match arms. Half-open

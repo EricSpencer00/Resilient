@@ -1,0 +1,9 @@
+hel
+llo
+he
+lo
+hello
+hé
+llo
+hi
+Program executed successfully
