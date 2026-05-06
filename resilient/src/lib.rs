@@ -5346,6 +5346,14 @@ impl Parser {
         let stmt_span = self.span_at_current();
         self.next_token(); // Skip 'let'
 
+        // RES-922: accept and ignore `let mut x = ...`. Resilient bindings
+        // are always reassignable today (`let x = 1; x = 2;` works);
+        // the `mut` marker is purely syntactic sugar for Rust users'
+        // muscle memory. Drop it silently — no AST change needed.
+        if self.current_token == Token::Mut {
+            self.next_token();
+        }
+
         // RES-401: tuple destructure form — `let (a, b, ...) = expr;`.
         // The `(` immediately after `let` is unambiguous: the
         // single-name and annotated forms both require an identifier
@@ -26773,6 +26781,29 @@ mod tests {
             "expected lo>hi error, got: {}",
             err
         );
+    }
+
+    /// RES-922: `let mut x = ...` is now accepted as syntactic sugar
+    /// for `let x = ...`. Resilient bindings have always been
+    /// reassignable, so the `mut` marker is purely for Rust-user
+    /// ergonomics — silently dropped at parse time.
+    #[test]
+    fn let_mut_keyword_is_accepted() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let mut x = 5;\n\
+                x = 10;\n\
+                return x;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 10),
+            other => panic!("expected Int(10), got {:?}", other),
+        }
     }
 
     /// RES-921: negative array indices wrap from the end. `arr[-1]` is
