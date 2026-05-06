@@ -1,0 +1,15 @@
+// RES-898 demo: tanh(x) is hyperbolic tangent. Mirror of tan (RES-146).
+// std-only; float-in / float-out per RES-130.
+
+fn main(int _d) {
+    println(tanh(0.0));                  // 0
+    // tanh is odd, so tanh(x) + tanh(-x) cancels exactly.
+    println(tanh(2.0) + tanh(-2.0));     // 0
+    // |tanh(x)| < 1 for moderate x — saturates toward ±1.
+    println(tanh(3.0) < 1.0);            // true
+    println(tanh(-3.0) > -1.0);          // true
+
+    return 0;
+}
+
+main(0);

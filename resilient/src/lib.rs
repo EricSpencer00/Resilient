@@ -8908,6 +8908,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("sinh", builtin_sinh),
     // RES-897.
     ("cosh", builtin_cosh),
+    // RES-898.
+    ("tanh", builtin_tanh),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9821,6 +9823,18 @@ fn builtin_cosh(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("cosh: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-898: `tanh(x: Float) -> Float` — hyperbolic tangent. Mirror of `tan`.
+fn builtin_tanh(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.tanh())),
+        [other] => Err(format!(
+            "tanh: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("tanh: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27346,6 +27360,48 @@ mod tests {
     #[test]
     fn cosh_arity_check() {
         let err = builtin_cosh(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn tanh_basic() {
+        // tanh(0) = 0.
+        close(
+            as_float(builtin_tanh(&[Value::Float(0.0)]).unwrap()),
+            0.0,
+            "tanh(0)",
+        );
+        close(
+            as_float(builtin_tanh(&[Value::Float(1.0)]).unwrap()),
+            0.7615941559557649,
+            "tanh(1)",
+        );
+        // tanh is odd: tanh(-x) = -tanh(x).
+        close(
+            as_float(builtin_tanh(&[Value::Float(-2.0)]).unwrap()),
+            -as_float(builtin_tanh(&[Value::Float(2.0)]).unwrap()),
+            "tanh odd-symmetry",
+        );
+        // |tanh(x)| < 1 for finite x; tanh(10) is close to but strictly
+        // below 1.0. (Larger x like 20 saturates to exactly 1.0 in f64.)
+        let large = as_float(builtin_tanh(&[Value::Float(10.0)]).unwrap());
+        assert!(
+            large < 1.0 && large > 0.999_999_99,
+            "tanh(10) was {}",
+            large
+        );
+    }
+
+    #[test]
+    fn tanh_rejects_int() {
+        let err = builtin_tanh(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn tanh_arity_check() {
+        let err = builtin_tanh(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
