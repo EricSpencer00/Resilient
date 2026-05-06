@@ -1,0 +1,57 @@
+// RES-910 demo: `break` and `continue` for loop control. Both apply
+// to the innermost enclosing `while` or `for-in` body.
+
+fn main(int _d) {
+    // `break` exits the innermost loop. Linear search returning the
+    // first index whose value crosses a threshold.
+    let i = 0;
+    let found = -1;
+    while i < 1000 {
+        if i * i > 100 {
+            found = i;
+            break;
+        }
+        i = i + 1;
+    }
+    println(found);                  // 11  (11*11 = 121 > 100, 10*10 = 100)
+
+    // `continue` skips the rest of the body. Sum 0..10 but skip every
+    // multiple of 3 — expected 1+2+4+5+7+8 = 27.
+    let j = 0;
+    let total = 0;
+    while j < 10 {
+        if j == 0 {
+            j = j + 1;
+            continue;
+        }
+        if j == 3 {
+            j = j + 1;
+            continue;
+        }
+        if j == 6 {
+            j = j + 1;
+            continue;
+        }
+        if j == 9 {
+            j = j + 1;
+            continue;
+        }
+        total = total + j;
+        j = j + 1;
+    }
+    println(total);                  // 27
+
+    // `break` inside `for-in` over a range works the same way.
+    let k_last = -1;
+    for k in 0..100 {
+        if k == 7 {
+            break;
+        }
+        k_last = k;
+    }
+    println(k_last);                 // 6
+
+    return 0;
+}
+
+main(0);

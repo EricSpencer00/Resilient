@@ -90,7 +90,11 @@ fn walk(node: &Node, bound: &mut BTreeSet<String>, free: &mut BTreeSet<String>) 
         | Node::StringLiteral { .. }
         | Node::BytesLiteral { .. }
         | Node::BooleanLiteral { .. }
-        | Node::DurationLiteral { .. } => {}
+        | Node::DurationLiteral { .. }
+        // RES-910: keyword-only statements have no expressions and bind
+        // no names, so they contribute nothing to free vars.
+        | Node::Break { .. }
+        | Node::Continue { .. } => {}
         // RES-221: walk each Expr part; literals have no free variables.
         Node::InterpolatedString { parts, .. } => {
             for part in parts {

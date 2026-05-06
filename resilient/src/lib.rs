@@ -311,6 +311,9 @@ enum Token {
     While,
     For,
     In,
+    /// RES-910: early-exit / skip-iteration control flow.
+    Break,
+    Continue,
     Requires,
     Ensures,
     /// RES-392/RES-387: `recovers_to` — crash-recovery postcondition.
@@ -544,6 +547,8 @@ impl Token {
             Token::While => "`while`".to_string(),
             Token::For => "`for`".to_string(),
             Token::In => "`in`".to_string(),
+            Token::Break => "`break`".to_string(),
+            Token::Continue => "`continue`".to_string(),
             Token::Requires => "`requires`".to_string(),
             Token::Ensures => "`ensures`".to_string(),
             Token::RecoversTo => "`recovers_to`".to_string(),
@@ -1003,6 +1008,8 @@ impl Lexer {
                         "while" => Token::While,
                         "for" => Token::For,
                         "in" => Token::In,
+                        "break" => Token::Break,
+                        "continue" => Token::Continue,
                         "requires" => Token::Requires,
                         "ensures" => Token::Ensures,
                         "recovers_to" => Token::RecoversTo,
@@ -1801,6 +1808,18 @@ enum Node {
     ReturnStatement {
         /// `None` for a bare `return;`
         value: Option<Box<Node>>,
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-910: `break;` — early-exit the innermost enclosing loop.
+    /// The typechecker rejects this outside any loop body.
+    Break {
+        #[allow(dead_code)]
+        span: span::Span,
+    },
+    /// RES-910: `continue;` — skip to the next iteration of the
+    /// innermost enclosing loop. Typechecker rejects outside a loop.
+    Continue {
         #[allow(dead_code)]
         span: span::Span,
     },
@@ -2698,6 +2717,8 @@ impl Parser {
             Token::Const => Some(self.parse_const_statement()),
             Token::Mod => Some(self.parse_module_decl()),
             Token::Return => Some(self.parse_return_statement()),
+            Token::Break => Some(self.parse_break_statement()),
+            Token::Continue => Some(self.parse_continue_statement()),
             Token::Live => Some(self.parse_live_block()),
             Token::Assert => Some(self.parse_assert()),
             Token::Assume => Some(self.parse_assume()),
@@ -5813,6 +5834,28 @@ impl Parser {
         }
     }
 
+    /// RES-910: parse `break;`. The keyword may be followed by an
+    /// optional `;`, mirroring `return;` syntax. The typechecker is
+    /// what enforces "must be inside a loop".
+    fn parse_break_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `break`
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+        Node::Break { span: stmt_span }
+    }
+
+    /// RES-910: parse `continue;`. Same shape as `break`.
+    fn parse_continue_statement(&mut self) -> Node {
+        let stmt_span = self.span_at_current();
+        self.next_token(); // skip `continue`
+        if self.peek_token == Token::Semicolon {
+            self.next_token();
+        }
+        Node::Continue { span: stmt_span }
+    }
+
     fn parse_live_block(&mut self) -> Node {
         self.next_token(); // Skip 'live'
 
@@ -8219,6 +8262,14 @@ enum Value {
     /// performing a chained field/method access.
     Option(Option<Box<Value>>),
     Return(Box<Value>),
+    /// RES-910: control-flow sentinel for `break`. Propagates through
+    /// `eval_block_statement` like `Return`, but is intercepted by the
+    /// nearest `WhileStatement` / `ForInStatement` evaluator.
+    Break,
+    /// RES-910: control-flow sentinel for `continue`. Same propagation
+    /// rule as `Break`; the loop evaluator consumes it and starts the
+    /// next iteration instead of exiting.
+    Continue,
     Void,
     /// RES-148: associative map. Keys are restricted (via `MapKey`) to
     /// the hashable primitives (`Int`, `String`, `Bool`) — anything
@@ -8412,6 +8463,8 @@ impl std::fmt::Debug for Value {
                 None => write!(f, "None"),
             },
             Value::Return(v) => write!(f, "Return({:?})", v),
+            Value::Break => write!(f, "Break"),
+            Value::Continue => write!(f, "Continue"),
             Value::Void => write!(f, "Void"),
             Value::Map(m) => write!(f, "Map({} entries)", m.len()),
             Value::Set(s) => write!(f, "Set({} items)", s.len()),
@@ -8510,6 +8563,8 @@ impl std::fmt::Display for Value {
                 None => write!(f, "None"),
             },
             Value::Return(v) => write!(f, "{}", v),
+            Value::Break => write!(f, "<break>"),
+            Value::Continue => write!(f, "<continue>"),
             Value::Void => write!(f, "void"),
             Value::Map(m) => {
                 // RES-148: iterate keys in sorted order so Display is
@@ -18490,6 +18545,10 @@ impl Interpreter {
                 };
                 Ok(Value::Return(Box::new(val)))
             }
+            // RES-910: emit the control-flow sentinel; the enclosing
+            // loop evaluator consumes it.
+            Node::Break { .. } => Ok(Value::Break),
+            Node::Continue { .. } => Ok(Value::Continue),
             Node::ForInStatement {
                 name,
                 iterable,
@@ -18531,6 +18590,16 @@ impl Interpreter {
                     if let Value::Return(_) = result {
                         return Ok(result);
                     }
+                    // RES-910: `break;` exits the loop with Void; the
+                    // post-loop block continues normally. `continue;`
+                    // is consumed and we fall through to the next
+                    // iteration.
+                    if matches!(result, Value::Break) {
+                        break;
+                    }
+                    // Value::Continue is intentionally ignored here —
+                    // the loop simply proceeds to its next condition
+                    // check.
                 }
                 Ok(Value::Void)
             }
@@ -19444,6 +19513,11 @@ impl Interpreter {
                 if let Value::Return(_) = result {
                     return Ok(result);
                 }
+                // RES-910: break exits the loop with Void; continue
+                // skips to the next iteration.
+                if matches!(result, Value::Break) {
+                    return Ok(Value::Void);
+                }
             }
             return Ok(Value::Void);
         }
@@ -19460,6 +19534,11 @@ impl Interpreter {
             let result = self.eval(body)?;
             if let Value::Return(_) = result {
                 return Ok(result);
+            }
+            // RES-910: same break/continue handling as the range
+            // fast-path above.
+            if matches!(result, Value::Break) {
+                return Ok(Value::Void);
             }
         }
         Ok(Value::Void)
@@ -19540,7 +19619,9 @@ impl Interpreter {
         for statement in statements {
             result = self.eval(statement)?;
 
-            if let Value::Return(_) = result {
+            // RES-910: Break/Continue propagate through blocks just like
+            // Return — the enclosing While/ForIn evaluator consumes them.
+            if matches!(result, Value::Return(_) | Value::Break | Value::Continue) {
                 return Ok(result);
             }
         }
@@ -25670,6 +25751,163 @@ mod tests {
             "expected an `if let` `=` diagnostic, got: {:?}",
             errs
         );
+    }
+
+    /// RES-910: `break;` exits the innermost enclosing `while` loop.
+    /// The post-loop block continues normally.
+    #[test]
+    fn break_exits_while_loop() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let i = 0;\n\
+                while i < 100 {\n\
+                    if i == 5 {\n\
+                        break;\n\
+                    }\n\
+                    i = i + 1;\n\
+                }\n\
+                return i;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 5),
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    /// RES-910: `continue;` skips the rest of the body but keeps the
+    /// loop going.
+    #[test]
+    fn continue_skips_iteration() {
+        // Walk i from 0..10 but `continue` past every value < 7; sum
+        // should be 7+8+9 = 24.
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let i = 0;\n\
+                let sum = 0;\n\
+                while i < 10 {\n\
+                    if i < 7 {\n\
+                        i = i + 1;\n\
+                        continue;\n\
+                    }\n\
+                    sum = sum + i;\n\
+                    i = i + 1;\n\
+                }\n\
+                return sum;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 24),
+            other => panic!("expected Int(24), got {:?}", other),
+        }
+    }
+
+    /// RES-910: `break;` works inside `for x in range`.
+    #[test]
+    fn break_exits_for_in_range() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let last = -1;\n\
+                for i in 0..100 {\n\
+                    if i == 7 {\n\
+                        break;\n\
+                    }\n\
+                    last = i;\n\
+                }\n\
+                return last;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 6),
+            other => panic!("expected Int(6), got {:?}", other),
+        }
+    }
+
+    /// RES-910: typechecker rejects `break` outside any loop body.
+    /// The diagnostic mentions the keyword and the surrounding context.
+    #[test]
+    fn break_outside_loop_is_typecheck_error() {
+        let src = "\
+            fn main(int _d) {\n\
+                break;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("'break' outside of a loop"),
+            "expected break-outside-loop error, got: {}",
+            err
+        );
+    }
+
+    /// RES-910: same rejection for `continue`.
+    #[test]
+    fn continue_outside_loop_is_typecheck_error() {
+        let src = "\
+            fn main(int _d) {\n\
+                continue;\n\
+                return 0;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = typechecker::TypeChecker::new();
+        let err = tc.check_program(&program).unwrap_err();
+        assert!(
+            err.contains("'continue' outside of a loop"),
+            "expected continue-outside-loop error, got: {}",
+            err
+        );
+    }
+
+    /// RES-910: `break` only exits the innermost loop. The outer loop
+    /// continues iterating after the inner one terminates.
+    #[test]
+    fn break_only_exits_innermost_loop() {
+        let src = "\
+            fn main(int _d) -> int {\n\
+                let outer_iters = 0;\n\
+                let i = 0;\n\
+                while i < 3 {\n\
+                    let j = 0;\n\
+                    while j < 100 {\n\
+                        if j == 2 {\n\
+                            break;\n\
+                        }\n\
+                        j = j + 1;\n\
+                    }\n\
+                    outer_iters = outer_iters + 1;\n\
+                    i = i + 1;\n\
+                }\n\
+                return outer_iters;\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::Int(n) => assert_eq!(n, 3),
+            other => panic!("expected Int(3), got {:?}", other),
+        }
     }
 
     #[test]

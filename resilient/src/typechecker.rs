@@ -906,6 +906,10 @@ pub struct TypeChecker {
     /// blocks) cannot raise checked failures today and must only
     /// invoke fns with an empty `fails` set.
     current_fn_fails: Option<Vec<String>>,
+    /// RES-910: depth of enclosing `while` / `for-in` bodies. `break`
+    /// and `continue` are typechecker-rejected when this is 0. Bumped
+    /// before recursing into a loop body and decremented after.
+    loop_depth: usize,
     /// RES-354: SMT theory selection. Auto-detect (BV32 if bitwise
     /// ops are present, LIA otherwise) by default. The driver
     /// overrides this from `--z3-theory <bv|lia|auto>`.
@@ -2731,6 +2735,8 @@ impl TypeChecker {
             let_type_hints: Vec::new(),
             // RES-387: no enclosing fn at program start.
             current_fn_fails: None,
+            // RES-910: loop depth starts at 0 (top-level is not a loop).
+            loop_depth: 0,
             // RES-354: auto-detect theory by default.
             #[cfg(feature = "z3")]
             z3_theory: crate::verifier_z3::Z3Theory::Auto,
@@ -4316,7 +4322,12 @@ impl TypeChecker {
 
             Node::ForInStatement { iterable, body, .. } => {
                 let _ = self.check_node(iterable)?;
-                let _ = self.check_node(body)?;
+                // RES-910: track loop depth so nested `break`/`continue`
+                // are accepted only inside the body.
+                self.loop_depth += 1;
+                let body_result = self.check_node(body);
+                self.loop_depth -= 1;
+                let _ = body_result?;
                 Ok(Type::Void)
             }
 
@@ -4324,7 +4335,29 @@ impl TypeChecker {
                 condition, body, ..
             } => {
                 let _ = self.check_node(condition)?;
-                let _ = self.check_node(body)?;
+                self.loop_depth += 1;
+                let body_result = self.check_node(body);
+                self.loop_depth -= 1;
+                let _ = body_result?;
+                Ok(Type::Void)
+            }
+
+            // RES-910: `break;` / `continue;` are typechecker-rejected
+            // outside any enclosing loop body.
+            Node::Break { .. } => {
+                if self.loop_depth == 0 {
+                    return Err("'break' outside of a loop — `break` is only valid \
+                         inside a `while` or `for-in` body"
+                        .to_string());
+                }
+                Ok(Type::Void)
+            }
+            Node::Continue { .. } => {
+                if self.loop_depth == 0 {
+                    return Err("'continue' outside of a loop — `continue` is only \
+                         valid inside a `while` or `for-in` body"
+                        .to_string());
+                }
                 Ok(Type::Void)
             }
 
