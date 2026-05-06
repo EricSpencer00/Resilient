@@ -283,6 +283,14 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
                 names
             }
         },
+        // RES-931: tuple-struct destructure — recurse into each field pattern.
+        Pattern::TupleStruct { fields, .. } => {
+            let mut names = Vec::new();
+            for sub in fields {
+                names.extend(collect_pattern_bindings(sub));
+            }
+            names
+        }
     }
 }
 
@@ -647,6 +655,10 @@ fn pattern_is_default_for_lint(p: &Pattern) -> bool {
         // RES-400: enum-variant patterns are never catch-alls — each
         // matches one specific variant.
         Pattern::EnumVariant { .. } => false,
+        // RES-931: a tuple-struct pattern is a catch-all iff every
+        // positional sub-pattern is itself a default — `Pair(_, _)`
+        // catches every `Pair`, but `Pair(0, _)` does not.
+        Pattern::TupleStruct { fields, .. } => fields.iter().all(pattern_is_default_for_lint),
     }
 }
 

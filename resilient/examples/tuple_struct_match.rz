@@ -1,0 +1,37 @@
+// RES-931 demo: tuple-struct destructure patterns in `match`.
+// Pairs with RES-928 (tuple structs). The pattern `Pair(p1, p2)`
+// matches a `Value::Struct` with the same name and synthesized
+// positional field names "0", "1", ... — sub-patterns recurse.
+
+struct Pair(int, string);
+struct Wrapped(int);
+
+fn classify(int _d) -> string {
+    // Literal-then-bind sub-patterns work positionally.
+    let p1 = new Pair(0, "first");
+    let r1 = match p1 {
+        Pair(0, _) => "zero-key",
+        Pair(_, s) => s,
+    };
+    println(r1);                                  // zero-key
+
+    // Bare identifier sub-patterns bind by position.
+    let p2 = new Pair(7, "seven");
+    let r2 = match p2 {
+        Pair(0, _) => "zero-key",
+        Pair(n, _) => "nonzero",
+    };
+    println(r2);                                  // nonzero
+
+    // Single-field tuple struct; literal vs wildcard.
+    let w = new Wrapped(99);
+    let r3 = match w {
+        Wrapped(99) => "ninety-nine",
+        Wrapped(_) => "other",
+    };
+    println(r3);                                  // ninety-nine
+
+    return "done";
+}
+
+println(classify(0));

@@ -1531,6 +1531,12 @@ pub(crate) enum Pattern {
         variant_name: String,
         payload: EnumPatternPayload,
     },
+    /// RES-931: tuple-struct destructure pattern — `Pair(0, _)`,
+    /// `Wrapped(Some(x))`, etc. Matches `Value::Struct` with the same
+    /// `name` and synthesized positional field names "0", "1", ...
+    /// The arity is checked against the struct registry by the
+    /// typechecker.
+    TupleStruct { name: String, fields: Vec<Pattern> },
 }
 
 /// RES-400: payload portion of a `Pattern::EnumVariant`. Mirrors the
@@ -8404,6 +8410,13 @@ impl Parser {
                 if self.peek_token == Token::LeftBrace {
                     return self.parse_match_struct_pattern(name);
                 }
+                // RES-931: tuple-struct destructure — `Pair(0, _)`.
+                // Bare `Identifier(...)` that isn't Some/Ok/Err and
+                // isn't a `::`-qualified enum variant is a tuple-struct
+                // pattern. Empty `Pair()` is also accepted (zero-field).
+                if self.peek_token == Token::LeftParen {
+                    return self.parse_tuple_struct_pattern(name);
+                }
                 // RES-161a: `name @ inner` bind-subpattern.
                 // peek_token tells us whether `@` follows. If so, consume
                 // it and parse the inner atom (not a full or-pattern — the
@@ -8423,6 +8436,50 @@ impl Parser {
                 Pattern::Wildcard
             }
         }
+    }
+
+    /// RES-931: parse a tuple-struct pattern body — `(p1, p2, ...)`.
+    /// On entry `current_token` is the struct-name identifier and
+    /// `peek_token == LeftParen`. On exit `current_token` is the
+    /// closing `)`.
+    fn parse_tuple_struct_pattern(&mut self, name: String) -> Pattern {
+        self.next_token(); // current = `(`
+        let mut fields: Vec<Pattern> = Vec::new();
+        if self.peek_token == Token::RightParen {
+            self.next_token(); // current = `)`
+            return Pattern::TupleStruct { name, fields };
+        }
+        self.next_token(); // current = start of first sub-pattern
+        let first = self.parse_pattern();
+        fields.push(first);
+        loop {
+            match self.peek_token {
+                Token::Comma => {
+                    self.next_token(); // current = `,`
+                    if self.peek_token == Token::RightParen {
+                        // Trailing comma allowed.
+                        self.next_token(); // current = `)`
+                        break;
+                    }
+                    self.next_token(); // current = start of next sub-pattern
+                    let p = self.parse_pattern();
+                    fields.push(p);
+                }
+                Token::RightParen => {
+                    self.next_token(); // current = `)`
+                    break;
+                }
+                _ => {
+                    let tok = self.peek_token.clone();
+                    self.record_error(format!(
+                        "Expected `,` or `)` in tuple-struct pattern, found {}",
+                        tok
+                    ));
+                    break;
+                }
+            }
+        }
+        Pattern::TupleStruct { name, fields }
     }
 
     /// Parse `.field`. current_token is `.` on entry; on exit current is `field`.
@@ -21646,6 +21703,40 @@ impl Interpreter {
                 Value::Result { ok: false, payload } => self.match_pattern(inner_pat, payload),
                 _ => Ok(None),
             },
+            // RES-931: tuple-struct destructure. The runtime stores
+            // tuple-struct values as Value::Struct with field names
+            // "0", "1", ... — so the match peels off positional
+            // sub-patterns and recurses against those synthesized
+            // field values. Name mismatch and arity mismatch are both
+            // a no-match (the typechecker raises a hard error on
+            // arity, but the interpreter stays defensive).
+            Pattern::TupleStruct { name, fields } => {
+                let Value::Struct {
+                    name: vname,
+                    fields: vfields,
+                } = value
+                else {
+                    return Ok(None);
+                };
+                if name != vname {
+                    return Ok(None);
+                }
+                if fields.len() != vfields.len() {
+                    return Ok(None);
+                }
+                let mut bindings = Vec::new();
+                for (i, sub) in fields.iter().enumerate() {
+                    let key = i.to_string();
+                    let Some((_, fv)) = vfields.iter().find(|(n, _)| n == &key) else {
+                        return Ok(None);
+                    };
+                    match self.match_pattern(sub, fv)? {
+                        None => return Ok(None),
+                        Some(mut b) => bindings.append(&mut b),
+                    }
+                }
+                Ok(Some(bindings))
+            }
             // RES-400: tagged-enum-variant pattern. Three shapes
             // dispatched off the value's payload kind. The pattern's
             // optional `type_name` qualifier must match the value's
@@ -27257,6 +27348,80 @@ mod tests {
             Value::Int(n) => assert_eq!(n, 42 + 5),
             other => panic!("expected Int(47), got {:?}", other),
         }
+    }
+
+    /// RES-931: tuple-struct destructure pattern matches positional
+    /// fields and threads bindings into the arm body.
+    #[test]
+    fn tuple_struct_match_pattern_binds_positionally() {
+        let src = "\
+            struct Pair(int, string);\n\
+            fn main(int _d) -> string {\n\
+                let p = new Pair(42, \"hello\");\n\
+                return match p {\n\
+                    Pair(0, _) => \"zero\",\n\
+                    Pair(_, s) => s,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "hello"),
+            other => panic!("expected String(\"hello\"), got {:?}", other),
+        }
+    }
+
+    /// RES-931: tuple-struct pattern with literal positional sub-pattern
+    /// fires only when the literal matches.
+    #[test]
+    fn tuple_struct_match_pattern_literal_arm_fires() {
+        let src = "\
+            struct Pair(int, string);\n\
+            fn main(int _d) -> string {\n\
+                let p = new Pair(0, \"x\");\n\
+                return match p {\n\
+                    Pair(0, _) => \"zero\",\n\
+                    Pair(_, s) => s,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = Interpreter::new();
+        match interp.eval(&program).unwrap() {
+            Value::String(s) => assert_eq!(s, "zero"),
+            other => panic!("expected String(\"zero\"), got {:?}", other),
+        }
+    }
+
+    /// RES-931: tuple-struct pattern with mismatched arity is rejected
+    /// by the typechecker with a clear diagnostic.
+    #[test]
+    fn tuple_struct_match_pattern_arity_mismatch_typechecks_err() {
+        let src = "\
+            struct Pair(int, string);\n\
+            fn main(int _d) -> int {\n\
+                let p = new Pair(1, \"x\");\n\
+                return match p {\n\
+                    Pair(n) => n,\n\
+                };\n\
+            }\n\
+            main(0);\n\
+        ";
+        let (program, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut tc = crate::typechecker::TypeChecker::new();
+        let result = tc.check_program(&program);
+        let err = result.expect_err("arity mismatch should fail typecheck");
+        assert!(
+            err.contains("expects 2 field(s), got 1"),
+            "expected arity diagnostic, got: {}",
+            err
+        );
     }
 
     /// RES-928: out-of-range positional index errors with a clear
