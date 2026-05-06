@@ -1086,6 +1086,8 @@ impl TypeChecker {
         env.set("acos".to_string(), fn_float_to_float());
         // RES-904.
         env.set("atan".to_string(), fn_float_to_float());
+        // RES-905.
+        env.set("cbrt".to_string(), fn_float_to_float());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -5376,6 +5378,7 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "asin",
         "acos",
         "atan",
+        "cbrt",
         // String/collection.
         "len",
         "push",
