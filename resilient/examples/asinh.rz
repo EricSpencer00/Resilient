@@ -1,0 +1,14 @@
+// RES-899 demo: asinh(x) is the inverse hyperbolic sine. Inverse of
+// sinh (RES-896). std-only; float-in / float-out per RES-130.
+
+fn main(int _d) {
+    println(asinh(0.0));                  // 0
+    // sinh(asinh(x)) = x for any real x.
+    println(sinh(asinh(2.5)));            // 2.5
+    // asinh is odd: asinh(x) + asinh(-x) cancels.
+    println(asinh(3.0) + asinh(-3.0));    // 0
+
+    return 0;
+}
+
+main(0);
