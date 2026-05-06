@@ -1239,6 +1239,17 @@ impl Formatter {
                 self.write(")");
             }
             Pattern::None => self.write("None"),
+            // RES-923: `Ok(inner)` / `Err(inner)` Result patterns.
+            Pattern::Ok(inner) => {
+                self.write("Ok(");
+                self.fmt_pattern(inner.as_ref());
+                self.write(")");
+            }
+            Pattern::Err(inner) => {
+                self.write("Err(");
+                self.fmt_pattern(inner.as_ref());
+                self.write(")");
+            }
             // RES-400: enum-variant pattern. Three shapes — None /
             // Named / Tuple — render with their respective punctuation.
             Pattern::EnumVariant {
