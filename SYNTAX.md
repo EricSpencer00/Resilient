@@ -818,6 +818,34 @@ match parse_int(input) {
 `None` for `Option`. Inner pattern can be a wildcard,
 identifier-binding, literal, range, or another nested pattern.
 
+### Anonymous tuple patterns (RES-932)
+
+Anonymous tuple values destructure positionally inside a `match`:
+
+```rust
+let p = (10, 20);
+match p {
+    (1, 2) => 0,
+    (a, b) => a + b,
+}
+```
+
+Sub-patterns can be any other pattern (wildcard, identifier, literal,
+range, nested tuple, `Some(_)` / `Ok(_)`, ...) and recurse element by
+element. A length mismatch is a no-match (falls through to the next
+arm).
+
+Disambiguation rules:
+
+- `()` is the unit pattern; matches `Value::Tuple(vec![])`.
+- `(p)` (no trailing comma) is a parenthesized pattern — equivalent to
+  `p`. This lets you group an inner pattern (`(x | y) => ...`) without
+  forcing a 1-tuple match.
+- `(p,)` (trailing comma) is a 1-tuple pattern.
+
+`(_, _)` is a catch-all over 2-tuples; `(0, _)` is not (the literal
+sub-pattern is non-default).
+
 ### Tuple-struct patterns (RES-931)
 
 A tuple-struct value (declared with `struct Pair(int, string);`)

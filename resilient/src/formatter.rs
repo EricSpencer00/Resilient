@@ -1303,6 +1303,22 @@ impl Formatter {
                 }
                 self.write(")");
             }
+            // RES-932: anonymous tuple pattern — `(1, 2)`, `(a, b)`,
+            // `()`. Single-element tuples emit a trailing comma to
+            // disambiguate from a parenthesized pattern.
+            Pattern::Tuple(items) => {
+                self.write("(");
+                for (i, sub) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.fmt_pattern(sub);
+                }
+                if items.len() == 1 {
+                    self.write(",");
+                }
+                self.write(")");
+            }
         }
     }
 }

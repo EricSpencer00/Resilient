@@ -569,6 +569,12 @@ fn bind_pattern(pat: &Pattern, bound: &mut BTreeSet<String>) {
                 bind_pattern(sub, bound);
             }
         }
+        // RES-932: anonymous tuple destructure — recurse positionally.
+        Pattern::Tuple(items) => {
+            for sub in items {
+                bind_pattern(sub, bound);
+            }
+        }
     }
 }
 

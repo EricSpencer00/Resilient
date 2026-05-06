@@ -212,6 +212,8 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
         // RES-931: tuple-struct destructure binds whatever each
         // positional sub-pattern binds.
         Pattern::TupleStruct { fields, .. } => fields.iter().flat_map(pattern_bindings).collect(),
+        // RES-932: anonymous tuple destructure — recurse positionally.
+        Pattern::Tuple(items) => items.iter().flat_map(pattern_bindings).collect(),
     }
 }
 
@@ -250,6 +252,10 @@ fn pattern_is_default(p: &Pattern) -> bool {
         // sole inhabitant of the nominal type, so name-mismatch is
         // caught upstream.
         Pattern::TupleStruct { fields, .. } => fields.iter().all(pattern_is_default),
+        // RES-932: an anonymous tuple pattern is a default iff every
+        // positional sub-pattern is a default. (`(_, _)` is default;
+        // `(0, _)` is not.)
+        Pattern::Tuple(items) => items.iter().all(pattern_is_default),
     }
 }
 
@@ -313,6 +319,8 @@ fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: 
         Pattern::TupleStruct { name, fields } => {
             name == sname && fields.len() == decl.len() && fields.iter().all(pattern_is_default)
         }
+        // RES-932: anonymous tuple patterns don't match struct-nominal types.
+        Pattern::Tuple(_) => false,
     }
 }
 
@@ -3174,6 +3182,18 @@ impl TypeChecker {
                         ));
                     };
                     let sub_bt = self.match_pattern_binding_types(sub, fty)?;
+                    out.extend(sub_bt);
+                }
+                Ok(out)
+            }
+            // RES-932: anonymous tuple destructure. Each positional
+            // sub-pattern recurses against `Type::Any` — the dynamic
+            // typechecker doesn't track per-position tuple element
+            // types yet, mirroring how Some/Ok bindings are widened.
+            Pattern::Tuple(items) => {
+                let mut out = Vec::new();
+                for sub in items {
+                    let sub_bt = self.match_pattern_binding_types(sub, &Type::Any)?;
                     out.extend(sub_bt);
                 }
                 Ok(out)
