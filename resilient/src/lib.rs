@@ -8918,6 +8918,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("atanh", builtin_atanh),
     // RES-902.
     ("asin", builtin_asin),
+    // RES-903.
+    ("acos", builtin_acos),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -9896,6 +9898,19 @@ fn builtin_asin(args: &[Value]) -> RResult<Value> {
             other
         )),
         _ => Err(format!("asin: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-903: `acos(x: Float) -> Float` — inverse cosine (radians). Inverse of
+/// `cos`; domain is `[-1, 1]`; `|x| > 1` yields NaN. Range `[0, π]`.
+fn builtin_acos(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Float(f.acos())),
+        [other] => Err(format!(
+            "acos: expected Float, got {} — call `to_float(x)` to widen an Int",
+            other
+        )),
+        _ => Err(format!("acos: expected 1 argument, got {}", args.len())),
     }
 }
 
@@ -27609,6 +27624,44 @@ mod tests {
     #[test]
     fn asin_arity_check() {
         let err = builtin_asin(&[]).unwrap_err();
+        assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    #[test]
+    fn acos_basic() {
+        // acos(1) = 0.
+        close(
+            as_float(builtin_acos(&[Value::Float(1.0)]).unwrap()),
+            0.0,
+            "acos(1)",
+        );
+        // acos(0) = π/2.
+        close(
+            as_float(builtin_acos(&[Value::Float(0.0)]).unwrap()),
+            std::f64::consts::FRAC_PI_2,
+            "acos(0)",
+        );
+        // acos(-1) = π.
+        close(
+            as_float(builtin_acos(&[Value::Float(-1.0)]).unwrap()),
+            std::f64::consts::PI,
+            "acos(-1)",
+        );
+        // |x| > 1 → NaN.
+        let nan = as_float(builtin_acos(&[Value::Float(1.5)]).unwrap());
+        assert!(nan.is_nan(), "acos(1.5) was {}", nan);
+    }
+
+    #[test]
+    fn acos_rejects_int() {
+        let err = builtin_acos(&[Value::Int(1)]).unwrap_err();
+        assert!(err.contains("expected Float"), "err was: {}", err);
+        assert!(err.contains("to_float"), "err was: {}", err);
+    }
+
+    #[test]
+    fn acos_arity_check() {
+        let err = builtin_acos(&[]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
     }
 
