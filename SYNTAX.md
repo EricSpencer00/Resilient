@@ -403,6 +403,45 @@ The impl block must provide all methods declared in the trait, with matching
 names and arities. Method implementations use the same `fn` syntax as top-level
 functions, and can access struct fields via `self`.
 
+### Operator Overloading
+
+Infix operators dispatch through method names that follow Rust's
+`core::ops` convention. When a struct has a method with the matching
+mangled name (e.g. `Vec2$add` for `+`), `lhs <op> rhs` evaluates that
+method with `lhs` as `self` and `rhs` as the second argument:
+
+```rust
+struct Vec2 { float x, float y, }
+
+impl Add for Vec2 {
+    fn add(Vec2 self, Vec2 other) -> Vec2 {
+        return new Vec2 { x: self.x + other.x, y: self.y + other.y };
+    }
+}
+
+let a = new Vec2 { x: 1.0, y: 2.0 };
+let b = new Vec2 { x: 3.0, y: 4.0 };
+let c = a + b;  // dispatches to Vec2$add(a, b)
+```
+
+The dispatch table:
+
+| Operator | Method  | | Operator | Method  |
+|---------|----------|-|----------|---------|
+| `+`     | `add`    | | `==`     | `eq`    |
+| `-`     | `sub`    | | `!=`     | `ne`    |
+| `*`     | `mul`    | | `<`      | `lt`    |
+| `/`     | `div`    | | `<=`     | `le`    |
+| `%`     | `rem`    | | `>`      | `gt`    |
+| `&`     | `bitand` | | `>=`     | `ge`    |
+| `\|`    | `bitor`  | | `<<`     | `shl`   |
+| `^`     | `bitxor` | | `>>`     | `shr`   |
+
+Logical `&&` / `||` and the `??` Option-coalescing operator do not
+overload (their short-circuit semantics make method dispatch
+inappropriate). When neither operand is a struct, behaviour is the
+built-in primitive dispatch with no change.
+
 ### Generic Bounds with Traits
 
 Use trait bounds to constrain generic type parameters:

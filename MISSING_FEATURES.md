@@ -1,162 +1,102 @@
-# 10 Major Missing Features in Resilient
+# Major Language Features Status
 
-Based on analysis of the current compiler implementation and git history, these are the highest-impact language features that would unlock significant new capabilities:
+A roadmap of what's implemented, partially implemented, and genuinely missing in Resilient. This was originally a "10 missing features" list; the audit found most are already in the compiler. The remaining genuinely missing pieces are listed below.
 
-## 1. Closures & Lambda Expressions
+## Already Implemented
 
-**Status**: Skeleton code exists (RES-164/169a) but incomplete  
-**Impact**: Essential for functional programming, callbacks, method chains  
-**Current state**: `free_vars` analysis exists but no lambda syntax  
-**Examples**:
-```rust
-let double = |x: int| { x * 2 };
-let doubled = array_map([1, 2, 3], |v| v * 2);
-```
+| Feature | Ticket | Status |
+|--------|--------|--------|
+| `?` operator (Result/Option propagation) | RES-086, RES-375 | Full — in `Node::TryExpression` eval |
+| String interpolation `"x = {x}"` | RES-221 | Full — `string_interp.rs` module |
+| Anonymous fn literals `fn(int x) -> int { ... }` | RES-403 | Full — `Node::FunctionLiteral` |
+| Function-type annotations `fn(int) -> int` | RES-403 | Full — parser accepts in param position |
+| Higher-order functions (`map`, `filter`, `reduce`) | RES-927 | Full — method-call form on arrays |
+| Generic type parameters `fn id<T>(x: T) -> T` | RES-405 PR1-4 | Full with monomorphization |
+| Variadic FFI (`extern fn printf(string, ...)`) | RES-316 | Full for FFI bindings |
+| Pipe operator `\|>` | RES-926 | Full |
+| `as` cast operator | RES-934 | Full |
+| Closure captures (immutable) | RES-164 | Full |
+| Tuple structs and tuple destructuring | RES-928, RES-933 | Full |
+| `if let` / `while let` / `else if let` | RES-908, RES-914, RES-930 | Full |
+| Range patterns / array slicing | RES-915, RES-911 | Full |
+| Compound assignment `+=` etc. | RES-912, RES-917 | Full |
+| Operator overloading via traits | (this PR) | Full at runtime |
 
-## 2. Complete Enum/Sum Types
+## Partially Implemented
 
-**Status**: RES-400 PR1 complete (payload-less variants), needs PR2-5  
-**Impact**: Core language feature for type-safe alternatives  
-**Current state**: Can't store data in variants, no pattern matching, no exhaustiveness checking  
-**Examples**:
-```rust
-enum Shape {
-    Circle { r: float },
-    Rect { w: float, h: float },
-}
-match s {
-    Shape::Circle { r } => 3.14 * r * r,
-    Shape::Rect { w, h } => w * h,
-}
-```
+| Feature | Ticket | Status |
+|--------|--------|--------|
+| Sum type / enum payloads | RES-400 PR1 | Parser scaffold for payload-less variants only; PR2-5 (payloads, matching, exhaustiveness, eval) remain |
+| Mutable closure capture | RES-328 | In progress — cell-based shared mutation works; auto-capture sugar deferred |
+| Module system | RES-116 | Textual splicing + namespacing primitives; full `mod`/`use` graph deferred |
+| Default function parameters | RES-118 | MVP for top-level fns; not for anonymous fn literals |
 
-## 3. Function Types as First-Class Values
+## Genuinely Missing
 
-**Status**: Not implemented  
-**Impact**: Higher-order functions, callbacks, dependency injection  
-**Current state**: Can pass functions by reference only through trait dispatch  
-**Examples**:
-```rust
-fn apply(callback: fn(int) -> int, x: int) -> int {
-    return callback(x);
-}
-```
+These have no in-flight scaffold and would each be substantial multi-PR work:
 
-## 4. Generic Functions
+### 1. Macros (Compile-Time Code Generation)
 
-**Status**: Only traits have generics (RES-783+)  
-**Impact**: Type-safe generic containers and algorithms  
-**Current state**: `fn foo<T>(x: T) -> T` syntax not supported  
-**Examples**:
-```rust
-fn swap<T>(a: T, b: T) -> (T, T) { return (b, a); }
-fn bsearch<T>(arr: Array<T>, target: T) -> Option<int> { ... }
-```
+No metaprogramming facilities exist. `assert_eq!`, `println!`-style format-string compile-time checking, and DSL macros all require an AST-at-compile-time representation, an expansion phase, and hygiene rules.
 
-## 5. Variadic Functions
+**Approximate scope**: 4-6 PRs (lexer for macro_rules!, parser for invocations, expansion engine, hygiene/scoping, error reporting, docs).
 
-**Status**: Not implemented  
-**Impact**: Functions with variable argument counts (print, format, sum)  
-**Current state**: All functions have fixed arity  
-**Examples**:
-```rust
-fn sum(int ...args) -> int { ... }
-fn format(string fmt, ...args) -> string { ... }
-```
+### 2. Async / Await
 
-## 6. Macros (Compile-Time Code Generation)
+Embedded I/O and actor-style cooperative scheduling currently use the live-block / actor primitives, but there's no `async fn` or `await` syntax. Adding it would unlock more conventional non-blocking I/O patterns.
 
-**Status**: Not implemented  
-**Impact**: DSLs, assertion macros, reducing boilerplate  
-**Current state**: No metaprogramming facilities  
-**Examples**:
-```rust
-#[macro]
-fn assert_eq(a, b) {
-    if a != b {
-        panic("assertion failed: {a} != {b}");
-    }
-}
-```
+**Approximate scope**: 5-8 PRs (parser, type representation, state-machine transform, scheduler integration, examples).
 
-## 7. Module System
+### 3. Const Functions / Compile-Time Evaluation
 
-**Status**: Basic textual include/import only  
-**Impact**: Code organization, namespacing, visibility control  
-**Current state**: Files are spliced inline; no `mod` keyword, no visibility modifiers  
-**Examples**:
-```rust
-mod math { fn sin(float x) -> float { ... } }
-mod graphics { use math::sin; }
-use graphics::draw;
-```
+Currently constants are limited to literals and a few folded expressions. A `const fn` keyword that lets the typechecker fully evaluate user code at compile time would enable better array sizes, lookup tables, and compile-time invariants.
 
-## 8. Operator Overloading
+**Approximate scope**: 3-4 PRs (parser, evaluator separation, typechecker integration, docs).
 
-**Status**: Not implemented  
-**Impact**: Custom types can define operators (Vector + Vector, Complex * Complex)  
-**Current state**: Only built-in operators work on built-in types  
-**Examples**:
-```rust
-struct Vector { float x, float y, }
-impl Add for Vector { fn add(self, other: Vector) -> Vector { ... } }
-let v3 = v1 + v2;
-```
+### 4. Trait Default Methods
 
-## 9. String Interpolation
+Trait declarations can only contain method *signatures*. Adding a default body (so impls can omit methods that have a default) is a real ergonomic gap for trait-heavy code.
 
-**Status**: Not implemented  
-**Impact**: Readable string formatting without verbose concatenation  
-**Current state**: Must concatenate or use separate string parts  
-**Examples**:
-```rust
-let x = 42;
-let msg = f"The answer is {x}";
-let formatted = "x={x}, y={y}";
-```
+**Approximate scope**: 1-2 PRs (parser change + trait registry update).
 
-## 10. Error Propagation Operator (?)
+### 5. Pattern-Matching Exhaustiveness for Structs
 
-**Status**: Not implemented  
-**Impact**: Ergonomic Result/Option handling  
-**Current state**: Manual unwrap/unwrap_or calls required  
-**Examples**:
-```rust
-fn risky() -> Result<int, string> {
-    let x = fallible()?;
-    let y = another_risky_call()?;
-    return ok(x + y);
-}
-```
+Match patterns over enums get exhaustiveness checks; match over plain structs and primitives don't. Closing this gap surfaces a class of bugs that typechecking misses today.
+
+**Approximate scope**: 2-3 PRs (extend the existing exhaustiveness pass, golden-file diagnostics).
+
+### 6. Type Classes / Implicit Parameters
+
+For ergonomic generic numeric code (`fn sum<T: Num>(arr: Array<T>) -> T`), some kind of bounded-instance lookup mechanism beyond the current trait-bound substitution would help. Today users must wrap operations in trait method calls.
+
+**Approximate scope**: 4-5 PRs (design + parser + typechecker + monomorphizer + docs).
+
+### 7. Recursive Type Definitions
+
+Self-referential structs like `struct Tree { Tree left, Tree right, }` would need a Box / indirection abstraction. Currently the type system treats this as an unbounded size error.
+
+**Approximate scope**: 2-3 PRs (Box type, parser sugar, typechecker, runtime indirection).
+
+### 8. Destructuring in Function Parameters
+
+`fn rotate((int x, int y)) -> (int, int)` is a small ergonomic win that would parallel the existing `let` destructuring.
+
+**Approximate scope**: 1 PR (parser change, typechecker, eval).
+
+### 9. Custom Derive Attributes
+
+`#[derive(Debug, Eq)]` on structs would auto-generate trait impls. Manual `impl` for boilerplate traits is currently the only option.
+
+**Approximate scope**: 2-3 PRs (attribute parser already exists; generator + per-derive logic).
+
+### 10. Associated Constants on Traits
+
+`trait Bounded { const MIN: int; const MAX: int; }` — useful for numeric trait bounds and embedded constants.
+
+**Approximate scope**: 2-3 PRs (parser, type representation, monomorphization).
 
 ---
 
-## Honorable Mentions
+## Footprint Reality Check
 
-**Lower priority but also valuable**:
-- Recursive type definitions (current limitation prevents recursive structs/enums)
-- Async/await (for I/O and long-running operations)
-- Const functions (compile-time evaluation, `const fn`)
-- Pattern matching improvements (struct/record patterns, guard clauses)
-- Better type inference (full Hindley-Milner; RES-120 WIP, gated on `infer` feature)
-- Destructuring in function parameters (`fn foo((int x, int y)) { ... }`)
-- Default trait methods (trait implementations can provide default bodies)
-- Attributes and derives (`#[derive(Debug)]`, custom attributes)
-
----
-
-## Estimated Complexity & Multi-PR Scope
-
-| Feature | Estimated PRs | Complexity | Core Blocker |
-|---------|---------------|-----------|--------------|
-| Closures | 3-4 | High | Free variable analysis exists; needs syntax + values + typechecker |
-| Complete enums | 5 | High | Payloads, matching, exhaustiveness (RES-400 PR2-5) |
-| Function types | 2-3 | Medium | Type representation + application syntax |
-| Generic functions | 3-4 | High | Parser + typechecker + monomorphization |
-| Variadic functions | 2 | Medium | Parser + VM support |
-| Macros | 4-5 | Very high | Need AST-at-compile-time + expansion framework |
-| Module system | 4-5 | High | Parser + visibility + resolution + scoping |
-| Operator overloading | 2-3 | Medium | Typechecker dispatch + trait integration |
-| String interpolation | 2 | Low | Parser + runtime formatting |
-| Error propagation (?) | 1-2 | Low | Syntactic sugar; desugar to match/unwrap |
-
+Resilient at ~1,800 KB of `lib.rs` is a much more complete language than the original "10 missing features" pass suggested. The genuinely-missing list above is what's left after auditing the actual implementation. Each item is decomposable into a small chain of PRs per the project's "ship-to-merge" workflow.
