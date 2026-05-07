@@ -1,0 +1,19 @@
+// Actor model: isolated processes communicate via messages.
+// spawn() creates an actor; send/receive pass values between them.
+// No shared state — data races are structurally impossible.
+
+fn summer() {
+    let a = receive();
+    let b = receive();
+    let c = receive();
+    println("sum = " + (a + b + c));
+}
+
+fn main() {
+    let pid = spawn(summer);
+    send(pid, 10);
+    send(pid, 20);
+    send(pid, 12);   // 10 + 20 + 12 = 42
+    println("messages sent");
+}
+main();

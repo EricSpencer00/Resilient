@@ -1,0 +1,7 @@
+true
+true
+false
+true
+true
+all proofs passed
+Program executed successfully

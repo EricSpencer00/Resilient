@@ -1,0 +1,42 @@
+// Contracts: machine-checked pre/postconditions.
+// `requires` is enforced at every call site;
+// `ensures` is a guarantee the callee must prove.
+// With --features z3, the compiler discharges these statically
+// — the division-by-zero check below has zero runtime cost.
+
+fn safe_divide(int n, int d) -> int
+    requires d != 0
+{
+    return n / d;
+}
+
+fn clamp(int x, int lo, int hi) -> int
+    requires lo <= hi
+    ensures result >= lo
+    ensures result <= hi
+{
+    if x < lo { return lo; }
+    if x > hi { return hi; }
+    return x;
+}
+
+fn factorial(int n) -> int
+    requires n >= 0
+    ensures result >= 1
+{
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+
+fn main() {
+    println(safe_divide(100, 7));   // 14  (integer division)
+    println(safe_divide(42, 6));    // 7
+
+    println(clamp(-5, 0, 10));      // 0   (below lo → returns lo)
+    println(clamp(15, 0, 10));      // 10  (above hi → returns hi)
+    println(clamp(5,  0, 10));      // 5   (in range → unchanged)
+
+    println(factorial(5));          // 120
+    println(factorial(0));          // 1
+}
+main();

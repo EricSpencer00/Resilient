@@ -1,0 +1,30 @@
+// Linear types: the compiler tracks resource ownership.
+// A linear value must be consumed exactly once —
+// double-close and use-after-close are compile-time errors,
+// not runtime crashes. Ideal for MMIO, file handles, sockets.
+
+struct UartConn { int port }
+
+fn uart_open(int port) -> linear UartConn {
+    println("uart: opened port " + port);
+    return new UartConn { port: port };
+}
+
+fn uart_write(linear UartConn c, string msg) -> linear UartConn {
+    println("uart: tx " + msg);
+    return c;   // ownership returned — caller must consume it
+}
+
+fn uart_close(linear UartConn c) {
+    println("uart: closed port " + c.port);
+    // c is consumed here; the compiler forbids any further use
+}
+
+fn main() {
+    let c  = uart_open(2);
+    let c2 = uart_write(c,  "boot ok");
+    let c3 = uart_write(c2, "sensor ready");
+    uart_close(c3);
+    println("handle released exactly once");
+}
+main();
