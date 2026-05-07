@@ -15,21 +15,391 @@ import init, {
   playground_version,
 } from "./pkg/resilient_playground.js";
 
+// Fallback examples shown when examples.json is not present (e.g., dev mode).
+// These are the curated top picks that best illustrate what makes Resilient
+// distinct. The full list (350+ examples) is baked into examples.json at
+// build time by playground/build.sh.
 const EXAMPLES_FALLBACK = [
   {
+    name: "sensor_monitor.rz",
+    source: `// Flagship example: contracts + Result + live self-healing block.
+// Classifies sensor readings into buckets and counts each category.
+
+struct Reading { int id, int value, }
+struct Counts { int low, int mid, int high, int alert, }
+
+fn bucket_of(int v) -> string
+    requires v >= 0
+{
+    if v < 25  { return "low"; }
+    if v < 75  { return "mid"; }
+    if v < 100 { return "high"; }
+    return "alert";
+}
+
+fn validate(int v) -> Result {
+    if v < 0    { return Err("negative reading"); }
+    if v > 1000 { return Err("overflow reading"); }
+    return Ok(v);
+}
+
+fn process(int v) -> Result {
+    let safe = validate(v)?;
+    return Ok(bucket_of(safe));
+}
+
+fn main() {
+    let readings = [
+        new Reading { id: 1, value: 10  },
+        new Reading { id: 2, value: 50  },
+        new Reading { id: 3, value: 90  },
+        new Reading { id: 4, value: 200 },
+        new Reading { id: 5, value: 0   },
+    ];
+    let counts = new Counts { low: 0, mid: 0, high: 0, alert: 0 };
+    let total = 0;
+    live invariant total >= 0 {
+        for r in readings {
+            let result = process(r.value);
+            if is_err(result) {
+                println("rejecting " + r.id + ": " + unwrap_err(result));
+            } else {
+                let label = unwrap(result);
+                if label == "low"   { counts.low   = counts.low   + 1; }
+                if label == "mid"   { counts.mid   = counts.mid   + 1; }
+                if label == "high"  { counts.high  = counts.high  + 1; }
+                if label == "alert" { counts.alert = counts.alert + 1; }
+                total = total + 1;
+            }
+        }
+    }
+    println("low:   " + counts.low);
+    println("mid:   " + counts.mid);
+    println("high:  " + counts.high);
+    println("alert: " + counts.alert);
+    println("processed: " + total);
+}
+main();
+`,
+  },
+  {
+    name: "showcase_contracts.rz",
+    source: `// Contracts: machine-checked pre/postconditions.
+// requires guards the caller; ensures guarantees the callee.
+// With --features z3, these discharge statically — zero runtime cost.
+
+fn safe_divide(int n, int d) -> int
+    requires d != 0
+{
+    return n / d;
+}
+
+fn clamp(int x, int lo, int hi) -> int
+    requires lo <= hi
+    ensures result >= lo
+    ensures result <= hi
+{
+    if x < lo { return lo; }
+    if x > hi { return hi; }
+    return x;
+}
+
+fn factorial(int n) -> int
+    requires n >= 0
+    ensures result >= 1
+{
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+
+fn main() {
+    println(safe_divide(100, 7));   // 14
+    println(safe_divide(42, 6));    // 7
+
+    println(clamp(-5, 0, 10));     // 0  (below lo)
+    println(clamp(15, 0, 10));     // 10 (above hi)
+    println(clamp(5,  0, 10));     // 5  (in range)
+
+    println(factorial(5));          // 120
+    println(factorial(0));          // 1
+}
+main();
+`,
+  },
+  {
+    name: "showcase_linear_types.rz",
+    source: `// Linear types: the compiler tracks resource ownership.
+// A linear value must be consumed exactly once.
+// Double-close and use-after-close are compile-time errors.
+
+struct UartConn { int port }
+
+fn uart_open(int port) -> linear UartConn {
+    println("uart: opened port " + port);
+    return new UartConn { port: port };
+}
+
+fn uart_write(linear UartConn c, string msg) -> linear UartConn {
+    println("uart: tx " + msg);
+    return c;   // ownership returned — caller must consume it
+}
+
+fn uart_close(linear UartConn c) {
+    println("uart: closed port " + c.port);
+    // c consumed here; the compiler forbids any further use
+}
+
+fn main() {
+    let c  = uart_open(2);
+    let c2 = uart_write(c,  "boot ok");
+    let c3 = uart_write(c2, "sensor ready");
+    uart_close(c3);
+    println("handle released exactly once");
+}
+main();
+`,
+  },
+  {
+    name: "showcase_actors.rz",
+    source: `// Actor model: isolated processes communicate via messages.
+// spawn() creates an actor; send/receive pass values between them.
+// No shared state — data races are structurally impossible.
+
+fn summer() {
+    let a = receive();
+    let b = receive();
+    let c = receive();
+    println("sum = " + (a + b + c));
+}
+
+fn main() {
+    let pid = spawn(summer);
+    send(pid, 10);
+    send(pid, 20);
+    send(pid, 12);   // 10 + 20 + 12 = 42
+    println("messages sent");
+}
+main();
+`,
+  },
+  {
+    name: "showcase_quantifiers.rz",
+    source: `// Quantifiers as runnable code and static proofs.
+// forall / exists evaluate at runtime and, with --features z3,
+// discharge as SMT lemmas — no loop unrolling needed.
+
+fn is_even(int n) -> bool { return n % 2 == 0; }
+
+fn main() {
+    // Every square in 0..8 is non-negative.
+    println(forall i in 0..8: i * i >= 0);     // true
+
+    // There exists an even number in 1..10.
+    println(exists i in 1..10: is_even(i));    // true
+
+    // Not all numbers in 0..5 are even.
+    println(forall i in 0..5: is_even(i));     // false
+
+    // Vacuously true: empty range, no counterexample.
+    println(forall i in 5..5: false);          // true
+
+    // Embed quantifiers directly in assertions.
+    assert(forall i in 0..10: i * i >= 0);
+    assert(exists i in 0..10: i == 7);
+    println("all proofs passed");
+}
+main();
+`,
+  },
+  {
+    name: "showcase_result.rz",
+    source: `// Result<T>: principled error propagation without exceptions.
+// Ok(v) carries a success value; Err(e) carries a failure reason.
+// Pattern matching forces every caller to handle both cases.
+
+fn safe_div(int n, int d) -> Result {
+    if d == 0 { return Err("division by zero"); }
+    return Ok(n / d);
+}
+
+fn safe_sqrt(int n) -> Result {
+    if n < 0 { return Err("negative input"); }
+    return Ok(n);
+}
+
+fn main() {
+    let r1 = safe_div(100, 5);
+    let msg1 = match r1 {
+        Ok(v)  => "100 / 5 = " + v,
+        Err(e) => "error: " + e,
+    };
+    println(msg1);
+
+    let r2 = safe_div(42, 0);
+    let msg2 = match r2 {
+        Ok(v)  => "ok: " + v,
+        Err(e) => "caught: " + e,
+    };
+    println(msg2);
+
+    let r3 = safe_sqrt(-1);
+    let msg3 = match r3 {
+        Ok(v)  => "ok: " + v,
+        Err(e) => "caught: " + e,
+    };
+    println(msg3);
+}
+main();
+`,
+  },
+  {
+    name: "sum_types_match.rz",
+    source: `// Algebraic data types with exhaustive pattern matching.
+// Each variant carries its own fields; match enforces coverage.
+
+enum Shape {
+    Circle { r: int },
+    Square { side: int },
+    Rect   { w: int, h: int },
+}
+
+enum Color { Red, Green, Blue }
+
+fn area(Shape s) -> int {
+    return match s {
+        Shape::Circle { r }    => 3 * r * r,
+        Shape::Square { side } => side * side,
+        Shape::Rect   { w, h } => w * h,
+    };
+}
+
+fn name(Color c) -> string {
+    return match c {
+        Color::Red   => "red",
+        Color::Green => "green",
+        Color::Blue  => "blue",
+    };
+}
+
+fn main() -> int {
+    println(area(new Shape::Circle { r: 2 }));       // 12
+    println(area(new Shape::Square { side: 4 }));    // 16
+    println(area(new Shape::Rect { w: 3, h: 5 }));  // 15
+    println(name(Color::Red));                        // red
+    println(name(Color::Green));                      // green
+    println(name(Color::Blue));                       // blue
+    return 0;
+}
+main();
+`,
+  },
+  {
+    name: "operator_overload.rz",
+    source: `// Operator overloading: implement Add, Sub, Mul for a custom type.
+
+struct Vec2 { float x, float y, }
+
+impl Add for Vec2 {
+    fn add(Vec2 self, Vec2 other) -> Vec2 {
+        return new Vec2 { x: self.x + other.x, y: self.y + other.y };
+    }
+}
+
+impl Sub for Vec2 {
+    fn sub(Vec2 self, Vec2 other) -> Vec2 {
+        return new Vec2 { x: self.x - other.x, y: self.y - other.y };
+    }
+}
+
+impl Mul for Vec2 {
+    fn mul(Vec2 self, Vec2 other) -> Vec2 {
+        return new Vec2 { x: self.x * other.x, y: self.y * other.y };
+    }
+}
+
+fn main() -> int {
+    let a = new Vec2 { x: 1.0, y: 2.0 };
+    let b = new Vec2 { x: 3.0, y: 4.0 };
+    let sum  = a + b;  println(sum.x);   println(sum.y);   // 4, 6
+    let diff = b - a;  println(diff.x);  println(diff.y);  // 2, 2
+    let prod = a * b;  println(prod.x);  println(prod.y);  // 3, 8
+    return 0;
+}
+main();
+`,
+  },
+  {
+    name: "pipe_operator.rz",
+    source: `// The |> pipe operator: x |> f desugars to f(x).
+// Chains read top-to-bottom instead of inside-out.
+
+fn double(int n) -> int  { return n * 2; }
+fn add_one(int n) -> int { return n + 1; }
+
+fn main(int _d) {
+    // Without pipes: nested calls read inside-out.
+    println(add_one(double(add_one(3))));        // 9
+
+    // With pipes: reads left-to-right.
+    println(3 |> add_one |> double |> add_one);  // 9
+
+    // String pipeline: trim then uppercase.
+    println("  resilient  " |> trim |> to_upper);  // RESILIENT
+
+    // Pipe with stdlib.
+    println(-42 |> abs);    // 42
+    println("ab" |> repeat(3));  // ababab
+    return 0;
+}
+main(0);
+`,
+  },
+  {
+    name: "invariant_proven_demo.rz",
+    source: `// SMT-discharged loop invariant.
+// The verifier statically proves both base case and inductive step
+// without executing the loop — no runtime check needed.
+
+fn main() {
+    let i = 0;
+    let n = 5;
+    while i < n {
+        invariant i >= 0;
+        invariant i <= n;
+        i = i + 1;
+    }
+    println("ok");
+}
+main();
+`,
+  },
+  {
+    name: "comprehension_demo.rz",
+    source: `// Array comprehensions: [expr for x in xs (if guard)?]
+
+fn main(int _d) {
+    let xs = [1, 2, 3, 4, 5, 6];
+
+    // Map: double each element.
+    let doubled = [x * 2 for x in xs];
+    println(doubled);               // [2, 4, 6, 8, 10, 12]
+
+    // Filter-map: square the even numbers only.
+    let even_sq = [x * x for x in xs if x % 2 == 0];
+    println(even_sq);               // [4, 16, 36]
+
+    return 0;
+}
+main(0);
+`,
+  },
+  {
     name: "hello.rz",
-    source:
-      'fn main() {\n    println("Hello, Resilient world!");\n}\nmain();\n',
-  },
-  {
-    name: "factorial.rz",
-    source:
-      "fn fact(int n) {\n    if n <= 1 { return 1; }\n    return n * fact(n - 1);\n}\nprintln(fact(7));\n",
-  },
-  {
-    name: "loop_invariant.rz",
-    source:
-      "fn sum_to(int n)\n  requires n >= 0\n  ensures result >= 0\n{\n    let total = 0;\n    let i = 0;\n    while i < n\n      invariant total >= 0\n      invariant i >= 0\n    {\n        total = total + i;\n        i = i + 1;\n    }\n    return total;\n}\nprintln(sum_to(10));\n",
+    source: `fn main() {
+    println("Hello, Resilient world!");
+}
+main();
+`,
   },
 ];
 
@@ -41,7 +411,7 @@ const clearBtn = document.getElementById("clear-btn");
 const select = document.getElementById("example-select");
 const banner = document.getElementById("scaffold-banner");
 
-editorEl.value = EXAMPLES_FALLBACK[0].source;
+editorEl.value = EXAMPLES_FALLBACK[0].source; // sensor_monitor — first pinned example
 
 const cm = CodeMirror.fromTextArea(editorEl, {
   mode: "rust",

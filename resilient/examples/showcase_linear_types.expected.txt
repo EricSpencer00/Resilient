@@ -1,0 +1,6 @@
+uart: opened port 2
+uart: tx boot ok
+uart: tx sensor ready
+uart: closed port 2
+handle released exactly once
+Program executed successfully

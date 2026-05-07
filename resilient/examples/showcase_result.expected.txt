@@ -1,0 +1,5 @@
+100 / 5 = 20
+caught: division by zero
+sqrt input: 9
+caught: negative input
+Program executed successfully

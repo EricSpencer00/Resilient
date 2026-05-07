@@ -1,0 +1,29 @@
+// Quantifiers as runnable code and static proofs.
+// `forall i in lo..hi: P(i)` evaluates true if P holds for every i.
+// `exists i in lo..hi: P(i)` is true if any witness satisfies P.
+// With --features z3, bounded-range forms discharge as SMT lemmas.
+
+fn is_even(int n) -> bool { return n % 2 == 0; }
+
+fn main() {
+    // Every square in 0..8 is non-negative.
+    println(forall i in 0..8: i * i >= 0);     // true
+
+    // There exists an even number in 1..10.
+    println(exists i in 1..10: is_even(i));    // true
+
+    // Not all numbers in 0..5 are even.
+    println(forall i in 0..5: is_even(i));     // false
+
+    // Every number in 1..6 is positive.
+    println(forall i in 1..6: i > 0);          // true
+
+    // Vacuously true: empty range, no counterexample.
+    println(forall i in 5..5: false);          // true
+
+    // Embed quantifiers directly in assertions.
+    assert(forall i in 0..10: i * i >= 0);
+    assert(exists i in 0..10: i == 7);
+    println("all proofs passed");
+}
+main();
