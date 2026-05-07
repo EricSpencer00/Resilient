@@ -160,6 +160,42 @@ main();
 `,
   },
   {
+    name: "showcase_live_invariant.rz",
+    source: `// \`live invariant\` is atomic rollback-on-failure with bounded retry.
+// When the body's exit state violates the invariant (or the body
+// throws), the runtime restores the pre-block environment and
+// re-runs the body. On exhaustion the error propagates.
+//
+// This demo exercises the machinery for real:
+//   - the body is non-idempotent (a two-step money transfer),
+//   - a transient fault aborts mid-transfer, and
+//   - the invariant \`total funds preserved\` fails on partial state.
+// Without rollback, repeated debits would compound and corrupt the
+// books. live_retries() lets the simulated fault clear by attempt 3.
+
+fn main() {
+    let bal_a = 100;
+    let bal_b = 50;
+    let total_before = bal_a + bal_b;
+
+    println("before: a=" + bal_a + " b=" + bal_b);
+
+    live invariant bal_a + bal_b == total_before {
+        bal_a = bal_a - 50;                       // partial mutation
+        if live_retries() < 2 {
+            assert(false, "transient fault — must roll back");
+        }
+        bal_b = bal_b + 50;                       // completes transfer
+    }
+
+    println("after:  a=" + bal_a + " b=" + bal_b);
+    println("total preserved: " + (bal_a + bal_b));
+    println("retries used: " + live_total_retries());
+}
+main();
+`,
+  },
+  {
     name: "showcase_actors.rz",
     source: `// Actor model: isolated processes communicate via messages.
 // spawn() creates an actor; send/receive pass values between them.

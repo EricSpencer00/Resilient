@@ -1,0 +1,45 @@
+// `live invariant` is atomic rollback-on-failure with bounded retry.
+// When the body's exit state violates the invariant (or the body
+// throws), the runtime restores the pre-block environment and
+// re-runs the body. On exhaustion the error propagates with a
+// "Live block failed after N attempts" prefix.
+//
+// This demo actually exercises the machinery:
+//
+//   - the body is non-idempotent (a two-step money transfer),
+//   - a transient fault aborts the body mid-transfer, and
+//   - the invariant `total funds preserved` fails on partial state.
+//
+// The rollback is what makes retries safe. Without it, the failed
+// debit would persist and the next attempt would debit again — the
+// invariant would never be restorable. `live_retries()` lets the
+// body see which attempt it's on, so the simulated fault clears
+// after two retries and the third attempt completes cleanly.
+
+fn main() {
+    let bal_a = 100;
+    let bal_b = 50;
+    let total_before = bal_a + bal_b;
+
+    println("before: a=" + bal_a + " b=" + bal_b);
+
+    live invariant bal_a + bal_b == total_before {
+        // Step 1: debit account A.
+        bal_a = bal_a - 50;
+
+        // Simulated transient fault on the first two attempts.
+        // Without rollback, the partial state (a=50, b=50, total=100)
+        // would leak out and a retry would debit again → corruption.
+        if live_retries() < 2 {
+            assert(false, "transient fault — must roll back");
+        }
+
+        // Step 2: credit account B. Reached only on the third attempt.
+        bal_b = bal_b + 50;
+    }
+
+    println("after:  a=" + bal_a + " b=" + bal_b);
+    println("total preserved: " + (bal_a + bal_b));
+    println("retries used: " + live_total_retries());
+}
+main();
