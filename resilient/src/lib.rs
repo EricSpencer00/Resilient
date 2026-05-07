@@ -167,6 +167,12 @@ mod assume_false_checker;
 // the main module only touches the extension-point blocks.
 mod try_catch;
 
+// Operator overloading for structs — dispatches `lhs <op> rhs` to a
+// trait-impl method (`Vec2$add`) when the LHS or RHS is a struct.
+// All logic lives in this module; lib.rs only calls into it from
+// `eval_infix_expression` before the type-mismatch fallthrough.
+mod operator_overload;
+
 // RES-330: `forall` / `exists` quantifier expressions in assertions.
 // All parser, interpreter, typechecker, and Z3 logic for quantifiers
 // lives here; the main module only touches the extension-point blocks
@@ -22048,7 +22054,17 @@ impl Interpreter {
                 self.eval_string_infix_expression(operator, l, r)
             }
             (Value::Bool(l), Value::Bool(r)) => self.eval_boolean_infix_expression(operator, l, r),
-            _ => Err(format!("Type mismatch: {} {} {}", left, operator, right)),
+            _ => {
+                // Operator overloading: when one operand is a struct
+                // and a `<StructName>$<op_method>` exists in the env,
+                // dispatch through it instead of erroring out.
+                if let Some(v) =
+                    crate::operator_overload::try_dispatch(self, operator, &left, &right)?
+                {
+                    return Ok(v);
+                }
+                Err(format!("Type mismatch: {} {} {}", left, operator, right))
+            }
         }
     }
 
