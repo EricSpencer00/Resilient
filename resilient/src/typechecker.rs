@@ -3128,6 +3128,56 @@ impl TypeChecker {
                 crate::newtypes::check(program, source_path)?;
                 crate::traits::check(program, source_path)?;
                 crate::region_inference::infer(program, source_path)?;
+                // Ralph-Loop-Uniqueness #1: watchdog-feed enforcement.
+                crate::watchdog_feed::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #2: sensor freshness.
+                crate::sensor_freshness::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #3: secret erasure.
+                crate::secret_erasure::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #4: transaction close.
+                crate::transaction_commit::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #5: ISR transitive safety.
+                crate::isr_call_graph::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #6: lock-ordering inversion.
+                crate::lock_ordering::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #7: reentrancy guard.
+                crate::reentrancy_guard::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #8: actor drain-on-shutdown.
+                crate::actor_drain::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #9: backpressure-safe handler.
+                crate::backpressure_safe::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #10: monotonic-field invariant.
+                crate::monotonic_field::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #11: saturation-required arithmetic.
+                crate::saturation_required::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #12: numeric units mixing.
+                crate::numeric_units::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #13: age-bounded data freshness.
+                crate::age_bounded_data::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #14: rate-limit static.
+                crate::rate_limit_static::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #15: stack budget.
+                crate::stack_budget::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #16: heap budget.
+                crate::heap_budget::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #17: bandwidth budget.
+                crate::bandwidth_budget::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #18: bounded-blocking budget.
+                crate::bounded_blocking::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #19: audit-log-required mutations.
+                crate::audit_log_required::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #20: degraded mode after critical assert.
+                crate::degraded_mode::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #21: crash-only modules.
+                crate::crash_only::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #22: idempotent handlers.
+                crate::idempotent_handler::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #23: epoch ordering.
+                crate::epoch_ordering::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #24: priority-inheritance discipline.
+                crate::priority_inheritance::check(program, source_path)?;
+                // Ralph-Loop-Uniqueness #25: TOCTOU guard.
+                crate::toctou_guard::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

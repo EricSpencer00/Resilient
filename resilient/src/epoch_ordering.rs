@@ -1,0 +1,54 @@
+//! Ralph-Loop Uniqueness #23 — epoch-ordering across function name suffixes.
+//!
+//! Migrations and schema-versioning require operations to run in epoch
+//! order: phase-1 must finish before phase-2 starts. Database migration
+//! tools enforce this at deploy time; no language requires that within
+//! a single source file, calls to `*_epoch1` precede calls to `*_epoch2`
+//! in any function that touches both.
+//!
+//! Resilient enforces a *lexical-order-within-function* property: in any
+//! function body, if we see two calls in textual order — one to
+//! `*_epoch<N>` and one to `*_epoch<M>` — N must be ≤ M. Out-of-order
+//! epoch invocations warn.
+
+#![allow(
+    clippy::collapsible_if,
+    clippy::doc_lazy_continuation,
+    clippy::single_match
+)]
+
+use crate::Node;
+use crate::uniqueness_walk::{for_each_function, visit};
+
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    for_each_function(program, |fname, _params, body| {
+        let mut sequence: Vec<(String, u32)> = Vec::new();
+        visit(body, &mut |n| {
+            if let Node::CallExpression { function, .. } = n {
+                if let Node::Identifier { name, .. } = function.as_ref() {
+                    if let Some(e) = epoch_of(name) {
+                        sequence.push((name.clone(), e));
+                    }
+                }
+            }
+        });
+        for w in sequence.windows(2) {
+            let (a, ea) = &w[0];
+            let (b, eb) = &w[1];
+            if ea > eb {
+                eprintln!(
+                    "warning: in '{fname}', epoch-ordered call '{a}' (epoch {ea}) \
+                     precedes '{b}' (epoch {eb}) — epochs must be non-decreasing"
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+fn epoch_of(name: &str) -> Option<u32> {
+    // Match suffix _epoch<N> with N a non-negative integer.
+    let idx = name.rfind("_epoch")?;
+    let tail = &name[idx + "_epoch".len()..];
+    tail.parse::<u32>().ok()
+}

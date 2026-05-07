@@ -1,0 +1,17 @@
+// Ralph-Loop-Uniqueness #15: static stack-budget check.
+//
+// `tight_stack32` declares a 32-word budget by suffix. Two parameters
+// plus three lets plus a single nested block fits comfortably.
+
+fn tight_stack32(int a, int b) -> int {
+    let s = a + b;
+    let p = a * b;
+    let q = s + p;
+    return q;
+}
+
+fn main() {
+    println("q=" + tight_stack32(3, 4));
+}
+
+main();

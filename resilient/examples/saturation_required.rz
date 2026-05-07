@@ -1,0 +1,23 @@
+// Ralph-Loop-Uniqueness #11: saturation-required arithmetic.
+//
+// `new_duty` is a saturation-typed local (suffix `_duty`). The let binds
+// it via `saturating_add`, satisfying the contract. Replacing the call
+// with `current + delta` would warn.
+
+fn saturating_add(int a, int b) -> int {
+    let raw = a + b;
+    if raw > 255 { return 255; }
+    if raw < 0 { return 0; }
+    return raw;
+}
+
+fn step(int current, int delta) -> int {
+    let new_duty = saturating_add(current, delta);
+    return new_duty;
+}
+
+fn main() {
+    println("duty=" + step(250, 30));
+}
+
+main();

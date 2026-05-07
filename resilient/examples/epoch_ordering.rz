@@ -1,0 +1,19 @@
+// Ralph-Loop-Uniqueness #23: epoch-ordering within a function.
+//
+// Calls to migrate_epoch1 then migrate_epoch2 are in non-decreasing
+// epoch order — fine. Inverting them would warn.
+
+fn migrate_epoch1(int n) -> int { return n + 1; }
+fn migrate_epoch2(int n) -> int { return n * 2; }
+
+fn rollout(int seed) -> int {
+    let a = migrate_epoch1(seed);
+    let b = migrate_epoch2(a);
+    return b;
+}
+
+fn main() {
+    println("rolled=" + rollout(5));
+}
+
+main();

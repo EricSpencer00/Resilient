@@ -292,6 +292,90 @@ mod supervisor;
 // reuses the existing `<Type>$<method>` mangling — no VTable.
 mod traits;
 
+// Ralph-Loop-Uniqueness: shared AST-walk helper used by the family of
+// novel safety-critical checks below. Provides pre-order traversal,
+// `for_each_function`, and small predicate helpers so each feature
+// module can stay tightly focused on its rule rather than tree descent.
+mod uniqueness_walk;
+
+// Ralph-Loop-Uniqueness #1: watchdog-feed enforcement. A function whose
+// parameter list contains a `Watchdog` must contain at least one feed-call
+// on that parameter, else a warning is emitted at compile time. No other
+// language enforces this — it's the canonical embedded liveness contract.
+mod watchdog_feed;
+// Ralph-Loop-Uniqueness #2: sensor freshness — reads of `Sensor` parameters
+// must be paired with a freshness check before consumption.
+mod sensor_freshness;
+// Ralph-Loop-Uniqueness #3: secret erasure — locals named secret_/key_/
+// nonce_ or typed `Secret*` must be wiped or returned before fn exit.
+mod secret_erasure;
+// Ralph-Loop-Uniqueness #4: transaction close — `Transaction` parameters
+// must be commit/rollback/abort'd in the function body.
+mod transaction_commit;
+// Ralph-Loop-Uniqueness #5: ISR transitive call-graph safety — fns named
+// `*_isr` / `irq_*` may not transitively call ISR-unsafe primitives.
+mod isr_call_graph;
+// Ralph-Loop-Uniqueness #6: lock-ordering inversion — co-acquired locks
+// must be acquired in the same order across all callers.
+mod lock_ordering;
+// Ralph-Loop-Uniqueness #7: transitive reentrancy guard — fns named
+// nonreentrant_*/_critical/_atomic may not be reachable from themselves.
+mod reentrancy_guard;
+// Ralph-Loop-Uniqueness #8: actor drain-on-shutdown — actors with a
+// shutdown handler must also declare a drain handler.
+mod actor_drain;
+// Ralph-Loop-Uniqueness #9: backpressure-safe handler — fns named
+// `*_handler` taking a mailbox must use a backpressure strategy.
+mod backpressure_safe;
+// Ralph-Loop-Uniqueness #10: monotonic field — assignments to fields
+// named last_/latest_/*_seq/*_clock/*_epoch must not decrease.
+mod monotonic_field;
+// Ralph-Loop-Uniqueness #11: saturation-required arithmetic — locals
+// suffixed _pwm/_duty/_brightness/_pct/_throttle must use saturating ops.
+mod saturation_required;
+// Ralph-Loop-Uniqueness #12: numeric units — mixing _ms with _s in `+`/`-`
+// is detected by suffix.
+mod numeric_units;
+// Ralph-Loop-Uniqueness #13: age-bounded data — value reads on a struct
+// with a `*_at` timestamp field must compare the timestamp first.
+mod age_bounded_data;
+// Ralph-Loop-Uniqueness #14: rate-limit static — fns suffixed
+// _singleshot/_oncepertick/_few have a static call-site cardinality cap.
+mod rate_limit_static;
+// Ralph-Loop-Uniqueness #15: stack budget — fns suffixed _stack8/16/32/64
+// declare a maximum-locals budget verified at compile time.
+mod stack_budget;
+// Ralph-Loop-Uniqueness #16: heap budget — fns suffixed _alloc0/1/.../8
+// declare a maximum number of allocation call sites in their body.
+mod heap_budget;
+// Ralph-Loop-Uniqueness #17: bandwidth budget — fns suffixed _iobytesN
+// must transmit no more than N literal bytes per invocation.
+mod bandwidth_budget;
+// Ralph-Loop-Uniqueness #18: bounded-blocking budget — fns suffixed
+// _bound1/2/4/8 may make at most N transitive blocking calls.
+mod bounded_blocking;
+// Ralph-Loop-Uniqueness #19: audit-log-required — writes to fields named
+// audited_*/_audited must be paired with audit_log/journal/record_event.
+mod audit_log_required;
+// Ralph-Loop-Uniqueness #20: degraded mode — assert_critical_/abort_/halt_
+// must be followed in the same block by a degraded_/safe_mode_/recover_ call.
+mod degraded_mode;
+// Ralph-Loop-Uniqueness #21: crash-only modules — every `crash_*` fn must
+// have a paired `recover_*` fn.
+mod crash_only;
+// Ralph-Loop-Uniqueness #22: idempotent handlers — fns suffixed
+// _idempotent must read a seen_/processed_ field or call a dedupe fn.
+mod idempotent_handler;
+// Ralph-Loop-Uniqueness #23: epoch ordering — calls to `*_epoch<N>` must
+// appear in non-decreasing N order within a function body.
+mod epoch_ordering;
+// Ralph-Loop-Uniqueness #24: priority inheritance — low_pri_/bg_/idle_
+// fns acquiring locks must use pi_lock/pi_acquire/with_priority_inherit.
+mod priority_inheritance;
+// Ralph-Loop-Uniqueness #25: TOCTOU guard — check-then-use pairs on the
+// same path must use an atomic_ variant or a single-step API.
+mod toctou_guard;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 

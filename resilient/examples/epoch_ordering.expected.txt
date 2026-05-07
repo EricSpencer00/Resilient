@@ -1,0 +1,2 @@
+rolled=12
+Program executed successfully

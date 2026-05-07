@@ -1,0 +1,22 @@
+// Ralph-Loop-Uniqueness #10: monotonic-field invariant.
+//
+// `clock.last_tick` is monotonic by name. The advance below adds to it,
+// preserving monotonicity. Replacing the line with `clock.last_tick = 0;`
+// would warn that the assignment may decrease the field.
+
+struct Clock {
+    int last_tick,
+}
+
+fn advance(Clock c, int delta) -> Clock {
+    c.last_tick = c.last_tick + delta;
+    return c;
+}
+
+fn main() {
+    let c = new Clock { last_tick: 5 };
+    advance(c, 3);
+    println("tick=" + c.last_tick);
+}
+
+main();

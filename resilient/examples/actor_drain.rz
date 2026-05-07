@@ -1,0 +1,22 @@
+// Ralph-Loop-Uniqueness #8: actor drain-on-shutdown.
+//
+// Stand-in demo using a plain function representation of an actor's
+// shutdown discipline: when shutdown_sequence is invoked it must drain
+// pending work before stopping. The static check (when actor AST nodes
+// are available) verifies any actor with a `shutdown` handler also
+// declares a `drain` handler.
+
+fn drain_mailbox(int pending) -> int {
+    return 0;
+}
+
+fn shutdown_sequence(int pending) -> int {
+    let drained = drain_mailbox(pending);
+    return drained;
+}
+
+fn main() {
+    println("residual=" + shutdown_sequence(5));
+}
+
+main();

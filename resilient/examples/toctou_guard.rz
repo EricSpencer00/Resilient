@@ -1,0 +1,19 @@
+// Ralph-Loop-Uniqueness #25: TOCTOU pattern detection.
+//
+// `safe_open` uses `atomic_file_open(path)` instead of an exists+open
+// pair, satisfying the TOCTOU contract. Replacing the atomic call with
+// `file_exists(path)` followed by `file_open(path)` would warn.
+
+fn atomic_file_open(int path) -> int {
+    return path + 1;
+}
+
+fn safe_open(int path) -> int {
+    return atomic_file_open(path);
+}
+
+fn main() {
+    println("fd=" + safe_open(7));
+}
+
+main();

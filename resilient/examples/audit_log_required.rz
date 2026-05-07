@@ -1,0 +1,25 @@
+// Ralph-Loop-Uniqueness #19: audit-log-required mutation.
+//
+// `update_account` mutates `acct.audited_balance` and pairs the change
+// with an `audit_log` call, satisfying compliance.
+
+struct Account {
+    int audited_balance,
+}
+
+fn audit_log(int kind, int delta) -> int {
+    return kind + delta;
+}
+
+fn update_account(Account acct, int delta) -> int {
+    acct.audited_balance = acct.audited_balance + delta;
+    audit_log(1, delta);
+    return acct.audited_balance;
+}
+
+fn main() {
+    let a = new Account { audited_balance: 100 };
+    println("bal=" + update_account(a, 5));
+}
+
+main();

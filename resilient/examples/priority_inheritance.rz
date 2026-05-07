@@ -1,0 +1,18 @@
+// Ralph-Loop-Uniqueness #24: priority-inheritance lock discipline.
+//
+// `bg_compress` is a low-priority fn that uses pi_lock instead of raw
+// lock — no inversion warning fires. Replacing pi_lock with lock would
+// emit the priority-inversion warning.
+
+fn pi_lock(int m) -> int { return m; }
+
+fn bg_compress(int data) -> int {
+    pi_lock(1);
+    return data + 1;
+}
+
+fn main() {
+    println("c=" + bg_compress(3));
+}
+
+main();

@@ -1,0 +1,2 @@
+tick=5
+Program executed successfully

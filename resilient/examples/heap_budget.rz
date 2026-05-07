@@ -1,0 +1,14 @@
+// Ralph-Loop-Uniqueness #16: static heap-allocation budget.
+//
+// `pure_compute_alloc0` declares a zero-allocation budget. The body is
+// pure arithmetic, no allocator calls. Adding `clone(x)` would warn.
+
+fn pure_compute_alloc0(int x) -> int {
+    return x * 2 + 7;
+}
+
+fn main() {
+    println("v=" + pure_compute_alloc0(5));
+}
+
+main();

@@ -1,0 +1,24 @@
+// Ralph-Loop-Uniqueness #13: age-bounded data freshness gate.
+//
+// `read_battery` compares the `_at` timestamp before reading `level`,
+// satisfying the freshness contract. Removing the `bat.observed_at >
+// MIN_TS` check would emit a stale-data warning.
+
+struct Battery {
+    int level,
+    int observed_at,
+}
+
+fn read_battery(Battery bat) -> int {
+    if bat.observed_at > 0 {
+        return bat.level;
+    }
+    return -1;
+}
+
+fn main() {
+    let bat = new Battery { level: 87, observed_at: 12345 };
+    println("battery=" + read_battery(bat));
+}
+
+main();
