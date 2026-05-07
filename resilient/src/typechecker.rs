@@ -2706,6 +2706,108 @@ impl TypeChecker {
         env.set("unwrap".to_string(), fn_result_to_any());
         env.set("unwrap_err".to_string(), fn_result_to_any());
 
+        // RES-936/937: Result fallback variants — Result + default → Any.
+        let fn_result_any_to_any = || Type::Function {
+            params: vec![Type::Result, Type::Any],
+            return_type: Box::new(Type::Any),
+        };
+        env.set("result_unwrap_or".to_string(), fn_result_any_to_any());
+        env.set("result_unwrap_or_err".to_string(), fn_result_any_to_any());
+        // RES-938: Result <-> Option conversion.
+        env.set(
+            "result_to_option".to_string(),
+            Type::Function {
+                params: vec![Type::Result],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "option_to_result".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        // RES-939: chain alternatives.
+        env.set(
+            "option_or".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "result_or".to_string(),
+            Type::Function {
+                params: vec![Type::Result, Type::Result],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        // RES-940: power-of-two helpers.
+        env.set(
+            "is_power_of_two".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "next_power_of_two".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        // RES-941: int-array statistics → Float.
+        let fn_array_to_float = || Type::Function {
+            params: vec![Type::Any],
+            return_type: Box::new(Type::Float),
+        };
+        env.set("array_average".to_string(), fn_array_to_float());
+        env.set("array_median".to_string(), fn_array_to_float());
+        // RES-942: float-array reductions.
+        env.set("array_sum_float".to_string(), fn_array_to_float());
+        env.set("array_product_float".to_string(), fn_array_to_float());
+        env.set("array_min_float".to_string(), fn_array_to_float());
+        env.set("array_max_float".to_string(), fn_array_to_float());
+        env.set("array_average_float".to_string(), fn_array_to_float());
+        // RES-943: hex encoding.
+        env.set(
+            "bytes_to_hex".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "bytes_from_hex".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Result),
+            },
+        );
+        // RES-944: bytes search.
+        let fn_bytes_bytes_to_bool = || Type::Function {
+            params: vec![Type::Bytes, Type::Bytes],
+            return_type: Box::new(Type::Bool),
+        };
+        env.set("bytes_starts_with".to_string(), fn_bytes_bytes_to_bool());
+        env.set("bytes_ends_with".to_string(), fn_bytes_bytes_to_bool());
+        env.set(
+            "bytes_index_of".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Bytes],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        // RES-945: default-fallback map accessors.
+        let fn_map_key_default = || Type::Function {
+            params: vec![Type::Any, Type::Any, Type::Any],
+            return_type: Box::new(Type::Any),
+        };
+        env.set("map_get_or".to_string(), fn_map_key_default());
+        env.set("hashmap_get_or".to_string(), fn_map_key_default());
+
         // RES-328: `cell(initial)` — shared mutable container.
         // Element type isn't tracked at the type-system layer (the
         // generic story lands with G7); the runtime enforces that
@@ -5927,6 +6029,37 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "byte_at",
         "bytes_concat",
         "bytes_eq",
+        // RES-944: bytes search.
+        "bytes_starts_with",
+        "bytes_ends_with",
+        "bytes_index_of",
+        // RES-943: hex encoding.
+        "bytes_to_hex",
+        "bytes_from_hex",
+        // RES-936/937: Result fallback variants.
+        "result_unwrap_or",
+        "result_unwrap_or_err",
+        // RES-938: Result <-> Option conversion.
+        "result_to_option",
+        "option_to_result",
+        // RES-939: chain alternatives.
+        "option_or",
+        "result_or",
+        // RES-940: power-of-two helpers.
+        "is_power_of_two",
+        "next_power_of_two",
+        // RES-941: int-array statistics.
+        "array_average",
+        "array_median",
+        // RES-942: float-array reductions.
+        "array_sum_float",
+        "array_product_float",
+        "array_min_float",
+        "array_max_float",
+        "array_average_float",
+        // RES-945: default-fallback map accessors.
+        "map_get_or",
+        "hashmap_get_or",
     ];
     PURE_BUILTINS.contains(&name)
 }

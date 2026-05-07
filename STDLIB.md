@@ -150,6 +150,12 @@ match r {
 | `unwrap_option(o)` | Option<T> → T | runtime error on `None` |
 | `option_unwrap(o)` | Option<T> → T | alias of `unwrap_option` |
 | `option_unwrap_or(o, d)` | (Option<T>, T) → T | default fallback |
+| `result_unwrap_or(r, d)` | (Result<T, E>, T) → T | RES-936: Ok payload, or `d` on Err — never panics |
+| `result_unwrap_or_err(r, d)` | (Result<T, E>, E) → E | RES-937: Err payload, or `d` on Ok — symmetric to `result_unwrap_or` |
+| `result_to_option(r)` | Result<T, E> → Option<T> | RES-938: `Ok(v)` → `Some(v)`, `Err(_)` → `None` |
+| `option_to_result(o, e)` | (Option<T>, E) → Result<T, E> | RES-938: `Some(v)` → `Ok(v)`, `None` → `Err(e)` |
+| `option_or(a, b)` | (Option<T>, Option<T>) → Option<T> | RES-939: `Some(_)` returns `a`; `None` returns `b` (chain alternatives) |
+| `result_or(a, b)` | (Result<T, E>, Result<T, E>) → Result<T, E> | RES-939: `Ok(_)` returns `a`; `Err(_)` returns `b` |
 
 ## Collections
 
@@ -201,6 +207,12 @@ match r {
 | `array_pad_left(arr, n, fill)` `array_pad_right(arr, n, fill)` | (array, int, T) → array | RES-449: pad to length n with fill |
 | `array_cycle(arr, n)` | (array, int) → array | RES-458: concatenate arr to itself n times; cap 1B |
 | `array_sort_desc(arr)` | array of int → array of int | RES-443: descending sort |
+| `array_average(arr)` | array of int → float | RES-941: arithmetic mean as Float; empty errors |
+| `array_median(arr)` | array of int → float | RES-941: middle element of sorted array; even-length returns mean of two middles; empty errors |
+| `array_sum_float(arr)` | array of float → float | RES-942: float-array sum; identity 0.0 on empty |
+| `array_product_float(arr)` | array of float → float | RES-942: float-array product; identity 1.0 on empty |
+| `array_min_float(arr)` `array_max_float(arr)` | array of float → float | RES-942: float-array min/max; NaN propagates; empty errors |
+| `array_average_float(arr)` | array of float → float | RES-942: float-array mean; empty errors |
 
 ### Maps
 
@@ -214,6 +226,7 @@ match r {
 | `map_len(m)` | map → int | entry count |
 | `map_values(m)` | map → array | RES-883: all values in same key-sorted order as `map_keys` |
 | `map_contains_key(m, k)` | (map, K) → bool | RES-884: membership test; mirrors `hashmap_contains` |
+| `map_get_or(m, k, default)` | (map, K, V) → V | RES-945: value at key, or `default` if missing — saves writing `match` over `map_get` |
 
 ### HashMap (RES-293)
 
@@ -232,6 +245,7 @@ the same immutable-value semantics (each mutation returns a new map).
 | `hashmap_keys(m)` | hashmap → array | keys, sorted for determinism |
 | `hashmap_len(m)` | hashmap → int | RES-885: entry count; mirrors `map_len` |
 | `hashmap_values(m)` | hashmap → array | RES-886: values in same key-sorted order as `hashmap_keys` |
+| `hashmap_get_or(m, k, default)` | (hashmap, K, V) → V | RES-945: same default-fallback shape as `map_get_or` |
 
 ### Sets
 
@@ -260,6 +274,11 @@ the same immutable-value semantics (each mutation returns a new map).
 | `byte_at(b, i)` | (bytes, int) → int | byte at index |
 | `bytes_concat(a, b)` | (bytes, bytes) → bytes | RES-887: a followed by b; inputs unchanged |
 | `bytes_eq(a, b)` | (bytes, bytes) → bool | RES-888: byte-equality of two Bytes values |
+| `bytes_starts_with(h, p)` | (bytes, bytes) → bool | RES-944: prefix predicate; empty prefix is always true |
+| `bytes_ends_with(h, s)` | (bytes, bytes) → bool | RES-944: suffix predicate; empty suffix is always true |
+| `bytes_index_of(h, n)` | (bytes, bytes) → int | RES-944: first byte index where `n` appears in `h`, or -1; empty `n` returns 0 |
+| `bytes_to_hex(b)` | bytes → string | RES-943: lowercase hex string, no prefix or separator |
+| `bytes_from_hex(s)` | string → Result<Bytes, String> | RES-943: parse hex (any case); errors on odd length / non-hex chars — never panics |
 
 ## Bitwise (RES-440)
 
@@ -268,6 +287,8 @@ the same immutable-value semantics (each mutation returns a new map).
 | `bit_and(a, b)` `bit_or(a, b)` `bit_xor(a, b)` | (int, int) → int | bitwise binary ops on i64 |
 | `bit_not(a)` | int → int | one's complement |
 | `bit_shl(a, n)` `bit_shr(a, n)` | (int, int) → int | shift amount must be 0..=63; arithmetic right shift |
+| `is_power_of_two(n)` | int → bool | RES-940: true iff `n > 0` and exactly one bit is set |
+| `next_power_of_two(n)` | int → int | RES-940: smallest power of two `>= n`; errors on negative input or overflow (`n > 2^62`) |
 
 ## Live blocks (RES-138, RES-141)
 
