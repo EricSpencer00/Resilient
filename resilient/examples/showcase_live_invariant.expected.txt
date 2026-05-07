@@ -1,0 +1,5 @@
+before: a=100 b=50
+after:  a=50 b=100
+total preserved: 150
+retries used: 2
+Program executed successfully

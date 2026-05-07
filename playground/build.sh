@@ -66,6 +66,7 @@ examples_dir = os.path.join(repo_root, "resilient", "examples")
 # They showcase the language's most distinctive features.
 PINNED = [
     "sensor_monitor.rz",            # flagship: contracts + Result + live block
+    "showcase_live_invariant.rz",   # live invariant: atomic rollback + retry (THE differentiator)
     "showcase_contracts.rz",        # requires / ensures / loop invariant
     "showcase_linear_types.rz",     # linear types: resource ownership tracking
     "showcase_actors.rz",           # actor model: spawn / send / receive
