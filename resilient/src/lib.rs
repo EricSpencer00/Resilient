@@ -10651,6 +10651,38 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bytes_concat", builtin_bytes_concat),
     // RES-888.
     ("bytes_eq", builtin_bytes_eq),
+    // RES-944: byte-search predicates / locator.
+    ("bytes_starts_with", builtin_bytes_starts_with),
+    ("bytes_ends_with", builtin_bytes_ends_with),
+    ("bytes_index_of", builtin_bytes_index_of),
+    // RES-943: hex encoding.
+    ("bytes_to_hex", builtin_bytes_to_hex),
+    ("bytes_from_hex", builtin_bytes_from_hex),
+    // RES-936: Result fallback parallel to option_unwrap_or.
+    ("result_unwrap_or", builtin_result_unwrap_or),
+    // RES-937: symmetric Err-side default.
+    ("result_unwrap_or_err", builtin_result_unwrap_or_err),
+    // RES-938: bidirectional Result <-> Option conversion.
+    ("result_to_option", builtin_result_to_option),
+    ("option_to_result", builtin_option_to_result),
+    // RES-939: chain alternatives without unwrapping.
+    ("option_or", builtin_option_or),
+    ("result_or", builtin_result_or),
+    // RES-940: power-of-two helpers.
+    ("is_power_of_two", builtin_is_power_of_two),
+    ("next_power_of_two", builtin_next_power_of_two),
+    // RES-941: int-array statistics.
+    ("array_average", builtin_array_average),
+    ("array_median", builtin_array_median),
+    // RES-942: float-array reductions.
+    ("array_sum_float", builtin_array_sum_float),
+    ("array_product_float", builtin_array_product_float),
+    ("array_min_float", builtin_array_min_float),
+    ("array_max_float", builtin_array_max_float),
+    ("array_average_float", builtin_array_average_float),
+    // RES-945: default-fallback map accessors.
+    ("map_get_or", builtin_map_get_or),
+    ("hashmap_get_or", builtin_hashmap_get_or),
     // RES-385: explicit consumption of a linear value. At runtime
     // `drop(v)` simply evaluates and discards its argument; the
     // semantic weight lives in the type checker's linear-use pass,
@@ -18521,6 +18553,543 @@ fn builtin_bytes_eq(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "bytes_eq: expected 2 arguments (bytes, bytes), got {}",
+            args.len()
+        )),
+    }
+}
+
+// ─── RES-936..RES-945: stdlib batch — Result/Option/Bytes/Array/Map ──────
+
+/// RES-936: `result_unwrap_or(r, default)` — Ok payload, or `default` on Err.
+fn builtin_result_unwrap_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok: true, payload }, _] => Ok((**payload).clone()),
+        [Value::Result { ok: false, .. }, default] => Ok(default.clone()),
+        [other, _] => Err(format!("result_unwrap_or: expected Result, got {}", other)),
+        _ => Err(format!(
+            "result_unwrap_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-937: `result_unwrap_or_err(r, default_err)` — Err payload, or
+/// `default_err` on Ok.
+fn builtin_result_unwrap_or_err(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok: false, payload }, _] => Ok((**payload).clone()),
+        [Value::Result { ok: true, .. }, default] => Ok(default.clone()),
+        [other, _] => Err(format!(
+            "result_unwrap_or_err: expected Result, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "result_unwrap_or_err: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-938: `result_to_option(r)` — `Ok(v)` → `Some(v)`, `Err(_)` → `None`.
+fn builtin_result_to_option(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Result { ok: true, payload }] => {
+            Ok(Value::Option(Some(Box::new((**payload).clone()))))
+        }
+        [Value::Result { ok: false, .. }] => Ok(Value::Option(None)),
+        [other] => Err(format!("result_to_option: expected Result, got {}", other)),
+        _ => Err(format!(
+            "result_to_option: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-938: `option_to_result(o, err)` — `Some(v)` → `Ok(v)`,
+/// `None` → `Err(err)`.
+fn builtin_option_to_result(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Option(Some(v)), _] => Ok(Value::Result {
+            ok: true,
+            payload: Box::new((**v).clone()),
+        }),
+        [Value::Option(None), err] => Ok(Value::Result {
+            ok: false,
+            payload: Box::new(err.clone()),
+        }),
+        [other, _] => Err(format!("option_to_result: expected Option, got {}", other)),
+        _ => Err(format!(
+            "option_to_result: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-939: `option_or(a, b)` — `Some(_)` returns `a`; `None` returns `b`.
+fn builtin_option_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [a @ Value::Option(Some(_)), _] => Ok(a.clone()),
+        [Value::Option(None), b @ Value::Option(_)] => Ok(b.clone()),
+        [Value::Option(None), other] => Err(format!(
+            "option_or: second argument must be Option, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "option_or: first argument must be Option, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "option_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-939: `result_or(a, b)` — `Ok(_)` returns `a`; `Err(_)` returns `b`.
+fn builtin_result_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [a @ Value::Result { ok: true, .. }, _] => Ok(a.clone()),
+        [Value::Result { ok: false, .. }, b @ Value::Result { .. }] => Ok(b.clone()),
+        [Value::Result { ok: false, .. }, other] => Err(format!(
+            "result_or: second argument must be Result, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "result_or: first argument must be Result, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "result_or: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-940: `is_power_of_two(n)` — true iff `n > 0` and exactly one bit set.
+fn builtin_is_power_of_two(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            let v = *n;
+            Ok(Value::Bool(v > 0 && (v & (v - 1)) == 0))
+        }
+        [other] => Err(format!("is_power_of_two: expected int, got {}", other)),
+        _ => Err(format!(
+            "is_power_of_two: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-940: `next_power_of_two(n)` — smallest power of two `>= n`. Errors
+/// on negative input or when the result would not fit in i64 (`n > 2^62`).
+fn builtin_next_power_of_two(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            let v = *n;
+            if v < 0 {
+                return Err(format!(
+                    "next_power_of_two: input must be non-negative, got {}",
+                    v
+                ));
+            }
+            if v <= 1 {
+                return Ok(Value::Int(1));
+            }
+            // Largest representable signed power of two is 1 << 62.
+            const LIMIT: i64 = 1i64 << 62;
+            if v > LIMIT {
+                return Err(format!(
+                    "next_power_of_two: result for {} exceeds i64::MAX",
+                    v
+                ));
+            }
+            // checked_next_power_of_two operates on u64; we already
+            // bounded `v` so the cast is safe.
+            let u = v as u64;
+            match u.checked_next_power_of_two() {
+                Some(p) if p <= (LIMIT as u64) => Ok(Value::Int(p as i64)),
+                _ => Err(format!(
+                    "next_power_of_two: result for {} exceeds i64::MAX",
+                    v
+                )),
+            }
+        }
+        [other] => Err(format!("next_power_of_two: expected int, got {}", other)),
+        _ => Err(format!(
+            "next_power_of_two: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-941: `array_average(arr)` — mean of an int array as Float. Empty
+/// is an error.
+fn builtin_array_average(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_average: empty array has no average".to_string());
+            }
+            let mut sum: i128 = 0;
+            for v in items {
+                match v {
+                    Value::Int(n) => sum += *n as i128,
+                    other => {
+                        return Err(format!(
+                            "array_average: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            let mean = (sum as f64) / (items.len() as f64);
+            Ok(Value::Float(mean))
+        }
+        [other] => Err(format!("array_average: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_average: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-941: `array_median(arr)` — median of an int array as Float. For
+/// even-length, returns the mean of the two middle elements. Empty errors.
+fn builtin_array_median(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Array(items)] => {
+            if items.is_empty() {
+                return Err("array_median: empty array has no median".to_string());
+            }
+            let mut nums: Vec<i64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Int(n) => nums.push(*n),
+                    other => {
+                        return Err(format!(
+                            "array_median: expected all int elements, got {}",
+                            other
+                        ));
+                    }
+                }
+            }
+            nums.sort_unstable();
+            let n = nums.len();
+            let mid = n / 2;
+            let median = if n % 2 == 1 {
+                nums[mid] as f64
+            } else {
+                let lo = nums[mid - 1] as f64;
+                let hi = nums[mid] as f64;
+                (lo + hi) / 2.0
+            };
+            Ok(Value::Float(median))
+        }
+        [other] => Err(format!("array_median: expected array, got {}", other)),
+        _ => Err(format!(
+            "array_median: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-942 helper: collect a Float vec from an array. Errors on non-Float
+/// elements or non-array argument.
+fn array_to_float_vec(name: &str, args: &[Value]) -> RResult<Vec<f64>> {
+    match args {
+        [Value::Array(items)] => {
+            let mut out: Vec<f64> = Vec::with_capacity(items.len());
+            for v in items {
+                match v {
+                    Value::Float(f) => out.push(*f),
+                    other => {
+                        return Err(format!(
+                            "{}: expected all float elements, got {}",
+                            name, other
+                        ));
+                    }
+                }
+            }
+            Ok(out)
+        }
+        [other] => Err(format!("{}: expected array, got {}", name, other)),
+        _ => Err(format!("{}: expected 1 argument, got {}", name, args.len())),
+    }
+}
+
+/// RES-942: `array_sum_float(arr)` — sum of a Float array; identity 0.0.
+fn builtin_array_sum_float(args: &[Value]) -> RResult<Value> {
+    let xs = array_to_float_vec("array_sum_float", args)?;
+    Ok(Value::Float(xs.iter().sum()))
+}
+
+/// RES-942: `array_product_float(arr)` — product of a Float array;
+/// identity 1.0.
+fn builtin_array_product_float(args: &[Value]) -> RResult<Value> {
+    let xs = array_to_float_vec("array_product_float", args)?;
+    Ok(Value::Float(xs.iter().product()))
+}
+
+/// RES-942: `array_min_float(arr)` — min of a Float array; NaN propagates;
+/// empty errors.
+fn builtin_array_min_float(args: &[Value]) -> RResult<Value> {
+    let xs = array_to_float_vec("array_min_float", args)?;
+    if xs.is_empty() {
+        return Err("array_min_float: empty array has no minimum".to_string());
+    }
+    let mut best = xs[0];
+    for &x in &xs[1..] {
+        if best.is_nan() || x.is_nan() {
+            best = f64::NAN;
+            break;
+        }
+        if x < best {
+            best = x;
+        }
+    }
+    Ok(Value::Float(best))
+}
+
+/// RES-942: `array_max_float(arr)` — max of a Float array; NaN propagates;
+/// empty errors.
+fn builtin_array_max_float(args: &[Value]) -> RResult<Value> {
+    let xs = array_to_float_vec("array_max_float", args)?;
+    if xs.is_empty() {
+        return Err("array_max_float: empty array has no maximum".to_string());
+    }
+    let mut best = xs[0];
+    for &x in &xs[1..] {
+        if best.is_nan() || x.is_nan() {
+            best = f64::NAN;
+            break;
+        }
+        if x > best {
+            best = x;
+        }
+    }
+    Ok(Value::Float(best))
+}
+
+/// RES-942: `array_average_float(arr)` — mean of a Float array; empty errors.
+fn builtin_array_average_float(args: &[Value]) -> RResult<Value> {
+    let xs = array_to_float_vec("array_average_float", args)?;
+    if xs.is_empty() {
+        return Err("array_average_float: empty array has no average".to_string());
+    }
+    let len = xs.len() as f64;
+    let sum: f64 = xs.iter().sum();
+    Ok(Value::Float(sum / len))
+}
+
+/// RES-943: `bytes_to_hex(b)` — render Bytes as a lowercase hex string with
+/// no prefix or separator.
+fn builtin_bytes_to_hex(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(b)] => {
+            let mut s = String::with_capacity(b.len() * 2);
+            for byte in b {
+                s.push(nibble_to_hex_lower(byte >> 4));
+                s.push(nibble_to_hex_lower(byte & 0x0F));
+            }
+            Ok(Value::String(s))
+        }
+        [other] => Err(format!("bytes_to_hex: expected Bytes, got {}", other)),
+        _ => Err(format!(
+            "bytes_to_hex: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+fn nibble_to_hex_lower(n: u8) -> char {
+    match n & 0x0F {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'a' + (n - 10)) as char,
+        _ => unreachable!(),
+    }
+}
+
+fn hex_char_to_nibble(c: char) -> Option<u8> {
+    match c {
+        '0'..='9' => Some(c as u8 - b'0'),
+        'a'..='f' => Some(c as u8 - b'a' + 10),
+        'A'..='F' => Some(c as u8 - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// RES-943: `bytes_from_hex(s)` — parse a hex string (any case, no prefix
+/// or separator) into Bytes. Returns `Err` on odd length or non-hex chars.
+fn builtin_bytes_from_hex(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::String(s)] => {
+            if s.len() % 2 != 0 {
+                return Ok(Value::Result {
+                    ok: false,
+                    payload: Box::new(Value::String(format!(
+                        "bytes_from_hex: odd-length input ({} chars)",
+                        s.len()
+                    ))),
+                });
+            }
+            let bytes = s.as_bytes();
+            let mut out: Vec<u8> = Vec::with_capacity(bytes.len() / 2);
+            let mut i = 0;
+            while i < bytes.len() {
+                let hi = match hex_char_to_nibble(bytes[i] as char) {
+                    Some(v) => v,
+                    None => {
+                        return Ok(Value::Result {
+                            ok: false,
+                            payload: Box::new(Value::String(format!(
+                                "bytes_from_hex: non-hex char '{}' at byte {}",
+                                bytes[i] as char, i
+                            ))),
+                        });
+                    }
+                };
+                let lo = match hex_char_to_nibble(bytes[i + 1] as char) {
+                    Some(v) => v,
+                    None => {
+                        return Ok(Value::Result {
+                            ok: false,
+                            payload: Box::new(Value::String(format!(
+                                "bytes_from_hex: non-hex char '{}' at byte {}",
+                                bytes[i + 1] as char,
+                                i + 1
+                            ))),
+                        });
+                    }
+                };
+                out.push((hi << 4) | lo);
+                i += 2;
+            }
+            Ok(Value::Result {
+                ok: true,
+                payload: Box::new(Value::Bytes(out)),
+            })
+        }
+        [other] => Err(format!("bytes_from_hex: expected String, got {}", other)),
+        _ => Err(format!(
+            "bytes_from_hex: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-944: `bytes_starts_with(haystack, prefix)` — true iff `haystack`
+/// begins with `prefix`. Empty prefix is always true.
+fn builtin_bytes_starts_with(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(h), Value::Bytes(p)] => Ok(Value::Bool(h.starts_with(p))),
+        [Value::Bytes(_), other] => Err(format!(
+            "bytes_starts_with: second argument must be Bytes, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "bytes_starts_with: first argument must be Bytes, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "bytes_starts_with: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-944: `bytes_ends_with(haystack, suffix)` — true iff `haystack`
+/// ends with `suffix`. Empty suffix is always true.
+fn builtin_bytes_ends_with(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(h), Value::Bytes(s)] => Ok(Value::Bool(h.ends_with(s))),
+        [Value::Bytes(_), other] => Err(format!(
+            "bytes_ends_with: second argument must be Bytes, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "bytes_ends_with: first argument must be Bytes, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "bytes_ends_with: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-944: `bytes_index_of(haystack, needle)` — first byte index where
+/// `needle` appears in `haystack`, or -1 if absent. Empty needle returns 0.
+fn builtin_bytes_index_of(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(h), Value::Bytes(n)] => {
+            if n.is_empty() {
+                return Ok(Value::Int(0));
+            }
+            if n.len() > h.len() {
+                return Ok(Value::Int(-1));
+            }
+            let last_start = h.len() - n.len();
+            for start in 0..=last_start {
+                if &h[start..start + n.len()] == n.as_slice() {
+                    return Ok(Value::Int(start as i64));
+                }
+            }
+            Ok(Value::Int(-1))
+        }
+        [Value::Bytes(_), other] => Err(format!(
+            "bytes_index_of: second argument must be Bytes, got {}",
+            other
+        )),
+        [other, _] => Err(format!(
+            "bytes_index_of: first argument must be Bytes, got {}",
+            other
+        )),
+        _ => Err(format!(
+            "bytes_index_of: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-945: `map_get_or(m, k, default)` — value at key, or `default` if
+/// missing. Same backing storage as `hashmap_get_or`.
+fn builtin_map_get_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k, default] => {
+            let key = MapKey::from_value(k)?;
+            match m.get(&key) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(default.clone()),
+            }
+        }
+        [a, _, _] => Err(format!(
+            "map_get_or: first argument must be a Map, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "map_get_or: expected 3 arguments (map, key, default), got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-945: `hashmap_get_or(m, k, default)` — alias of `map_get_or` in the
+/// HashMap namespace.
+fn builtin_hashmap_get_or(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Map(m), k, default] => {
+            let key = MapKey::from_value(k)?;
+            match m.get(&key) {
+                Some(v) => Ok(v.clone()),
+                None => Ok(default.clone()),
+            }
+        }
+        [a, _, _] => Err(format!(
+            "hashmap_get_or: first argument must be a HashMap, got {}",
+            a
+        )),
+        _ => Err(format!(
+            "hashmap_get_or: expected 3 arguments (hashmap, key, default), got {}",
             args.len()
         )),
     }
@@ -51464,5 +52033,543 @@ mod ffi_integration_tests {
             Value::Float(v) => assert!((v - 3.0_f64).abs() < 1e-10, "sqrt(9) == 3, got {}", v),
             other => panic!("expected Float, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod stdlib_batch_tests_res_936_to_945 {
+    use super::*;
+
+    // Local helpers (the parent mod tests' helpers are private to that mod).
+    fn as_int(v: Value) -> i64 {
+        match v {
+            Value::Int(n) => n,
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    fn as_bool(v: Value) -> bool {
+        match v {
+            Value::Bool(b) => b,
+            other => panic!("expected Bool, got {:?}", other),
+        }
+    }
+
+    fn as_string(v: Value) -> String {
+        match v {
+            Value::String(s) => s,
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    fn as_bytes(v: Value) -> Vec<u8> {
+        match v {
+            Value::Bytes(b) => b,
+            other => panic!("expected Bytes, got {:?}", other),
+        }
+    }
+
+    fn ok(v: Value) -> Value {
+        Value::Result {
+            ok: true,
+            payload: Box::new(v),
+        }
+    }
+
+    fn err(v: Value) -> Value {
+        Value::Result {
+            ok: false,
+            payload: Box::new(v),
+        }
+    }
+
+    fn some(v: Value) -> Value {
+        Value::Option(Some(Box::new(v)))
+    }
+
+    fn none() -> Value {
+        Value::Option(None)
+    }
+
+    // RES-936: result_unwrap_or
+    #[test]
+    fn result_unwrap_or_ok_returns_payload() {
+        let v = builtin_result_unwrap_or(&[ok(Value::Int(7)), Value::Int(0)]).unwrap();
+        assert_eq!(as_int(v), 7);
+    }
+
+    #[test]
+    fn result_unwrap_or_err_returns_default() {
+        let v =
+            builtin_result_unwrap_or(&[err(Value::String("nope".into())), Value::Int(42)]).unwrap();
+        assert_eq!(as_int(v), 42);
+    }
+
+    #[test]
+    fn result_unwrap_or_rejects_non_result() {
+        let e = builtin_result_unwrap_or(&[Value::Int(1), Value::Int(0)]).unwrap_err();
+        assert!(e.contains("expected Result"), "err was: {}", e);
+    }
+
+    #[test]
+    fn result_unwrap_or_rejects_wrong_arity() {
+        let e = builtin_result_unwrap_or(&[ok(Value::Int(1))]).unwrap_err();
+        assert!(e.contains("expected 2 arguments"), "err was: {}", e);
+    }
+
+    // RES-937: result_unwrap_or_err
+    #[test]
+    fn result_unwrap_or_err_err_returns_payload() {
+        let v = builtin_result_unwrap_or_err(&[
+            err(Value::String("boom".into())),
+            Value::String("ok".into()),
+        ])
+        .unwrap();
+        assert_eq!(as_string(v), "boom");
+    }
+
+    #[test]
+    fn result_unwrap_or_err_ok_returns_default() {
+        let v = builtin_result_unwrap_or_err(&[ok(Value::Int(7)), Value::String("none".into())])
+            .unwrap();
+        assert_eq!(as_string(v), "none");
+    }
+
+    #[test]
+    fn result_unwrap_or_err_rejects_non_result() {
+        let e =
+            builtin_result_unwrap_or_err(&[Value::Int(1), Value::String("x".into())]).unwrap_err();
+        assert!(e.contains("expected Result"), "err was: {}", e);
+    }
+
+    // RES-938: result_to_option / option_to_result
+    #[test]
+    fn result_to_option_ok_to_some() {
+        let v = builtin_result_to_option(&[ok(Value::Int(5))]).unwrap();
+        match v {
+            Value::Option(Some(b)) => assert_eq!(as_int(*b), 5),
+            other => panic!("expected Some(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn result_to_option_err_to_none() {
+        let v = builtin_result_to_option(&[err(Value::String("e".into()))]).unwrap();
+        matches!(v, Value::Option(None))
+            .then_some(())
+            .expect("expected None");
+    }
+
+    #[test]
+    fn option_to_result_some_to_ok() {
+        let v =
+            builtin_option_to_result(&[some(Value::Int(9)), Value::String("e".into())]).unwrap();
+        match v {
+            Value::Result { ok: true, payload } => assert_eq!(as_int(*payload), 9),
+            other => panic!("expected Ok(9), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn option_to_result_none_to_err() {
+        let v = builtin_option_to_result(&[none(), Value::String("missing".into())]).unwrap();
+        match v {
+            Value::Result { ok: false, payload } => {
+                assert_eq!(as_string(*payload), "missing");
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn option_result_round_trip() {
+        let original = some(Value::Int(11));
+        let res = builtin_option_to_result(&[original.clone(), Value::String("e".into())]).unwrap();
+        let back = builtin_result_to_option(&[res]).unwrap();
+        match back {
+            Value::Option(Some(b)) => assert_eq!(as_int(*b), 11),
+            other => panic!("expected Some(11), got {:?}", other),
+        }
+    }
+
+    // RES-939: option_or / result_or
+    #[test]
+    fn option_or_some_returns_first() {
+        let v = builtin_option_or(&[some(Value::Int(1)), some(Value::Int(2))]).unwrap();
+        match v {
+            Value::Option(Some(b)) => assert_eq!(as_int(*b), 1),
+            other => panic!("expected Some(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn option_or_none_returns_second() {
+        let v = builtin_option_or(&[none(), some(Value::Int(2))]).unwrap();
+        match v {
+            Value::Option(Some(b)) => assert_eq!(as_int(*b), 2),
+            other => panic!("expected Some(2), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn option_or_none_none_returns_none() {
+        let v = builtin_option_or(&[none(), none()]).unwrap();
+        matches!(v, Value::Option(None))
+            .then_some(())
+            .expect("expected None");
+    }
+
+    #[test]
+    fn result_or_ok_returns_first() {
+        let v = builtin_result_or(&[ok(Value::Int(1)), ok(Value::Int(2))]).unwrap();
+        match v {
+            Value::Result { ok: true, payload } => assert_eq!(as_int(*payload), 1),
+            other => panic!("expected Ok(1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn result_or_err_returns_second() {
+        let v = builtin_result_or(&[err(Value::String("a".into())), ok(Value::Int(2))]).unwrap();
+        match v {
+            Value::Result { ok: true, payload } => assert_eq!(as_int(*payload), 2),
+            other => panic!("expected Ok(2), got {:?}", other),
+        }
+    }
+
+    // RES-940: is_power_of_two / next_power_of_two
+    #[test]
+    fn is_power_of_two_basic_cases() {
+        for &(n, expect) in &[
+            (-1_i64, false),
+            (0, false),
+            (1, true),
+            (2, true),
+            (3, false),
+            (4, true),
+            (7, false),
+            (8, true),
+            (1024, true),
+            (1025, false),
+        ] {
+            let got = as_bool(builtin_is_power_of_two(&[Value::Int(n)]).unwrap());
+            assert_eq!(got, expect, "is_power_of_two({}) expected {}", n, expect);
+        }
+    }
+
+    #[test]
+    fn next_power_of_two_basic_cases() {
+        for &(n, expect) in &[
+            (0_i64, 1_i64),
+            (1, 1),
+            (2, 2),
+            (3, 4),
+            (4, 4),
+            (5, 8),
+            (1023, 1024),
+            (1024, 1024),
+            (1025, 2048),
+        ] {
+            let got = as_int(builtin_next_power_of_two(&[Value::Int(n)]).unwrap());
+            assert_eq!(got, expect, "next_power_of_two({}) expected {}", n, expect);
+        }
+    }
+
+    #[test]
+    fn next_power_of_two_rejects_negative() {
+        let e = builtin_next_power_of_two(&[Value::Int(-2)]).unwrap_err();
+        assert!(e.contains("non-negative"), "err was: {}", e);
+    }
+
+    #[test]
+    fn next_power_of_two_rejects_overflow() {
+        let too_big = (1i64 << 62) + 1;
+        let e = builtin_next_power_of_two(&[Value::Int(too_big)]).unwrap_err();
+        assert!(e.contains("exceeds"), "err was: {}", e);
+    }
+
+    // RES-941: array_average / array_median
+    #[test]
+    fn array_average_simple() {
+        let arr = Value::Array(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]);
+        let v = builtin_array_average(&[arr]).unwrap();
+        match v {
+            Value::Float(f) => assert!((f - 2.5).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_average_empty_errors() {
+        let e = builtin_array_average(&[Value::Array(vec![])]).unwrap_err();
+        assert!(e.contains("empty"), "err was: {}", e);
+    }
+
+    #[test]
+    fn array_median_odd_length() {
+        let arr = Value::Array(vec![Value::Int(7), Value::Int(1), Value::Int(3)]);
+        let v = builtin_array_median(&[arr]).unwrap();
+        match v {
+            Value::Float(f) => assert!((f - 3.0).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_median_even_length() {
+        let arr = Value::Array(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]);
+        let v = builtin_array_median(&[arr]).unwrap();
+        match v {
+            Value::Float(f) => assert!((f - 2.5).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_median_empty_errors() {
+        let e = builtin_array_median(&[Value::Array(vec![])]).unwrap_err();
+        assert!(e.contains("empty"), "err was: {}", e);
+    }
+
+    // RES-942: float-array reductions
+    #[test]
+    fn array_sum_float_basic() {
+        let arr = Value::Array(vec![
+            Value::Float(1.5),
+            Value::Float(2.5),
+            Value::Float(0.0),
+        ]);
+        match builtin_array_sum_float(&[arr]).unwrap() {
+            Value::Float(f) => assert!((f - 4.0).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_sum_float_empty_is_zero() {
+        match builtin_array_sum_float(&[Value::Array(vec![])]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 0.0),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_product_float_empty_is_one() {
+        match builtin_array_product_float(&[Value::Array(vec![])]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 1.0),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_min_max_float_basic() {
+        let arr = Value::Array(vec![
+            Value::Float(3.0),
+            Value::Float(-1.0),
+            Value::Float(2.0),
+        ]);
+        match builtin_array_min_float(std::slice::from_ref(&arr)).unwrap() {
+            Value::Float(f) => assert!((f - (-1.0)).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+        match builtin_array_max_float(&[arr]).unwrap() {
+            Value::Float(f) => assert!((f - 3.0).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_min_float_propagates_nan() {
+        let arr = Value::Array(vec![
+            Value::Float(1.0),
+            Value::Float(f64::NAN),
+            Value::Float(2.0),
+        ]);
+        match builtin_array_min_float(&[arr]).unwrap() {
+            Value::Float(f) => assert!(f.is_nan()),
+            other => panic!("expected NaN Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_average_float_basic() {
+        let arr = Value::Array(vec![
+            Value::Float(1.0),
+            Value::Float(2.0),
+            Value::Float(3.0),
+        ]);
+        match builtin_array_average_float(&[arr]).unwrap() {
+            Value::Float(f) => assert!((f - 2.0).abs() < 1e-12),
+            other => panic!("expected Float, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_min_float_empty_errors() {
+        let e = builtin_array_min_float(&[Value::Array(vec![])]).unwrap_err();
+        assert!(e.contains("empty"), "err was: {}", e);
+    }
+
+    // RES-943: hex encoding
+    #[test]
+    fn bytes_to_hex_empty_is_empty_string() {
+        let v = builtin_bytes_to_hex(&[Value::Bytes(vec![])]).unwrap();
+        assert_eq!(as_string(v), "");
+    }
+
+    #[test]
+    fn bytes_to_hex_deadbeef() {
+        let v = builtin_bytes_to_hex(&[Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])]).unwrap();
+        assert_eq!(as_string(v), "deadbeef");
+    }
+
+    #[test]
+    fn bytes_from_hex_round_trip() {
+        let original = vec![0x00_u8, 0x10, 0x7F, 0xFE, 0xFF];
+        let hex = builtin_bytes_to_hex(&[Value::Bytes(original.clone())]).unwrap();
+        let parsed = builtin_bytes_from_hex(&[hex]).unwrap();
+        match parsed {
+            Value::Result { ok: true, payload } => assert_eq!(as_bytes(*payload), original),
+            other => panic!("expected Ok(Bytes), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_from_hex_uppercase_ok() {
+        let v = builtin_bytes_from_hex(&[Value::String("DEADBEEF".into())]).unwrap();
+        match v {
+            Value::Result { ok: true, payload } => {
+                assert_eq!(as_bytes(*payload), vec![0xDE, 0xAD, 0xBE, 0xEF])
+            }
+            other => panic!("expected Ok(Bytes), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_from_hex_odd_length_errors() {
+        let v = builtin_bytes_from_hex(&[Value::String("abc".into())]).unwrap();
+        match v {
+            Value::Result { ok: false, payload } => {
+                assert!(as_string(*payload).contains("odd-length"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_from_hex_non_hex_errors() {
+        let v = builtin_bytes_from_hex(&[Value::String("abxy".into())]).unwrap();
+        match v {
+            Value::Result { ok: false, payload } => {
+                assert!(as_string(*payload).contains("non-hex char"));
+            }
+            other => panic!("expected Err, got {:?}", other),
+        }
+    }
+
+    // RES-944: bytes search
+    #[test]
+    fn bytes_starts_with_basic() {
+        let h = Value::Bytes(vec![1, 2, 3, 4]);
+        let p = Value::Bytes(vec![1, 2]);
+        let v = builtin_bytes_starts_with(&[h, p]).unwrap();
+        assert!(as_bool(v));
+    }
+
+    #[test]
+    fn bytes_starts_with_empty_prefix_is_true() {
+        let h = Value::Bytes(vec![1, 2, 3]);
+        let p = Value::Bytes(vec![]);
+        assert!(as_bool(builtin_bytes_starts_with(&[h, p]).unwrap()));
+    }
+
+    #[test]
+    fn bytes_starts_with_mismatch_is_false() {
+        let h = Value::Bytes(vec![1, 2, 3]);
+        let p = Value::Bytes(vec![2]);
+        assert!(!as_bool(builtin_bytes_starts_with(&[h, p]).unwrap()));
+    }
+
+    #[test]
+    fn bytes_ends_with_basic() {
+        let h = Value::Bytes(vec![1, 2, 3, 4]);
+        let s = Value::Bytes(vec![3, 4]);
+        assert!(as_bool(builtin_bytes_ends_with(&[h, s]).unwrap()));
+    }
+
+    #[test]
+    fn bytes_index_of_found() {
+        let h = Value::Bytes(vec![0, 1, 2, 3, 1, 2]);
+        let n = Value::Bytes(vec![1, 2]);
+        assert_eq!(as_int(builtin_bytes_index_of(&[h, n]).unwrap()), 1);
+    }
+
+    #[test]
+    fn bytes_index_of_missing_is_minus_one() {
+        let h = Value::Bytes(vec![1, 2, 3]);
+        let n = Value::Bytes(vec![9]);
+        assert_eq!(as_int(builtin_bytes_index_of(&[h, n]).unwrap()), -1);
+    }
+
+    #[test]
+    fn bytes_index_of_empty_needle_is_zero() {
+        let h = Value::Bytes(vec![1, 2, 3]);
+        let n = Value::Bytes(vec![]);
+        assert_eq!(as_int(builtin_bytes_index_of(&[h, n]).unwrap()), 0);
+    }
+
+    #[test]
+    fn bytes_index_of_needle_longer_than_haystack() {
+        let h = Value::Bytes(vec![1]);
+        let n = Value::Bytes(vec![1, 2, 3]);
+        assert_eq!(as_int(builtin_bytes_index_of(&[h, n]).unwrap()), -1);
+    }
+
+    // RES-945: map_get_or / hashmap_get_or
+    #[test]
+    fn map_get_or_present_returns_value() {
+        let m = builtin_map_new(&[]).unwrap();
+        let m = builtin_map_insert(&[m, Value::String("k".into()), Value::Int(7)]).unwrap();
+        let v = builtin_map_get_or(&[m, Value::String("k".into()), Value::Int(0)]).unwrap();
+        assert_eq!(as_int(v), 7);
+    }
+
+    #[test]
+    fn map_get_or_missing_returns_default() {
+        let m = builtin_map_new(&[]).unwrap();
+        let v = builtin_map_get_or(&[m, Value::String("absent".into()), Value::Int(42)]).unwrap();
+        assert_eq!(as_int(v), 42);
+    }
+
+    #[test]
+    fn hashmap_get_or_present_returns_value() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let m = builtin_hashmap_insert(&[m, Value::String("k".into()), Value::Int(99)]).unwrap();
+        let v = builtin_hashmap_get_or(&[m, Value::String("k".into()), Value::Int(0)]).unwrap();
+        assert_eq!(as_int(v), 99);
+    }
+
+    #[test]
+    fn hashmap_get_or_missing_returns_default() {
+        let m = builtin_hashmap_new(&[]).unwrap();
+        let v =
+            builtin_hashmap_get_or(&[m, Value::String("absent".into()), Value::Int(7)]).unwrap();
+        assert_eq!(as_int(v), 7);
+    }
+
+    #[test]
+    fn map_get_or_rejects_non_map() {
+        let e = builtin_map_get_or(&[Value::Int(1), Value::Int(0), Value::Int(0)]).unwrap_err();
+        assert!(e.contains("first argument must be a Map"), "err was: {}", e);
     }
 }
