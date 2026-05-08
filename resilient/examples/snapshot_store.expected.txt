@@ -1,0 +1,9 @@
+battery now: 87
+battery initial: 100
+missing: snapshot_load: no snapshot named 'never_set'
+snapshot count: 3
+  - battery_init
+  - battery_now
+  - temp_init
+after clear, count: 2
+Program executed successfully

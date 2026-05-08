@@ -1,0 +1,7 @@
+granted token (16 hex chars): 16
+authorized call: 42
+forged call: -1
+revoked: true
+post-revoke call: -1
+active caps: 0
+Program executed successfully

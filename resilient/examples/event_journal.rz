@@ -1,0 +1,39 @@
+// Grand-Implementation Pass 2 — Subsystem A: deterministic-replay journal.
+//
+// Resilient's runtime ships a logical tick + bounded event journal as
+// first-class core-stdlib primitives. Every `record_event` is durable
+// in the trace, the trace can be `replay_events()`'d as Strings, and
+// the tick is monotonic & purely logical (no wall-clock drift across
+// replay hosts).
+
+fn step(int x) -> int {
+    record_event("step.input", x);
+    let result = x * 2 + 7;
+    record_event("step.result", result);
+    return result;
+}
+
+fn main() {
+    clear_events();
+    println("tick before: " + tick_now());
+
+    let a = step(3);
+    let b = step(10);
+
+    println("tick after: " + tick_now());
+    println("event count: " + event_count());
+
+    // Replay the journal as serialized strings — perfect for
+    // diffing against a known-good golden trace.
+    let trace = replay_events();
+    println("--- trace ---");
+    for line in trace {
+        println(line);
+    }
+    println("---");
+
+    println("a=" + a);
+    println("b=" + b);
+}
+
+main();

@@ -1,0 +1,12 @@
+tick before: 0
+tick after: 4
+event count: 4
+--- trace ---
+0 [1] step.input=3
+1 [2] step.result=13
+2 [3] step.input=10
+3 [4] step.result=27
+---
+a=13
+b=27
+Program executed successfully

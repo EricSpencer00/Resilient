@@ -1,0 +1,31 @@
+// Grand-Implementation Pass 3 — Subsystem D: named resource quotas.
+//
+// Embedded radio airtime budget, SD-card write budget, crypto-op count —
+// every embedded project tracks these manually. Resilient ships them as
+// core-stdlib primitives.
+
+fn try_send(int bytes) -> bool {
+    return quota_charge("radio_bytes", bytes);
+}
+
+fn main() {
+    quota_set("radio_bytes", 100);
+
+    let ok1 = try_send(40);
+    let ok2 = try_send(40);
+    let ok3 = try_send(40);     // would exceed: 80 + 40 = 120 > 100
+
+    println("send 40: " + ok1);
+    println("send 40: " + ok2);
+    println("send 40: " + ok3);
+    println("used: " + quota_used("radio_bytes"));
+    println("remaining: " + quota_remaining("radio_bytes"));
+
+    let prior = quota_reset("radio_bytes");
+    println("reset (prior used): " + prior);
+    println("after reset, remaining: " + quota_remaining("radio_bytes"));
+
+    println("named quotas: " + len(quotas()));
+}
+
+main();

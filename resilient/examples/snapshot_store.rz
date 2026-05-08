@@ -1,0 +1,31 @@
+// Grand-Implementation Pass 2 — Subsystem C: named in-process snapshots.
+//
+// Programmer-addressable state checkpoints. No library, no DB, no agent —
+// the language ships a bounded named-snapshot store as a core primitive.
+
+fn main() {
+    snapshot_save("battery_init", 100);
+    snapshot_save("temp_init", 22);
+
+    let drained = snapshot_save("battery_now", 87);
+    println("battery now: " + drained);
+
+    let loaded = unwrap(snapshot_load("battery_init"));
+    println("battery initial: " + loaded);
+
+    let missing = snapshot_load("never_set");
+    if is_err(missing) {
+        println("missing: " + unwrap_err(missing));
+    }
+
+    let keys = snapshot_keys();
+    println("snapshot count: " + len(keys));
+    for k in keys {
+        println("  - " + k);
+    }
+
+    snapshot_clear("temp_init");
+    println("after clear, count: " + len(snapshot_keys()));
+}
+
+main();
