@@ -15,6 +15,7 @@
 
 #![allow(
     clippy::collapsible_if,
+    clippy::collapsible_match,
     clippy::doc_lazy_continuation,
     clippy::single_match
 )]
