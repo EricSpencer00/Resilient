@@ -376,6 +376,19 @@ mod priority_inheritance;
 // same path must use an atomic_ variant or a single-step API.
 mod toctou_guard;
 
+// Grand-Implementation Pass 2 — Subsystem A: logical tick clock + bounded
+// event journal. `tick_now`, `tick_advance`, `record_event`, `replay_events`,
+// `clear_events`, `event_count`. Deterministic replay as core stdlib.
+mod event_journal;
+// Grand-Implementation Pass 2 — Subsystem B: provenance-tagged values.
+// `tag(int, str)`, `untag(tagged, str) -> Result<int>`, `tag_of(tagged) -> Result<str>`.
+// First-class runtime provenance — no language has this in its core stdlib.
+mod provenance;
+// Grand-Implementation Pass 2 — Subsystem C: named snapshots.
+// `snapshot_save`, `snapshot_load`, `snapshot_keys`, `snapshot_clear`.
+// Programmer-addressable in-process state checkpoints as core primitive.
+mod snapshot_store;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 
@@ -10296,6 +10309,39 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // Embedded targets stub: a DWT-based implementation is future work.
     ("clock_now", builtin_clock_now),
     ("clock_elapsed", builtin_clock_elapsed),
+    // Grand-Implementation Pass 2 — Subsystem A: tick clock + event journal.
+    // Deterministic structural replay as a core-stdlib primitive.
+    ("tick_now", crate::event_journal::builtin_tick_now),
+    ("tick_advance", crate::event_journal::builtin_tick_advance),
+    ("record_event", crate::event_journal::builtin_record_event),
+    ("replay_events", crate::event_journal::builtin_replay_events),
+    ("clear_events", crate::event_journal::builtin_clear_events),
+    ("event_count", crate::event_journal::builtin_event_count),
+    // Grand-Implementation Pass 2 — Subsystem B: runtime provenance.
+    // `tag(value, "source") -> Tagged` wraps an Int with a provenance string.
+    // `untag(t, "expected") -> Result<Int>` enforces source on extract.
+    // `tag_of(t) -> Result<String>` reads the source non-destructively.
+    ("tag", crate::provenance::builtin_tag),
+    ("untag", crate::provenance::builtin_untag),
+    ("tag_of", crate::provenance::builtin_tag_of),
+    // Grand-Implementation Pass 2 — Subsystem C: named snapshots.
+    // Programmer-addressable in-process checkpoints, bounded to MAX_SNAPSHOTS.
+    (
+        "snapshot_save",
+        crate::snapshot_store::builtin_snapshot_save,
+    ),
+    (
+        "snapshot_load",
+        crate::snapshot_store::builtin_snapshot_load,
+    ),
+    (
+        "snapshot_keys",
+        crate::snapshot_store::builtin_snapshot_keys,
+    ),
+    (
+        "snapshot_clear",
+        crate::snapshot_store::builtin_snapshot_clear,
+    ),
     // RES-150: seedable SplitMix64 random builtins. std-only.
     ("random_int", builtin_random_int),
     ("random_float", builtin_random_float),

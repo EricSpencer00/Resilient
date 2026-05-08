@@ -1,0 +1,28 @@
+// Grand-Implementation Pass 2 — Subsystem B: runtime provenance tags.
+//
+// Sensor fusion / audit-lineage scenario: two sensors produce ints, but
+// the consumer must know which sensor each came from. `tag(...)` stamps,
+// `untag(..., "expected")` enforces, `tag_of(...)` reads non-destructively.
+
+fn main() {
+    let imu = tag(127, "imu_x");
+    let baro = tag(101325, "baro");
+
+    // tag_of returns Result<String> — read provenance non-destructively.
+    let imu_src = unwrap(tag_of(imu));
+    let baro_src = unwrap(tag_of(baro));
+    println("imu source: " + imu_src);
+    println("baro source: " + baro_src);
+
+    // untag asserts the expected provenance — extract value or get Err.
+    let imu_val = unwrap(untag(imu, "imu_x"));
+    println("imu reading: " + imu_val);
+
+    // Mismatched untag returns Err — provenance is non-discardable.
+    let bad = untag(baro, "imu_x");
+    if is_err(bad) {
+        println("rejected mismatched provenance: " + unwrap_err(bad));
+    }
+}
+
+main();
