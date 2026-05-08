@@ -10,7 +10,7 @@
 //! Resilient flags as ISR-context any function whose name is suffixed
 //! `_isr` / `_irq` or prefixed `isr_` / `irq_`, then performs a
 //! transitive call-graph walk and warns if any callee is a known
-//! "ISR-unsafe" primitive: `malloc`, `free`, `panic`, `lock`, `wait`,
+//! "ISR-hostile" primitive: `malloc`, `free`, `panic`, `lock`, `wait`,
 //! `sleep`, `println`, `print`, `block_on`, `await`, or any function in
 //! the program flagged `_blocks` / `_alloc`.
 //!
@@ -70,7 +70,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                 for c in cs {
                     if is_isr_unsafe_call(c) {
                         eprintln!(
-                            "warning: ISR '{root}' transitively calls ISR-unsafe '{c}' \
+                            "warning: ISR '{root}' transitively calls ISR-hostile '{c}' \
                              via '{fname}' — interrupt context must not block or allocate"
                         );
                     }

@@ -313,7 +313,7 @@ mod secret_erasure;
 // must be commit/rollback/abort'd in the function body.
 mod transaction_commit;
 // Ralph-Loop-Uniqueness #5: ISR transitive call-graph safety — fns named
-// `*_isr` / `irq_*` may not transitively call ISR-unsafe primitives.
+// `*_isr` / `irq_*` may not transitively call ISR-hostile primitives.
 mod isr_call_graph;
 // Ralph-Loop-Uniqueness #6: lock-ordering inversion — co-acquired locks
 // must be acquired in the same order across all callers.
