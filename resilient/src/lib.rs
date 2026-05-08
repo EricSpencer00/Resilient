@@ -388,6 +388,16 @@ mod provenance;
 // `snapshot_save`, `snapshot_load`, `snapshot_keys`, `snapshot_clear`.
 // Programmer-addressable in-process state checkpoints as core primitive.
 mod snapshot_store;
+// Grand-Implementation Pass 3 — Subsystem D: named resource quotas.
+// `quota_set`, `quota_charge`, `quota_remaining`, `quota_reset`,
+// `quota_used`, `quotas`. Programmer-addressable budget enforcement
+// in core stdlib — radio airtime, SD writes, crypto ops, sample counts.
+mod quotas;
+// Grand-Implementation Pass 3 — Subsystem E: capability tokens.
+// `mint_cap`, `check_cap`, `revoke_cap`, `caps`. Mintable, revocable,
+// programmer-addressable bearer-token capabilities — capability-based
+// security as a core stdlib primitive.
+mod capabilities;
 
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
@@ -10342,6 +10352,18 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "snapshot_clear",
         crate::snapshot_store::builtin_snapshot_clear,
     ),
+    // Grand-Implementation Pass 3 — Subsystem D: named resource quotas.
+    ("quota_set", crate::quotas::builtin_quota_set),
+    ("quota_charge", crate::quotas::builtin_quota_charge),
+    ("quota_remaining", crate::quotas::builtin_quota_remaining),
+    ("quota_reset", crate::quotas::builtin_quota_reset),
+    ("quota_used", crate::quotas::builtin_quota_used),
+    ("quotas", crate::quotas::builtin_quotas),
+    // Grand-Implementation Pass 3 — Subsystem E: capability tokens.
+    ("mint_cap", crate::capabilities::builtin_mint_cap),
+    ("check_cap", crate::capabilities::builtin_check_cap),
+    ("revoke_cap", crate::capabilities::builtin_revoke_cap),
+    ("caps", crate::capabilities::builtin_caps),
     // RES-150: seedable SplitMix64 random builtins. std-only.
     ("random_int", builtin_random_int),
     ("random_float", builtin_random_float),

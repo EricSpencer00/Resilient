@@ -1,0 +1,9 @@
+send 40: true
+send 40: true
+send 40: false
+used: 80
+remaining: 20
+reset (prior used): 80
+after reset, remaining: 100
+named quotas: 1
+Program executed successfully

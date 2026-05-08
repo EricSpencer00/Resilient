@@ -1,0 +1,28 @@
+// Grand-Implementation Pass 3 — Subsystem E: capability tokens.
+//
+// Mint a token, hand it to an authorized caller, the caller presents it
+// at every privileged operation. Revoke once and every outstanding
+// holder is invalidated simultaneously.
+
+fn privileged_op(string token, int x) -> int {
+    if check_cap("admin", token) {
+        return x * 2;
+    }
+    return -1;
+}
+
+fn main() {
+    let token = mint_cap("admin");
+    println("granted token (16 hex chars): " + len(token));
+
+    println("authorized call: " + privileged_op(token, 21));
+    println("forged call: " + privileged_op("0000000000000000", 21));
+
+    let revoked = revoke_cap("admin");
+    println("revoked: " + revoked);
+    println("post-revoke call: " + privileged_op(token, 21));
+
+    println("active caps: " + len(caps()));
+}
+
+main();
