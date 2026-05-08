@@ -1,0 +1,20 @@
+// Ralph-Loop-Uniqueness #21: crash-only module discipline.
+//
+// `crash_payment` has a paired `recover_payment` — no warning. Drop the
+// recovery function and the linter complains that the crash path is
+// unrecoverable.
+
+fn crash_payment(int reason) -> int {
+    return reason;
+}
+
+fn recover_payment(int last_state) -> int {
+    return last_state + 1;
+}
+
+fn main() {
+    crash_payment(0);
+    println("recovered=" + recover_payment(7));
+}
+
+main();

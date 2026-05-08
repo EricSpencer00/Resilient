@@ -1,0 +1,20 @@
+// Ralph-Loop-Uniqueness #7: transitive reentrancy guard.
+//
+// `nonreentrant_settle` is flagged as a reentrancy-banned root by name.
+// The body calls `compute`, which is acyclic with respect to settle,
+// so the linter is happy. If `compute` ever transitively called
+// `nonreentrant_settle` again, the linter would warn.
+
+fn compute(int x) -> int {
+    return x + 1;
+}
+
+fn nonreentrant_settle(int amount) -> int {
+    return compute(amount);
+}
+
+fn main() {
+    println("settled=" + nonreentrant_settle(10));
+}
+
+main();

@@ -1,0 +1,15 @@
+// Ralph-Loop-Uniqueness #12: numeric-unit mixing detection.
+//
+// Adding two `_ms` values is fine. Adding `_ms` to `_s` would emit:
+//   "warning: ... let 'total_ms' adds/subtracts mixed units '_ms' and '_s'..."
+
+fn add_durations(int a_ms, int b_ms) -> int {
+    let total_ms = a_ms + b_ms;
+    return total_ms;
+}
+
+fn main() {
+    println("ms=" + add_durations(150, 75));
+}
+
+main();

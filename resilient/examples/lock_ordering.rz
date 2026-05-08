@@ -1,0 +1,34 @@
+// Ralph-Loop-Uniqueness #6: cross-function lock-ordering check.
+//
+// Both functions co-acquire `mutex_a` and `mutex_b` in the same order.
+// Inverting the order in either function would make the linter warn:
+//   "lock-ordering inversion: 'mutex_a' before 'mutex_b' in [...] vs
+//    'mutex_b' before 'mutex_a' in [...] — deadlock risk"
+
+fn lock(int m) -> int { return m; }
+fn unlock(int m) -> int { return m; }
+
+fn deposit(int mutex_a, int mutex_b, int amount) -> int {
+    lock(mutex_a);
+    lock(mutex_b);
+    let total = amount * 2;
+    unlock(mutex_b);
+    unlock(mutex_a);
+    return total;
+}
+
+fn withdraw(int mutex_a, int mutex_b, int amount) -> int {
+    lock(mutex_a);
+    lock(mutex_b);
+    let net = amount;
+    unlock(mutex_b);
+    unlock(mutex_a);
+    return net;
+}
+
+fn main() {
+    println("d=" + deposit(1, 2, 5));
+    println("w=" + withdraw(1, 2, 3));
+}
+
+main();

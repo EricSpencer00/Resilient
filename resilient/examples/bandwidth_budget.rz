@@ -1,0 +1,18 @@
+// Ralph-Loop-Uniqueness #17: static IO byte-budget check.
+//
+// `telemetry_iobytes64` declares a 64-byte budget by suffix. The body
+// makes one IO call with a small payload literal, well under budget.
+
+fn radio_tx(int kind, int len) -> int {
+    return kind + len;
+}
+
+fn telemetry_iobytes64(int kind) -> int {
+    return radio_tx(kind, 16);
+}
+
+fn main() {
+    println("sent=" + telemetry_iobytes64(2));
+}
+
+main();

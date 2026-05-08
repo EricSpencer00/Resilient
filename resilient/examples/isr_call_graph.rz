@@ -1,0 +1,20 @@
+// Ralph-Loop-Uniqueness #5: ISR call-graph safety.
+//
+// `timer_isr` is treated as interrupt context (suffix `_isr`).
+// It calls `update_counter`, which is leaf and safe — no warning fires.
+// If `update_counter` called `println` or anything ending in `_alloc`,
+// the linter would warn about transitive ISR-unsafety.
+
+fn update_counter(int v) -> int {
+    return v + 1;
+}
+
+fn timer_isr(int ticks) -> int {
+    return update_counter(ticks);
+}
+
+fn main() {
+    println("isr_result=" + timer_isr(7));
+}
+
+main();

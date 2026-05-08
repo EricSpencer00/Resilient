@@ -1,0 +1,19 @@
+// Ralph-Loop-Uniqueness #18: bounded-blocking transitive budget.
+//
+// `audio_tick_bound2` declares budget = 2 blocking calls. The body
+// calls `wait` once and `sleep` once — exactly at budget.
+
+fn wait(int x) -> int { return x; }
+fn sleep(int x) -> int { return x; }
+
+fn audio_tick_bound2(int sample) -> int {
+    wait(1);
+    sleep(2);
+    return sample;
+}
+
+fn main() {
+    println("tick=" + audio_tick_bound2(42));
+}
+
+main();

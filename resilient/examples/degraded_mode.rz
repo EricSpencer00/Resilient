@@ -1,0 +1,22 @@
+// Ralph-Loop-Uniqueness #20: degraded-mode requirement after critical
+// assert.
+
+fn assert_critical_temp(int t) -> int {
+    return t;
+}
+
+fn safe_mode_cool(int t) -> int {
+    return t - 10;
+}
+
+fn flight_step(int temp) -> int {
+    assert_critical_temp(temp);
+    let cooled = safe_mode_cool(temp);
+    return cooled;
+}
+
+fn main() {
+    println("step=" + flight_step(100));
+}
+
+main();

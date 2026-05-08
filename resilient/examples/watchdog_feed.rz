@@ -1,0 +1,37 @@
+// Ralph-Loop-Uniqueness #1: watchdog-feed enforcement demo.
+//
+// `service_loop` takes a `Watchdog` parameter; the compiler verifies the
+// body contains at least one feed call on it (`feed_watchdog(wd)` or a
+// method-style `wd.feed()`). If you remove the call below, you'll see:
+//
+//   warning: function 'service_loop' takes Watchdog parameter(s) [wd]
+//   but never calls .feed()/.kick()/.pet()/.reset()...
+//
+// No other language compiler enforces this — most embedded teams catch
+// starved-watchdog bugs only at integration test time.
+
+struct Watchdog {
+    int last_feed_tick,
+}
+
+fn feed_watchdog(Watchdog wd) -> Watchdog {
+    wd.last_feed_tick = wd.last_feed_tick + 1;
+    return wd;
+}
+
+fn service_loop(Watchdog wd, int ticks) -> int {
+    let i = 0;
+    while i < ticks {
+        feed_watchdog(wd);
+        i = i + 1;
+    }
+    return wd.last_feed_tick;
+}
+
+fn main() {
+    let wd = new Watchdog { last_feed_tick: 0 };
+    let fed = service_loop(wd, 3);
+    println("watchdog fed " + fed + " times");
+}
+
+main();

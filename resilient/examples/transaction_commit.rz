@@ -1,0 +1,31 @@
+// Ralph-Loop-Uniqueness #4: transaction commit-or-rollback enforcement.
+//
+// `transfer` takes a Transaction; the linter verifies it's closed.
+// Drop the `commit(tx)` call and you'll get:
+//
+//   warning: function 'transfer' takes Transaction parameter(s) [tx]
+//   but never calls .commit()/.rollback()/.abort()...
+
+struct Transaction {
+    int id,
+    bool committed,
+}
+
+fn commit(Transaction tx) -> Transaction {
+    tx.committed = true;
+    return tx;
+}
+
+fn transfer(Transaction tx, int from, int to, int amount) -> int {
+    let charged = from - amount;
+    let credited = to + amount;
+    commit(tx);
+    return charged + credited;
+}
+
+fn main() {
+    let tx = new Transaction { id: 1, committed: false };
+    println("net=" + transfer(tx, 100, 0, 30));
+}
+
+main();

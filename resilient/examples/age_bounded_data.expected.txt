@@ -1,0 +1,2 @@
+battery=87
+Program executed successfully

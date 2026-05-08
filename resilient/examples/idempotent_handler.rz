@@ -1,0 +1,18 @@
+// Ralph-Loop-Uniqueness #22: idempotency-required handler.
+
+fn is_duplicate(int id) -> bool {
+    return id < 0;
+}
+
+fn process_payment_idempotent(int id) -> int {
+    if is_duplicate(id) {
+        return 0;
+    }
+    return id;
+}
+
+fn main() {
+    println("p=" + process_payment_idempotent(42));
+}
+
+main();

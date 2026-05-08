@@ -1,0 +1,27 @@
+// Ralph-Loop-Uniqueness #9: backpressure-safe handler discipline.
+//
+// `request_handler` takes a parameter named `mailbox`; the linter
+// requires at least one backpressure strategy call (drop_oldest,
+// is_full guard, etc.). Below the call to `is_full(mailbox)` satisfies
+// the contract.
+
+fn is_full(int q) -> bool {
+    return q > 100;
+}
+
+fn drop_oldest(int q) -> int {
+    return q - 1;
+}
+
+fn request_handler(int mailbox, int req) -> int {
+    if is_full(mailbox) {
+        return drop_oldest(mailbox);
+    }
+    return mailbox + 1;
+}
+
+fn main() {
+    println("queue=" + request_handler(50, 1));
+}
+
+main();

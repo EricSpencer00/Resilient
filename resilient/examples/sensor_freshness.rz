@@ -1,0 +1,32 @@
+// Ralph-Loop-Uniqueness #2: sensor-freshness enforcement demo.
+//
+// `read_safely` is approved by the linter because it calls
+// `is_fresh(s)` before reading `.value()`. Drop the freshness call and
+// the compiler warns that you may act on stale sensor data.
+
+struct Sensor {
+    int last_stamp,
+    int latest,
+}
+
+fn is_fresh(Sensor s) -> bool {
+    return s.last_stamp > 0;
+}
+
+fn value(Sensor s) -> int {
+    return s.latest;
+}
+
+fn read_safely(Sensor s) -> int {
+    if is_fresh(s) {
+        return value(s);
+    }
+    return -1;
+}
+
+fn main() {
+    let s = new Sensor { last_stamp: 1, latest: 42 };
+    println("reading: " + read_safely(s));
+}
+
+main();

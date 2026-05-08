@@ -1,0 +1,15 @@
+// Ralph-Loop-Uniqueness #14: static rate-limit fan-in.
+//
+// `init_singleshot` is rate-limited by suffix to one call site. The
+// program below calls it exactly once. Adding a second call site would
+// emit "exceeds static budget".
+
+fn init_singleshot(int x) -> int {
+    return x + 100;
+}
+
+fn main() {
+    println("init=" + init_singleshot(7));
+}
+
+main();
