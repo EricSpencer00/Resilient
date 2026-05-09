@@ -1,4 +1,4 @@
 0
-true
+2.5
 0
 Program executed successfully

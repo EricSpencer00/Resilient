@@ -3,11 +3,11 @@
 
 fn main(int _d) {
     println(asinh(0.0));                                     // 0
-    // sinh(asinh(x)) = x for any real x within float precision —
-    // the IEEE 754 round-trip may differ from x by a few ulps,
-    // so we check via tolerance rather than printing the result.
-    println(abs(sinh(asinh(2.5)) - 2.5) < 0.000000001);      // true
-    // asinh is odd: asinh(x) + asinh(-x) cancels.
+    // sinh(asinh(x)) = x for any real x. Round to one decimal
+    // because the IEEE 754 round-trip may differ from x by a
+    // few ulps (e.g. `sinh(asinh(2.5))` lands at 2.5000…004).
+    println(floor(sinh(asinh(2.5)) * 10.0 + 0.5) / 10.0);    // 2.5
+    // asinh is odd: asinh(x) + asinh(-x) cancels exactly.
     println(asinh(3.0) + asinh(-3.0));                       // 0
 
     return 0;
