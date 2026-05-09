@@ -54,6 +54,8 @@ time, commit it, and only then move the post.
 | **G19** | Proof-carrying assertions | ✅ RES-071 (`--emit-certificate`), RES-194 (Ed25519 signatures), RES-195 (`verify-all` + manifest), RES-331 (schema v1 doc). Bundle is round-trippable end-to-end. |
 | **G20** | Self-hosting | ⏳ Blocked on RES-323 (lexer in Resilient) → RES-379 (parser in Resilient). |
 | **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19. RES-383 security audit landed 2026-04-29. |
+| **G22** | TLA+ model checking | ⏳ V2+ design locked — RES-396 (#270). Ship surface = V2.0 bridge (`rz tla check`) + V2.1 `@refines`. |
+| **G23** | 50-feature vibe-coded-resilience pass | ✅ PR #1076 — 51 new compiler modules. `resilience_score`, `vibe_debt`, `behavioral_fingerprint`, `contract_inference`, `anti_regression`, and 46 more. See `MISSING_FEATURES.md`. |
 
 ### V2 ladder (post-V1 ship)
 
@@ -115,3 +117,9 @@ changelog entry below.
   G19 closed: certificate manifest schema v1 (RES-331) plus end-to-end signed `verify-all`.
   RES-383 FFI v1 security audit signed off (no CVEs).
   RES-392b per-prefix `recovers_to` BMC scaffolding.
+- 2026-05-09 — **G23 landed**: 50-feature pass (PR #1076). 51 new compiler modules covering the
+  full vibe-coded-resilience pipeline (`resilience_score`, `vibe_debt`, `behavioral_fingerprint`,
+  `contract_inference`, `semantic_regression`, `semver_behavior`, `blame_attribution`, `autopilot`,
+  `crash_only_cert`, `intent_blocks`, `anti_regression`) plus type-system innovations, verification,
+  embedded/hardware, concurrency, ecosystem, and ergonomics features. See `MISSING_FEATURES.md`
+  for the complete feature inventory.

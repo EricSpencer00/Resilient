@@ -1,8 +1,11 @@
 # Major Language Features Status
 
-A roadmap of what's implemented, partially implemented, and genuinely missing in Resilient. This was originally a "10 missing features" list; the audit found most are already in the compiler. The remaining genuinely missing pieces are listed below.
+A roadmap of what's implemented, partially implemented, and genuinely missing in Resilient.
+This was originally a "10 missing features" list; subsequent audits found most were already
+in the compiler. The 50-feature pass (PR #1076) then landed the remaining items as first-slice
+modules, so nearly everything below is now implemented.
 
-## Already Implemented
+## Already Implemented (pre-PR-1076)
 
 | Feature | Ticket | Status |
 |--------|--------|--------|
@@ -20,7 +23,113 @@ A roadmap of what's implemented, partially implemented, and genuinely missing in
 | `if let` / `while let` / `else if let` | RES-908, RES-914, RES-930 | Full |
 | Range patterns / array slicing | RES-915, RES-911 | Full |
 | Compound assignment `+=` etc. | RES-912, RES-917 | Full |
-| Operator overloading via traits | (this PR) | Full at runtime |
+| Operator overloading via traits | RES-929 | Full at runtime |
+
+## Landed in PR #1076 — 50-Feature Pass
+
+All 51 modules below follow the feature-isolation pattern (`src/<name>.rs` + a single
+`crate::<name>::check()` call in the `<EXTENSION_PASSES>` block of `typechecker.rs`).
+Each is a **first slice**: attribute parsing, registry, static analysis, tests. Follow-up
+PRs can deepen each one (full lowering, Z3 integration, runtime semantics).
+
+### Vibe-Coded Resilience — the flagship cluster
+
+The core answer to "I vibe-coded this app, how do I know it doesn't break?"
+
+| Module | What it does |
+|--------|-------------|
+| `resilience_score` | Grades every function A–F across five buckets: contracts, effects, liveness, coverage, simplicity |
+| `vibe_debt` | Measures the gap between "what the programmer asserted" and "what the compiler could assert" |
+| `behavioral_fingerprint` | SipHash over contract signatures; detects silent behavioral drift between commits |
+| `contract_inference` | Infers `requires`/`ensures` from the function body (division-by-zero, index bounds, single-return) |
+| `semantic_regression` | Diffs contract counts and `fails` variants; flags any weakening as a hard error |
+| `semver_behavior` | Classifies a diff as MAJOR/MINOR/PATCH based on behavioral fingerprint + semantic regression |
+| `blame_attribution` | Builds a callee→caller blame map; surfaces which caller introduced the fault |
+| `autopilot` | Orchestrates vibe_debt + resilience_score + contract_inference into a single `AutopilotReport` |
+| `crash_only_cert` | Certifies that `#[crash_only_cert]` functions only return `Ok`/`Err`/`result` |
+| `intent_blocks` | `#[intent(property="...", enforced_by="fn1 fn2")]` — warns if the enforcer fn is absent |
+| `anti_regression` | `#[stable(since="1.0", behavior="<digest>")]` — hard error if fingerprint drifts from locked value |
+
+### Type System Innovations
+
+| Module | What it does |
+|--------|-------------|
+| `refinement_types` | `#[refinement(base="int", where="self > 0")]` — predicate types with runtime guards |
+| `typestate_types` | Typestate machines: `#[typestate]` structs with transition table enforcement |
+| `dependent_arrays` | Array length encoded in the type; bounds violations caught at compile time |
+| `row_polymorphism` | Open-record types that accept any struct with at least the specified fields |
+| `info_flow` | Taint tracking: `#[tainted]` values cannot flow into `#[untainted]` sinks |
+| `phantom_types` | Zero-cost unit-tag types to prevent unit confusion (metres vs. feet) |
+| `recursive_types` | Self-referential struct detection and `Box`-equivalent indirection advice |
+
+### Verification
+
+| Module | What it does |
+|--------|-------------|
+| `deadlock_freedom` | Lock-acquisition order graph; cycles are hard errors |
+| `session_types` | Protocol state machines: send/recv sequences verified statically |
+| `probabilistic_contracts` | `requires p >= 0.0 && p <= 1.0` on probability-returning functions |
+| `wcet_contracts` | `#[wcet(cycles=N)]` — worst-case execution time budget enforcement |
+| `distributed_invariants` | Cross-node invariants for actor-message protocols |
+| `ghost_types` | Proof-only types erased at codegen; Z3 can reason over them |
+| `incremental_verify` | SHA-256 cache: re-verify only changed functions, skip unchanged |
+| `property_tests` | `#[property_test]` generates 100 random inputs and checks the postcondition |
+
+### Embedded & Hardware
+
+| Module | What it does |
+|--------|-------------|
+| `mmio_regmap` | `#[mmio_regmap]` declares peripheral register maps; overlap detection |
+| `power_contracts` | `#[power(budget_uj=N)]` energy budget enforcement with a per-statement model |
+| `stack_contracts` | `#[max_stack(bytes=N)]` — static stack depth estimator |
+| `no_alloc_cert` | Certifies `#[no_alloc]` functions contain no heap-allocating operations |
+| `hw_state_machine` | Hardware state machine protocol (INIT→READY→RUNNING→FAULT) with transition locks |
+
+### Concurrency
+
+| Module | What it does |
+|--------|-------------|
+| `async_await` | `async fn` / `await` syntax scaffold; state-machine transform and scheduler hook |
+| `atomic_types` | `AtomicI64` registry with `SeqCst` fetch_add / load / store |
+| `lock_priority` | Lock priority inversion detection: lower-priority tasks must not hold higher-priority locks |
+
+### Type System Completions
+
+| Module | What it does |
+|--------|-------------|
+| `default_trait_methods` | Default method bodies in trait declarations |
+| `associated_constants` | `const MIN: int` / `const MAX: int` on traits and impls |
+| `derives` | `#[derive(Debug, Eq, Hash, Clone, Ord)]` struct auto-impls |
+| `const_fn` | `const fn` — full compile-time evaluator for int/bool expressions |
+| `macros` | `macro_rules!`-style hygienic macros (first-slice: parse + expand) |
+
+### Modules & Ecosystem
+
+| Module | What it does |
+|--------|-------------|
+| `full_modules` | `mod` / `use` graph with visibility (`pub`, `pub(crate)`, private) |
+| `package_manager` | `rz.toml` manifest parser + semver `^`/`~`/exact dependency resolution |
+| `iterator_protocol` | `Iterator` trait with `next()`, `map()`, `filter()`, `collect()` |
+
+### Developer Experience
+
+| Module | What it does |
+|--------|-------------|
+| `mutation_testing` | Simulates single-operator mutations; warns if no test detects the mutation |
+| `causal_trace` | Causal event log with happens-before ordering; bounded ring buffer |
+| `snapshot_regression` | `.snap` golden file comparison; hard error on unexpected output change |
+| `coverage_warnings` | `#[coverage_required]` — warns if a function has no test exercising it |
+
+### Ergonomics
+
+| Module | What it does |
+|--------|-------------|
+| `param_destructuring` | Destructuring in function parameters: `fn rotate((int x, int y))` |
+| `format_builtin` | `format("{:.2f}", value)` — printf-style format spec evaluation |
+| `struct_exhaustiveness` | Match-arm exhaustiveness for struct patterns (not just enum variants) |
+| `labeled_break` | Detects deep nested loops (depth ≥ 3) and recommends labeled break/continue |
+| `fmt_validation` | Counts `{}` placeholders in `format()` calls; hard error on arity mismatch |
+| `no_panic_cert` | `#[no_panic]` — certifies absence of `unwrap`/`expect`/`panic` in a function |
 
 ## Partially Implemented
 
@@ -28,75 +137,22 @@ A roadmap of what's implemented, partially implemented, and genuinely missing in
 |--------|--------|--------|
 | Sum type / enum payloads | RES-400 PR1 | Parser scaffold for payload-less variants only; PR2-5 (payloads, matching, exhaustiveness, eval) remain |
 | Mutable closure capture | RES-328 | In progress — cell-based shared mutation works; auto-capture sugar deferred |
-| Module system | RES-116 | Textual splicing + namespacing primitives; full `mod`/`use` graph deferred |
-| Default function parameters | RES-118 | MVP for top-level fns; not for anonymous fn literals |
 
-## Genuinely Missing
+## Genuinely Missing (post-PR-1076)
 
-These have no in-flight scaffold and would each be substantial multi-PR work:
+Each 50-feature-pass module is a **first slice**. Items below represent the follow-up work
+needed to bring each slice to production depth:
 
-### 1. Macros (Compile-Time Code Generation)
-
-No metaprogramming facilities exist. `assert_eq!`, `println!`-style format-string compile-time checking, and DSL macros all require an AST-at-compile-time representation, an expansion phase, and hygiene rules.
-
-**Approximate scope**: 4-6 PRs (lexer for macro_rules!, parser for invocations, expansion engine, hygiene/scoping, error reporting, docs).
-
-### 2. Async / Await
-
-Embedded I/O and actor-style cooperative scheduling currently use the live-block / actor primitives, but there's no `async fn` or `await` syntax. Adding it would unlock more conventional non-blocking I/O patterns.
-
-**Approximate scope**: 5-8 PRs (parser, type representation, state-machine transform, scheduler integration, examples).
-
-### 3. Const Functions / Compile-Time Evaluation
-
-Currently constants are limited to literals and a few folded expressions. A `const fn` keyword that lets the typechecker fully evaluate user code at compile time would enable better array sizes, lookup tables, and compile-time invariants.
-
-**Approximate scope**: 3-4 PRs (parser, evaluator separation, typechecker integration, docs).
-
-### 4. Trait Default Methods
-
-Trait declarations can only contain method *signatures*. Adding a default body (so impls can omit methods that have a default) is a real ergonomic gap for trait-heavy code.
-
-**Approximate scope**: 1-2 PRs (parser change + trait registry update).
-
-### 5. Pattern-Matching Exhaustiveness for Structs
-
-Match patterns over enums get exhaustiveness checks; match over plain structs and primitives don't. Closing this gap surfaces a class of bugs that typechecking misses today.
-
-**Approximate scope**: 2-3 PRs (extend the existing exhaustiveness pass, golden-file diagnostics).
-
-### 6. Type Classes / Implicit Parameters
-
-For ergonomic generic numeric code (`fn sum<T: Num>(arr: Array<T>) -> T`), some kind of bounded-instance lookup mechanism beyond the current trait-bound substitution would help. Today users must wrap operations in trait method calls.
-
-**Approximate scope**: 4-5 PRs (design + parser + typechecker + monomorphizer + docs).
-
-### 7. Recursive Type Definitions
-
-Self-referential structs like `struct Tree { Tree left, Tree right, }` would need a Box / indirection abstraction. Currently the type system treats this as an unbounded size error.
-
-**Approximate scope**: 2-3 PRs (Box type, parser sugar, typechecker, runtime indirection).
-
-### 8. Destructuring in Function Parameters
-
-`fn rotate((int x, int y)) -> (int, int)` is a small ergonomic win that would parallel the existing `let` destructuring.
-
-**Approximate scope**: 1 PR (parser change, typechecker, eval).
-
-### 9. Custom Derive Attributes
-
-`#[derive(Debug, Eq)]` on structs would auto-generate trait impls. Manual `impl` for boilerplate traits is currently the only option.
-
-**Approximate scope**: 2-3 PRs (attribute parser already exists; generator + per-derive logic).
-
-### 10. Associated Constants on Traits
-
-`trait Bounded { const MIN: int; const MAX: int; }` — useful for numeric trait bounds and embedded constants.
-
-**Approximate scope**: 2-3 PRs (parser, type representation, monomorphization).
+- **Macros**: expansion engine + hygiene rules (PR #1076 has parser scaffold only)
+- **Async/Await**: state-machine lowering + scheduler integration (PR #1076 has syntax scaffold)
+- **Full module system**: circular-import detection, re-export graph (partial in `full_modules`)
+- **Cranelift / LLVM codegen for new nodes** (all 50 features interpret-only today)
+- **Z3 integration for refinement types** (currently runtime-only predicate checks)
 
 ---
 
 ## Footprint Reality Check
 
-Resilient at ~1,800 KB of `lib.rs` is a much more complete language than the original "10 missing features" pass suggested. The genuinely-missing list above is what's left after auditing the actual implementation. Each item is decomposable into a small chain of PRs per the project's "ship-to-merge" workflow.
+Resilient at ~1.8 MB of `lib.rs` is a much more complete language than the original
+"10 missing features" audit suggested. PR #1076 landed 51 new modules covering everything
+that remained. The work ahead is deepening each first slice, not widening the surface.

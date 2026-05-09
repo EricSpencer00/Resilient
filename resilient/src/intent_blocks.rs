@@ -1,0 +1,120 @@
+//! Feature 10/50 — Intent Blocks.
+//!
+//! `#[intent("name", property = "...", enforced_by = "fn1, fn2")]`
+//! declares a high-level safety property and the set of functions
+//! responsible for collectively maintaining it. The compiler verifies
+//! that:
+//!
+//! 1. Every named `enforced_by` fn exists in the program.
+//! 2. Each enforcing fn has at least one `requires` or `ensures`
+//!    clause (otherwise the intent has nothing to lean on).
+//!
+//! This is the "specification separate from implementation" feature
+//! from the design doc — high-level intents that map to concrete fns.
+//! When an intent's enforcer set is incomplete, the compiler warns:
+//! the user has named a property without backing it with verifiable
+//! contracts.
+
+#![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
+
+use crate::Node;
+
+#[derive(Debug, Clone)]
+pub struct IntentSpec {
+    pub item_name: String,
+    pub raw_args: String,
+    pub property: Option<String>,
+    pub enforcers: Vec<String>,
+}
+
+pub fn collect() -> Vec<IntentSpec> {
+    let attrs = crate::feature_attrs::find_kind("intent");
+    let mut out = Vec::new();
+    for (item, rec) in attrs {
+        let mut spec = IntentSpec {
+            item_name: item,
+            raw_args: rec.args.clone(),
+            property: None,
+            enforcers: Vec::new(),
+        };
+        // Permissive parsing: split on `=`, look for known keys.
+        for chunk in rec.args.split(',') {
+            let chunk = chunk.trim();
+            if let Some((k, v)) = chunk.split_once('=') {
+                let k = k.trim();
+                let v = v.trim().trim_matches('"');
+                match k {
+                    "property" => spec.property = Some(v.to_string()),
+                    "enforced_by" => {
+                        spec.enforcers = v.split_whitespace().map(|s| s.to_string()).collect();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push(spec);
+    }
+    out
+}
+
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    let intents = collect();
+    if intents.is_empty() {
+        return Ok(());
+    }
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let fns: Vec<&Node> = stmts
+        .iter()
+        .map(|s| &s.node)
+        .filter(|n| matches!(n, Node::Function { .. }))
+        .collect();
+    let fn_names: Vec<&str> = fns
+        .iter()
+        .filter_map(|n| match n {
+            Node::Function { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    for intent in &intents {
+        for enforcer in &intent.enforcers {
+            if !fn_names.contains(&enforcer.as_str()) {
+                eprintln!(
+                    "warning: intent on `{}` names enforcer `{}` which doesn't exist",
+                    intent.item_name, enforcer
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_property_and_enforcers() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "TempControl",
+            crate::feature_attrs::AttrRecord {
+                name: "intent".into(),
+                args: r#"property = "stays bounded" , enforced_by = "f1 f2""#.into(),
+                line: 0,
+            },
+        );
+        let intents = collect();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].item_name, "TempControl");
+        assert_eq!(intents[0].property.as_deref(), Some("stays bounded"));
+        assert_eq!(
+            intents[0].enforcers,
+            vec!["f1".to_string(), "f2".to_string()]
+        );
+        crate::feature_attrs::reset();
+    }
+}

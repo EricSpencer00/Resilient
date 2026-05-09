@@ -121,6 +121,25 @@ fn calculate_velocity(float distance, float time) {
 
 Resilient provides detailed error messages and has sophisticated error recovery mechanisms, especially within live blocks.
 
+### "I Vibe-Coded This — Will It Break?" — The Resilience Pipeline
+
+A unique cluster of analysis passes answers this question automatically:
+
+| Pass | What it tells you |
+|------|------------------|
+| `vibe_debt` | Measures the gap between what you asserted and what the compiler could assert — as a percentage |
+| `resilience_score` | Grades every function A–F across contracts, effects, liveness, coverage, and simplicity |
+| `contract_inference` | Automatically infers `requires`/`ensures` from the function body (division by zero, index bounds, single-return expressions) |
+| `behavioral_fingerprint` | SipHash over contract signatures — detects silent behavioral drift between commits without reading the body |
+| `anti_regression` | `#[stable(since="1.0", behavior="<digest>")]` — hard compile error if a function's behavior fingerprint drifts from the locked value |
+| `semantic_regression` | Diffs contract counts and `fails` variants between versions; any weakening is a hard error |
+| `semver_behavior` | Classifies a diff as MAJOR, MINOR, or PATCH based on behavioral evidence — not just API surface |
+| `blame_attribution` | Builds a callee→caller blame map so you know exactly which caller introduced the fault |
+| `crash_only_cert` | `#[crash_only_cert]` — certifies a function only exits via `Ok`/`Err`/`result`, never partially |
+| `no_panic_cert` | `#[no_panic]` — certifies absence of `unwrap`/`expect`/`panic`/`todo` in a function |
+
+Run `rz --infer-contracts my_file.rz` to get contract suggestions for any function that lacks them.
+
 ## Getting Started
 
 The shipped CLI is **`rz`** — short for Resilient, matches the `.rz` source extension.

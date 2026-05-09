@@ -1,0 +1,34 @@
+// 50-feature pass — Vibe Debt demo.
+//
+// Three functions of varying spec quality. Run with `--audit` to
+// see the per-fn vibe-debt scoring; the analyzer registers them
+// during typechecking but does not change runtime behavior.
+
+// Fully vibe — no contracts, no effect annotation, body alone.
+fn vibe_only(int a, int b) {
+    return a + b;
+}
+
+// Half-specified — has a precondition but no postcondition.
+fn half_spec(int a, int b) -> int
+    requires b != 0
+{
+    return a / b;
+}
+
+// Fully specified — pure, contracts on both sides, called from main.
+pure fn fully_spec(int a, int b) -> int
+    requires a >= 0 && b >= 0
+    ensures result >= 0
+    ensures result == a + b
+{
+    return a + b;
+}
+
+fn main() {
+    println(vibe_only(1, 2));
+    println(half_spec(10, 2));
+    println(fully_spec(3, 4));
+}
+
+main();

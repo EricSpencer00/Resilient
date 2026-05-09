@@ -399,6 +399,63 @@ mod quotas;
 // security as a core stdlib primitive.
 mod capabilities;
 
+// 50-feature missing-language-features pass — shared attribute registry
+// and 50 new feature modules. See feature_attrs.rs for the registry,
+// and the per-feature module docs for what each does.
+mod anti_regression;
+mod associated_constants;
+mod async_await;
+mod atomic_types;
+mod autopilot;
+mod behavioral_fingerprint;
+mod blame_attribution;
+mod causal_trace;
+mod const_fn;
+mod contract_inference;
+mod coverage_warnings;
+mod crash_only_cert;
+mod deadlock_freedom;
+mod default_trait_methods;
+mod dependent_arrays;
+mod derives;
+mod distributed_invariants;
+mod feature_attrs;
+mod fmt_validation;
+mod format_builtin;
+mod full_modules;
+mod ghost_types;
+mod hw_state_machine;
+mod incremental_verify;
+mod info_flow;
+mod intent_blocks;
+mod iterator_protocol;
+mod labeled_break;
+mod lock_priority;
+mod macros;
+mod mmio_regmap;
+mod mutation_testing;
+mod no_alloc_cert;
+mod no_panic_cert;
+mod package_manager;
+mod param_destructuring;
+mod phantom_types;
+mod power_contracts;
+mod probabilistic_contracts;
+mod property_tests;
+mod recursive_types;
+mod refinement_types;
+mod resilience_score;
+mod row_polymorphism;
+mod semantic_regression;
+mod semver_behavior;
+mod session_types;
+mod snapshot_regression;
+mod stack_contracts;
+mod struct_exhaustiveness;
+mod typestate_types;
+mod vibe_debt;
+mod wcet_contracts;
+
 #[allow(unused_imports)]
 use span::{Pos, Span, Spanned};
 

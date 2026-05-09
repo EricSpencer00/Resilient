@@ -1,0 +1,132 @@
+//! Feature 13/50 — Temporal Type States.
+//!
+//! `#[typestate(states = "Closed Open Flushed", transitions = "Closed:open->Open Open:flush->Flushed Open:close->Closed Flushed:close->Closed")]`
+//! attached to a struct turns it into a typestate type: the value's
+//! state evolves across method calls, and calls that violate the
+//! state machine are rejected.
+//!
+//! This is unlike session types (which are about channel protocols) —
+//! typestates apply to any stateful object: file handles, MMIO
+//! peripherals, lock guards, parser cursors. The effect is to make
+//! "use after close" a compile error rather than a runtime panic.
+//!
+//! This module ships:
+//!
+//! * The attribute parser into a `TypestateSpec` struct.
+//! * A `validate_call(struct_name, current_state, method)` API that
+//!   returns `Ok(next_state)` or `Err`. Wired into the runtime by
+//!   downstream PR; tests exercise it directly today.
+
+#![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
+
+use crate::Node;
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+#[derive(Debug, Clone)]
+pub struct TypestateSpec {
+    pub struct_name: String,
+    pub states: Vec<String>,
+    /// Map of (current_state, method) -> next_state.
+    pub transitions: HashMap<(String, String), String>,
+}
+
+static SPECS: RwLock<Vec<TypestateSpec>> = RwLock::new(Vec::new());
+
+pub fn collect() -> Vec<TypestateSpec> {
+    let attrs = crate::feature_attrs::find_kind("typestate");
+    let mut out = Vec::new();
+    for (item, rec) in attrs {
+        let mut spec = TypestateSpec {
+            struct_name: item,
+            states: Vec::new(),
+            transitions: HashMap::new(),
+        };
+        for chunk in rec.args.split(',') {
+            let chunk = chunk.trim();
+            if let Some((k, v)) = chunk.split_once('=') {
+                let k = k.trim();
+                let v = v.trim().trim_matches('"');
+                match k {
+                    "states" => {
+                        spec.states = v.split_whitespace().map(|s| s.to_string()).collect();
+                    }
+                    "transitions" => {
+                        for t in v.split_whitespace() {
+                            // Format: state:method->next
+                            if let Some((lhs, next)) = t.split_once("->") {
+                                if let Some((state, method)) = lhs.split_once(':') {
+                                    spec.transitions.insert(
+                                        (state.to_string(), method.to_string()),
+                                        next.to_string(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push(spec);
+    }
+    out
+}
+
+pub fn install(specs: Vec<TypestateSpec>) {
+    if let Ok(mut g) = SPECS.write() {
+        *g = specs;
+    }
+}
+
+pub fn validate_call(
+    struct_name: &str,
+    current_state: &str,
+    method: &str,
+) -> Result<String, String> {
+    let specs = SPECS.read().ok().map(|g| g.clone()).unwrap_or_default();
+    let spec = specs
+        .iter()
+        .find(|s| s.struct_name == struct_name)
+        .ok_or_else(|| format!("no typestate for {struct_name}"))?;
+    spec.transitions
+        .get(&(current_state.to_string(), method.to_string()))
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "typestate violation: cannot call `{}` on `{}` in state `{}`",
+                method, struct_name, current_state
+            )
+        })
+}
+
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    install(collect());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_protocol_validates_close_after_open() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "File",
+            crate::feature_attrs::AttrRecord {
+                name: "typestate".into(),
+                args: r#"states = "Closed Open", transitions = "Closed:open->Open Open:close->Closed""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert_eq!(
+            validate_call("File", "Closed", "open").unwrap(),
+            "Open".to_string()
+        );
+        assert!(validate_call("File", "Closed", "close").is_err());
+        crate::feature_attrs::reset();
+    }
+}
