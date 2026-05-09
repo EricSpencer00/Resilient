@@ -174,6 +174,8 @@ pub fn is_known_attribute(name: &str) -> bool {
             | "ghost_fn"
             | "blame"
             | "version"
+            | "ai_review_required"
+            | "lean_spec"
     )
 }
 

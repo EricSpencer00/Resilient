@@ -402,6 +402,7 @@ mod capabilities;
 // 50-feature missing-language-features pass — shared attribute registry
 // and 50 new feature modules. See feature_attrs.rs for the registry,
 // and the per-feature module docs for what each does.
+mod ai_threat_model;
 mod anti_regression;
 mod associated_constants;
 mod async_await;
@@ -430,6 +431,7 @@ mod info_flow;
 mod intent_blocks;
 mod iterator_protocol;
 mod labeled_break;
+mod lean_spec;
 mod lock_priority;
 mod macros;
 mod mmio_regmap;
@@ -26069,6 +26071,8 @@ pub fn run_cli() {
     // `--typecheck` so the fixpoint has run and `stats.fn_effects`
     // is populated.
     let mut explain_effects = false;
+    let mut ai_threats_mode = false;
+    let mut emit_lean_spec_fn: Option<String> = None;
     let mut emit_cert_dir: Option<PathBuf> = None;
     // RES-194: Ed25519 signing key — when present, the driver
     // writes `cert.sig` alongside the `.smt2` files.
@@ -26169,6 +26173,29 @@ pub fn run_cli() {
                 // RES-347: dump one line per user fn with its
                 // inferred effect. Implies --typecheck.
                 explain_effects = true;
+            } else if arg == "--ai-threats" {
+                // 50+: dump every detected AI failure-mode pattern in
+                // the program — off-by-one, swallowed errors, magic
+                // numbers, hallucinated identifiers, etc. Soft: prints
+                // a report and exits 0 even with violations. The hard
+                // gate is the `#[ai_review_required]` attribute on a
+                // function; that path is enforced by typechecker.
+                ai_threats_mode = true;
+            } else if arg == "--emit-lean-spec" {
+                // 50+: emit a Lean 4 theorem for the named function.
+                // The output is printed to stdout and is intended to
+                // be saved into `resilient/lean-spec/Resilient/Generated/`
+                // for `lake build` to verify. Only pure-arithmetic
+                // single-return fns lower cleanly; others print a
+                // diagnostic and exit nonzero.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --emit-lean-spec requires a function name");
+                    std::process::exit(2);
+                }
+                emit_lean_spec_fn = Some(args[i].clone());
+            } else if let Some(name) = arg.strip_prefix("--emit-lean-spec=") {
+                emit_lean_spec_fn = Some(name.to_string());
             } else if arg == "--emit-certificate" {
                 // RES-071: --emit-certificate <DIR>
                 i += 1;
@@ -26445,6 +26472,62 @@ pub fn run_cli() {
                 Ok(src) => {
                     dump_tokens_to_stdout(&src);
                     return;
+                }
+                Err(e) => {
+                    eprintln!("Error: could not read {}: {}", filename, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if ai_threats_mode {
+            if filename.is_empty() {
+                eprintln!("Error: --ai-threats requires a path argument");
+                std::process::exit(2);
+            }
+            match fs::read_to_string(filename) {
+                Ok(src) => {
+                    let (program, errs) = parse(&src);
+                    if !errs.is_empty() {
+                        for e in errs {
+                            eprintln!("Parser error: {}", e);
+                        }
+                        std::process::exit(1);
+                    }
+                    println!("{}", crate::ai_threat_model::report(&program, filename));
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Error: could not read {}: {}", filename, e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        if let Some(fn_name) = emit_lean_spec_fn.as_deref() {
+            if filename.is_empty() {
+                eprintln!("Error: --emit-lean-spec requires a path argument");
+                std::process::exit(2);
+            }
+            match fs::read_to_string(filename) {
+                Ok(src) => {
+                    let (program, errs) = parse(&src);
+                    if !errs.is_empty() {
+                        for e in errs {
+                            eprintln!("Parser error: {}", e);
+                        }
+                        std::process::exit(1);
+                    }
+                    match crate::lean_spec::try_emit_for_fn(&program, fn_name) {
+                        Ok(lean) => {
+                            print!("{}", lean);
+                            return;
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error: could not read {}: {}", filename, e);

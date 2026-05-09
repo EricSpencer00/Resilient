@@ -131,6 +131,13 @@ The core answer to "I vibe-coded this app, how do I know it doesn't break?"
 | `fmt_validation` | Counts `{}` placeholders in `format()` calls; hard error on arity mismatch |
 | `no_panic_cert` | `#[no_panic]` — certifies absence of `unwrap`/`expect`/`panic` in a function |
 
+## Landed Post-PR-1076 — League-of-Its-Own Pass
+
+| Module | What it does |
+|--------|-------------|
+| `ai_threat_model` | Formal threat model for LLM failure modes — 10 detection passes, `--ai-threats` CLI, `#[ai_review_required]` hard gate |
+| `lean_spec` | Lean 4 operational semantics + per-function theorem emitter — `--emit-lean-spec=FN`, `lean-spec/` Lake project with proven `eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`, `eval_neg_involutive` |
+
 ## Partially Implemented
 
 | Feature | Ticket | Status |

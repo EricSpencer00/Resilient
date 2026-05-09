@@ -140,6 +140,36 @@ A unique cluster of analysis passes answers this question automatically:
 
 Run `rz --infer-contracts my_file.rz` to get contract suggestions for any function that lacks them.
 
+### AI-Aware Type System
+
+Resilient is the first production language with an explicit threat model for *its own contributors*. The premise: most code is now LLM-generated, and we don't trust the LLM. The compiler ships with a `--ai-threats` pass that catches the patterns that mark code as AI-generated-without-careful-review:
+
+| Pattern | What it catches |
+|---------|----------------|
+| `OffByOne` | `i <= len(arr)` — closes off the wrong end of a half-open range |
+| `MissedElse` | `if cond { return X; } CODE` — implicit fall-through with no `else` |
+| `SwallowedError` | `catch { }` — empty handler silently consumes errors |
+| `MagicNumber` | numeric literal > 1 outside a recognised "small constant" context |
+| `CopyPasteBlock` | two structurally-identical statement sequences within one fn |
+| `UnboundedLoop` | `while true { ... }` with no `break` reachable |
+| `GhostHandler` | error handler whose body is just a `println` or trivial `return` |
+| `HallucinatedIdent` | call to an identifier 1–2 edits away from a known builtin |
+| `NestedConditional` | three or more nested `if`-conditionals — flatten with `match` |
+| `SilentSwallow` | `try` body that fails, `catch` arm that returns a literal |
+
+Run `rz --ai-threats my_file.rz` for an advisory report, or annotate a function with `#[ai_review_required]` to make every threat in its body a hard compile error. See [docs/AI_THREAT_MODEL.md](docs/AI_THREAT_MODEL.md).
+
+### Lean-Proven Semantics
+
+Resilient ships its own operational semantics in Lean 4 at [`resilient/lean-spec/`](resilient/lean-spec/). For pure-arithmetic functions the compiler can emit a per-function Lean theorem stating that the AST means exactly what `eval` says it means:
+
+```bash
+rz --emit-lean-spec=double my_file.rz > lean-spec/Resilient/Generated/Double.lean
+cd lean-spec && lake build
+```
+
+Three theorems are proven up-front: `eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`. Each subsequent compiler optimisation pass can be discharged against the same `eval` relation. CompCert exists for C; **no embedded-targeted language has this**. See [docs/LEAN_SPEC.md](docs/LEAN_SPEC.md).
+
 ## Getting Started
 
 The shipped CLI is **`rz`** — short for Resilient, matches the `.rz` source extension.
