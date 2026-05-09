@@ -1,0 +1,21 @@
+// 50-feature pass — Refinement Types demo.
+//
+// `#[refinement(base = "int", where = "self > 0")]` declares a
+// refinement type. Value of type `PositiveInt` must satisfy the
+// predicate; the runtime guard `refine_int` enforces this.
+
+#[refinement(base = "int", where = "self > 0")]
+type PositiveInt = int;
+
+fn divide(int n, int d) -> int
+    requires d > 0
+{
+    return n / d;
+}
+
+fn main() {
+    println(divide(10, 2));
+    println(divide(20, 4));
+}
+
+main();

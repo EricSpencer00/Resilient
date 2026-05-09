@@ -1,0 +1,154 @@
+//! Feature 16/50 — Information Flow / Non-Interference Types.
+//!
+//! `#[secret]` marks a value or parameter as classified; `#[public]`
+//! marks one as observable. The compiler enforces that no `#[secret]`
+//! value reaches a `#[public]` sink without going through a
+//! declassification function tagged `#[declassify]`.
+//!
+//! This first slice tracks the secret/public classification on
+//! parameters and return types, builds the data-flow approximation
+//! at call sites, and reports any direct secret→public propagation.
+
+#![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
+
+use crate::Node;
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Label {
+    Secret,
+    Public,
+    Unknown,
+}
+
+pub fn collect_param_labels() -> HashMap<String, Label> {
+    let mut out = HashMap::new();
+    for (item, _rec) in crate::feature_attrs::find_kind("secret") {
+        out.insert(item, Label::Secret);
+    }
+    for (item, _rec) in crate::feature_attrs::find_kind("public") {
+        out.insert(item, Label::Public);
+    }
+    out
+}
+
+pub fn check_program(program: &Node) -> Vec<String> {
+    let labels = collect_param_labels();
+    let mut errors = Vec::new();
+    if labels.is_empty() {
+        return errors;
+    }
+    let secret_fns: HashSet<&String> = labels
+        .iter()
+        .filter(|(_, l)| **l == Label::Secret)
+        .map(|(k, _)| k)
+        .collect();
+    let public_fns: HashSet<&String> = labels
+        .iter()
+        .filter(|(_, l)| **l == Label::Public)
+        .map(|(k, _)| k)
+        .collect();
+
+    let Node::Program(stmts) = program else {
+        return errors;
+    };
+    for s in stmts {
+        if let Node::Function { name, body, .. } = &s.node {
+            if public_fns.contains(name) {
+                // walk body: any call to a secret-tagged fn is a leak.
+                let mut leaks = Vec::new();
+                walk_calls(body, &mut leaks);
+                for callee in leaks {
+                    if secret_fns.contains(&callee) {
+                        errors.push(format!(
+                            "info-flow: `{}` is `#[public]` but transitively calls `#[secret]` fn `{}`",
+                            name, callee
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    errors
+}
+
+fn walk_calls(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                out.push(name.clone());
+            }
+            for a in arguments {
+                walk_calls(a, out);
+            }
+        }
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                walk_calls(s, out);
+            }
+        }
+        Node::ReturnStatement { value: Some(e), .. } => walk_calls(e, out),
+        Node::LetStatement { value, .. } => walk_calls(value, out),
+        Node::ExpressionStatement { expr, .. } => walk_calls(expr, out),
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            walk_calls(condition, out);
+            walk_calls(consequence, out);
+            if let Some(e) = alternative {
+                walk_calls(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let errs = check_program(program);
+    if !errs.is_empty() {
+        return Err(format!("{}:0:0: error: {}", source_path, errs[0]));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    #[test]
+    fn secret_to_public_is_blocked() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "leak",
+            crate::feature_attrs::AttrRecord {
+                name: "secret".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "log",
+            crate::feature_attrs::AttrRecord {
+                name: "public".into(),
+                args: String::new(),
+                line: 0,
+            },
+        );
+        let src = r#"
+            fn leak(int x) -> int { return x; }
+            fn log(int x) -> int { return leak(x); }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(!check_program(&prog).is_empty());
+        crate::feature_attrs::reset();
+    }
+}

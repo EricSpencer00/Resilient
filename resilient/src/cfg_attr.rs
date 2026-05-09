@@ -207,7 +207,15 @@ pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
             return parser.parse_statement();
         }
     };
+    // 50-feature pass: any attribute name registered in `feature_attrs`
+    // is parsed permissively, recorded against the next item, and the
+    // gated item is kept (we don't strip — these attributes are
+    // declarative metadata, not conditional compilation). The parser
+    // walks the attribute body opaquely and stops at the matching `]`.
     if attr_name != "cfg" {
+        if crate::feature_attrs::is_known_attribute(&attr_name) {
+            return parse_feature_attribute(parser, attr_name);
+        }
         parser.record_error(format!(
             "unknown attribute `#[{}]`. Known: `#[cfg(...)]`",
             attr_name
@@ -260,6 +268,112 @@ pub fn parse_cfg_attribute(parser: &mut Parser) -> Option<crate::Node> {
         // happen later.
         let _ = parser.parse_statement();
         None
+    }
+}
+
+/// 50-feature pass: parse `#[name(args...)]` (or `#[name]`) for a
+/// known feature-registry attribute, record it against the next
+/// item's name (best-effort lookahead), and parse the gated item
+/// normally. This is intentionally permissive: each owning feature
+/// module re-parses the args string according to its own surface
+/// syntax in its later check pass, so we just capture the raw text
+/// here and let semantic errors surface in those passes.
+fn parse_feature_attribute(parser: &mut Parser, name: String) -> Option<crate::Node> {
+    parser.next_token(); // skip the attribute identifier
+
+    let mut args = String::new();
+    if matches!(parser.current_token, Token::LeftParen) {
+        parser.next_token(); // skip `(`
+        // Capture tokens until the matching `)`. We rebuild a string
+        // approximation; feature modules don't expect lossless source —
+        // they just need keyword-or-value identification.
+        let mut depth = 1;
+        while depth > 0 {
+            match &parser.current_token {
+                Token::Eof => break,
+                Token::LeftParen => {
+                    depth += 1;
+                    args.push('(');
+                }
+                Token::RightParen => {
+                    depth -= 1;
+                    if depth > 0 {
+                        args.push(')');
+                    }
+                }
+                Token::Comma => args.push(','),
+                Token::Assign => args.push('='),
+                Token::Identifier(n) => args.push_str(n),
+                Token::IntLiteral(i) => args.push_str(&i.to_string()),
+                Token::FloatLiteral(f) => args.push_str(&f.to_string()),
+                Token::StringLiteral(s) => {
+                    args.push('"');
+                    args.push_str(s);
+                    args.push('"');
+                }
+                Token::BoolLiteral(b) => args.push_str(if *b { "true" } else { "false" }),
+                Token::Greater => args.push('>'),
+                Token::Less => args.push('<'),
+                Token::GreaterEqual => args.push_str(">="),
+                Token::LessEqual => args.push_str("<="),
+                Token::Equal => args.push_str("=="),
+                Token::NotEqual => args.push_str("!="),
+                Token::Plus => args.push('+'),
+                Token::Minus => args.push('-'),
+                Token::Multiply => args.push('*'),
+                Token::Divide => args.push('/'),
+                Token::Arrow => args.push_str("->"),
+                Token::DoubleColon => args.push_str("::"),
+                _ => args.push(' '),
+            }
+            args.push(' ');
+            parser.next_token();
+        }
+    }
+
+    if !matches!(parser.current_token, Token::RightBracket) {
+        let tok = parser.current_token.clone();
+        parser.record_error(format!(
+            "expected `]` to close `#[{}(...)]`, found {}",
+            name, tok
+        ));
+        skip_until_close_bracket(parser);
+        return parser.parse_statement();
+    }
+    parser.next_token(); // skip `]`
+
+    // Parse the gated item, then peek into it to find the item's
+    // canonical name so we can key the registry entry. This is a
+    // best-effort lookup — anonymous statements don't get a key.
+    let item = parser.parse_statement();
+    if let Some(node) = &item
+        && let Some(item_name) = node_item_name(node)
+    {
+        crate::feature_attrs::record(
+            &item_name,
+            crate::feature_attrs::AttrRecord {
+                name,
+                args: args.trim().to_string(),
+                line: 0,
+            },
+        );
+    }
+    item
+}
+
+/// Best-effort: extract the declared name from a top-level node so the
+/// attribute registry can key its entry. Returns `None` for unnamed
+/// statements (let-bindings, expressions).
+fn node_item_name(node: &crate::Node) -> Option<String> {
+    match node {
+        crate::Node::Function { name, .. } => Some(name.clone()),
+        crate::Node::StructDecl { name, .. } => Some(name.clone()),
+        crate::Node::TypeAlias { name, .. } => Some(name.clone()),
+        crate::Node::NewtypeDecl { name, .. } => Some(name.clone()),
+        crate::Node::EnumDecl { name, .. } => Some(name.clone()),
+        crate::Node::TraitDecl { name, .. } => Some(name.clone()),
+        crate::Node::ActorDecl { name, .. } => Some(name.clone()),
+        _ => None,
     }
 }
 

@@ -1,0 +1,33 @@
+// 50-feature pass — Anti-Regression Contracts demo.
+//
+// `#[stable(since = "1.0", behavior = "<digest>")]` locks in the
+// observable behavior of `sensor_read`. If a future commit weakens
+// the postcondition or removes the contract entirely, the
+// behavioral fingerprint changes and CI fails the
+// `crate::anti_regression::check` pass.
+//
+// The example below uses a placeholder digest of 0; a real
+// pipeline would invoke the bundled `behavioral_fingerprint`
+// helper to compute the actual digest and pin it here.
+
+#[stable(since = "1.0", behavior = "0")]
+fn sensor_read(int raw) -> int
+    ensures result >= 0
+    ensures result <= 1024
+{
+    if raw < 0 {
+        return 0;
+    }
+    if raw > 1024 {
+        return 1024;
+    }
+    return raw;
+}
+
+fn main() {
+    println(sensor_read(500));
+    println(sensor_read(-1));
+    println(sensor_read(2000));
+}
+
+main();

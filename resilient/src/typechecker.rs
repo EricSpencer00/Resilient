@@ -3178,6 +3178,64 @@ impl TypeChecker {
                 crate::priority_inheritance::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #25: TOCTOU guard.
                 crate::toctou_guard::check(program, source_path)?;
+                // 50-feature missing-language-features pass.
+                // Each module owns one or more of the 50+1 features in
+                // the design doc; see per-module docs for what each
+                // does. Order is mostly independent (analysis-only
+                // passes), but blame_attribution must run before
+                // anti_regression so the latter has the call graph.
+                crate::resilience_score::check(program, source_path)?;
+                crate::vibe_debt::check(program, source_path)?;
+                crate::behavioral_fingerprint::check(program, source_path)?;
+                crate::contract_inference::check(program, source_path)?;
+                crate::semantic_regression::check(program, source_path)?;
+                crate::semver_behavior::check(program, source_path)?;
+                crate::blame_attribution::check(program, source_path)?;
+                crate::autopilot::check(program, source_path)?;
+                crate::crash_only_cert::check(program, source_path)?;
+                crate::intent_blocks::check(program, source_path)?;
+                crate::anti_regression::check(program, source_path)?;
+                crate::refinement_types::check(program, source_path)?;
+                crate::typestate_types::check(program, source_path)?;
+                crate::dependent_arrays::check(program, source_path)?;
+                crate::row_polymorphism::check(program, source_path)?;
+                crate::info_flow::check(program, source_path)?;
+                crate::phantom_types::check(program, source_path)?;
+                crate::recursive_types::check(program, source_path)?;
+                crate::deadlock_freedom::check(program, source_path)?;
+                crate::session_types::check(program, source_path)?;
+                crate::probabilistic_contracts::check(program, source_path)?;
+                crate::wcet_contracts::check(program, source_path)?;
+                crate::distributed_invariants::check(program, source_path)?;
+                crate::ghost_types::check(program, source_path)?;
+                crate::incremental_verify::check(program, source_path)?;
+                crate::property_tests::check(program, source_path)?;
+                crate::mmio_regmap::check(program, source_path)?;
+                crate::power_contracts::check(program, source_path)?;
+                crate::stack_contracts::check(program, source_path)?;
+                crate::no_alloc_cert::check(program, source_path)?;
+                crate::hw_state_machine::check(program, source_path)?;
+                crate::async_await::check(program, source_path)?;
+                crate::atomic_types::check(program, source_path)?;
+                crate::lock_priority::check(program, source_path)?;
+                crate::default_trait_methods::check(program, source_path)?;
+                crate::associated_constants::check(program, source_path)?;
+                crate::derives::check(program, source_path)?;
+                crate::const_fn::check(program, source_path)?;
+                crate::macros::check(program, source_path)?;
+                crate::full_modules::check(program, source_path)?;
+                crate::package_manager::check(program, source_path)?;
+                crate::iterator_protocol::check(program, source_path)?;
+                crate::mutation_testing::check(program, source_path)?;
+                crate::causal_trace::check(program, source_path)?;
+                crate::snapshot_regression::check(program, source_path)?;
+                crate::coverage_warnings::check(program, source_path)?;
+                crate::param_destructuring::check(program, source_path)?;
+                crate::format_builtin::check(program, source_path)?;
+                crate::struct_exhaustiveness::check(program, source_path)?;
+                crate::labeled_break::check(program, source_path)?;
+                crate::fmt_validation::check(program, source_path)?;
+                crate::no_panic_cert::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

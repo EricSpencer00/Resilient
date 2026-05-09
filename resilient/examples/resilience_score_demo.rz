@@ -1,0 +1,30 @@
+// 50-feature pass — Resilience Score demo.
+//
+// Two functions: one minimal, one richly specified. The
+// resilience-score analyzer grades each per the criteria in
+// resilient/src/resilience_score.rs.
+
+fn light(int x) {
+    return x;
+}
+
+pure fn heavy(int x, int y) -> int
+    requires x >= 0 && y >= 0
+    ensures result == x + y
+    ensures result >= 0
+{
+    let s = x + y;
+    return s;
+}
+
+fn caller(int dummy) {
+    let a = light(5);
+    let b = heavy(3, 4);
+    return a + b;
+}
+
+fn main() {
+    println(caller(0));
+}
+
+main();
