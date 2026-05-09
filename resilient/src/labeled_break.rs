@@ -35,14 +35,13 @@ pub fn analyze(program: &Node) -> Vec<DeepBreakWarning> {
 
 fn walk(node: &Node, fn_name: &str, depth: u32, out: &mut Vec<DeepBreakWarning>) {
     match node {
-        Node::Break { .. } | Node::Continue { .. } => {
-            if depth >= 3 {
-                out.push(DeepBreakWarning {
-                    function: fn_name.to_string(),
-                    depth,
-                });
-            }
+        Node::Break { .. } | Node::Continue { .. } if depth >= 3 => {
+            out.push(DeepBreakWarning {
+                function: fn_name.to_string(),
+                depth,
+            });
         }
+        Node::Break { .. } | Node::Continue { .. } => {}
         Node::WhileStatement { body, .. } | Node::ForInStatement { body, .. } => {
             walk(body, fn_name, depth + 1, out);
         }

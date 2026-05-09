@@ -82,15 +82,14 @@ fn generate_in(node: &Node, fn_name: &str, out: &mut Vec<Mutation>) {
             generate_in(left, fn_name, out);
             generate_in(right, fn_name, out);
         }
-        Node::IntegerLiteral { value, .. } => {
-            if *value == 0 {
-                out.push(Mutation {
-                    fn_name: fn_name.to_string(),
-                    kind: "literal".into(),
-                    description: "swap `0` -> `1`".into(),
-                });
-            }
+        Node::IntegerLiteral { value, .. } if *value == 0 => {
+            out.push(Mutation {
+                fn_name: fn_name.to_string(),
+                kind: "literal".into(),
+                description: "swap `0` -> `1`".into(),
+            });
         }
+        Node::IntegerLiteral { .. } => {}
         Node::BooleanLiteral { value, .. } => {
             out.push(Mutation {
                 fn_name: fn_name.to_string(),
