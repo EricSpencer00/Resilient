@@ -20105,12 +20105,17 @@ fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
 // Interpreter for executing Resilient programs
 //
 // Default tree-walking-interpreter call-depth limit. The previous value
-// (32) was too low for routine recursive algorithms — `fact(35)`, a
-// recursive walk of a small tree, etc. would all hit the guard before
-// the host stack came under any pressure. We cap conservatively at 256
-// by default (8× the previous limit, well below the host stack limit
-// even with the post-RES-911 per-frame footprint) and let users opt up
-// via the `RZ_MAX_CALL_DEPTH` environment variable.
+// (32 in every build) was too low for routine recursive algorithms —
+// `fact(35)`, a recursive walk of a small tree, etc. would all hit the
+// guard before the host stack came under any pressure. Release builds
+// now default to 256 (8× the old limit, ample headroom in any standard
+// host stack budget). Debug builds keep 32 because debug per-frame
+// footprint is several × larger than release and exceeds 8 MiB host
+// stacks at much lower depths. Both honour `RZ_MAX_CALL_DEPTH` so
+// users can opt up (or down) at runtime.
+#[cfg(debug_assertions)]
+const DEFAULT_INTERPRETER_CALL_DEPTH: usize = 32;
+#[cfg(not(debug_assertions))]
 const DEFAULT_INTERPRETER_CALL_DEPTH: usize = 256;
 
 /// Resolve the interpreter's max call depth. Reads `RZ_MAX_CALL_DEPTH`
@@ -37247,9 +37252,9 @@ mod tests {
         // guard plenty of runway to fire before the host stack runs
         // out. This test asserts the *safety property* — that runaway
         // recursion returns an error rather than crashing — not the
-        // absolute frame size. `count(1024)` exceeds the default depth
-        // limit (256) by 4× so the guard fires well before the host
-        // stack budget is touched.
+        // absolute frame size. `count(1000)` exceeds the debug-build
+        // default depth limit (32) by 30× so the guard fires well
+        // before the host stack budget is touched.
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
@@ -37258,7 +37263,7 @@ mod tests {
                         if n <= 0 { return 0; }
                         return 1 + count(n - 1);
                     }
-                    let r = count(1024);
+                    let r = count(1000);
                 "#;
                 let (p, errors) = parse(src);
                 assert!(errors.is_empty(), "{:?}", errors);
