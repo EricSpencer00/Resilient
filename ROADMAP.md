@@ -56,6 +56,8 @@ time, commit it, and only then move the post.
 | **G21** | FFI v1 (tree-walker + static registry) | ✅ Shipped 2026-04-19. RES-383 security audit landed 2026-04-29. |
 | **G22** | TLA+ model checking | ⏳ V2+ design locked — RES-396 (#270). Ship surface = V2.0 bridge (`rz tla check`) + V2.1 `@refines`. |
 | **G23** | 50-feature vibe-coded-resilience pass | ✅ PR #1076 — 51 new compiler modules. `resilience_score`, `vibe_debt`, `behavioral_fingerprint`, `contract_inference`, `anti_regression`, and 46 more. See `MISSING_FEATURES.md`. |
+| **G24** | AI-aware type system | ✅ `ai_threat_model` — 10 detections (`OffByOne`, `MissedElse`, `SwallowedError`, `MagicNumber`, `CopyPasteBlock`, `UnboundedLoop`, `GhostHandler`, `HallucinatedIdent`, `NestedConditional`, `SilentSwallow`). `--ai-threats` CLI + `#[ai_review_required]` hard gate. First production language with an explicit threat model for its own contributors. See `docs/AI_THREAT_MODEL.md`. |
+| **G25** | Lean-proven operational semantics | ✅ `lean-spec/` Lake project + Rust emitter `lean_spec`. Four proven theorems (`eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`, `eval_neg_involutive`). `--emit-lean-spec=FN` exports per-function theorems for downstream `lake build`. CompCert-class evidence bundle for safety-critical certification. See `docs/LEAN_SPEC.md`. |
 
 ### V2 ladder (post-V1 ship)
 
@@ -123,3 +125,14 @@ changelog entry below.
   `crash_only_cert`, `intent_blocks`, `anti_regression`) plus type-system innovations, verification,
   embedded/hardware, concurrency, ecosystem, and ergonomics features. See `MISSING_FEATURES.md`
   for the complete feature inventory.
+- 2026-05-09 — **G24 + G25 landed**: League-of-its-own pass.
+  G24 — `ai_threat_model` is the first production language with an explicit threat model
+  for its own contributors: 10 syntactic detections of LLM failure modes (`OffByOne`,
+  `MissedElse`, `SwallowedError`, `MagicNumber`, `CopyPasteBlock`, `UnboundedLoop`,
+  `GhostHandler`, `HallucinatedIdent`, `NestedConditional`, `SilentSwallow`),
+  `--ai-threats` advisory CLI, `#[ai_review_required]` hard gate.
+  G25 — `lean_spec` ships Resilient's operational semantics in Lean 4
+  (`resilient/lean-spec/` Lake project) with four proven theorems
+  (`eval_int_lit_id`, `eval_add_comm`, `eval_const_fold_sound`, `eval_neg_involutive`)
+  plus a Rust emitter that exports per-function correctness theorems via
+  `--emit-lean-spec=FN`. Foundation for tool qualification under DO-178C DAL-A.

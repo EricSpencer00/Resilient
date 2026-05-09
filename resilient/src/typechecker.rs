@@ -3236,6 +3236,8 @@ impl TypeChecker {
                 crate::labeled_break::check(program, source_path)?;
                 crate::fmt_validation::check(program, source_path)?;
                 crate::no_panic_cert::check(program, source_path)?;
+                crate::ai_threat_model::check(program, source_path)?;
+                crate::lean_spec::check(program, source_path)?;
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice

@@ -1,0 +1,24 @@
+// Lean Spec — demonstration program.
+//
+// Run with: rz --emit-lean-spec=double examples/lean_spec_demo.rz
+//
+// The compiler will print a Lean 4 theorem stating that `double`
+// evaluates to `x + x` under the operational semantics defined in
+// `resilient/lean-spec/Resilient/Semantics.lean`. The output can
+// be saved to a file under `lean-spec/Resilient/Generated/` for
+// `lake build` to verify.
+
+fn double(int x) -> int {
+    return x + x;
+}
+
+fn triple(int x) -> int {
+    return x + x + x;
+}
+
+fn main() {
+    println(double(5));
+    println(triple(5));
+}
+
+main();

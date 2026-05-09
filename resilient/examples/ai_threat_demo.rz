@@ -1,0 +1,20 @@
+// AI Threat Model — demonstration program.
+//
+// Run with: rz --ai-threats examples/ai_threat_demo.rz
+//
+// The compiler will report each AI failure-mode pattern present
+// in the file, with file:line:col, threat kind, and a suggested
+// mitigation. The program itself runs successfully — the threat
+// reporter is a soft, advisory pass.
+
+fn safe_add(int a, int b) -> int {
+    return a + b;
+}
+
+fn main() {
+    println(safe_add(2, 3));
+    println(safe_add(10, 20));
+    println(safe_add(100, 200));
+}
+
+main();
