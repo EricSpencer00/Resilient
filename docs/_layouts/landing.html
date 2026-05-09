@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="{{ site.lang | default: 'en' }}" class="rl-landing-html">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ page.title | default: site.title }} — {{ site.title }}</title>
+  <meta name="description" content="{{ page.description | default: site.description }}">
+
+  {% seo %}
+
+  <link rel="icon" type="image/png" href="{{ '/assets/images/logo-transparent.png' | relative_url }}">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://images.unsplash.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,200..700;1,9..144,200..700&family=Manrope:wght@200..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ '/assets/css/landing.css' | relative_url }}">
+</head>
+<body class="rl-landing">
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     NAV
+     ──────────────────────────────────────────────────────────────────────── -->
+<header class="rl-nav" data-theme="dark">
+  <div class="rl-nav__inner">
+    <a class="rl-nav__brand" href="{{ '/' | relative_url }}" aria-label="Resilient — home">
+      <img src="{{ '/assets/images/logo-transparent.png' | relative_url }}" alt="" class="rl-nav__mark">
+      <span class="rl-nav__wordmark">Resilient</span>
+    </a>
+
+    <nav class="rl-nav__links" aria-label="Primary">
+      <a href="{{ '/getting-started' | relative_url }}">Get started</a>
+      <a href="{{ '/syntax' | relative_url }}">Syntax</a>
+      <a href="{{ '/language-reference' | relative_url }}">Reference</a>
+      <a href="{{ '/certification' | relative_url }}">Certification</a>
+      <a href="{{ '/community' | relative_url }}">Community</a>
+    </nav>
+
+    <div class="rl-nav__aux">
+      <a class="rl-nav__pill" href="https://ericspencer.us/Resilient/playground/">Playground</a>
+      <a class="rl-nav__icon" href="https://github.com/EricSpencer00/Resilient" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path fill="currentColor" d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.36-3.88-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.69.08-.69 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.17a10.96 10.96 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.36-5.25 5.65.41.36.78 1.07.78 2.15v3.18c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     HERO
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-hero-v2">
+  <div class="rl-hero-v2__bg" aria-hidden="true">
+    <img src="https://images.unsplash.com/photo-1568209865332-a15790aed756?w=2200&q=80&auto=format&fit=crop" alt="" loading="eager" fetchpriority="high">
+    <div class="rl-hero-v2__bg-veil"></div>
+    <div class="rl-hero-v2__bg-grid"></div>
+  </div>
+
+  <div class="rl-hero-v2__rule">
+    <span>RESILIENT &nbsp;·&nbsp; v1.0 &nbsp;·&nbsp; MIT</span>
+    <span>EST. 2024 &nbsp;·&nbsp; CORTEX-M · RISC-V · X86_64</span>
+    <span>EDITION 01</span>
+  </div>
+
+  <div class="rl-hero-v2__inner">
+    <div class="rl-hero-v2__copy">
+      <p class="rl-hero-v2__eyebrow">A LANGUAGE FOR SAFETY&#8209;CRITICAL SYSTEMS</p>
+
+      <h1 class="rl-hero-v2__title">
+        Code that<br>
+        <em>holds the line.</em>
+      </h1>
+
+      <p class="rl-hero-v2__lede">
+        Resilient is a statically-typed, compiled language for software where
+        failure is not an option. Contracts are proven at compile time. Hardware
+        faults self&#8209;heal. The same source runs on a development laptop or
+        on a bare&#8209;metal microcontroller.
+      </p>
+
+      <div class="rl-hero-v2__cta">
+        <a class="rl-pill rl-pill--solid" href="{{ '/getting-started' | relative_url }}">
+          <span>Begin</span>
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M4 12h15m-5-5 5 5-5 5"/></svg>
+        </a>
+        <a class="rl-pill rl-pill--ghost" href="https://ericspencer.us/Resilient/playground/">
+          Open the Playground
+        </a>
+      </div>
+
+      <dl class="rl-hero-v2__facts">
+        <div><dt>Backends</dt><dd>Interpreter · VM · JIT</dd></div>
+        <div><dt>Verifier</dt><dd>Z3 / SMT-LIB2</dd></div>
+        <div><dt>Runtime</dt><dd><code>#![no_std]</code></dd></div>
+      </dl>
+    </div>
+
+    <div class="rl-hero-v2__panel">
+      <div class="rl-codeplate">
+        <div class="rl-codeplate__chrome">
+          <span class="rl-codeplate__dot rl-codeplate__dot--r"></span>
+          <span class="rl-codeplate__dot rl-codeplate__dot--y"></span>
+          <span class="rl-codeplate__dot rl-codeplate__dot--g"></span>
+          <span class="rl-codeplate__name">altitude_controller.rz</span>
+          <span class="rl-codeplate__badge">verified</span>
+        </div>
+<pre class="rl-codeplate__code"><span class="t-c">// Fault-tolerant flight controller</span>
+<span class="t-k">fn</span> <span class="t-f">read_pressure</span>(<span class="t-t">int</span> sensor_id) -&gt; <span class="t-t">float</span>
+    <span class="t-k">requires</span> sensor_id &gt;= <span class="t-n">0</span> &amp;&amp; sensor_id &lt; <span class="t-n">4</span>
+    <span class="t-k">ensures</span>  result &gt;= <span class="t-n">0.0</span> &amp;&amp; result &lt;= <span class="t-n">120_000.0</span>
+{
+    <span class="t-k">let</span> raw = hal::adc_read(sensor_id);
+    <span class="t-k">return</span> calibrate(raw, PRESSURE_CAL[sensor_id]);
+}
+
+<span class="t-k">fn</span> <span class="t-f">altitude_controller</span>() {
+    <span class="t-k">live</span> {
+        <span class="t-c">// transient faults auto-retry — no crash</span>
+        <span class="t-k">let</span> p   = read_pressure(PRIMARY_SENSOR);
+        <span class="t-k">let</span> alt = barometric_altitude(p);
+
+        <span class="t-k">assert</span>(alt &lt; MAX_ALTITUDE, <span class="t-s">"ceiling exceeded"</span>);
+        actuator::set_throttle(pid_update(alt));
+    }
+}</pre>
+        <div class="rl-codeplate__foot">
+          <span class="rl-codeplate__check">✓ contracts proved</span>
+          <span class="rl-codeplate__check">✓ no_std clean</span>
+          <span class="rl-codeplate__check">✓ &lt; 64 KiB .text</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rl-hero-v2__scroll" aria-hidden="true">
+    <span>scroll</span>
+    <svg viewBox="0 0 24 36" width="14" height="20"><rect x="1" y="1" width="22" height="34" rx="11" fill="none" stroke="currentColor" stroke-width="1"/><circle class="rl-scroll-dot" cx="12" cy="10" r="2" fill="currentColor"/></svg>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     MANIFESTO — editorial cream
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-manifesto">
+  <div class="rl-manifesto__inner">
+    <p class="rl-manifesto__index">§ 01 · The thesis</p>
+    <p class="rl-manifesto__lead">
+      Most languages assume the happy path. Resilient assumes the
+      <em>worst</em> path — and refuses to ship until you have proven your
+      software survives it.
+    </p>
+
+    <div class="rl-manifesto__cols">
+      <div>
+        <h3>Failure is a first-class concern</h3>
+        <p>A pacemaker may not throw. An anti&#8209;lock brake controller may not
+        leak memory. A reactor monitor may not panic. <em>Live blocks</em>
+        let your code expect transient faults, recover from them, and keep
+        the supervised state machine moving.</p>
+      </div>
+      <div>
+        <h3>Proof is preferred to prose</h3>
+        <p>Function contracts are not documentation — they are formal
+        obligations. Where the verifier can decide them, they are proven at
+        compile time and a re-checkable SMT&#8209;LIB2 certificate is
+        emitted. Where it cannot, they become typed runtime guards.</p>
+      </div>
+      <div>
+        <h3>The same source, dev laptop to bare metal</h3>
+        <p>No allocator. No exceptions. No panics in the default runtime.
+        The compiler emits binaries small enough for a Cortex&#8209;M0
+        and proofs strong enough for a DO&#8209;178C audit — from a single
+        source tree.</p>
+      </div>
+    </div>
+
+    <div class="rl-manifesto__rule">
+      <span>I.</span>
+      <span>II.</span>
+      <span>III.</span>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     LIVE BLOCK — dark cinematic
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-feature rl-feature--live">
+  <div class="rl-feature__media">
+    <img src="https://images.unsplash.com/photo-1571677763146-13da41719260?w=1800&q=80&auto=format&fit=crop" alt="Cockpit instrument panel at night" loading="lazy">
+    <div class="rl-feature__media-veil"></div>
+  </div>
+
+  <div class="rl-feature__inner">
+    <div class="rl-feature__copy">
+      <p class="rl-feature__index">§ 02 · The runtime primitive</p>
+      <h2 class="rl-feature__title">
+        <span class="rl-mono-tag">live { }</span><br>
+        <em>Failure becomes</em><br>
+        a state, not<br>
+        a stop.
+      </h2>
+      <p class="rl-feature__body">
+        Wrap critical code in a <code>live</code> block and the runtime
+        becomes its supervisor. A snapshot is captured on entry. A
+        recoverable fault — a transient ADC glitch, a momentary CAN&#8209;bus
+        dropout, a divide&#8209;by&#8209;zero from a bad reading — restores
+        state and retries. The watchdog never trips. The kernel never
+        panics. The mission keeps flying.
+      </p>
+      <a class="rl-link-arrow" href="{{ '/live-block-semantics' | relative_url }}">
+        Read the semantics <span aria-hidden="true">→</span>
+      </a>
+    </div>
+
+    <div class="rl-feature__diagram">
+      <div class="rl-flow">
+        <div class="rl-flow__step rl-flow__step--in">
+          <span class="rl-flow__num">01</span>
+          <span class="rl-flow__name">enter live</span>
+          <span class="rl-flow__sub">snapshot taken</span>
+        </div>
+        <div class="rl-flow__arrow"></div>
+        <div class="rl-flow__step rl-flow__step--exec">
+          <span class="rl-flow__num">02</span>
+          <span class="rl-flow__name">execute</span>
+          <span class="rl-flow__sub">supervised body</span>
+        </div>
+        <div class="rl-flow__branch">
+          <div class="rl-flow__branch-line"></div>
+          <div class="rl-flow__step rl-flow__step--ok">
+            <span class="rl-flow__num">03a</span>
+            <span class="rl-flow__name">commit</span>
+            <span class="rl-flow__sub">state advances</span>
+          </div>
+          <div class="rl-flow__step rl-flow__step--fault">
+            <span class="rl-flow__num">03b</span>
+            <span class="rl-flow__name">restore</span>
+            <span class="rl-flow__sub">retry once · or escalate</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     CONTRACTS — cream editorial
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-contracts">
+  <div class="rl-contracts__inner">
+    <p class="rl-contracts__index">§ 03 · The compile-time contract</p>
+    <h2 class="rl-contracts__title">
+      Write the&nbsp;<em>obligation.</em><br>
+      The compiler decides<br>
+      who must honor it.
+    </h2>
+
+    <div class="rl-contracts__split">
+      <div class="rl-contracts__codeside">
+        <div class="rl-codeplate rl-codeplate--light">
+          <div class="rl-codeplate__chrome">
+            <span class="rl-codeplate__name">infusion_pump.rz</span>
+            <span class="rl-codeplate__badge rl-codeplate__badge--proved">proved</span>
+          </div>
+<pre class="rl-codeplate__code"><span class="t-k">fn</span> <span class="t-f">deliver_dose</span>(<span class="t-t">float</span> ml_per_hr, <span class="t-t">int</span> seconds)
+    <span class="t-k">requires</span> ml_per_hr &gt;= <span class="t-n">0.1</span> &amp;&amp; ml_per_hr &lt;= <span class="t-n">300.0</span>
+    <span class="t-k">requires</span> seconds  &gt; <span class="t-n">0</span>     &amp;&amp; seconds  &lt;= <span class="t-n">86_400</span>
+    <span class="t-k">ensures</span>  total_ml(result) &lt;= MAX_DAILY_ML
+{
+    <span class="t-k">let</span> total = ml_per_hr * (seconds <span class="t-k">as</span> <span class="t-t">float</span>) / <span class="t-n">3600.0</span>;
+    pump::dispense(total);
+    <span class="t-k">return</span> Dose { ml: total };
+}</pre>
+        </div>
+
+        <div class="rl-terminal-v2">
+          <div class="rl-terminal-v2__prompt">$ rz --audit infusion_pump.rz</div>
+<pre class="rl-terminal-v2__out"><span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">requires</span>  ml_per_hr ∈ [0.1, 300.0]    <span class="t-mu">proved</span>
+<span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">requires</span>  seconds   ∈ (0, 86_400]   <span class="t-mu">proved</span>
+<span class="t-ok">✓</span>  <span class="t-pa">deliver_dose</span>  <span class="t-k">ensures</span>   total_ml ≤ MAX_DAILY_ML <span class="t-mu">proved</span>
+
+<span class="t-cert">→</span>  <span class="t-mu">certificate emitted at</span> ./certs/infusion_pump.smtlib2
+<span class="t-cert">→</span>  <span class="t-mu">re-checkable under any SMT solver</span></pre>
+        </div>
+      </div>
+
+      <div class="rl-contracts__copy">
+        <p class="rl-contracts__lede">
+          <code>requires</code> states what must hold on entry.
+          <code>ensures</code> states what holds on exit. The Z3 backend
+          decides them statically when it can — and emits an SMT&#8209;LIB2
+          certificate so a downstream auditor can re&#8209;verify under
+          their own solver of record.
+        </p>
+
+        <ul class="rl-contracts__list">
+          <li>
+            <span class="rl-contracts__bullet">P</span>
+            <div>
+              <strong>Proven</strong>
+              <span>Discharged at compile time. Zero runtime cost.</span>
+            </div>
+          </li>
+          <li>
+            <span class="rl-contracts__bullet">G</span>
+            <div>
+              <strong>Guarded</strong>
+              <span>Where the verifier can&rsquo;t decide, contracts become typed runtime asserts. Never silently ignored.</span>
+            </div>
+          </li>
+          <li>
+            <span class="rl-contracts__bullet">C</span>
+            <div>
+              <strong>Certified</strong>
+              <span>Every proof is exportable as SMT&#8209;LIB2 — auditable under your own solver of record.</span>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     PERFORMANCE — dark
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-perf">
+  <div class="rl-perf__inner">
+    <p class="rl-perf__index">§ 04 · The numbers</p>
+    <h2 class="rl-perf__title">Three execution paths.<br><em>One source tree.</em></h2>
+
+    <div class="rl-perf__grid">
+      <article class="rl-perf__card">
+        <div class="rl-perf__num">1×</div>
+        <div class="rl-perf__name">Tree-walking interpreter</div>
+        <div class="rl-perf__cmd">rz prog.rz</div>
+        <p class="rl-perf__note">For fast iteration, REPL work, and the test loop. Zero build steps; instant feedback.</p>
+      </article>
+      <article class="rl-perf__card rl-perf__card--mid">
+        <div class="rl-perf__num">12×</div>
+        <div class="rl-perf__name">Bytecode VM</div>
+        <div class="rl-perf__cmd">rz --vm prog.rz</div>
+        <p class="rl-perf__note">A compact, deterministic register machine. Ideal for embedded targets that don&rsquo;t need a JIT.</p>
+      </article>
+      <article class="rl-perf__card rl-perf__card--top">
+        <div class="rl-perf__num">145×</div>
+        <div class="rl-perf__name">Cranelift JIT</div>
+        <div class="rl-perf__cmd">rz --jit prog.rz</div>
+        <p class="rl-perf__note">Within <strong>1.4×</strong> of native Rust on the standard suite. Same source, native speed.</p>
+      </article>
+    </div>
+
+    <p class="rl-perf__foot">
+      Benchmarks measured on M1 Max, fib(25). <a href="{{ '/performance' | relative_url }}">Methodology &amp; raw numbers →</a>
+    </p>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     TARGETS — image grid
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-targets">
+  <div class="rl-targets__head">
+    <p class="rl-targets__index">§ 05 · Where it runs</p>
+    <h2 class="rl-targets__title">
+      From&nbsp;a&nbsp;laptop<br>
+      to&nbsp;<em>bare&nbsp;silicon.</em>
+    </h2>
+    <p class="rl-targets__lede">
+      The <code>resilient-runtime</code> crate is <code>#![no_std]</code> by
+      default — zero allocator, zero panics, zero <code>std</code>. Cross&#8209;compile
+      gates run on every commit, and the Cortex&#8209;M4F demo enforces a
+      <strong>64 KiB</strong> .text budget that has never regressed.
+    </p>
+  </div>
+
+  <div class="rl-targets__grid">
+    <article class="rl-target">
+      <div class="rl-target__media">
+        <img src="https://images.unsplash.com/photo-1494083306499-e22e4a457632?w=900&q=80&auto=format&fit=crop" alt="Microchip macro" loading="lazy">
+      </div>
+      <div class="rl-target__body">
+        <p class="rl-target__triplet">CORTEX-M4F</p>
+        <h3>thumbv7em-none-eabihf</h3>
+        <p>The flagship embedded target. Hard&#8209;float ABI, .text ≤ 64 KiB, gated on every PR via the <code>resilient-runtime-cortex-m-demo</code> crate.</p>
+      </div>
+    </article>
+
+    <article class="rl-target">
+      <div class="rl-target__media">
+        <img src="https://images.unsplash.com/photo-1562408590-e32931084e23?w=900&q=80&auto=format&fit=crop" alt="Circuit board" loading="lazy">
+      </div>
+      <div class="rl-target__body">
+        <p class="rl-target__triplet">CORTEX-M0+</p>
+        <h3>thumbv6m-none-eabi</h3>
+        <p>The smallest supervised target — soft&#8209;float, sub&#8209;100&nbsp;MHz cores. Live blocks compile away to ~80 bytes of supervisor stub per site.</p>
+      </div>
+    </article>
+
+    <article class="rl-target">
+      <div class="rl-target__media">
+        <img src="https://images.unsplash.com/photo-1517976487492-5750f3195933?w=900&q=80&auto=format&fit=crop" alt="Spacecraft launch" loading="lazy">
+      </div>
+      <div class="rl-target__body">
+        <p class="rl-target__triplet">RV32IMAC</p>
+        <h3>riscv32imac-unknown-none-elf</h3>
+        <p>RISC&#8209;V baseline with atomics &amp; compressed insts. Open ISA, fully supervised — a fit for new&#8209;build avionics and reactor monitors.</p>
+      </div>
+    </article>
+
+    <article class="rl-target">
+      <div class="rl-target__media">
+        <img src="https://images.unsplash.com/photo-1568209865332-a15790aed756?w=900&q=80&auto=format&fit=crop" alt="Microchip golden" loading="lazy">
+      </div>
+      <div class="rl-target__body">
+        <p class="rl-target__triplet">x86_64 · aarch64</p>
+        <h3>development &amp; simulation</h3>
+        <p>The same source the satellite ships runs in your editor. <code>cargo test</code> on host. <code>rz --jit</code> for hot iteration. Bit&#8209;for&#8209;bit determinism with the embedded VM.</p>
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     STANDARDS — cream
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-standards">
+  <div class="rl-standards__inner">
+    <p class="rl-standards__index">§ 06 · The standards</p>
+    <h2 class="rl-standards__title">
+      Mapped, objective by objective,<br>
+      to the regimes that audit you.
+    </h2>
+    <p class="rl-standards__lede">
+      Resilient is not itself a certified tool. Its surface is mapped, line by
+      line, to the objectives that the major safety regimes enforce — so the
+      qualification kit you build downstream begins from a defensible
+      starting point, not a clean&#8209;sheet defense.
+    </p>
+
+    <div class="rl-standards__grid">
+      <a class="rl-standard" href="{{ '/standards/do-178c' | relative_url }}">
+        <p class="rl-standard__sector">Avionics</p>
+        <h3 class="rl-standard__name">DO-178C</h3>
+        <p class="rl-standard__desc">Software considerations in airborne systems. Maps to A&#8209;1 through A&#8209;7 objective tables for Levels A &amp; B.</p>
+        <span class="rl-standard__cta">View mapping →</span>
+      </a>
+      <a class="rl-standard" href="{{ '/standards/iso-26262' | relative_url }}">
+        <p class="rl-standard__sector">Automotive</p>
+        <h3 class="rl-standard__name">ISO 26262</h3>
+        <p class="rl-standard__desc">Functional safety for road vehicles. Mapping covers ASIL D software — Part 6, Tables 1–10.</p>
+        <span class="rl-standard__cta">View mapping →</span>
+      </a>
+      <a class="rl-standard" href="{{ '/standards/iec-62304' | relative_url }}">
+        <p class="rl-standard__sector">Medical</p>
+        <h3 class="rl-standard__name">IEC 62304</h3>
+        <p class="rl-standard__desc">Medical device software lifecycle. Class C software — pacemakers, infusion pumps, ventilators.</p>
+        <span class="rl-standard__cta">View mapping →</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     COMPARE — narrow strip
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-compare">
+  <div class="rl-compare__inner">
+    <p class="rl-compare__index">§ 07 · Already in a regime?</p>
+    <div class="rl-compare__row">
+      <a class="rl-compare__card" href="{{ '/compare/rust-vs-resilient' | relative_url }}">
+        <span class="rl-compare__from">embedded-Rust</span>
+        <span class="rl-compare__arrow">→</span>
+        <span class="rl-compare__to">Resilient</span>
+        <span class="rl-compare__why">Sharper compile&#8209;time guarantees without losing the borrow story.</span>
+      </a>
+      <a class="rl-compare__card" href="{{ '/compare/ada-spark-vs-resilient' | relative_url }}">
+        <span class="rl-compare__from">Ada · SPARK</span>
+        <span class="rl-compare__arrow">→</span>
+        <span class="rl-compare__to">Resilient</span>
+        <span class="rl-compare__why">Modern syntax, exportable certificates, friendlier toolchain.</span>
+      </a>
+      <a class="rl-compare__card" href="{{ '/compare/misra-c-vs-resilient' | relative_url }}">
+        <span class="rl-compare__from">MISRA C</span>
+        <span class="rl-compare__arrow">→</span>
+        <span class="rl-compare__to">Resilient</span>
+        <span class="rl-compare__why">Past the limits of MISRA C:2012 without leaving the safety envelope.</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     CTA
+     ──────────────────────────────────────────────────────────────────────── -->
+<section class="rl-cta">
+  <div class="rl-cta__bg" aria-hidden="true">
+    <img src="https://images.unsplash.com/photo-1454789548928-9efd52dc4031?w=2200&q=80&auto=format&fit=crop" alt="" loading="lazy">
+    <div class="rl-cta__veil"></div>
+  </div>
+  <div class="rl-cta__inner">
+    <p class="rl-cta__index">§ 08 · Begin</p>
+    <h2 class="rl-cta__title">
+      Pick&nbsp;up&nbsp;the&nbsp;compiler.<br>
+      <em>Prove your first contract<br>in five minutes.</em>
+    </h2>
+
+    <div class="rl-cta__install">
+      <span class="rl-cta__prompt">$</span>
+<pre class="rl-cta__cmd">git clone https://github.com/EricSpencer00/Resilient.git
+cd Resilient &amp;&amp; cargo install --path resilient
+rz examples/altitude_controller.rz</pre>
+      <button class="rl-cta__copy" aria-label="Copy install command">copy</button>
+    </div>
+
+    <div class="rl-cta__paths">
+      <a class="rl-cta__path" href="{{ '/getting-started' | relative_url }}">
+        <span class="rl-cta__num">01</span>
+        <span class="rl-cta__pathname">Getting started</span>
+        <span class="rl-cta__pathnote">Installation, hello world, and a first contract.</span>
+      </a>
+      <a class="rl-cta__path" href="https://ericspencer.us/Resilient/playground/">
+        <span class="rl-cta__num">02</span>
+        <span class="rl-cta__pathname">Try in the browser</span>
+        <span class="rl-cta__pathnote">A WebAssembly-hosted playground. No install required.</span>
+      </a>
+      <a class="rl-cta__path" href="https://github.com/EricSpencer00/Resilient-examples">
+        <span class="rl-cta__num">03</span>
+        <span class="rl-cta__pathname">Read mission code</span>
+        <span class="rl-cta__pathnote">Pacemaker, ABS, infusion pump, reactor monitor — full source.</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────────────
+     FOOTER
+     ──────────────────────────────────────────────────────────────────────── -->
+<footer class="rl-foot">
+  <div class="rl-foot__inner">
+    <div class="rl-foot__brand">
+      <img src="{{ '/assets/images/logo-transparent.png' | relative_url }}" alt="" class="rl-foot__mark">
+      <p class="rl-foot__motto">
+        Resilient is built one ticket at a time. AI agents and humans contribute side&#8209;by&#8209;side. The CI suite is the merge gate.
+      </p>
+    </div>
+
+    <div class="rl-foot__cols">
+      <div>
+        <h4>Language</h4>
+        <a href="{{ '/syntax' | relative_url }}">Syntax</a>
+        <a href="{{ '/language-reference' | relative_url }}">Reference</a>
+        <a href="{{ '/memory-model' | relative_url }}">Memory model</a>
+        <a href="{{ '/no-std' | relative_url }}">no_std runtime</a>
+      </div>
+      <div>
+        <h4>Verify</h4>
+        <a href="{{ '/certification' | relative_url }}">Certification</a>
+        <a href="{{ '/standards/do-178c' | relative_url }}">DO-178C</a>
+        <a href="{{ '/standards/iso-26262' | relative_url }}">ISO 26262</a>
+        <a href="{{ '/standards/iec-62304' | relative_url }}">IEC 62304</a>
+      </div>
+      <div>
+        <h4>Tooling</h4>
+        <a href="{{ '/tooling' | relative_url }}">CLI</a>
+        <a href="{{ '/lsp' | relative_url }}">LSP</a>
+        <a href="https://ericspencer.us/Resilient/playground/">Playground</a>
+        <a href="{{ '/performance' | relative_url }}">Benchmarks</a>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <a href="https://github.com/EricSpencer00/Resilient">GitHub</a>
+        <a href="https://github.com/EricSpencer00/Resilient/issues">Issues</a>
+        <a href="{{ '/contributing' | relative_url }}">Contributing</a>
+        <a href="{{ '/community' | relative_url }}">Community</a>
+      </div>
+    </div>
+
+    <div class="rl-foot__base">
+      <span>© {{ 'now' | date: '%Y' }} Eric Spencer &middot; MIT License</span>
+      <span>Photography: <a href="https://unsplash.com/license">Unsplash License</a></span>
+      <span>Resilient v1.0</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Copy install command on the CTA button.
+  (function() {
+    var btn = document.querySelector('.rl-cta__copy');
+    var cmd = document.querySelector('.rl-cta__cmd');
+    if (!btn || !cmd) return;
+    btn.addEventListener('click', function() {
+      navigator.clipboard.writeText(cmd.innerText).then(function() {
+        btn.textContent = 'copied';
+        setTimeout(function() { btn.textContent = 'copy'; }, 1400);
+      });
+    });
+  })();
+
+  // Sticky-nav contrast: the nav switches from glass-on-dark to glass-on-light
+  // depending on which section is in view, so it stays legible across the
+  // alternating hero/manifesto/feature sections without a hard color change.
+  (function() {
+    var nav = document.querySelector('.rl-nav');
+    if (!nav) return;
+    var lights = document.querySelectorAll('.rl-manifesto, .rl-contracts, .rl-standards, .rl-compare');
+    function update() {
+      var y = window.scrollY + 30;
+      var onLight = false;
+      lights.forEach(function(el) {
+        var top = el.offsetTop;
+        var bot = top + el.offsetHeight;
+        if (y >= top && y < bot) onLight = true;
+      });
+      nav.dataset.theme = onLight ? 'light' : 'dark';
+    }
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+  })();
+</script>
+
+</body>
+</html>
