@@ -160,10 +160,12 @@ enum Tok {
     BlockComment,
 
     // --- literals ---
-    // Hex / binary int literals (with `_` digit separators). Priority
-    // is bumped so `0x10` never decomposes into `Int(0) Ident("x10")`.
+    // Hex / octal / binary int literals (with `_` digit separators).
+    // Priority is bumped so `0x10` never decomposes into `Int(0) Ident("x10")`.
     #[regex(r"0[xX][0-9a-fA-F_]+", hex_int, priority = 3)]
     HexInt(i64),
+    #[regex(r"0[oO][0-7_]+", oct_int, priority = 3)]
+    OctInt(i64),
     #[regex(r"0[bB][01_]+", bin_int, priority = 3)]
     BinInt(i64),
     // Float literal — `1.2`, `1.`, plus RES-906 scientific notation
@@ -352,6 +354,11 @@ fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     Some(i64::from_str_radix(&body, 2).unwrap_or(0))
 }
 
+fn oct_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
+    let body = lex.slice()[2..].replace('_', "");
+    Some(i64::from_str_radix(&body, 8).unwrap_or(0))
+}
+
 /// RES-909: decimal int literal with optional `_` separators.
 fn int_lit(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
     let slice = lex.slice();
@@ -525,14 +532,26 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
 }
 
 fn block_comment(lex: &mut logos::Lexer<Tok>) -> logos::Skip {
-    // `lex.slice()` already covered the opening `/*`; scan the
-    // remainder for the first `*/` and bump past it. On EOF without
-    // a closer, consume to end of input so the lexer stops.
-    let rem = lex.remainder();
-    match rem.find("*/") {
-        Some(end) => lex.bump(end + 2),
-        None => lex.bump(rem.len()),
+    // `lex.slice()` already covered the opening `/*`; walk the
+    // remainder and consume bytes until the matching closer is found,
+    // tracking nesting depth so `/* /* */ */` requires two closings.
+    // On EOF without a complete close, consume to end of input so the
+    // lexer stops.
+    let rem = lex.remainder().as_bytes();
+    let mut i = 0usize;
+    let mut depth: usize = 1;
+    while i < rem.len() && depth > 0 {
+        if i + 1 < rem.len() && rem[i] == b'*' && rem[i + 1] == b'/' {
+            depth -= 1;
+            i += 2;
+        } else if i + 1 < rem.len() && rem[i] == b'/' && rem[i + 1] == b'*' {
+            depth += 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
     }
+    lex.bump(i);
     logos::Skip
 }
 
@@ -753,6 +772,7 @@ fn convert(t: Tok) -> Token {
         Tok::DoubleQuestion => Token::DoubleQuestion,
         Tok::At => Token::At,
         Tok::HexInt(n) => Token::IntLiteral(n),
+        Tok::OctInt(n) => Token::IntLiteral(n),
         Tok::BinInt(n) => Token::IntLiteral(n),
         Tok::Int(n) => Token::IntLiteral(n),
         Tok::Float(f) => Token::FloatLiteral(f),

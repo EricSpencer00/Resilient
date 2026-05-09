@@ -2,11 +2,13 @@
 // sinh (RES-896). std-only; float-in / float-out per RES-130.
 
 fn main(int _d) {
-    println(asinh(0.0));                  // 0
-    // sinh(asinh(x)) = x for any real x.
-    println(sinh(asinh(2.5)));            // 2.5
-    // asinh is odd: asinh(x) + asinh(-x) cancels.
-    println(asinh(3.0) + asinh(-3.0));    // 0
+    println(asinh(0.0));                                     // 0
+    // sinh(asinh(x)) = x for any real x. Round to one decimal
+    // because the IEEE 754 round-trip may differ from x by a
+    // few ulps (e.g. `sinh(asinh(2.5))` lands at 2.5000…004).
+    println(floor(sinh(asinh(2.5)) * 10.0 + 0.5) / 10.0);    // 2.5
+    // asinh is odd: asinh(x) + asinh(-x) cancels exactly.
+    println(asinh(3.0) + asinh(-3.0));                       // 0
 
     return 0;
 }

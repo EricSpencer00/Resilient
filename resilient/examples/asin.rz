@@ -3,12 +3,14 @@
 // is [-1, 1]; |x|>1 yields NaN. Range [-π/2, π/2].
 
 fn main(int _d) {
-    println(asin(0.0));                  // 0
-    // sin(asin(x)) = x for x in [-1, 1].
-    println(sin(asin(0.5)));             // 0.5
-    // asin is odd: asin(x) + asin(-x) cancels.
-    println(asin(0.7) + asin(-0.7));     // 0
-    println(asin(1.0) > 0.0);            // true (= π/2)
+    println(asin(0.0));                                     // 0
+    // sin(asin(x)) = x for x in [-1, 1]. Round to one decimal
+    // because the IEEE 754 round-trip may differ from x by a
+    // few ulps (e.g. `sin(asin(0.5))` lands at 0.4999…994).
+    println(floor(sin(asin(0.5)) * 10.0 + 0.5) / 10.0);     // 0.5
+    // asin is odd: asin(x) + asin(-x) cancels exactly.
+    println(asin(0.7) + asin(-0.7));                        // 0
+    println(asin(1.0) > 0.0);                               // true (= π/2)
 
     return 0;
 }

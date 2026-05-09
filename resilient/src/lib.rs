@@ -1099,21 +1099,30 @@ impl Lexer {
                     }
                     return self.next_token();
                 } else if self.peek_char() == '*' {
-                    // Block comment: skip to '*/' (non-nesting).
-                    self.read_char(); // consume first '*'
-                    self.read_char(); // advance past it
-                    loop {
+                    // Block comment: skip to matching '*/'. Nested comments
+                    // are supported — `/* /* */ */` requires two closings.
+                    // On EOF inside an open block, return `Eof` so the
+                    // parser produces a clean unexpected-EOF diagnostic
+                    // rather than an "unrecognized character `*`" red
+                    // herring.
+                    self.read_char(); // consume first '/'
+                    self.read_char(); // advance past '*'
+                    let mut depth: usize = 1;
+                    while depth > 0 {
                         if self.ch == '\0' {
-                            // Unterminated block comment — record a lexer
-                            // error and stop; return Eof so parser stops.
-                            return Token::Unknown('*');
+                            return Token::Eof;
                         }
                         if self.ch == '*' && self.peek_char() == '/' {
                             self.read_char(); // '*'
                             self.read_char(); // '/'
-                            break;
+                            depth -= 1;
+                        } else if self.ch == '/' && self.peek_char() == '*' {
+                            self.read_char(); // '/'
+                            self.read_char(); // '*'
+                            depth += 1;
+                        } else {
+                            self.read_char();
                         }
-                        self.read_char();
                     }
                     return self.next_token();
                 } else if self.peek_char() == '=' {
@@ -1387,9 +1396,12 @@ impl Lexer {
     }
 
     fn read_number(&mut self) -> Token {
-        // Hex (0x...) and binary (0b...) integer literals first.
+        // Hex (0x...), octal (0o...), and binary (0b...) integer literals first.
         if self.ch == '0' && (self.peek_char() == 'x' || self.peek_char() == 'X') {
             return self.read_radix_number(16, "0x");
+        }
+        if self.ch == '0' && (self.peek_char() == 'o' || self.peek_char() == 'O') {
+            return self.read_radix_number(8, "0o");
         }
         if self.ch == '0' && (self.peek_char() == 'b' || self.peek_char() == 'B') {
             return self.read_radix_number(2, "0b");
@@ -20091,7 +20103,34 @@ fn sb_struct(buf: String, cap: i64, overflow: bool) -> Value {
 }
 
 // Interpreter for executing Resilient programs
-const MAX_INTERPRETER_CALL_DEPTH: usize = 32;
+//
+// Default tree-walking-interpreter call-depth limit. The previous value
+// (32 in every build) was too low for routine recursive algorithms —
+// `fact(35)`, a recursive walk of a small tree, etc. would all hit the
+// guard before the host stack came under any pressure. Release builds
+// now default to 256 (8× the old limit, ample headroom in any standard
+// host stack budget). Debug builds keep 32 because debug per-frame
+// footprint is several × larger than release and exceeds 8 MiB host
+// stacks at much lower depths. Both honour `RZ_MAX_CALL_DEPTH` so
+// users can opt up (or down) at runtime.
+#[cfg(debug_assertions)]
+const DEFAULT_INTERPRETER_CALL_DEPTH: usize = 32;
+#[cfg(not(debug_assertions))]
+const DEFAULT_INTERPRETER_CALL_DEPTH: usize = 256;
+
+/// Resolve the interpreter's max call depth. Reads `RZ_MAX_CALL_DEPTH`
+/// once on first call (cached in a `OnceLock`); falls back to the
+/// default when the variable is missing, unparsable, or zero.
+fn max_interpreter_call_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| {
+        std::env::var("RZ_MAX_CALL_DEPTH")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_INTERPRETER_CALL_DEPTH)
+    })
+}
 
 struct Interpreter {
     env: Environment,
@@ -22428,10 +22467,11 @@ impl Interpreter {
                 type_params,
                 fails,
             } => {
-                if self.call_depth >= MAX_INTERPRETER_CALL_DEPTH {
+                let max_depth = max_interpreter_call_depth();
+                if self.call_depth >= max_depth {
                     return Err(format!(
                         "maximum interpreter call depth exceeded at fn {} (limit {})",
-                        name, MAX_INTERPRETER_CALL_DEPTH
+                        name, max_depth
                     ));
                 }
                 // RES-050: env.clone() is now an Rc bump, not a deep
@@ -36579,6 +36619,20 @@ mod tests {
     }
 
     #[test]
+    fn octal_literals() {
+        // Closes #1082: `0o…` parses as base-8 with optional `_` separators,
+        // matching the existing hex (`0x…`) and binary (`0b…`) handling.
+        let (p, errors) = parse("let a = 0o10; let b = 0o777; let c = 0o7_5_5; let d = 0O20;");
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("a").unwrap(), Value::Int(8)));
+        assert!(matches!(interp.env.get("b").unwrap(), Value::Int(511)));
+        assert!(matches!(interp.env.get("c").unwrap(), Value::Int(493)));
+        assert!(matches!(interp.env.get("d").unwrap(), Value::Int(16)));
+    }
+
+    #[test]
     fn block_comments_are_stripped() {
         let src = "let /* inline */ x = /* another */ 42; /* trailing */";
         let (p, errors) = parse(src);
@@ -36593,6 +36647,27 @@ mod tests {
         let src = "let x = 1;\n/* line two\nand three */\nlet y = 2;";
         let (_p, errors) = parse(src);
         assert!(errors.is_empty(), "{:?}", errors);
+    }
+
+    #[test]
+    fn nested_block_comments() {
+        // Closes #1083: the lexer must track nesting depth so the
+        // first `*/` inside a nested comment doesn't terminate the
+        // outer block. Two `*/` are required to close `/* /* */ */`.
+        let src = "let /* outer /* inner */ still in comment */ x = 7;";
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(matches!(interp.env.get("x").unwrap(), Value::Int(7)));
+
+        // Two-deep nesting also works.
+        let src2 = "let y = /* a /* b /* c */ d */ e */ 13;";
+        let (p2, errors2) = parse(src2);
+        assert!(errors2.is_empty(), "{:?}", errors2);
+        let mut interp2 = Interpreter::new();
+        interp2.eval(&p2).unwrap();
+        assert!(matches!(interp2.env.get("y").unwrap(), Value::Int(13)));
     }
 
     #[test]
@@ -37174,10 +37249,12 @@ mod tests {
         // per-eval-frame stack footprint up enough that 8 MiB stopped
         // being a comfortable margin. 16 MiB is still well within any
         // hosted environment and gives the interpreter's call-depth
-        // guard (`MAX_INTERPRETER_CALL_DEPTH = 32`) plenty of runway to
-        // fire before the host stack runs out. This test asserts the
-        // *safety property* — that runaway recursion returns an error
-        // rather than crashing — not the absolute frame size.
+        // guard plenty of runway to fire before the host stack runs
+        // out. This test asserts the *safety property* — that runaway
+        // recursion returns an error rather than crashing — not the
+        // absolute frame size. `count(1000)` exceeds the debug-build
+        // default depth limit (32) by 30× so the guard fires well
+        // before the host stack budget is touched.
         let handle = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
