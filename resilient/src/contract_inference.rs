@@ -8,7 +8,7 @@
 //! * `requires p != 0` when `p` appears as a divisor in `a / p` or
 //!   `a % p` — division by zero is the canonical missing precondition.
 //! * `requires p >= 0` when `p` is the iteration bound of a `while`
-//!   or `for` whose body uses negative-overflow-unsafe arithmetic.
+//!   or `for` whose body uses arithmetic that may underflow on negatives.
 //! * `requires len(p) > 0` when `p[0]` is read without an explicit
 //!   bounds check.
 //! * `ensures result == X` when the body has exactly one `return X;`

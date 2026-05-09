@@ -98,12 +98,12 @@ mod tests {
 
     #[test]
     fn raw_int_return_fails_certification() {
-        let src = r#"fn unsafe_fn(int x) { return x; }"#;
+        let src = r#"fn risky_fn(int x) { return x; }"#;
         let (prog, _) = parse(src);
         if let Node::Program(stmts) = &prog {
             for s in stmts {
                 if let Node::Function { name, .. } = &s.node {
-                    if name == "unsafe_fn" {
+                    if name == "risky_fn" {
                         assert!(!is_crash_only_certified(&s.node));
                     }
                 }
