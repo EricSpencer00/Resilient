@@ -3069,6 +3069,22 @@ impl Parser {
                 self.record_error(msg);
                 None
             }
+            // RES-1084: orphan closing brackets at statement-start
+            // are an unbalanced-delimiter indicator (an extra `}`
+            // outside any block, or a stray `)` / `]`). Without an
+            // explicit arm here, the fallthrough drops them
+            // silently because `parse_expression` returns `None`
+            // for closing tokens. Record a clean diagnostic so the
+            // user sees the unbalanced brace instead of getting a
+            // green compile on broken source.
+            Token::RightBrace | Token::RightParen | Token::RightBracket => {
+                let tok = self.current_token.clone();
+                self.record_error(format!(
+                    "unexpected {} at statement start — no enclosing block",
+                    tok
+                ));
+                None
+            }
             // RES-390: contextual keywords `actor` / `cluster`. Both
             // are recognised only at the top of a statement when
             // followed by an identifier, so user code that binds
@@ -21584,6 +21600,29 @@ impl Interpreter {
         invariants: &[Node],
         span: &span::Span,
     ) -> RResult<Value> {
+        // RES-1085: wrap the iteration in a fresh enclosed environment so
+        // the loop binding `name` shadows the outer scope rather than
+        // overwriting it. Without this push/pop, `let i = 100; for i in
+        // 0..3 {} println(i);` prints 2 instead of 100.
+        let inner_env = Environment::new_enclosed(self.env.clone());
+        let saved_env = std::mem::replace(&mut self.env, inner_env);
+        let result = self.eval_for_in_in_scope(name, iterable, body, invariants, span);
+        self.env = saved_env;
+        result
+    }
+
+    /// Inner body of [`Self::eval_for_in`]. The caller (eval_for_in)
+    /// owns the scope push/pop; this fn just iterates and binds the
+    /// loop variable in the already-pushed scope so an early `?` can
+    /// propagate without leaking the binding to the outer scope.
+    fn eval_for_in_in_scope(
+        &mut self,
+        name: &str,
+        iterable: &Node,
+        body: &Node,
+        invariants: &[Node],
+        span: &span::Span,
+    ) -> RResult<Value> {
         // RES-222: extract body-level invariants once.
         let body_invs = crate::loop_invariants::collect_body_invariants(body);
         // RES-291: range fast-path — iterate lazily without
@@ -22384,20 +22423,16 @@ impl Interpreter {
             "+" => Ok(Value::Float(left + right)),
             "-" => Ok(Value::Float(left - right)),
             "*" => Ok(Value::Float(left * right)),
-            "/" => {
-                if right == 0.0 {
-                    Err("Division by zero".to_string())
-                } else {
-                    Ok(Value::Float(left / right))
-                }
-            }
-            "%" => {
-                if right == 0.0 {
-                    Err("Modulo by zero".to_string())
-                } else {
-                    Ok(Value::Float(left % right))
-                }
-            }
+            // RES-1086: float division and modulo follow IEEE 754:
+            // `x / 0.0` yields ±Inf (sign of `x`); `0.0 / 0.0` yields
+            // NaN; `x % 0.0` yields NaN. The previous explicit
+            // `right == 0.0` rejection produced a runtime error and
+            // (in some paths) returned exit code 0, hiding the fault
+            // from CI scripts. Rust's `f64 / f64` and `f64 % f64`
+            // already implement the full IEEE 754 semantics — just
+            // forward to them.
+            "/" => Ok(Value::Float(left / right)),
+            "%" => Ok(Value::Float(left % right)),
             "==" => Ok(Value::Bool(left == right)),
             "!=" => Ok(Value::Bool(left != right)),
             "<" => Ok(Value::Bool(left < right)),
@@ -36668,6 +36703,97 @@ mod tests {
         let mut interp2 = Interpreter::new();
         interp2.eval(&p2).unwrap();
         assert!(matches!(interp2.env.get("y").unwrap(), Value::Int(13)));
+    }
+
+    #[test]
+    fn for_loop_binding_does_not_leak_to_outer_scope() {
+        // Closes #1085: `for i in …` must shadow an outer `i` rather
+        // than overwriting it. The previous behaviour left `i` holding
+        // the loop's last value after the loop ended, silently
+        // corrupting any outer-scope binding of the same name.
+        let src = r#"
+            let i = 100;
+            let trace = i;
+            let last_inner = 0;
+            for i in 0..3 { last_inner = i; }
+            let outer = i;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        assert!(
+            matches!(interp.env.get("trace").unwrap(), Value::Int(100)),
+            "outer i should be 100 before the loop"
+        );
+        assert!(
+            matches!(interp.env.get("last_inner").unwrap(), Value::Int(2)),
+            "the loop body must observe the iterator binding"
+        );
+        assert!(
+            matches!(interp.env.get("outer").unwrap(), Value::Int(100)),
+            "outer i must still be 100 after the loop, not the loop's last value (was 2)"
+        );
+    }
+
+    #[test]
+    fn float_division_by_zero_yields_ieee754() {
+        // Closes #1086: float division and modulo follow IEEE 754
+        // rather than rejecting `right == 0.0` with a runtime error.
+        let src = r#"
+            let pos_inf = 1.0 / 0.0;
+            let neg_inf = -1.0 / 0.0;
+            let nan_v = 0.0 / 0.0;
+            let nan_mod = 1.0 % 0.0;
+        "#;
+        let (p, errors) = parse(src);
+        assert!(errors.is_empty(), "{:?}", errors);
+        let mut interp = Interpreter::new();
+        interp.eval(&p).unwrap();
+        match interp.env.get("pos_inf").unwrap() {
+            Value::Float(x) => assert!(x.is_infinite() && x > 0.0, "got {x}"),
+            other => panic!("pos_inf was {other}"),
+        }
+        match interp.env.get("neg_inf").unwrap() {
+            Value::Float(x) => assert!(x.is_infinite() && x < 0.0, "got {x}"),
+            other => panic!("neg_inf was {other}"),
+        }
+        match interp.env.get("nan_v").unwrap() {
+            Value::Float(x) => assert!(x.is_nan(), "got {x}"),
+            other => panic!("nan_v was {other}"),
+        }
+        match interp.env.get("nan_mod").unwrap() {
+            Value::Float(x) => assert!(x.is_nan(), "got {x}"),
+            other => panic!("nan_mod was {other}"),
+        }
+    }
+
+    #[test]
+    fn orphan_closing_brace_at_top_level_is_a_parse_error() {
+        // Closes #1084: a stray `}` at the top level (off-by-one brace
+        // in source) must produce a clean diagnostic instead of being
+        // silently dropped by parser recovery.
+        let src = "fn main() { return 0; }\n}\nmain();\n";
+        let (_p, errors) = parse(src);
+        assert!(
+            errors.iter().any(|e| e.contains("unexpected `}`")),
+            "expected an `unexpected `}}`` diagnostic, got: {:?}",
+            errors
+        );
+
+        // Stray `)` and `]` are caught by the same arm.
+        let (_p2, errors2) = parse(")");
+        assert!(
+            errors2.iter().any(|e| e.contains("unexpected `)`")),
+            "expected an `unexpected `)`` diagnostic, got: {:?}",
+            errors2
+        );
+        let (_p3, errors3) = parse("]");
+        assert!(
+            errors3.iter().any(|e| e.contains("unexpected `]`")),
+            "expected an `unexpected `]`` diagnostic, got: {:?}",
+            errors3
+        );
     }
 
     #[test]
