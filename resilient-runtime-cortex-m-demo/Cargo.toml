@@ -1,6 +1,6 @@
 [package]
 name = "resilient-runtime-cortex-m-demo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Cortex-M4F buildable demo wiring `resilient-runtime` with `embedded-alloc::LlffHeap` as the global allocator (RES-101)."
 authors = ["Eric Spencer"]
