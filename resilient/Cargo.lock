@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "resilient"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "cranelift",
@@ -1700,11 +1700,11 @@ dependencies = [
 
 [[package]]
 name = "resilient-runtime"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "resilient-span"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "rustc-hash"

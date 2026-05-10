@@ -6,16 +6,26 @@
 //!
 //! Builds on `crate::format_builtin::parse_template` so the
 //! validation engine and runtime parser stay in lock-step.
+//!
+//! RES-1101: when `parse_template` reports an unterminated `{`
+//! placeholder (RES-1093), the validator surfaces that error
+//! directly so malformed templates are caught at compile time
+//! instead of producing plausible-looking runtime output.
 
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation, dead_code)]
 
 use crate::Node;
 
-pub fn count_placeholders(template: &str) -> usize {
+/// Returns the placeholder count, or `None` if the template is
+/// malformed (e.g., unterminated `{`).
+pub fn count_placeholders(template: &str) -> Option<usize> {
     crate::format_builtin::parse_template(template)
-        .iter()
-        .filter(|s| matches!(s, crate::format_builtin::FormatSegment::Placeholder(_)))
-        .count()
+        .ok()
+        .map(|segs| {
+            segs.iter()
+                .filter(|s| matches!(s, crate::format_builtin::FormatSegment::Placeholder(_)))
+                .count()
+        })
 }
 
 pub fn analyze(program: &Node) -> Vec<String> {
@@ -41,13 +51,30 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
             if let Node::Identifier { name: callee, .. } = function.as_ref() {
                 if callee == "format" && !arguments.is_empty() {
                     if let Node::StringLiteral { value, .. } = &arguments[0] {
-                        let need = count_placeholders(value);
-                        let got = arguments.len() - 1;
-                        if got != need {
-                            errs.push(format!(
-                                "in `{}`: format string has {} placeholders but {} args were passed",
-                                fn_name, need, got
-                            ));
+                        match crate::format_builtin::parse_template(value) {
+                            Err(e) => {
+                                // RES-1101: surface the unterminated `{`
+                                // diagnostic directly.
+                                errs.push(format!("in `{}`: {}", fn_name, e));
+                            }
+                            Ok(segs) => {
+                                let need = segs
+                                    .iter()
+                                    .filter(|s| {
+                                        matches!(
+                                            s,
+                                            crate::format_builtin::FormatSegment::Placeholder(_)
+                                        )
+                                    })
+                                    .count();
+                                let got = arguments.len() - 1;
+                                if got != need {
+                                    errs.push(format!(
+                                        "in `{}`: format string has {} placeholders but {} args were passed",
+                                        fn_name, need, got
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -95,5 +122,20 @@ mod tests {
         let src = r#"fn f(int x) { format("hello {}", x, x, x); return 0; }"#;
         let (prog, _) = parse(src);
         assert!(!analyze(&prog).is_empty());
+    }
+
+    /// RES-1101: an unterminated `{` placeholder surfaces as a
+    /// compile-time error, not a silently-accepted call.
+    #[test]
+    fn unterminated_brace_in_template_errors() {
+        let src = r#"fn f(int x) { format("hello {", x); return 0; }"#;
+        let (prog, _) = parse(src);
+        let errs = analyze(&prog);
+        assert!(!errs.is_empty(), "expected an error");
+        assert!(
+            errs[0].contains("unterminated"),
+            "expected unterminated diagnostic, got: {}",
+            errs[0]
+        );
     }
 }

@@ -10302,6 +10302,10 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("print", builtin_print),
     // RES-144: single-line stdin read. std-only.
     ("input", builtin_input),
+    // RES-1100: expose the compiler version to programs so build
+    // manifests and provenance certificates can pin the toolchain
+    // they were produced by.
+    ("version", builtin_version),
     ("abs", builtin_abs),
     // RES-410: sign(x) — -1, 0, +1 for negative/zero/positive.
     ("sign", builtin_sign),
@@ -11022,6 +11026,17 @@ fn builtin_input(args: &[Value]) -> RResult<Value> {
     let stdin = std::io::stdin();
     let mut lock = stdin.lock();
     do_input(&mut lock, &prompt)
+}
+
+/// RES-1100: `version()` — returns the compiler's `CARGO_PKG_VERSION`
+/// as a `String`. Programs use this to embed the toolchain version
+/// in build manifests, provenance certificates, and runtime guards
+/// that gate behaviour against a known-good compiler revision.
+fn builtin_version(args: &[Value]) -> RResult<Value> {
+    if !args.is_empty() {
+        return Err(format!("version: expected 0 arguments, got {}", args.len()));
+    }
+    Ok(Value::String(env!("CARGO_PKG_VERSION").to_string()))
 }
 
 /// Core of `input()` factored out for unit testing — generic over
@@ -32945,6 +32960,23 @@ mod tests {
         let err =
             builtin_input(&[Value::String("a".into()), Value::String("b".into())]).unwrap_err();
         assert!(err.contains("expected 1 argument"), "err was: {}", err);
+    }
+
+    /// RES-1100: `version()` returns the compiler's
+    /// CARGO_PKG_VERSION as a Value::String.
+    #[test]
+    fn builtin_version_returns_pkg_version() {
+        let v = builtin_version(&[]).unwrap();
+        match v {
+            Value::String(s) => assert_eq!(s, env!("CARGO_PKG_VERSION")),
+            other => panic!("expected String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_version_rejects_args() {
+        let err = builtin_version(&[Value::Int(0)]).unwrap_err();
+        assert!(err.contains("expected 0 arguments"), "err was: {}", err);
     }
 
     // --- RES-143: file_read / file_write builtins ---

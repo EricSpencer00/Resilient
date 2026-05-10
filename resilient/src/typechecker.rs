@@ -2363,6 +2363,17 @@ impl TypeChecker {
             },
         );
 
+        // RES-1100: `version()` returns the compiler's
+        // CARGO_PKG_VERSION so programs can embed the toolchain
+        // version in build manifests / provenance certificates.
+        env.set(
+            "version".to_string(),
+            Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::String),
+            },
+        );
+
         // RES-143: file I/O builtins (std-only; the resilient-runtime
         // sibling crate has no builtins table so its no_std posture is
         // unaffected).
