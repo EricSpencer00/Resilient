@@ -20134,6 +20134,33 @@ const DEFAULT_INTERPRETER_CALL_DEPTH: usize = 32;
 #[cfg(not(debug_assertions))]
 const DEFAULT_INTERPRETER_CALL_DEPTH: usize = 256;
 
+/// RES-1089: range table for the bounded numeric types when they
+/// appear in a `let x: T = …` annotation. Returns `Some((min, max))`
+/// if `T` is a width-bounded integer the interpreter should
+/// runtime-check; `None` otherwise (so e.g. `int`, `float`, `string`,
+/// user-defined struct names all fall through unchecked).
+///
+/// The widths track the standard Rust / C99 conventions — these are
+/// the same names the typechecker recognises in [`typechecker.rs`]
+/// and the same ones [`STDLIB.md`] / `SYNTAX.md` document. Adding a
+/// new width here is the only place a runtime bounds check needs to
+/// land.
+fn bounded_int_range(type_annot: &str) -> Option<(i64, i64)> {
+    match type_annot {
+        "u8" => Some((0, u8::MAX as i64)),
+        "i8" => Some((i8::MIN as i64, i8::MAX as i64)),
+        "u16" => Some((0, u16::MAX as i64)),
+        "i16" => Some((i16::MIN as i64, i16::MAX as i64)),
+        "u32" => Some((0, u32::MAX as i64)),
+        "i32" => Some((i32::MIN as i64, i32::MAX as i64)),
+        // u64 / i64 / int are i64-wide on the runtime side — no
+        // narrower bound to enforce. usize / isize are platform
+        // dependent and not currently exposed in user-facing
+        // annotations.
+        _ => None,
+    }
+}
+
 /// Resolve the interpreter's max call depth. Reads `RZ_MAX_CALL_DEPTH`
 /// once on first call (cached in a `OnceLock`); falls back to the
 /// default when the variable is missing, unparsable, or zero.
@@ -20372,12 +20399,38 @@ impl Interpreter {
             Node::Block {
                 stmts: statements, ..
             } => self.eval_block_statement(statements),
-            Node::LetStatement { name, value, .. } => {
+            Node::LetStatement {
+                name,
+                value,
+                type_annot,
+                ..
+            } => {
                 let val = self.eval(value)?;
                 // RES-041: if the RHS short-circuited (e.g. via `?`),
                 // propagate the Return instead of binding it.
                 if matches!(val, Value::Return(_)) {
                     return Ok(val);
+                }
+                // RES-1089: runtime bounds check for the bounded
+                // numeric types (`u8` / `i8` / `u16` / `i16` / `u32`
+                // / `i32`). The typechecker already rejects literal
+                // `let x: u8 = 1000` in strict mode, but the
+                // interpreter must also enforce bounds when the
+                // annotated value is computed at runtime — e.g.
+                // `let r: u8 = add_u8(200, 100)` where the i64
+                // result `300` is out of range for `u8`. Without
+                // this guard, the type annotation is documentation
+                // only and code that cross-compiles to Cortex-M
+                // produces different values than the interpreter.
+                if let Some(annot) = type_annot.as_deref()
+                    && let Some((min, max)) = bounded_int_range(annot)
+                    && let Value::Int(n) = val
+                    && (n < min || n > max)
+                {
+                    return Err(format!(
+                        "value {} out of range for type {} ({}..={})",
+                        n, annot, min, max
+                    ));
                 }
                 self.env.set(name.clone(), val);
                 Ok(Value::Void)
@@ -24375,6 +24428,7 @@ fn run_pending_actors(interpreter: &mut Interpreter) -> RResult<()> {
 fn execute_file(
     filename: &str,
     type_check: bool,
+    no_typecheck: bool,
     audit: bool,
     explain_effects: bool,
     emit_cert_dir: Option<&Path>,
@@ -24514,10 +24568,28 @@ fn execute_file(
     // Type checking if enabled. --audit, --explain-effects, and
     // --emit-certificate all imply --typecheck (no point running
     // them without it).
-    let want_typecheck = type_check || audit || explain_effects || emit_cert_dir.is_some();
+    //
+    // RES-1088: typecheck-by-default. The driver runs the static
+    // type checker on every invocation unless `--no-typecheck` is
+    // set. Two modes:
+    //
+    // * **Strict** (`-t / --typecheck / --audit / --explain-effects /
+    //   --emit-certificate / --verbose / --deny-unproven-bounds` —
+    //   any of the modes that already implied --typecheck): a type
+    //   error aborts the run with exit 1, matching the legacy
+    //   behaviour. The "Running type checker..." / "Type check
+    //   passed" status lines are printed.
+    // * **Soft (default)**: a type error is rendered to stderr but
+    //   execution continues. Exit code follows the program's
+    //   runtime exit. Status lines are suppressed so default-mode
+    //   stdout matches what users have always seen.
+    let typecheck_strict = type_check || audit || explain_effects || emit_cert_dir.is_some();
+    let want_typecheck = !no_typecheck;
     let mut proven_fns: HashSet<String> = HashSet::new();
     if want_typecheck {
-        println!("Running type checker...");
+        if typecheck_strict {
+            println!("Running type checker...");
+        }
         let tc_base = typechecker::TypeChecker::new()
             // RES-137: apply the driver's --verifier-timeout-ms
             // value. A fresh `TypeChecker::new()` defaults to 5000;
@@ -24539,14 +24611,25 @@ fn execute_file(
         // RES-080: pass the source filename so per-statement errors
         // are prefixed with `<file>:<line>:<col>:`.
         match tc.check_program_with_source(&program, filename) {
-            Ok(_) => println!("\x1B[32mType check passed\x1B[0m"),
+            Ok(_) => {
+                if typecheck_strict {
+                    println!("\x1B[32mType check passed\x1B[0m");
+                }
+            }
             Err(e) => {
                 eprintln!("\x1B[31mType error: {}\x1B[0m", e);
                 // RES-117: add a caret diagnostic beneath the
                 // ANSI-red header so the offending source position
                 // is visually underlined.
                 eprintln!("{}", render_with_caret(&contents, &e, "Type error"));
-                return Err(format!("Type check failed: {}", e));
+                if typecheck_strict {
+                    return Err(format!("Type check failed: {}", e));
+                }
+                // RES-1088: soft mode — surface the diagnostic but
+                // keep going so legacy programs that have always
+                // run unchecked still execute. The user sees the
+                // safety information they were missing without an
+                // abrupt CI break across the existing example set.
             }
         }
         // RES-068: harvest the set of fns whose contracts the
@@ -25942,7 +26025,12 @@ USAGE:\n\
 \n\
 COMMON FLAGS:\n\
     -h, --help                   Show this help and exit\n\
-    -t, --typecheck              Run the static type checker\n\
+    -t, --typecheck              Run the static type checker in strict mode\n\
+                                 (fail with exit 1 on any type error). The\n\
+                                 type checker also runs by default in soft\n\
+                                 mode — diagnostics print to stderr but the\n\
+                                 program still executes (RES-1088).\n\
+        --no-typecheck           Skip the static type checker entirely\n\
         --audit                  Print the verification audit trail\n\
         --verbose                Print one stderr line per loop\n\
                                  invariant statically proven (RES-318)\n\
@@ -26136,6 +26224,13 @@ pub fn run_cli() {
     }
 
     let mut type_check = false;
+    // RES-1088: `--no-typecheck` opts out of the default-on type
+    // checker. The default behaviour is to run typecheck on every
+    // invocation, surface diagnostics on stderr, and continue
+    // execution. `-t / --typecheck` (and the modes that imply it
+    // via `typecheck_strict` below) keep the legacy strict
+    // semantics — fail with exit 1 on any type error.
+    let mut no_typecheck = false;
     let mut audit = false;
     // RES-318: --verbose enables one stderr line per loop invariant
     // statically discharged by the Z3 verifier. Off by default so
@@ -26216,6 +26311,11 @@ pub fn run_cli() {
             let arg = &args[i];
             if arg == "--typecheck" || arg == "-t" {
                 type_check = true;
+            } else if arg == "--no-typecheck" {
+                // RES-1088: opt out of the default-on type checker.
+                // Mostly for legacy scripts that intentionally feed
+                // type-violating programs through the interpreter.
+                no_typecheck = true;
             } else if arg == "--audit" {
                 audit = true;
             } else if arg == "--verbose" {
@@ -26703,6 +26803,7 @@ pub fn run_cli() {
                 let result = execute_file(
                     &filename_owned,
                     type_check,
+                    no_typecheck,
                     audit,
                     explain_effects,
                     cert_dir_owned.as_deref(),
@@ -26744,6 +26845,7 @@ pub fn run_cli() {
             let run_result = execute_file(
                 filename,
                 type_check,
+                no_typecheck,
                 audit,
                 explain_effects,
                 emit_cert_dir.as_deref(),
@@ -36765,6 +36867,55 @@ mod tests {
         match interp.env.get("nan_mod").unwrap() {
             Value::Float(x) => assert!(x.is_nan(), "got {x}"),
             other => panic!("nan_mod was {other}"),
+        }
+    }
+
+    #[test]
+    fn bounded_int_let_traps_on_out_of_range_value() {
+        // Closes #1089: `let x: u8 = 1000` must trap at runtime, not
+        // silently bind 1000 in a u8 slot. Same for the runtime
+        // result of arithmetic that overflows the declared type.
+        for (src, expected) in &[
+            (
+                "let x: u8 = 1000;",
+                "value 1000 out of range for type u8 (0..=255)",
+            ),
+            (
+                "let x: i8 = -200;",
+                "value -200 out of range for type i8 (-128..=127)",
+            ),
+            (
+                "let x: u16 = 70000;",
+                "value 70000 out of range for type u16 (0..=65535)",
+            ),
+            (
+                "let x: i32 = 5000000000;",
+                "value 5000000000 out of range for type i32 (-2147483648..=2147483647)",
+            ),
+        ] {
+            let (p, errors) = parse(src);
+            assert!(errors.is_empty(), "{src}: {:?}", errors);
+            let mut interp = Interpreter::new();
+            let err = interp.eval(&p).unwrap_err();
+            assert!(
+                err.contains(expected),
+                "for {src}: expected message containing {expected:?}, got {err:?}"
+            );
+        }
+
+        // Valid in-range values keep working.
+        for src in &[
+            "let x: u8 = 200;",
+            "let x: i8 = -128;",
+            "let x: i8 = 127;",
+            "let x: u16 = 65535;",
+            "let x: u32 = 4000000000;",
+            "let x: i32 = -2147483648;",
+        ] {
+            let (p, errors) = parse(src);
+            assert!(errors.is_empty(), "{src}: {:?}", errors);
+            let mut interp = Interpreter::new();
+            interp.eval(&p).unwrap_or_else(|e| panic!("{src}: {e}"));
         }
     }
 
