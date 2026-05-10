@@ -112,7 +112,34 @@ fn run_capture(source: &str, flags: &[&str], tag: &str) -> String {
 /// - normalizes any remaining absolute-path-to-scratch fragments;
 /// - pins the `seed=<N>` stderr line from the RNG initializer.
 fn check_diagnostic(name: &str, flags: &[&str], source: &str) {
-    let output = run_capture(source, flags, name);
+    // RES-1088: typecheck now runs by default and prints diagnostics
+    // to stderr. Snapshot tests that intentionally exercise runtime
+    // failures (no `-t` / `--typecheck` / `--audit` in their flag
+    // set) shouldn't pick up those typecheck-emitted lines, since
+    // the snapshot is anchored on the runtime error message. When
+    // none of the strict-mode flags are present, opt out via
+    // `--no-typecheck` so the captured output stays focused on
+    // runtime behaviour.
+    let strict_flag = flags.iter().any(|f| {
+        matches!(
+            *f,
+            "-t" | "--typecheck"
+                | "--audit"
+                | "--explain-effects"
+                | "--emit-certificate"
+                | "--verbose"
+                | "--deny-unproven-bounds"
+        )
+    });
+    let mut effective: Vec<&str>;
+    let flags_to_use: &[&str] = if strict_flag {
+        flags
+    } else {
+        effective = flags.to_vec();
+        effective.push("--no-typecheck");
+        &effective
+    };
+    let output = run_capture(source, flags_to_use, name);
     // Use insta's settings to attach a `description` listing the
     // source so a reviewer sees WHAT produced the snapshot without
     // hunting for the test's source.
