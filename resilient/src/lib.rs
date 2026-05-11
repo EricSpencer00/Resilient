@@ -21,6 +21,9 @@ mod array_chunking;
 // RES-1146: float / string sort + array_is_sorted predicates.
 // Pure leaf builtins; module-isolated.
 mod array_sort_extra;
+// RES-1150: statistical reductions — variance, stddev, median_float, range_float.
+// Pure leaf builtins; module-isolated.
+mod array_stats;
 // RES-1140: ASCII char-class predicates — rounds out the RES-459 family.
 // Pure leaf builtins; module-isolated.
 mod ascii_predicates;
@@ -11169,6 +11172,34 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "hashmap_is_empty",
         crate::map_entries_merge::builtin_hashmap_is_empty,
+    ),
+    // RES-1150: statistical reductions — variance, stddev, median_float,
+    // range_float. Pure leaf builtins; module-isolated in
+    // `array_stats.rs`. Appended at the end of BUILTINS per the perf
+    // rule from PR #1125.
+    (
+        "array_variance_int",
+        crate::array_stats::builtin_array_variance_int,
+    ),
+    (
+        "array_variance_float",
+        crate::array_stats::builtin_array_variance_float,
+    ),
+    (
+        "array_stddev_int",
+        crate::array_stats::builtin_array_stddev_int,
+    ),
+    (
+        "array_stddev_float",
+        crate::array_stats::builtin_array_stddev_float,
+    ),
+    (
+        "array_median_float",
+        crate::array_stats::builtin_array_median_float,
+    ),
+    (
+        "array_range_float",
+        crate::array_stats::builtin_array_range_float,
     ),
 ];
 

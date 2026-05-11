@@ -1393,6 +1393,18 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-1150: statistical reductions — variance, stddev,
+        // median_float, range_float. All return Float.
+        let fn_array_to_float = || Type::Function {
+            params: vec![Type::Array],
+            return_type: Box::new(Type::Float),
+        };
+        env.set("array_variance_int".to_string(), fn_array_to_float());
+        env.set("array_variance_float".to_string(), fn_array_to_float());
+        env.set("array_stddev_int".to_string(), fn_array_to_float());
+        env.set("array_stddev_float".to_string(), fn_array_to_float());
+        env.set("array_median_float".to_string(), fn_array_to_float());
+        env.set("array_range_float".to_string(), fn_array_to_float());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6231,6 +6243,13 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_binary_search",
         "array_binary_search_float",
         "array_binary_search_string",
+        // RES-1150: statistical reductions.
+        "array_variance_int",
+        "array_variance_float",
+        "array_stddev_int",
+        "array_stddev_float",
+        "array_median_float",
+        "array_range_float",
         // String/collection.
         "len",
         "push",

@@ -5,12 +5,12 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-1144-map-entries-merge",
-      "claimed_at": "2026-05-11T15:42:00Z"
+      "branch": "res-1150-array-stats",
+      "claimed_at": "2026-05-11T16:12:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1144-map-entries-merge",
-      "claimed_at": "2026-05-11T15:42:00Z"
+      "branch": "res-1150-array-stats",
+      "claimed_at": "2026-05-11T16:12:00Z"
     }
   }
 }

@@ -1,0 +1,30 @@
+// RES-1150 demo: array variance, stddev, median_float, range_float.
+
+fn main(int _d) {
+    // Variance / stddev of [2, 4, 4, 4, 5, 5, 7, 9] — classic example.
+    // Mean = 5, variance = 4, stddev = 2.
+    let data = [2, 4, 4, 4, 5, 5, 7, 9];
+    println(array_variance_int(data));   // 4
+    println(array_stddev_int(data));     // 2
+
+    // Constant arrays have zero variance / stddev.
+    println(array_variance_int([7, 7, 7]));  // 0
+    println(array_stddev_int([7, 7, 7]));    // 0
+
+    // Float variants.
+    println(array_variance_float([1.0, 1.0, 5.0, 5.0])); // 4
+
+    // Median of an odd-length float array (sorted: [1, 5, 9]).
+    println(array_median_float([9.0, 1.0, 5.0]));  // 5
+
+    // Median of even-length array — average of two middle elements.
+    println(array_median_float([1.0, 2.0, 3.0, 4.0])); // 2.5
+
+    // Range (peak-to-peak): max - min.
+    println(array_range_float([1.0, 5.0, 2.0, 8.0])); // 7
+    println(array_range_float([-10.0, 0.0, 10.0]));   // 20
+
+    return 0;
+}
+
+main(0);
