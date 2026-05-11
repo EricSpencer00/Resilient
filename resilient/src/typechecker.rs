@@ -3110,6 +3110,21 @@ impl TypeChecker {
         env.set("array_argmin_float".to_string(), fn_array_to_int());
         env.set("array_argmax_string".to_string(), fn_array_to_int());
         env.set("array_argmin_string".to_string(), fn_array_to_int());
+        // RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+        let fn_float_to_float_p = || Type::Function {
+            params: vec![Type::Float],
+            return_type: Box::new(Type::Float),
+        };
+        env.set("expm1".to_string(), fn_float_to_float_p());
+        env.set("ln_1p".to_string(), fn_float_to_float_p());
+        env.set(
+            "mul_add".to_string(),
+            Type::Function {
+                params: vec![Type::Float, Type::Float, Type::Float],
+                return_type: Box::new(Type::Float),
+            },
+        );
+        env.set("recip".to_string(), fn_float_to_float_p());
 
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
@@ -6922,6 +6937,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_argmin_float",
         "array_argmax_string",
         "array_argmin_string",
+        // RES-1168: precision-sensitive math.
+        "expm1",
+        "ln_1p",
+        "mul_add",
+        "recip",
         "set_new",
         "set_insert",
         "set_remove",
