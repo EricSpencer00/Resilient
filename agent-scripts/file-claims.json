@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-1168-precision-math",
-      "claimed_at": "2026-05-11T17:42:00Z"
+      "branch": "res-1182-rotate-signum",
+      "claimed_at": "2026-05-11T19:50:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1168-precision-math",
-      "claimed_at": "2026-05-11T17:42:00Z"
+      "branch": "res-1182-rotate-signum",
+      "claimed_at": "2026-05-11T19:50:00Z"
     }
   }
 }

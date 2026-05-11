@@ -1595,6 +1595,20 @@ impl TypeChecker {
         env.set("bytes_drop".to_string(), fn_bytes_int_to_bytes());
         env.set("bytes_take_last".to_string(), fn_bytes_int_to_bytes());
         env.set("bytes_drop_last".to_string(), fn_bytes_int_to_bytes());
+        // RES-1182: integer bit rotation + scalar signum.
+        let fn_int_int_to_int = || Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("rotate_left".to_string(), fn_int_int_to_int());
+        env.set("rotate_right".to_string(), fn_int_int_to_int());
+        env.set(
+            "signum".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6545,6 +6559,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bytes_drop",
         "bytes_take_last",
         "bytes_drop_last",
+        // RES-1182: integer bit rotation + scalar signum.
+        "rotate_left",
+        "rotate_right",
+        "signum",
         // String/collection.
         "len",
         "push",
