@@ -12,6 +12,9 @@ use std::rc::Rc;
 // Pure leaf builtins; module-isolated so adding new bytes/int helpers
 // doesn't have to dodge each other inside lib.rs.
 mod alignment_helpers;
+// RES-1148: binary search on sorted int / float / string arrays.
+// Pure leaf builtins; module-isolated.
+mod array_binary_search;
 // RES-1142: array chunking + striding + rotation primitives.
 // Pure leaf builtins; module-isolated.
 mod array_chunking;
@@ -11127,6 +11130,21 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_is_sorted_string",
         crate::array_sort_extra::builtin_array_is_sorted_string,
+    ),
+    // RES-1148: binary search on sorted int / float / string arrays.
+    // Pure leaf builtins; module-isolated in `array_binary_search.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    (
+        "array_binary_search",
+        crate::array_binary_search::builtin_array_binary_search,
+    ),
+    (
+        "array_binary_search_float",
+        crate::array_binary_search::builtin_array_binary_search_float,
+    ),
+    (
+        "array_binary_search_string",
+        crate::array_binary_search::builtin_array_binary_search_string,
     ),
 ];
 

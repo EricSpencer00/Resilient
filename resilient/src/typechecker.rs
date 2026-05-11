@@ -1368,6 +1368,31 @@ impl TypeChecker {
         env.set("array_is_sorted".to_string(), fn_array_to_bool());
         env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
         env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
+        // RES-1148: binary search on sorted int / float / string arrays.
+        // Return type is Result<Int, Int> — typed as `Any` since the type
+        // system has no generic Result<T, E> yet (same convention as the
+        // `checked_*` builtins in RES-1115).
+        env.set(
+            "array_binary_search".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Int],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "array_binary_search_float".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Float],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "array_binary_search_string".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::String],
+                return_type: Box::new(Type::Any),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6158,6 +6183,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_is_sorted",
         "array_is_sorted_float",
         "array_is_sorted_string",
+        // RES-1148: binary search on sorted arrays.
+        "array_binary_search",
+        "array_binary_search_float",
+        "array_binary_search_string",
         // String/collection.
         "len",
         "push",
