@@ -1,0 +1,27 @@
+// RES-1164 demo: enumerate / array_zip3 / string_truncate.
+
+fn main(int _d) {
+    // enumerate produces [[0, v0], [1, v1], ...].
+    let pairs = enumerate(["a", "b", "c"]);
+    println(len(pairs));            // 3
+    println(pairs[0]);              // [0, "a"]
+    println(pairs[2]);              // [2, "c"]
+
+    // array_zip3 — 3-way zip.
+    let triples = array_zip3([1, 2, 3], [10, 20, 30], [100, 200, 300]);
+    println(len(triples));          // 3
+    println(triples[0]);            // [1, 10, 100]
+
+    // zip3 truncates to the shortest input.
+    println(len(array_zip3([1, 2, 3, 4], [10, 20], [100, 200, 300])));  // 2
+
+    // string_truncate — first N Unicode scalars.
+    println(string_truncate("hello", 3));        // hel
+    println(string_truncate("hello", 100));      // hello
+    println(string_truncate("hello", 0));        // (empty)
+    println(string_truncate("café", 3));         // caf
+
+    return 0;
+}
+
+main(0);
