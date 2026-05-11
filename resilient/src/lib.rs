@@ -25,6 +25,9 @@ mod array_sort_extra;
 // Pure leaf builtins; module-isolated.
 mod ascii_predicates;
 mod bytecode;
+// RES-1144: map_entries / map_merge / map_is_empty + hashmap aliases.
+// Pure leaf builtins; module-isolated.
+mod map_entries_merge;
 // RES-1134: bitwise + construction ops on `Value::Bytes` —
 // xor / and / or / not / fill / reverse. Pure leaf builtins; wires
 // into BUILTINS, typechecker env-seed, and PURE_BUILTINS only.
@@ -11145,6 +11148,27 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_binary_search_string",
         crate::array_binary_search::builtin_array_binary_search_string,
+    ),
+    // RES-1144: map_entries / map_merge / map_is_empty + hashmap aliases.
+    // Pure leaf builtins; module-isolated in `map_entries_merge.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    ("map_entries", crate::map_entries_merge::builtin_map_entries),
+    ("map_merge", crate::map_entries_merge::builtin_map_merge),
+    (
+        "map_is_empty",
+        crate::map_entries_merge::builtin_map_is_empty,
+    ),
+    (
+        "hashmap_entries",
+        crate::map_entries_merge::builtin_hashmap_entries,
+    ),
+    (
+        "hashmap_merge",
+        crate::map_entries_merge::builtin_hashmap_merge,
+    ),
+    (
+        "hashmap_is_empty",
+        crate::map_entries_merge::builtin_hashmap_is_empty,
     ),
 ];
 

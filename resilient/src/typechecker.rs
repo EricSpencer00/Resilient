@@ -2764,6 +2764,28 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-1144: map_entries / map_merge / map_is_empty.
+        env.set(
+            "map_entries".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
+        env.set(
+            "map_merge".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "map_is_empty".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
 
         // RES-293: HashMap stdlib builtins. Same permissive-Any
         // shape as the Map builtins above — once G7 inference lands
@@ -2824,6 +2846,28 @@ impl TypeChecker {
             Type::Function {
                 params: vec![Type::Any],
                 return_type: Box::new(Type::Array),
+            },
+        );
+        // RES-1144: hashmap_entries / hashmap_merge / hashmap_is_empty.
+        env.set(
+            "hashmap_entries".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Array),
+            },
+        );
+        env.set(
+            "hashmap_merge".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "hashmap_is_empty".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Bool),
             },
         );
 
@@ -6551,6 +6595,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "map_len",
         "map_values",
         "map_contains_key",
+        // RES-1144: map_entries / map_merge / map_is_empty.
+        "map_entries",
+        "map_merge",
+        "map_is_empty",
         // RES-293: HashMap stdlib builtins (purely functional —
         // each returns a new map / scalar; no IO).
         "hashmap_new",
@@ -6561,6 +6609,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "hashmap_keys",
         "hashmap_len",
         "hashmap_values",
+        // RES-1144: hashmap_entries / hashmap_merge / hashmap_is_empty.
+        "hashmap_entries",
+        "hashmap_merge",
+        "hashmap_is_empty",
         "set_new",
         "set_insert",
         "set_remove",
