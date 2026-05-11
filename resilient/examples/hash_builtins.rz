@@ -1,0 +1,25 @@
+// RES-1162 demo: deterministic hash builtins.
+
+fn main(int _d) {
+    // hash_int is deterministic — same input always produces same output.
+    println(hash_int(0));        // -2152535355466424913 (SplitMix64(0))
+    println(hash_int(1));        // some distinct hash
+
+    // hash_string of empty is the FNV-1a offset basis (cast to i64).
+    println(hash_string(""));    // -3750763034362895579
+
+    // hash_bytes on the same UTF-8 bytes as a string produces the same hash.
+    println(hash_string("hello") == hash_bytes(b"hello"));  // true
+
+    // hash_combine folds two hashes asymmetrically.
+    let h1 = hash_string("foo");
+    let h2 = hash_string("bar");
+    println(hash_combine(h1, h2) != hash_combine(h2, h1));  // true
+
+    // Hash combine is deterministic too.
+    println(hash_combine(7, 13) == hash_combine(7, 13));    // true
+
+    return 0;
+}
+
+main(0);

@@ -44,9 +44,12 @@ mod bytes_bitwise;
 // RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
 // Pure leaf builtins; module-isolated.
 mod bytes_helpers;
+// RES-1162: deterministic hash builtins — hash_int / hash_string /
+// hash_bytes / hash_combine. Pure leaf builtins; module-isolated.
 mod compiler;
 mod const_fold;
 mod disasm;
+mod hash_builtins;
 // RES-1154: set_is_empty / set_from_array / result_and / option_and.
 // Pure leaf builtins; module-isolated.
 mod set_result_option;
@@ -11269,6 +11272,14 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "array_last_or",
         crate::array_set_helpers::builtin_array_last_or,
     ),
+    // RES-1162: deterministic hash builtins — hash_int / hash_string /
+    // hash_bytes / hash_combine. Pure leaf builtins; module-isolated in
+    // `hash_builtins.rs`. Appended at the end of BUILTINS per the perf
+    // rule from PR #1125.
+    ("hash_int", crate::hash_builtins::builtin_hash_int),
+    ("hash_string", crate::hash_builtins::builtin_hash_string),
+    ("hash_bytes", crate::hash_builtins::builtin_hash_bytes),
+    ("hash_combine", crate::hash_builtins::builtin_hash_combine),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
