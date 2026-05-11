@@ -20,6 +20,10 @@ mod bytes_bitwise;
 mod compiler;
 mod const_fold;
 mod disasm;
+// RES-1138: IEEE 754 classification + total order + sign-bit predicates.
+// Pure leaf builtins; module-isolated so the predicate surface can
+// grow without bloating lib.rs.
+mod float_predicates;
 // RES-510 PR 3: REPL is CLI-only — uses rustyline (termios) which
 // doesn't compile to wasm32. Gated so the playground can depend on
 // the lib without dragging it in.
@@ -11022,6 +11026,30 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "is_multiple_of",
         crate::alignment_helpers::builtin_is_multiple_of,
+    ),
+    // RES-1138: IEEE 754 classification + total order + sign-bit
+    // predicates. Pure leaf builtins; module-isolated in
+    // `float_predicates.rs`. Appended at the end of BUILTINS per
+    // the perf rule established in PR #1125.
+    (
+        "float_classify",
+        crate::float_predicates::builtin_float_classify,
+    ),
+    (
+        "float_total_cmp",
+        crate::float_predicates::builtin_float_total_cmp,
+    ),
+    (
+        "float_is_normal",
+        crate::float_predicates::builtin_float_is_normal,
+    ),
+    (
+        "float_is_subnormal",
+        crate::float_predicates::builtin_float_is_subnormal,
+    ),
+    (
+        "float_sign_bit",
+        crate::float_predicates::builtin_float_sign_bit,
     ),
 ];
 

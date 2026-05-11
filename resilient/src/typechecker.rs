@@ -1309,6 +1309,29 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-1138: IEEE 754 classification + total order + sign-bit
+        // predicates.
+        let fn_float_to_bool = || Type::Function {
+            params: vec![Type::Float],
+            return_type: Box::new(Type::Bool),
+        };
+        env.set(
+            "float_classify".to_string(),
+            Type::Function {
+                params: vec![Type::Float],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "float_total_cmp".to_string(),
+            Type::Function {
+                params: vec![Type::Float, Type::Float],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set("float_is_normal".to_string(), fn_float_to_bool());
+        env.set("float_is_subnormal".to_string(), fn_float_to_bool());
+        env.set("float_sign_bit".to_string(), fn_float_to_bool());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6073,6 +6096,12 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-1136: alignment helpers.
         "next_multiple_of",
         "is_multiple_of",
+        // RES-1138: IEEE 754 classification + total order + sign-bit.
+        "float_classify",
+        "float_total_cmp",
+        "float_is_normal",
+        "float_is_subnormal",
+        "float_sign_bit",
         // String/collection.
         "len",
         "push",

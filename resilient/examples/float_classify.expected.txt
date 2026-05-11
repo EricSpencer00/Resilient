@@ -1,0 +1,16 @@
+normal
+zero
+zero
+infinite
+nan
+true
+false
+false
+false
+true
+true
+-1
+1
+0
+-1
+Program executed successfully
