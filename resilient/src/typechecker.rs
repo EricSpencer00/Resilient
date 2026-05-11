@@ -1354,6 +1354,20 @@ impl TypeChecker {
         env.set("is_ascii_lowercase".to_string(), fn_string_to_bool());
         env.set("is_ascii_punctuation".to_string(), fn_string_to_bool());
         env.set("is_ascii_control".to_string(), fn_string_to_bool());
+        // RES-1146: float / string sort + array_is_sorted predicates.
+        let fn_array_to_array = || Type::Function {
+            params: vec![Type::Array],
+            return_type: Box::new(Type::Array),
+        };
+        let fn_array_to_bool = || Type::Function {
+            params: vec![Type::Array],
+            return_type: Box::new(Type::Bool),
+        };
+        env.set("array_sort_float".to_string(), fn_array_to_array());
+        env.set("array_sort_string".to_string(), fn_array_to_array());
+        env.set("array_is_sorted".to_string(), fn_array_to_bool());
+        env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
+        env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6138,6 +6152,12 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "is_ascii_lowercase",
         "is_ascii_punctuation",
         "is_ascii_control",
+        // RES-1146: float / string sort + array_is_sorted predicates.
+        "array_sort_float",
+        "array_sort_string",
+        "array_is_sorted",
+        "array_is_sorted_float",
+        "array_is_sorted_string",
         // String/collection.
         "len",
         "push",

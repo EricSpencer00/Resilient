@@ -1,0 +1,12 @@
+-1
+3
+true
+Bob
+alice
+carol
+true
+true
+false
+true
+true
+Program executed successfully
