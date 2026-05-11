@@ -5,21 +5,12 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
-<<<<<<< HEAD
-      "branch": "res-1150-array-stats",
-      "claimed_at": "2026-05-11T16:12:00Z"
+      "branch": "res-1154-set-result-option",
+      "claimed_at": "2026-05-11T16:32:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1150-array-stats",
-      "claimed_at": "2026-05-11T16:12:00Z"
-=======
-      "branch": "res-1152-bytes-helpers",
-      "claimed_at": "2026-05-11T16:22:00Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1152-bytes-helpers",
-      "claimed_at": "2026-05-11T16:22:00Z"
->>>>>>> 50e33d1 (RES-1152: bytes_repeat / bytes_count_byte / bytes_replace_byte)
+      "branch": "res-1154-set-result-option",
+      "claimed_at": "2026-05-11T16:32:00Z"
     }
   }
 }
