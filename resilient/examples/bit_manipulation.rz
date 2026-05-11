@@ -1,0 +1,31 @@
+// RES-1156 demo: per-bit accessors — set_bit, clear_bit, get_bit, flip_bit.
+
+fn main(int _d) {
+    // set_bit: turn a bit on. 0 with bit 3 set = 8.
+    println(set_bit(0, 0));    // 1
+    println(set_bit(0, 3));    // 8
+    println(set_bit(5, 1));    // 7 (0b101 -> 0b111)
+
+    // clear_bit: turn a bit off. 0xFF clear bit 0 = 0xFE.
+    println(clear_bit(255, 0));  // 254
+    println(clear_bit(15, 2));   // 11 (0b1111 -> 0b1011)
+
+    // get_bit: read a bit. Bit 0 of 0b1010 is 0, bit 1 is 1.
+    println(get_bit(10, 0));   // false (bit 0 of 0b1010)
+    println(get_bit(10, 1));   // true  (bit 1 of 0b1010)
+    println(get_bit(10, 3));   // true  (bit 3 of 0b1010)
+
+    // flip_bit: toggle. Involution — calling twice is identity.
+    println(flip_bit(0, 4));   // 16
+    println(flip_bit(16, 4));  // 0
+
+    // Common use: GPIO-style register manipulation.
+    let reg = set_bit(set_bit(clear_bit(0xFF, 1), 8), 16);
+    // Started with 0xFF (low byte all set). Cleared bit 1 → 0xFD.
+    // Set bit 8 → 0x01FD. Set bit 16 → 0x101FD.
+    println(reg);              // 66045
+
+    return 0;
+}
+
+main(0);

@@ -1427,6 +1427,17 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bytes),
             },
         );
+        // RES-1156: per-bit accessors on i64.
+        env.set("set_bit".to_string(), fn_int_int_to_int());
+        env.set("clear_bit".to_string(), fn_int_int_to_int());
+        env.set(
+            "get_bit".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set("flip_bit".to_string(), fn_int_int_to_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6305,6 +6316,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bytes_repeat",
         "bytes_count_byte",
         "bytes_replace_byte",
+        // RES-1156: per-bit accessors.
+        "set_bit",
+        "clear_bit",
+        "get_bit",
+        "flip_bit",
         // String/collection.
         "len",
         "push",

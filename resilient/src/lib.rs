@@ -15,6 +15,9 @@ mod alignment_helpers;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
+// RES-1156: per-bit accessors on i64 — set / clear / get / flip.
+// Pure leaf builtins; module-isolated.
+mod bit_manipulation;
 // RES-1142: array chunking + striding + rotation primitives.
 // Pure leaf builtins; module-isolated.
 mod array_chunking;
@@ -11232,6 +11235,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ),
     ("result_and", crate::set_result_option::builtin_result_and),
     ("option_and", crate::set_result_option::builtin_option_and),
+    // RES-1156: per-bit accessors on i64 — set / clear / get / flip.
+    // Pure leaf builtins; module-isolated in `bit_manipulation.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    ("set_bit", crate::bit_manipulation::builtin_set_bit),
+    ("clear_bit", crate::bit_manipulation::builtin_clear_bit),
+    ("get_bit", crate::bit_manipulation::builtin_get_bit),
+    ("flip_bit", crate::bit_manipulation::builtin_flip_bit),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
