@@ -1,12 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-1176-bytes-conversions",
-      "claimed_at": "2026-05-11T18:22:00Z"
+      "branch": "res-1178-bytes-slicing",
+      "claimed_at": "2026-05-11T19:14:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1176-bytes-conversions",
-      "claimed_at": "2026-05-11T18:22:00Z"
+      "branch": "res-1178-bytes-slicing",
+      "claimed_at": "2026-05-11T19:14:39Z"
     }
   }
 }
