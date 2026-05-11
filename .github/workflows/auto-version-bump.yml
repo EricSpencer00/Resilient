@@ -9,18 +9,16 @@
 #      `Cargo.toml` + `vscode-extension/package.json`.
 #   3. Regenerate `Cargo.lock` to reflect the new package versions.
 #   4. Commit the bump (with `[skip-version-bump]` in the message so
-#      this workflow does not loop) and tag `v0.1.NNNN`.
-#   5. Push the tag — this fires `release.yml` (cross-target binary
-#      build + GitHub release) and `vscode_extension.yml` (`.vsix`
-#      package + publish to the VS Code Marketplace using the
-#      `VSCE_PAT` repo secret).
+#      this workflow does not loop) and push back to `main`.
 #
-#  Required repo secrets:
-#   - `VSCE_PAT` — Azure DevOps personal access token with
-#     `Marketplace (publish)` scope for publisher `fromamerica`.
-#     Create at https://dev.azure.com/<org>/_usersSettings/tokens
-#     and add at GitHub → Settings → Secrets and variables → Actions.
-#   - (optional) `WORKFLOW_PUSH_TOKEN` — fine-grained PAT with
+#  Tagging + release is decoupled: the version files stay current here,
+#  but tags + GitHub releases + Marketplace publishes only happen on the
+#  weekly cron (see `weekly-release.yml`) or manual dispatch. This keeps
+#  notification volume low for watchers while keeping the source-of-truth
+#  version current with every commit.
+#
+#  Required repo secrets / config:
+#   - `WORKFLOW_PUSH_TOKEN` (optional) — fine-grained PAT with
 #     `contents: write` on this repo if branch protection on `main`
 #     blocks bot pushes via `GITHUB_TOKEN`. The job falls back to
 #     `GITHUB_TOKEN` when unset.
@@ -154,7 +152,7 @@ jobs:
             git --no-pager diff --stat
           fi
 
-      - name: Commit + tag + push
+      - name: Commit + push
         if: steps.extract.outputs.version != '' && steps.diff.outputs.changed == 'true'
         env:
           VERSION: ${{ steps.extract.outputs.version }}
@@ -164,16 +162,6 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m "chore: bump version to v${VERSION} [skip-version-bump]" \
-                     -m "Auto-bump from RES-${ISSUE}." \
+                     -m "Auto-bump from RES-${ISSUE}. Tag + release fires weekly (see weekly-release.yml)." \
                      -m "Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
-          # If the tag already exists for this version, the squash
-          # merge re-fired auto-bump after a previous run already
-          # produced this tag. Skip rather than fail.
-          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${VERSION} already exists — pushing branch only."
-            git push origin HEAD:main
-          else
-            git tag -a "v${VERSION}" -m "Resilient v${VERSION} — RES-${ISSUE}"
-            git push origin HEAD:main
-            git push origin "v${VERSION}"
-          fi
+          git push origin HEAD:main

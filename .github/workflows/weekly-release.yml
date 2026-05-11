@@ -1,0 +1,76 @@
+#  Weekly release cut.
+#
+#  Decoupled from `auto-version-bump.yml`: bumps land on every push to
+#  main, but tags + GitHub releases + Marketplace publishes only happen
+#  once a week (or via manual dispatch). This keeps notification volume
+#  low for repo watchers while keeping the source-of-truth version
+#  current.
+#
+#  On schedule (Mondays 12:00 UTC) or `workflow_dispatch`:
+#   1. Read the current version from `vscode-extension/package.json`.
+#   2. If the matching tag `v<version>` already exists, no-op (a release
+#      was already cut for the current version, no new work has merged).
+#   3. Otherwise, create the annotated tag at the current `main` HEAD,
+#      and push it. The tag push then fires the existing flow:
+#       - `release.yml` → cross-target binary build + GitHub release
+#       - `vscode_extension.yml` → `.vsix` package + Marketplace publish
+#
+#  Manual dispatch is also wired so a release can be cut off-schedule
+#  (e.g., for a hotfix). The behaviour is identical to the cron path.
+
+name: weekly-release
+
+on:
+  schedule:
+    # Mondays 12:00 UTC. Adjust as desired.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Cut release from current version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main at HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Read current version
+        id: version
+        run: |
+          VERSION=$(python3 -c '
+          import json, pathlib
+          print(json.loads(pathlib.Path("vscode-extension/package.json").read_text())["version"])
+          ')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Current version: ${VERSION}"
+
+      - name: Check if tag already exists
+        id: tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${VERSION} already exists — nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag v${VERSION} does not exist yet — will create."
+          fi
+
+      - name: Create + push tag
+        if: steps.tag.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "v${VERSION}" -m "Resilient v${VERSION} — weekly release cut"
+          git push origin "v${VERSION}"
+          echo "Pushed tag v${VERSION}. release.yml + vscode_extension.yml will fire."
