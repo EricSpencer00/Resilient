@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 // Import modules
+// RES-1136: alignment helpers — `next_multiple_of` and `is_multiple_of`.
+// Pure leaf builtins; module-isolated so adding new bytes/int helpers
+// doesn't have to dodge each other inside lib.rs.
+mod alignment_helpers;
 mod bytecode;
 // RES-1134: bitwise + construction ops on `Value::Bytes` —
 // xor / and / or / not / fill / reverse. Pure leaf builtins; wires
@@ -11008,6 +11012,17 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("bytes_not", crate::bytes_bitwise::builtin_bytes_not),
     ("bytes_fill", crate::bytes_bitwise::builtin_bytes_fill),
     ("bytes_reverse", crate::bytes_bitwise::builtin_bytes_reverse),
+    // RES-1136: alignment helpers. Pure leaf builtins; module-isolated
+    // in `alignment_helpers.rs`. Appended at the end of BUILTINS per
+    // the perf rule established in PR #1125.
+    (
+        "next_multiple_of",
+        crate::alignment_helpers::builtin_next_multiple_of,
+    ),
+    (
+        "is_multiple_of",
+        crate::alignment_helpers::builtin_is_multiple_of,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

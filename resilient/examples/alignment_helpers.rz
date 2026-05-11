@@ -1,0 +1,29 @@
+// RES-1136 demo: next_multiple_of(n, m) rounds n up to the next
+// multiple of m; is_multiple_of(a, b) tests divisibility.
+
+fn main(int _d) {
+    // Buffer-pad a 13-byte payload to an 8-byte boundary.
+    println(next_multiple_of(13, 8));         // 16
+
+    // 100 bytes rounded up to a 64-byte cache line.
+    println(next_multiple_of(100, 64));       // 128
+
+    // Already aligned — returns unchanged.
+    println(next_multiple_of(4096, 4096));    // 4096
+
+    // One byte past a page — bumps up to the next page.
+    println(next_multiple_of(4097, 4096));    // 8192
+
+    // Negative n: smallest multiple of 4 that is ≥ -5 is -4.
+    println(next_multiple_of(-5, 4));         // -4
+
+    // Divisibility checks.
+    println(is_multiple_of(64, 8));           // true
+    println(is_multiple_of(65, 8));           // false
+    println(is_multiple_of(-64, 8));          // true (sign of a is irrelevant)
+    println(is_multiple_of(0, 7));            // true (0 is a multiple of every nonzero b)
+
+    return 0;
+}
+
+main(0);

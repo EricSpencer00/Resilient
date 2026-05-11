@@ -1300,6 +1300,15 @@ impl TypeChecker {
             },
         );
         env.set("bytes_reverse".to_string(), fn_bytes_to_bytes());
+        // RES-1136: alignment helpers.
+        env.set("next_multiple_of".to_string(), fn_int_int_to_int());
+        env.set(
+            "is_multiple_of".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Bool),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6061,6 +6070,9 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bytes_not",
         "bytes_fill",
         "bytes_reverse",
+        // RES-1136: alignment helpers.
+        "next_multiple_of",
+        "is_multiple_of",
         // String/collection.
         "len",
         "push",
