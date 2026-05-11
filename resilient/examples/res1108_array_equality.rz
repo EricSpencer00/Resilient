@@ -1,0 +1,29 @@
+// RES-1108: structural `==` / `!=` for arrays. Same length + element-
+// wise equality. Different lengths compare unequal rather than panic.
+
+fn main() {
+    let a = [1, 2, 3];
+    let b = [1, 2, 3];
+    let c = [1, 2, 4];
+    let d = [1, 2];
+
+    println(a == b);    // true  — structurally identical
+    println(a == c);    // false — element diff
+    println(a == d);    // false — length diff
+    println(a != c);    // true  — inverse of ==
+    println([] == []);  // true  — empty arrays
+
+    // Nested arrays compare recursively.
+    let nested1 = [[1, 2], [3, 4]];
+    let nested2 = [[1, 2], [3, 4]];
+    let nested3 = [[1, 2], [3, 5]];
+    println(nested1 == nested2);   // true
+    println(nested1 == nested3);   // false
+
+    // Mixed-element arrays still compare element-wise.
+    let mixed1 = ["a", "b"];
+    let mixed2 = ["a", "b"];
+    println(mixed1 == mixed2);     // true
+}
+
+main();

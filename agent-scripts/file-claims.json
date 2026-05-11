@@ -1,8 +1,12 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "res-934-as-cast",
-      "claimed_at": "2026-05-06T06:31:27Z"
+      "branch": "claude/wizardly-feynman-0204f0",
+      "claimed_at": "2026-05-11T01:39:51Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "claude/wizardly-feynman-0204f0",
+      "claimed_at": "2026-05-11T01:39:51Z"
     }
   }
 }

@@ -1,0 +1,32 @@
+// RES-1111: `let` declarations inside an `if` / `while` / `for` body
+// are confined to that body. Without this rule a stray inner `let`
+// silently clobbered outer bindings — a serious hazard for safety-
+// critical code.
+
+fn main() {
+    // The outer `x` survives an inner-scope rebinding.
+    let x = 1;
+    if true {
+        let x = 99;
+        println(x);    // 99  (inner scope)
+    }
+    println(x);        // 1   (outer scope intact)
+
+    // Reassignment from inside a block still updates the outer
+    // binding, since `=` walks the env chain.
+    let counter = 0;
+    if true {
+        counter = counter + 10;
+    }
+    println(counter);  // 10
+
+    // Loop body bindings are confined to the body.
+    let total = 0;
+    for i in 0..3 {
+        let doubled = i * 2;
+        total = total + doubled;
+    }
+    println(total);    // 0+2+4 = 6
+}
+
+main();
