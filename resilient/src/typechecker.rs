@@ -1534,6 +1534,30 @@ impl TypeChecker {
         env.set("array_cumprod".to_string(), fn_array_to_array_int());
         env.set("array_diffs".to_string(), fn_array_to_array_int());
         env.set("array_min_max".to_string(), fn_array_to_array_int());
+        // RES-1172: small string + array gaps.
+        let fn_string_string_to_array = || Type::Function {
+            params: vec![Type::String, Type::String],
+            return_type: Box::new(Type::Array),
+        };
+        env.set("string_split_once".to_string(), fn_string_string_to_array());
+        env.set(
+            "string_rsplit_once".to_string(),
+            fn_string_string_to_array(),
+        );
+        env.set(
+            "string_from_chars".to_string(),
+            Type::Function {
+                params: vec![Type::Array],
+                return_type: Box::new(Type::String),
+            },
+        );
+        env.set(
+            "array_is_empty".to_string(),
+            Type::Function {
+                params: vec![Type::Array],
+                return_type: Box::new(Type::Bool),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6451,6 +6475,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_cumprod",
         "array_diffs",
         "array_min_max",
+        // RES-1172: small string + array gaps.
+        "string_split_once",
+        "string_rsplit_once",
+        "string_from_chars",
+        "array_is_empty",
         // String/collection.
         "len",
         "push",

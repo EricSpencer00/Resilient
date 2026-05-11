@@ -56,6 +56,9 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
+// RES-1172: small string + array gaps — split_once / rsplit_once /
+// string_from_chars / array_is_empty. Pure leaf builtins; module-isolated.
+mod string_array_misc;
 // RES-1164: iteration helpers — enumerate, array_zip3, string_truncate.
 // Pure leaf builtins; module-isolated.
 mod iter_helpers;
@@ -11342,6 +11345,25 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_min_max",
         crate::array_cumulative::builtin_array_min_max,
+    ),
+    // RES-1172: small string + array gaps.
+    // Pure leaf builtins; module-isolated in `string_array_misc.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    (
+        "string_split_once",
+        crate::string_array_misc::builtin_string_split_once,
+    ),
+    (
+        "string_rsplit_once",
+        crate::string_array_misc::builtin_string_rsplit_once,
+    ),
+    (
+        "string_from_chars",
+        crate::string_array_misc::builtin_string_from_chars,
+    ),
+    (
+        "array_is_empty",
+        crate::string_array_misc::builtin_array_is_empty,
     ),
 ];
 
