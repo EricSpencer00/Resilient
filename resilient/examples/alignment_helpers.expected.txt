@@ -1,0 +1,10 @@
+16
+128
+4096
+8192
+-4
+true
+false
+true
+true
+Program executed successfully

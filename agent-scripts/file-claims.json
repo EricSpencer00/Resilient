@@ -5,12 +5,12 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-1134-bytes-bitwise-ops",
-      "claimed_at": "2026-05-11T14:57:42Z"
+      "branch": "res-1136-alignment-helpers",
+      "claimed_at": "2026-05-11T15:08:45Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1134-bytes-bitwise-ops",
-      "claimed_at": "2026-05-11T14:57:42Z"
+      "branch": "res-1136-alignment-helpers",
+      "claimed_at": "2026-05-11T15:08:45Z"
     }
   }
 }
