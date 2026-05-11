@@ -50,6 +50,9 @@ mod bytes_bitwise;
 // RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
 // Pure leaf builtins; module-isolated.
 mod bytes_helpers;
+// RES-1176: bytes ↔ string conversions — strip_prefix / strip_suffix /
+// bytes_to_string. Pure leaf builtins; module-isolated.
+mod bytes_conversions;
 // RES-1162: deterministic hash builtins — hash_int / hash_string /
 // hash_bytes / hash_combine. Pure leaf builtins; module-isolated.
 mod compiler;
@@ -11373,6 +11376,22 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("unix_time_s", crate::unix_time::builtin_unix_time_s),
     ("unix_time_ms", crate::unix_time::builtin_unix_time_ms),
     ("unix_time_ns", crate::unix_time::builtin_unix_time_ns),
+    // RES-1176: bytes ↔ string conversions — strip_prefix / strip_suffix /
+    // bytes_to_string. Pure leaf builtins; module-isolated in
+    // `bytes_conversions.rs`. Appended at the end of BUILTINS per the
+    // perf rule from PR #1125.
+    (
+        "bytes_strip_prefix",
+        crate::bytes_conversions::builtin_bytes_strip_prefix,
+    ),
+    (
+        "bytes_strip_suffix",
+        crate::bytes_conversions::builtin_bytes_strip_suffix,
+    ),
+    (
+        "bytes_to_string",
+        crate::bytes_conversions::builtin_bytes_to_string,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

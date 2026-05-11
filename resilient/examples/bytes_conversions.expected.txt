@@ -1,0 +1,9 @@
+11
+19
+19
+5
+9
+Ok("hello")
+Ok("")
+Err("invalid UTF-8 at byte 0")
+Program executed successfully

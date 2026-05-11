@@ -1,0 +1,25 @@
+// RES-1176 demo: bytes_strip_prefix / bytes_strip_suffix / bytes_to_string.
+// Three small Bytes <-> String conversion helpers.
+
+fn main(int _d) {
+    // --- bytes_strip_prefix: strip matching prefix; else unchanged.
+    let url = b"https://example.com";
+    let scheme = b"https://";
+    println(bytes_len(bytes_strip_prefix(url, scheme)));    // 11
+    println(bytes_len(bytes_strip_prefix(url, b"ftp://"))); // 19 (unchanged)
+    println(bytes_len(bytes_strip_prefix(url, b"")));        // 19 (empty = identity)
+
+    // --- bytes_strip_suffix: same, from the right.
+    let file = b"image.png";
+    println(bytes_len(bytes_strip_suffix(file, b".png")));   // 5
+    println(bytes_len(bytes_strip_suffix(file, b".jpg")));   // 9 (unchanged)
+
+    // --- bytes_to_string: UTF-8 decode, returns Result<String, String>.
+    println(bytes_to_string(b"hello"));               // Ok("hello")
+    println(bytes_to_string(b""));                    // Ok("")
+    println(bytes_to_string(b"\xFF\xFE"));            // Err("invalid UTF-8 at byte 0")
+
+    return 0;
+}
+
+main(0);

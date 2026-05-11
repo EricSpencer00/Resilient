@@ -1566,6 +1566,26 @@ impl TypeChecker {
         env.set("unix_time_s".to_string(), fn_zero_to_int());
         env.set("unix_time_ms".to_string(), fn_zero_to_int());
         env.set("unix_time_ns".to_string(), fn_zero_to_int());
+        // RES-1176: bytes ↔ string conversions.
+        let fn_bytes_bytes_to_bytes_strip = || Type::Function {
+            params: vec![Type::Bytes, Type::Bytes],
+            return_type: Box::new(Type::Bytes),
+        };
+        env.set(
+            "bytes_strip_prefix".to_string(),
+            fn_bytes_bytes_to_bytes_strip(),
+        );
+        env.set(
+            "bytes_strip_suffix".to_string(),
+            fn_bytes_bytes_to_bytes_strip(),
+        );
+        env.set(
+            "bytes_to_string".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes],
+                return_type: Box::new(Type::Any),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6492,6 +6512,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "string_rsplit_once",
         "string_from_chars",
         "array_is_empty",
+        // RES-1176: bytes ↔ string conversions.
+        "bytes_strip_prefix",
+        "bytes_strip_suffix",
+        "bytes_to_string",
         // String/collection.
         "len",
         "push",
