@@ -1,0 +1,179 @@
+#  Auto-bump version on every push to main.
+#
+#  The version follows `0.1.<NNNN>` where `<NNNN>` is the issue number
+#  parsed out of the `RES-NNNN` prefix in the latest commit message.
+#
+#  On every push to `main`:
+#   1. Extract `RES-(\d+)` from the head commit message.
+#   2. If found, set `version = "0.1.NNNN"` in every workspace
+#      `Cargo.toml` + `vscode-extension/package.json`.
+#   3. Regenerate `Cargo.lock` to reflect the new package versions.
+#   4. Commit the bump (with `[skip-version-bump]` in the message so
+#      this workflow does not loop) and tag `v0.1.NNNN`.
+#   5. Push the tag — this fires `release.yml` (cross-target binary
+#      build + GitHub release) and `vscode_extension.yml` (`.vsix`
+#      package + publish to the VS Code Marketplace using the
+#      `VSCE_PAT` repo secret).
+#
+#  Required repo secrets:
+#   - `VSCE_PAT` — Azure DevOps personal access token with
+#     `Marketplace (publish)` scope for publisher `fromamerica`.
+#     Create at https://dev.azure.com/<org>/_usersSettings/tokens
+#     and add at GitHub → Settings → Secrets and variables → Actions.
+#   - (optional) `WORKFLOW_PUSH_TOKEN` — fine-grained PAT with
+#     `contents: write` on this repo if branch protection on `main`
+#     blocks bot pushes via `GITHUB_TOKEN`. The job falls back to
+#     `GITHUB_TOKEN` when unset.
+
+name: auto-version-bump
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump version from RES-NNNN
+    runs-on: ubuntu-latest
+    if: |
+      !contains(github.event.head_commit.message, '[skip-version-bump]')
+      && github.event.head_commit.author.email != 'github-actions[bot]@users.noreply.github.com'
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Extract RES-NNNN from commit message
+        id: extract
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, re
+          msg = os.environ.get("HEAD_MESSAGE", "")
+          m = re.search(r"RES-(\d+)", msg)
+          if m:
+              n = m.group(1)
+              print(f"issue={n}")
+              print(f"version=0.1.{n}")
+          else:
+              print("issue=")
+              print("version=")
+          PY
+
+      - name: Report extraction result
+        run: |
+          if [ -z "${{ steps.extract.outputs.version }}" ]; then
+            echo "No RES-NNNN found in head commit — nothing to bump."
+          else
+            echo "Bumping to version ${{ steps.extract.outputs.version }} (from RES-${{ steps.extract.outputs.issue }})"
+          fi
+
+      - name: Update version strings
+        if: steps.extract.outputs.version != ''
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, re, os, pathlib
+          version = os.environ["VERSION"]
+          cargo_paths = [
+              "resilient/Cargo.toml",
+              "resilient-runtime/Cargo.toml",
+              "resilient-span/Cargo.toml",
+              "resilient-runtime-cortex-m-demo/Cargo.toml",
+              "playground/Cargo.toml",
+          ]
+          # Only rewrite the top-level [package] version = "..." line.
+          # The regex anchors to start-of-line and matches the first
+          # occurrence per file — exactly the [package] version. Path
+          # deps lower in the file have a different shape (`version = ...`
+          # inside a {} table) and are not matched.
+          version_re = re.compile(r'^version\s*=\s*"[^"]*"', re.M)
+          for p in cargo_paths:
+              path = pathlib.Path(p)
+              if not path.exists():
+                  print(f"skip (missing): {p}")
+                  continue
+              text = path.read_text()
+              new = version_re.sub(f'version = "{version}"', text, count=1)
+              if new != text:
+                  path.write_text(new)
+                  print(f"updated: {p} -> {version}")
+              else:
+                  print(f"unchanged (no match): {p}")
+          # vscode-extension/package.json — top-level "version" key.
+          pkg_path = pathlib.Path("vscode-extension/package.json")
+          pkg = json.loads(pkg_path.read_text())
+          if pkg.get("version") != version:
+              pkg["version"] = version
+              pkg_path.write_text(json.dumps(pkg, indent=2) + "\n")
+              print(f"updated: {pkg_path} -> {version}")
+          else:
+              print(f"unchanged: {pkg_path}")
+          PY
+
+      - name: Install Rust toolchain
+        if: steps.extract.outputs.version != ''
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Refresh Cargo.lock files
+        if: steps.extract.outputs.version != ''
+        run: |
+          # Each crate has its own Cargo.lock (independent crates, not a
+          # workspace). `cargo metadata` is the cheapest way to reconcile
+          # the lock with a version-only change — no compile, no dep bumps.
+          for manifest in resilient resilient-runtime resilient-span resilient-runtime-cortex-m-demo; do
+            if [ -f "$manifest/Cargo.toml" ]; then
+              echo "Refreshing $manifest/Cargo.lock"
+              cargo metadata --manifest-path "$manifest/Cargo.toml" --format-version 1 > /dev/null
+            fi
+          done
+
+      - name: Detect changes
+        if: steps.extract.outputs.version != ''
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "Nothing changed — already at version ${{ steps.extract.outputs.version }}."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat
+          fi
+
+      - name: Commit + tag + push
+        if: steps.extract.outputs.version != '' && steps.diff.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+          ISSUE: ${{ steps.extract.outputs.issue }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "chore: bump version to v${VERSION} [skip-version-bump]" \
+                     -m "Auto-bump from RES-${ISSUE}." \
+                     -m "Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          # If the tag already exists for this version, the squash
+          # merge re-fired auto-bump after a previous run already
+          # produced this tag. Skip rather than fail.
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists — pushing branch only."
+            git push origin HEAD:main
+          else
+            git tag -a "v${VERSION}" -m "Resilient v${VERSION} — RES-${ISSUE}"
+            git push origin HEAD:main
+            git push origin "v${VERSION}"
+          fi
