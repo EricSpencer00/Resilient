@@ -1467,6 +1467,29 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-1162: deterministic hash builtins.
+        env.set(
+            "hash_int".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "hash_string".to_string(),
+            Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "hash_bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set("hash_combine".to_string(), fn_int_int_to_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6356,6 +6379,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_index_of_last",
         "array_first_or",
         "array_last_or",
+        // RES-1162: deterministic hash builtins.
+        "hash_int",
+        "hash_string",
+        "hash_bytes",
+        "hash_combine",
         // String/collection.
         "len",
         "push",
