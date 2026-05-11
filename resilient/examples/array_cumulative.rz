@@ -1,0 +1,26 @@
+// RES-1170 demo: array_cumsum / array_cumprod / array_diffs / array_min_max.
+
+fn main(int _d) {
+    // Cumulative sum: each element is the prefix sum.
+    println(array_cumsum([1, 2, 3, 4]));        // [1, 3, 6, 10]
+    println(array_cumsum([]));                  // []
+    println(array_cumsum([5, 0, 0, 0]));        // [5, 5, 5, 5]
+
+    // Cumulative product: prefix products.
+    println(array_cumprod([1, 2, 3, 4]));       // [1, 2, 6, 24]
+    println(array_cumprod([1, 2, 0, 3, 4]));    // [1, 2, 0, 0, 0]
+
+    // Adjacent differences (output length = max(0, len - 1)).
+    println(array_diffs([1, 3, 6, 10]));        // [2, 3, 4]
+    println(array_diffs([7, 7, 7, 7]));         // [0, 0, 0]
+    println(array_diffs([42]));                 // []
+
+    // Single-pass min/max.
+    println(array_min_max([3, 1, 5, 2, 4]));    // [1, 5]
+    println(array_min_max([5, 5, 5]));          // [5, 5]
+    println(array_min_max([42]));               // [42, 42]
+
+    return 0;
+}
+
+main(0);
