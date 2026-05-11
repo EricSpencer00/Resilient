@@ -1,0 +1,39 @@
+// RES-1142 demo: array_chunks, array_chunks_exact, array_step,
+// array_rotate_left, array_rotate_right.
+
+fn main(int _d) {
+    // Non-overlapping chunks; last may be shorter.
+    let arr = [1, 2, 3, 4, 5];
+    let cs = array_chunks(arr, 2);
+    println(len(cs));               // 3
+    println(len(cs[0]));             // 2
+    println(len(cs[2]));             // 1 (remainder)
+
+    // Strict version drops the remainder.
+    let ex = array_chunks_exact(arr, 2);
+    println(len(ex));               // 2
+
+    // Every-nth element.
+    let stepped = array_step([10, 20, 30, 40, 50, 60, 70], 3);
+    println(len(stepped));          // 3
+    println(stepped[0]);            // 10
+    println(stepped[2]);            // 70
+
+    // Rotation: rotate-left by 2 on [1..5] → [3,4,5,1,2].
+    let rl = array_rotate_left([1, 2, 3, 4, 5], 2);
+    println(rl[0]);                 // 3
+    println(rl[4]);                 // 2
+
+    // Rotation taken modulo length.
+    let rl_mod = array_rotate_left([1, 2, 3, 4, 5], 7);
+    println(rl_mod[0]);             // 3 (7 mod 5 = 2)
+
+    // Round-trip: rotate left then right by same amount.
+    let back = array_rotate_right(array_rotate_left([1, 2, 3, 4, 5], 3), 3);
+    println(back[0]);               // 1
+    println(back[4]);               // 5
+
+    return 0;
+}
+
+main(0);
