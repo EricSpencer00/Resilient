@@ -2904,6 +2904,35 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-1154: set_is_empty / set_from_array / result_and / option_and.
+        env.set(
+            "set_is_empty".to_string(),
+            Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Bool),
+            },
+        );
+        env.set(
+            "set_from_array".to_string(),
+            Type::Function {
+                params: vec![Type::Array],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "result_and".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "option_and".to_string(),
+            Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
 
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
@@ -6658,6 +6687,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "hashmap_entries",
         "hashmap_merge",
         "hashmap_is_empty",
+        // RES-1154: set_is_empty / set_from_array / result_and / option_and.
+        "set_is_empty",
+        "set_from_array",
+        "result_and",
+        "option_and",
         "set_new",
         "set_insert",
         "set_remove",

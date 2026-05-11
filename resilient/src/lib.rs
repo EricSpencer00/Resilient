@@ -41,6 +41,9 @@ mod bytes_helpers;
 mod compiler;
 mod const_fold;
 mod disasm;
+// RES-1154: set_is_empty / set_from_array / result_and / option_and.
+// Pure leaf builtins; module-isolated.
+mod set_result_option;
 // RES-1138: IEEE 754 classification + total order + sign-bit predicates.
 // Pure leaf builtins; module-isolated so the predicate surface can
 // grow without bloating lib.rs.
@@ -11216,6 +11219,19 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "bytes_replace_byte",
         crate::bytes_helpers::builtin_bytes_replace_byte,
     ),
+    // RES-1154: set_is_empty / set_from_array / result_and / option_and.
+    // Pure leaf builtins; module-isolated in `set_result_option.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    (
+        "set_is_empty",
+        crate::set_result_option::builtin_set_is_empty,
+    ),
+    (
+        "set_from_array",
+        crate::set_result_option::builtin_set_from_array,
+    ),
+    ("result_and", crate::set_result_option::builtin_result_and),
+    ("option_and", crate::set_result_option::builtin_option_and),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

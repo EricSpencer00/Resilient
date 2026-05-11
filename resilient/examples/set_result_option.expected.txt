@@ -1,0 +1,14 @@
+true
+false
+3
+true
+false
+2
+true
+Ok(2)
+Err("nope")
+Err("late")
+Some(2)
+None
+None
+Program executed successfully

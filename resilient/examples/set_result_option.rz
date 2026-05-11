@@ -1,0 +1,33 @@
+// RES-1154 demo: set_is_empty / set_from_array / result_and / option_and.
+
+fn main(int _d) {
+    // set_is_empty
+    println(set_is_empty(set_new()));   // true
+    let s = set_insert(set_new(), 42);
+    println(set_is_empty(s));            // false
+
+    // set_from_array — deduplicates and reorders into set semantics.
+    let s2 = set_from_array([1, 2, 3, 2, 1]);
+    println(set_len(s2));                // 3
+    println(set_has(s2, 1));             // true
+    println(set_has(s2, 5));             // false
+
+    // Mixed hashable types in one set.
+    let s3 = set_from_array(["a", "b"]);
+    println(set_len(s3));                // 2
+    println(set_has(s3, "a"));           // true
+
+    // result_and: short-circuits on first Err, otherwise returns second.
+    println(result_and(Ok(1), Ok(2)));        // Ok(2)
+    println(result_and(Err("nope"), Ok(2)));  // Err(nope) — first wins
+    println(result_and(Ok(1), Err("late")));  // Err(late)
+
+    // option_and: short-circuits on first None.
+    println(option_and(Some(1), Some(2)));    // Some(2)
+    println(option_and(None, Some(2)));       // None
+    println(option_and(Some(1), None));       // None
+
+    return 0;
+}
+
+main(0);
