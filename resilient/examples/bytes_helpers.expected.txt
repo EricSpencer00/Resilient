@@ -1,0 +1,9 @@
+00ff00ff00ff
+6
+0
+3
+2
+0
+ff01ff02
+aabb
+Program executed successfully

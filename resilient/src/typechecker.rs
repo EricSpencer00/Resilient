@@ -1405,6 +1405,28 @@ impl TypeChecker {
         env.set("array_stddev_float".to_string(), fn_array_to_float());
         env.set("array_median_float".to_string(), fn_array_to_float());
         env.set("array_range_float".to_string(), fn_array_to_float());
+        // RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
+        env.set(
+            "bytes_repeat".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Int],
+                return_type: Box::new(Type::Bytes),
+            },
+        );
+        env.set(
+            "bytes_count_byte".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "bytes_replace_byte".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes, Type::Int, Type::Int],
+                return_type: Box::new(Type::Bytes),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6250,6 +6272,10 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_stddev_float",
         "array_median_float",
         "array_range_float",
+        // RES-1152: per-byte helpers.
+        "bytes_repeat",
+        "bytes_count_byte",
+        "bytes_replace_byte",
         // String/collection.
         "len",
         "push",

@@ -1,0 +1,28 @@
+// RES-1152 demo: bytes_repeat / bytes_count_byte / bytes_replace_byte.
+
+fn main(int _d) {
+    // bytes_repeat: build a sentinel pattern.
+    let sig = bytes_repeat(b"\x00\xFF", 3);
+    println(bytes_to_hex(sig));            // 00ff00ff00ff
+    println(bytes_len(sig));               // 6
+
+    // bytes_repeat with n=0 is empty.
+    println(bytes_len(bytes_repeat(b"hi", 0))); // 0
+
+    // bytes_count_byte: tally a specific byte value.
+    let msg = b"hello world";
+    println(bytes_count_byte(msg, 108));   // 3 ('l' = 0x6C = 108)
+    println(bytes_count_byte(msg, 111));   // 2 ('o')
+    println(bytes_count_byte(msg, 99));    // 0 ('c' absent)
+
+    // bytes_replace_byte: rewrite one byte value to another.
+    let masked = bytes_replace_byte(b"\x00\x01\x00\x02", 0, 0xFF);
+    println(bytes_to_hex(masked));         // ff01ff02
+
+    // Identity when old == new.
+    println(bytes_to_hex(bytes_replace_byte(b"\xAA\xBB", 0xAA, 0xAA))); // aabb
+
+    return 0;
+}
+
+main(0);
