@@ -182,9 +182,27 @@ pub fn is_known_attribute(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// RES-1132: `record_and_lookup` and `reset_clears_state` both
+    /// drive the global `ATTR_REGISTRY`. cargo runs tests in parallel
+    /// by default, so without serialization the two races: A's
+    /// `record` can be wiped by B's `reset` between A's `record` and
+    /// `find_kind` calls, intermittently failing `record_and_lookup`
+    /// with `len = 0`. A per-module mutex held for the entire test
+    /// makes the global-state writes serial without affecting any
+    /// other test in the binary.
+    fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        // Poison-tolerant: if a prior test panicked while holding the
+        // lock, the registry isn't corrupted (reset() rebuilds it),
+        // so we recover the guard and proceed.
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
 
     #[test]
     fn record_and_lookup() {
+        let _g = serial_lock();
         reset();
         record(
             "my_fn",
@@ -209,6 +227,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
+        let _g = serial_lock();
         reset();
         record(
             "f",

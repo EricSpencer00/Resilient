@@ -1,8 +1,8 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-1126-1130-direction-rounded-div",
-      "claimed_at": "2026-05-11T14:25:23Z"
+    "resilient/src/feature_attrs.rs": {
+      "branch": "res-1132-feature-attrs-test-race",
+      "claimed_at": "2026-05-11T14:34:56Z"
     }
   }
 }
