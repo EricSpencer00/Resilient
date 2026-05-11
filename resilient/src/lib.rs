@@ -15,6 +15,9 @@ mod alignment_helpers;
 // RES-1142: array chunking + striding + rotation primitives.
 // Pure leaf builtins; module-isolated.
 mod array_chunking;
+// RES-1146: float / string sort + array_is_sorted predicates.
+// Pure leaf builtins; module-isolated.
+mod array_sort_extra;
 // RES-1140: ASCII char-class predicates — rounds out the RES-459 family.
 // Pure leaf builtins; module-isolated.
 mod ascii_predicates;
@@ -11101,6 +11104,29 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "is_ascii_control",
         crate::ascii_predicates::builtin_is_ascii_control,
+    ),
+    // RES-1146: float / string sort + array_is_sorted predicates.
+    // Pure leaf builtins; module-isolated in `array_sort_extra.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    (
+        "array_sort_float",
+        crate::array_sort_extra::builtin_array_sort_float,
+    ),
+    (
+        "array_sort_string",
+        crate::array_sort_extra::builtin_array_sort_string,
+    ),
+    (
+        "array_is_sorted",
+        crate::array_sort_extra::builtin_array_is_sorted,
+    ),
+    (
+        "array_is_sorted_float",
+        crate::array_sort_extra::builtin_array_is_sorted_float,
+    ),
+    (
+        "array_is_sorted_string",
+        crate::array_sort_extra::builtin_array_is_sorted_string,
     ),
 ];
 
