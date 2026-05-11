@@ -59,6 +59,8 @@ mod hash_builtins;
 // RES-1172: small string + array gaps — split_once / rsplit_once /
 // string_from_chars / array_is_empty. Pure leaf builtins; module-isolated.
 mod string_array_misc;
+// RES-1174: wall-clock unix time builtins. @io / impure.
+mod unix_time;
 // RES-1164: iteration helpers — enumerate, array_zip3, string_truncate.
 // Pure leaf builtins; module-isolated.
 mod iter_helpers;
@@ -11365,6 +11367,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "array_is_empty",
         crate::string_array_misc::builtin_array_is_empty,
     ),
+    // RES-1174: wall-clock unix time. @io / impure.
+    // Pure leaf builtins; module-isolated in `unix_time.rs`. Appended
+    // at the end of BUILTINS per the perf rule from PR #1125.
+    ("unix_time_s", crate::unix_time::builtin_unix_time_s),
+    ("unix_time_ms", crate::unix_time::builtin_unix_time_ms),
+    ("unix_time_ns", crate::unix_time::builtin_unix_time_ns),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
