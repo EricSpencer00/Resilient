@@ -10404,6 +10404,35 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("count_zeros", builtin_count_zeros),
     ("leading_zeros", builtin_leading_zeros),
     ("trailing_zeros", builtin_trailing_zeros),
+    // RES-1115..1118: overflow-safe integer arithmetic — safety-critical
+    // embedded code needs an explicit overflow policy, not silent wrap.
+    ("saturating_add", builtin_saturating_add),
+    ("saturating_sub", builtin_saturating_sub),
+    ("saturating_mul", builtin_saturating_mul),
+    ("wrapping_add", builtin_wrapping_add),
+    ("wrapping_sub", builtin_wrapping_sub),
+    ("wrapping_mul", builtin_wrapping_mul),
+    ("checked_add", builtin_checked_add),
+    ("checked_sub", builtin_checked_sub),
+    ("checked_mul", builtin_checked_mul),
+    ("checked_div", builtin_checked_div),
+    // RES-1119..1121: bit manipulation. Building blocks for crypto,
+    // CRC, FFT bit-reversal, and endianness fixups.
+    ("rotate_left_int", builtin_rotate_left_int),
+    ("rotate_right_int", builtin_rotate_right_int),
+    ("reverse_bits", builtin_reverse_bits),
+    ("swap_bytes", builtin_swap_bytes),
+    // RES-1122..1123: int ↔ bytes endianness conversion. Closes the
+    // authoring gap in the bytes_* family for fixed-size integer
+    // framing of binary protocols.
+    ("to_be_bytes", builtin_to_be_bytes),
+    ("to_le_bytes", builtin_to_le_bytes),
+    ("from_be_bytes", builtin_from_be_bytes),
+    ("from_le_bytes", builtin_from_le_bytes),
+    // RES-1124: integer-only math primitives — no f64 round-trip, so
+    // suitable for no_std targets without an FPU.
+    ("isqrt", builtin_isqrt),
+    ("ipow", builtin_ipow),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -11564,6 +11593,402 @@ fn builtin_trailing_zeros(args: &[Value]) -> RResult<Value> {
             "trailing_zeros: expected 1 argument, got {}",
             args.len()
         )),
+    }
+}
+
+// === RES-1115..1118: overflow-safe integer arithmetic =====================
+// Safety-critical embedded code routinely accumulates sensor samples, time
+// deltas, and energy budgets. Plain `+` silently wraps; these builtins make
+// the overflow policy explicit — saturating, wrapping, or checked.
+
+/// RES-1115: `saturating_add(a, b)` — clamps to `i64::MAX` / `i64::MIN`
+/// on overflow rather than wrapping. Use for monotonic counters and
+/// budgets where exceeding the bound should saturate, not roll over.
+fn builtin_saturating_add(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.saturating_add(*b))),
+        [a, b] => Err(format!(
+            "saturating_add: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "saturating_add: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1116: `saturating_sub(a, b)` — clamps to `i64::MIN` / `i64::MAX`
+/// on under/overflow rather than wrapping.
+fn builtin_saturating_sub(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.saturating_sub(*b))),
+        [a, b] => Err(format!(
+            "saturating_sub: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "saturating_sub: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1116: `saturating_mul(a, b)` — clamps to the i64 bounds on
+/// overflow in either direction. Multiplication is the most
+/// overflow-prone arithmetic op; this is the embedded-safe form for
+/// gain and scale factors.
+fn builtin_saturating_mul(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.saturating_mul(*b))),
+        [a, b] => Err(format!(
+            "saturating_mul: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "saturating_mul: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1117: `wrapping_add(a, b)` — explicit two's-complement wrapping.
+/// Pair with `wrapping_sub`/`wrapping_mul` for hash mixers, PRNGs, and
+/// any algorithm that intentionally relies on modular i64 arithmetic.
+/// Documents the wrap as intentional so future hardening of `+` with
+/// overflow checks won't break these sites.
+fn builtin_wrapping_add(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.wrapping_add(*b))),
+        [a, b] => Err(format!(
+            "wrapping_add: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "wrapping_add: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1117: `wrapping_sub(a, b)` — see `wrapping_add`.
+fn builtin_wrapping_sub(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.wrapping_sub(*b))),
+        [a, b] => Err(format!(
+            "wrapping_sub: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "wrapping_sub: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1117: `wrapping_mul(a, b)` — see `wrapping_add`.
+fn builtin_wrapping_mul(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.wrapping_mul(*b))),
+        [a, b] => Err(format!(
+            "wrapping_mul: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "wrapping_mul: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1118: `checked_add(a, b)` — `Some(sum)` on success, `None` on
+/// overflow. The strongest of the three overflow handlers: the caller
+/// is forced to handle the failure path via pattern matching on
+/// `Option<int>`.
+fn builtin_checked_add(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(match a.checked_add(*b) {
+            Some(v) => Value::Option(Some(Box::new(Value::Int(v)))),
+            None => Value::Option(None),
+        }),
+        [a, b] => Err(format!(
+            "checked_add: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "checked_add: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1118: `checked_sub(a, b)` — see `checked_add`.
+fn builtin_checked_sub(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(match a.checked_sub(*b) {
+            Some(v) => Value::Option(Some(Box::new(Value::Int(v)))),
+            None => Value::Option(None),
+        }),
+        [a, b] => Err(format!(
+            "checked_sub: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "checked_sub: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1118: `checked_mul(a, b)` — see `checked_add`.
+fn builtin_checked_mul(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(match a.checked_mul(*b) {
+            Some(v) => Value::Option(Some(Box::new(Value::Int(v)))),
+            None => Value::Option(None),
+        }),
+        [a, b] => Err(format!(
+            "checked_mul: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "checked_mul: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1118: `checked_div(a, b)` — `Some(quotient)` on success, `None`
+/// on division by zero OR the single overflow case `i64::MIN / -1`.
+/// Both failure modes surface as the same `None` so the caller's
+/// `if let Some(...)` branch handles them uniformly.
+fn builtin_checked_div(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(match a.checked_div(*b) {
+            Some(v) => Value::Option(Some(Box::new(Value::Int(v)))),
+            None => Value::Option(None),
+        }),
+        [a, b] => Err(format!(
+            "checked_div: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "checked_div: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+// === RES-1119..1121: bit manipulation ====================================
+
+/// RES-1119: `rotate_left_int(value, n)` — rotate bits left by `n`
+/// positions (modulo 64). Building block for crypto primitives, hash
+/// mixers, and ARM bitfield manipulation. The implementation masks
+/// `n & 63` so a full rotation is the identity.
+fn builtin_rotate_left_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(v), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "rotate_left_int: shift count must be non-negative, got {}",
+                    n
+                ));
+            }
+            Ok(Value::Int(v.rotate_left((*n as u32) & 63)))
+        }
+        [a, b] => Err(format!(
+            "rotate_left_int: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "rotate_left_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1119: `rotate_right_int(value, n)` — see `rotate_left_int`.
+/// Round-trip with `rotate_left_int(rotate_right_int(x, n), n) == x`.
+fn builtin_rotate_right_int(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(v), Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "rotate_right_int: shift count must be non-negative, got {}",
+                    n
+                ));
+            }
+            Ok(Value::Int(v.rotate_right((*n as u32) & 63)))
+        }
+        [a, b] => Err(format!(
+            "rotate_right_int: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "rotate_right_int: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1120: `reverse_bits(value)` — reverse the order of the 64 bits.
+/// Involution; useful for FFT bit-reversal permutations and hardware
+/// bit-order fixups where the MCU samples LSB-first but the wire
+/// format is MSB-first.
+fn builtin_reverse_bits(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.reverse_bits())),
+        [other] => Err(format!("reverse_bits: expected int, got {}", other)),
+        _ => Err(format!(
+            "reverse_bits: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1121: `swap_bytes(value)` — reverse the 8 bytes of `value` (a
+/// 64-bit endianness flip). Essential when the on-wire byte order is
+/// fixed (e.g., big-endian network frames) but the host MCU is
+/// little-endian or vice versa.
+fn builtin_swap_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Int(i.swap_bytes())),
+        [other] => Err(format!("swap_bytes: expected int, got {}", other)),
+        _ => Err(format!(
+            "swap_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+// === RES-1122..1123: endianness conversion between int and bytes ==========
+
+/// RES-1122: `to_be_bytes(value)` — pack a 64-bit integer into an
+/// 8-byte `Value::Bytes` buffer in big-endian (network) order.
+/// Companion to `from_be_bytes`. Closes the authoring gap in the
+/// `bytes_*` family (RES-152) for fixed-size integer framing.
+fn builtin_to_be_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Bytes(i.to_be_bytes().to_vec())),
+        [other] => Err(format!("to_be_bytes: expected int, got {}", other)),
+        _ => Err(format!(
+            "to_be_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1122: `to_le_bytes(value)` — see `to_be_bytes`; little-endian
+/// order.
+fn builtin_to_le_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Bytes(i.to_le_bytes().to_vec())),
+        [other] => Err(format!("to_le_bytes: expected int, got {}", other)),
+        _ => Err(format!(
+            "to_le_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1123: `from_be_bytes(buf)` — unpack an 8-byte `Value::Bytes`
+/// buffer as a big-endian 64-bit integer. Length-checked: anything
+/// other than exactly 8 bytes is a typed error.
+fn builtin_from_be_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(b)] => {
+            if b.len() != 8 {
+                return Err(format!(
+                    "from_be_bytes: expected exactly 8 bytes, got {}",
+                    b.len()
+                ));
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(b);
+            Ok(Value::Int(i64::from_be_bytes(arr)))
+        }
+        [other] => Err(format!("from_be_bytes: expected bytes, got {}", other)),
+        _ => Err(format!(
+            "from_be_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1123: `from_le_bytes(buf)` — see `from_be_bytes`; little-endian
+/// order.
+fn builtin_from_le_bytes(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Bytes(b)] => {
+            if b.len() != 8 {
+                return Err(format!(
+                    "from_le_bytes: expected exactly 8 bytes, got {}",
+                    b.len()
+                ));
+            }
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(b);
+            Ok(Value::Int(i64::from_le_bytes(arr)))
+        }
+        [other] => Err(format!("from_le_bytes: expected bytes, got {}", other)),
+        _ => Err(format!(
+            "from_le_bytes: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+// === RES-1124: integer-only math primitives ===============================
+
+/// RES-1124: `isqrt(n)` — integer square root (truncating). Unlike the
+/// `sqrt(int)` builtin, which routes through `f64` and loses precision
+/// above 2^53, this stays in `i64` throughout. Domain: `n >= 0`.
+fn builtin_isqrt(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n < 0 {
+                return Err(format!(
+                    "isqrt: domain error — argument must be non-negative, got {}",
+                    n
+                ));
+            }
+            Ok(Value::Int(n.isqrt()))
+        }
+        [other] => Err(format!("isqrt: expected int, got {}", other)),
+        _ => Err(format!("isqrt: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-1124: `ipow(base, exp)` — integer power with explicit overflow
+/// detection. Negative `exp` is a typed error (would require a
+/// fractional representation); overflow is also a typed error so
+/// silent wrapping is impossible. `ipow(0, 0) == 1`, matching
+/// `i64::checked_pow`'s convention.
+fn builtin_ipow(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(base), Value::Int(exp)] => {
+            if *exp < 0 {
+                return Err(format!(
+                    "ipow: negative exponent {} not representable as int (use float pow)",
+                    exp
+                ));
+            }
+            let exp_u32 = u32::try_from(*exp).map_err(|_| {
+                format!(
+                    "ipow: exponent {} too large for i64::checked_pow (max u32)",
+                    exp
+                )
+            })?;
+            match base.checked_pow(exp_u32) {
+                Some(v) => Ok(Value::Int(v)),
+                None => Err(format!(
+                    "ipow: overflow computing {}^{} (out of i64 range)",
+                    base, exp
+                )),
+            }
+        }
+        [a, b] => Err(format!("ipow: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!("ipow: expected 2 arguments, got {}", args.len())),
     }
 }
 
@@ -33120,6 +33545,377 @@ mod tests {
     fn builtin_version_rejects_args() {
         let err = builtin_version(&[Value::Int(0)]).unwrap_err();
         assert!(err.contains("expected 0 arguments"), "err was: {}", err);
+    }
+
+    // --- RES-1115..1124: overflow-safe arithmetic + bit/byte ops ----------
+
+    fn as_some_int(v: Value) -> i64 {
+        match v {
+            Value::Option(Some(inner)) => match *inner {
+                Value::Int(i) => i,
+                other => panic!("expected Some(Int), got Some({:?})", other),
+            },
+            other => panic!("expected Some(_), got {:?}", other),
+        }
+    }
+
+    fn assert_none(v: Value, tag: &str) {
+        match v {
+            Value::Option(None) => {}
+            other => panic!("{}: expected None, got {:?}", tag, other),
+        }
+    }
+
+    // RES-1115: saturating_add — overflow clamps to i64::MAX/MIN.
+    #[test]
+    fn saturating_add_overflow_clamps() {
+        assert_eq!(
+            as_int(builtin_saturating_add(&[Value::Int(i64::MAX), Value::Int(1)]).unwrap()),
+            i64::MAX
+        );
+        assert_eq!(
+            as_int(builtin_saturating_add(&[Value::Int(i64::MIN), Value::Int(-1)]).unwrap()),
+            i64::MIN
+        );
+    }
+    #[test]
+    fn saturating_add_happy_path() {
+        assert_eq!(
+            as_int(builtin_saturating_add(&[Value::Int(5), Value::Int(7)]).unwrap()),
+            12
+        );
+        assert_eq!(
+            as_int(builtin_saturating_add(&[Value::Int(-3), Value::Int(-4)]).unwrap()),
+            -7
+        );
+    }
+
+    // RES-1116: saturating_sub / saturating_mul.
+    #[test]
+    fn saturating_sub_clamps() {
+        assert_eq!(
+            as_int(builtin_saturating_sub(&[Value::Int(i64::MIN), Value::Int(1)]).unwrap()),
+            i64::MIN
+        );
+        assert_eq!(
+            as_int(builtin_saturating_sub(&[Value::Int(0), Value::Int(i64::MIN)]).unwrap()),
+            i64::MAX
+        );
+        assert_eq!(
+            as_int(builtin_saturating_sub(&[Value::Int(10), Value::Int(3)]).unwrap()),
+            7
+        );
+    }
+    #[test]
+    fn saturating_mul_clamps() {
+        assert_eq!(
+            as_int(builtin_saturating_mul(&[Value::Int(i64::MAX), Value::Int(2)]).unwrap()),
+            i64::MAX
+        );
+        assert_eq!(
+            as_int(builtin_saturating_mul(&[Value::Int(i64::MIN), Value::Int(2)]).unwrap()),
+            i64::MIN
+        );
+        assert_eq!(
+            as_int(builtin_saturating_mul(&[Value::Int(0), Value::Int(i64::MIN)]).unwrap()),
+            0
+        );
+        assert_eq!(
+            as_int(builtin_saturating_mul(&[Value::Int(6), Value::Int(7)]).unwrap()),
+            42
+        );
+    }
+
+    // RES-1117: wrapping_{add,sub,mul} — explicit modular i64.
+    #[test]
+    fn wrapping_add_wraps() {
+        assert_eq!(
+            as_int(builtin_wrapping_add(&[Value::Int(i64::MAX), Value::Int(1)]).unwrap()),
+            i64::MIN
+        );
+        assert_eq!(
+            as_int(builtin_wrapping_add(&[Value::Int(2), Value::Int(3)]).unwrap()),
+            5
+        );
+    }
+    #[test]
+    fn wrapping_sub_wraps() {
+        assert_eq!(
+            as_int(builtin_wrapping_sub(&[Value::Int(i64::MIN), Value::Int(1)]).unwrap()),
+            i64::MAX
+        );
+        assert_eq!(
+            as_int(builtin_wrapping_sub(&[Value::Int(10), Value::Int(3)]).unwrap()),
+            7
+        );
+    }
+    #[test]
+    fn wrapping_mul_wraps() {
+        assert_eq!(
+            as_int(builtin_wrapping_mul(&[Value::Int(i64::MAX), Value::Int(2)]).unwrap()),
+            -2
+        );
+        assert_eq!(
+            as_int(builtin_wrapping_mul(&[Value::Int(6), Value::Int(7)]).unwrap()),
+            42
+        );
+    }
+
+    // RES-1118: checked_{add,sub,mul,div} — Option-returning overflow.
+    #[test]
+    fn checked_add_overflow_is_none() {
+        assert_none(
+            builtin_checked_add(&[Value::Int(i64::MAX), Value::Int(1)]).unwrap(),
+            "checked_add overflow",
+        );
+        assert_eq!(
+            as_some_int(builtin_checked_add(&[Value::Int(2), Value::Int(3)]).unwrap()),
+            5
+        );
+    }
+    #[test]
+    fn checked_sub_overflow_is_none() {
+        assert_none(
+            builtin_checked_sub(&[Value::Int(i64::MIN), Value::Int(1)]).unwrap(),
+            "checked_sub overflow",
+        );
+        assert_eq!(
+            as_some_int(builtin_checked_sub(&[Value::Int(10), Value::Int(3)]).unwrap()),
+            7
+        );
+    }
+    #[test]
+    fn checked_mul_overflow_is_none() {
+        assert_none(
+            builtin_checked_mul(&[Value::Int(i64::MAX), Value::Int(2)]).unwrap(),
+            "checked_mul overflow",
+        );
+        assert_eq!(
+            as_some_int(builtin_checked_mul(&[Value::Int(6), Value::Int(7)]).unwrap()),
+            42
+        );
+    }
+    #[test]
+    fn checked_div_zero_and_overflow_are_none() {
+        // Div by zero.
+        assert_none(
+            builtin_checked_div(&[Value::Int(10), Value::Int(0)]).unwrap(),
+            "checked_div by zero",
+        );
+        // i64::MIN / -1 overflows.
+        assert_none(
+            builtin_checked_div(&[Value::Int(i64::MIN), Value::Int(-1)]).unwrap(),
+            "checked_div i64::MIN / -1",
+        );
+        // Happy path.
+        assert_eq!(
+            as_some_int(builtin_checked_div(&[Value::Int(10), Value::Int(3)]).unwrap()),
+            3
+        );
+    }
+
+    // RES-1119: rotate_{left,right}_int — round-trip + masking.
+    #[test]
+    fn rotate_left_int_round_trip() {
+        let x = 0x0123_4567_89AB_CDEFi64;
+        assert_eq!(
+            as_int(builtin_rotate_left_int(&[Value::Int(x), Value::Int(8)]).unwrap()),
+            x.rotate_left(8)
+        );
+        // Full rotation == identity.
+        assert_eq!(
+            as_int(builtin_rotate_left_int(&[Value::Int(x), Value::Int(64)]).unwrap()),
+            x
+        );
+        // All-ones is invariant.
+        assert_eq!(
+            as_int(builtin_rotate_left_int(&[Value::Int(-1), Value::Int(5)]).unwrap()),
+            -1
+        );
+    }
+    #[test]
+    fn rotate_right_int_round_trip() {
+        let x = 0x0123_4567_89AB_CDEFi64;
+        let rotated = as_int(builtin_rotate_left_int(&[Value::Int(x), Value::Int(13)]).unwrap());
+        let back =
+            as_int(builtin_rotate_right_int(&[Value::Int(rotated), Value::Int(13)]).unwrap());
+        assert_eq!(back, x, "rotate_left then rotate_right should round-trip");
+    }
+    #[test]
+    fn rotate_negative_count_errors() {
+        assert!(
+            builtin_rotate_left_int(&[Value::Int(1), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+        assert!(
+            builtin_rotate_right_int(&[Value::Int(1), Value::Int(-1)])
+                .unwrap_err()
+                .contains("non-negative")
+        );
+    }
+
+    // RES-1120: reverse_bits — involution + invariants.
+    #[test]
+    fn reverse_bits_endpoints_and_invariants() {
+        assert_eq!(
+            as_int(builtin_reverse_bits(&[Value::Int(1)]).unwrap()),
+            i64::MIN
+        );
+        assert_eq!(as_int(builtin_reverse_bits(&[Value::Int(0)]).unwrap()), 0);
+        assert_eq!(as_int(builtin_reverse_bits(&[Value::Int(-1)]).unwrap()), -1);
+    }
+    #[test]
+    fn reverse_bits_is_involution() {
+        for x in [
+            0i64,
+            1,
+            -1,
+            42,
+            i64::MAX,
+            i64::MIN,
+            0xDEAD_BEEF_CAFE_F00Du64 as i64,
+        ] {
+            let twice = as_int(
+                builtin_reverse_bits(&[Value::Int(as_int(
+                    builtin_reverse_bits(&[Value::Int(x)]).unwrap(),
+                ))])
+                .unwrap(),
+            );
+            assert_eq!(
+                twice, x,
+                "reverse_bits(reverse_bits({})) should be {}",
+                x, x
+            );
+        }
+    }
+
+    // RES-1121: swap_bytes — known pattern + invariants.
+    #[test]
+    fn swap_bytes_known_pattern() {
+        assert_eq!(
+            as_int(builtin_swap_bytes(&[Value::Int(0x0123_4567_89AB_CDEFi64)]).unwrap()),
+            0xEFCD_AB89_6745_2301u64 as i64
+        );
+        assert_eq!(as_int(builtin_swap_bytes(&[Value::Int(0)]).unwrap()), 0);
+        assert_eq!(as_int(builtin_swap_bytes(&[Value::Int(-1)]).unwrap()), -1);
+    }
+    #[test]
+    fn swap_bytes_is_involution() {
+        for x in [1i64, 42, -42, i64::MAX, i64::MIN] {
+            let twice = as_int(
+                builtin_swap_bytes(&[Value::Int(as_int(
+                    builtin_swap_bytes(&[Value::Int(x)]).unwrap(),
+                ))])
+                .unwrap(),
+            );
+            assert_eq!(twice, x);
+        }
+    }
+
+    // RES-1122..1123: int ↔ bytes round-trip.
+    #[test]
+    fn to_be_bytes_known_pattern() {
+        match builtin_to_be_bytes(&[Value::Int(0x0102_0304_0506_0708i64)]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b, vec![1, 2, 3, 4, 5, 6, 7, 8]),
+            other => panic!("expected Bytes, got {:?}", other),
+        }
+    }
+    #[test]
+    fn to_le_bytes_known_pattern() {
+        match builtin_to_le_bytes(&[Value::Int(0x0102_0304_0506_0708i64)]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b, vec![8, 7, 6, 5, 4, 3, 2, 1]),
+            other => panic!("expected Bytes, got {:?}", other),
+        }
+    }
+    #[test]
+    fn to_bytes_edges() {
+        match builtin_to_be_bytes(&[Value::Int(0)]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b, vec![0u8; 8]),
+            _ => panic!("expected Bytes(0..)"),
+        }
+        match builtin_to_le_bytes(&[Value::Int(-1)]).unwrap() {
+            Value::Bytes(b) => assert_eq!(b, vec![0xFFu8; 8]),
+            _ => panic!("expected Bytes(0xFF..)"),
+        }
+    }
+    #[test]
+    fn from_be_le_round_trip() {
+        for x in [
+            0i64,
+            1,
+            -1,
+            42,
+            i64::MAX,
+            i64::MIN,
+            0x0102_0304_0506_0708i64,
+        ] {
+            let be = builtin_to_be_bytes(&[Value::Int(x)]).unwrap();
+            assert_eq!(as_int(builtin_from_be_bytes(&[be]).unwrap()), x);
+            let le = builtin_to_le_bytes(&[Value::Int(x)]).unwrap();
+            assert_eq!(as_int(builtin_from_le_bytes(&[le]).unwrap()), x);
+        }
+    }
+    #[test]
+    fn from_bytes_length_mismatch_errors() {
+        let err = builtin_from_be_bytes(&[Value::Bytes(vec![0; 7])]).unwrap_err();
+        assert!(err.contains("expected exactly 8 bytes"), "err was: {}", err);
+        let err = builtin_from_le_bytes(&[Value::Bytes(vec![0; 9])]).unwrap_err();
+        assert!(err.contains("expected exactly 8 bytes"), "err was: {}", err);
+    }
+
+    // RES-1124: isqrt + ipow.
+    #[test]
+    fn isqrt_boundary() {
+        assert_eq!(as_int(builtin_isqrt(&[Value::Int(0)]).unwrap()), 0);
+        assert_eq!(as_int(builtin_isqrt(&[Value::Int(1)]).unwrap()), 1);
+        assert_eq!(as_int(builtin_isqrt(&[Value::Int(4)]).unwrap()), 2);
+        assert_eq!(as_int(builtin_isqrt(&[Value::Int(15)]).unwrap()), 3);
+        assert_eq!(as_int(builtin_isqrt(&[Value::Int(16)]).unwrap()), 4);
+        assert_eq!(
+            as_int(builtin_isqrt(&[Value::Int(i64::MAX)]).unwrap()),
+            3_037_000_499
+        );
+    }
+    #[test]
+    fn isqrt_negative_is_domain_error() {
+        let err = builtin_isqrt(&[Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("non-negative"), "err was: {}", err);
+    }
+    #[test]
+    fn ipow_basic() {
+        assert_eq!(
+            as_int(builtin_ipow(&[Value::Int(2), Value::Int(10)]).unwrap()),
+            1024
+        );
+        assert_eq!(
+            as_int(builtin_ipow(&[Value::Int(3), Value::Int(5)]).unwrap()),
+            243
+        );
+        // x^0 == 1, including 0^0 (matches checked_pow).
+        assert_eq!(
+            as_int(builtin_ipow(&[Value::Int(5), Value::Int(0)]).unwrap()),
+            1
+        );
+        assert_eq!(
+            as_int(builtin_ipow(&[Value::Int(0), Value::Int(0)]).unwrap()),
+            1
+        );
+        // Signed bases.
+        assert_eq!(
+            as_int(builtin_ipow(&[Value::Int(-2), Value::Int(3)]).unwrap()),
+            -8
+        );
+    }
+    #[test]
+    fn ipow_negative_exp_errors() {
+        let err = builtin_ipow(&[Value::Int(2), Value::Int(-1)]).unwrap_err();
+        assert!(err.contains("negative exponent"), "err was: {}", err);
+    }
+    #[test]
+    fn ipow_overflow_errors() {
+        let err = builtin_ipow(&[Value::Int(2), Value::Int(63)]).unwrap_err();
+        assert!(err.contains("overflow"), "err was: {}", err);
     }
 
     // --- RES-143: file_read / file_write builtins ---

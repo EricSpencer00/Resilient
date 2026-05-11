@@ -1196,6 +1196,65 @@ impl TypeChecker {
         env.set("count_zeros".to_string(), fn_int_to_int());
         env.set("leading_zeros".to_string(), fn_int_to_int());
         env.set("trailing_zeros".to_string(), fn_int_to_int());
+        // RES-1115..1118: overflow-safe integer arithmetic. The
+        // checked_* family returns Option<int>; the type system has
+        // no Option<T> yet, so we use Type::Any for the return slot
+        // — the runtime check (`Value::Option`) is strict.
+        let fn_int_int_to_int = || Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        let fn_int_int_to_any = || Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Any),
+        };
+        env.set("saturating_add".to_string(), fn_int_int_to_int());
+        env.set("saturating_sub".to_string(), fn_int_int_to_int());
+        env.set("saturating_mul".to_string(), fn_int_int_to_int());
+        env.set("wrapping_add".to_string(), fn_int_int_to_int());
+        env.set("wrapping_sub".to_string(), fn_int_int_to_int());
+        env.set("wrapping_mul".to_string(), fn_int_int_to_int());
+        env.set("checked_add".to_string(), fn_int_int_to_any());
+        env.set("checked_sub".to_string(), fn_int_int_to_any());
+        env.set("checked_mul".to_string(), fn_int_int_to_any());
+        env.set("checked_div".to_string(), fn_int_int_to_any());
+        // RES-1119..1121: bit manipulation.
+        env.set("rotate_left_int".to_string(), fn_int_int_to_int());
+        env.set("rotate_right_int".to_string(), fn_int_int_to_int());
+        env.set("reverse_bits".to_string(), fn_int_to_int());
+        env.set("swap_bytes".to_string(), fn_int_to_int());
+        // RES-1122..1123: int ↔ bytes endianness conversion.
+        env.set(
+            "to_be_bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Bytes),
+            },
+        );
+        env.set(
+            "to_le_bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Bytes),
+            },
+        );
+        env.set(
+            "from_be_bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "from_le_bytes".to_string(),
+            Type::Function {
+                params: vec![Type::Bytes],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        // RES-1124: integer-only math primitives.
+        env.set("isqrt".to_string(), fn_int_to_int());
+        env.set("ipow".to_string(), fn_int_int_to_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -5914,6 +5973,30 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "count_zeros",
         "leading_zeros",
         "trailing_zeros",
+        // RES-1115..1118: overflow-safe arithmetic.
+        "saturating_add",
+        "saturating_sub",
+        "saturating_mul",
+        "wrapping_add",
+        "wrapping_sub",
+        "wrapping_mul",
+        "checked_add",
+        "checked_sub",
+        "checked_mul",
+        "checked_div",
+        // RES-1119..1121: bit manipulation.
+        "rotate_left_int",
+        "rotate_right_int",
+        "reverse_bits",
+        "swap_bytes",
+        // RES-1122..1123: int ↔ bytes endianness conversion.
+        "to_be_bytes",
+        "to_le_bytes",
+        "from_be_bytes",
+        "from_le_bytes",
+        // RES-1124: integer-only math primitives.
+        "isqrt",
+        "ipow",
         // String/collection.
         "len",
         "push",

@@ -1,12 +1,8 @@
 {
   "claims": {
     "resilient/src/lib.rs": {
-      "branch": "claude/wizardly-feynman-0204f0",
-      "claimed_at": "2026-05-11T01:39:51Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "claude/wizardly-feynman-0204f0",
-      "claimed_at": "2026-05-11T01:39:51Z"
+      "branch": "claude/upbeat-kilby-e80ef1",
+      "claimed_at": "2026-05-11T14:04:16Z"
     }
   }
 }
