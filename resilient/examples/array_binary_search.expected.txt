@@ -1,0 +1,13 @@
+Ok(2)
+Ok(0)
+Ok(4)
+Err(0)
+Err(2)
+Err(5)
+Err(0)
+Ok(1)
+Ok(2)
+Err(4)
+Ok(2)
+Err(2)
+Program executed successfully

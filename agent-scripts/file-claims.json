@@ -5,12 +5,12 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-1146-array-sort-extra",
-      "claimed_at": "2026-05-11T15:52:00Z"
+      "branch": "res-1148-binary-search",
+      "claimed_at": "2026-05-11T16:02:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1146-array-sort-extra",
-      "claimed_at": "2026-05-11T15:52:00Z"
+      "branch": "res-1148-binary-search",
+      "claimed_at": "2026-05-11T16:02:00Z"
     }
   }
 }
