@@ -3,6 +3,14 @@
     "resilient/src/feature_attrs.rs": {
       "branch": "res-1132-feature-attrs-test-race",
       "claimed_at": "2026-05-11T14:34:56Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1134-bytes-bitwise-ops",
+      "claimed_at": "2026-05-11T14:57:42Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1134-bytes-bitwise-ops",
+      "claimed_at": "2026-05-11T14:57:42Z"
     }
   }
 }

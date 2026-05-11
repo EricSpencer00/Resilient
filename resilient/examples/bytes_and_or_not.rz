@@ -1,0 +1,24 @@
+// RES-1134 demo: bytes_and / bytes_or / bytes_not — bitwise mask ops.
+// AND clears bits, OR sets bits, NOT flips every bit (involution).
+
+fn main(int _d) {
+    // Mask off the high nibble of every byte (clear top 4 bits).
+    let lo = bytes_and(b"\xAB\xCD\xEF", b"\x0F\x0F\x0F");
+    println(bytes_to_hex(lo));         // 0b0d0f
+
+    // Set the low nibble of every byte to 0xF.
+    let hi = bytes_or(b"\x10\x20\x30", b"\x0F\x0F\x0F");
+    println(bytes_to_hex(hi));         // 1f2f3f
+
+    // NOT flips every bit.
+    let flipped = bytes_not(b"\x00\xFF\xAA\x55");
+    println(bytes_to_hex(flipped));    // ff0055aa
+
+    // NOT(NOT(b)) == b — involution.
+    let back = bytes_not(bytes_not(b"hello"));
+    println(bytes_eq(back, b"hello")); // true
+
+    return 0;
+}
+
+main(0);

@@ -9,6 +9,10 @@ use std::rc::Rc;
 
 // Import modules
 mod bytecode;
+// RES-1134: bitwise + construction ops on `Value::Bytes` —
+// xor / and / or / not / fill / reverse. Pure leaf builtins; wires
+// into BUILTINS, typechecker env-seed, and PURE_BUILTINS only.
+mod bytes_bitwise;
 mod compiler;
 mod const_fold;
 mod disasm;
@@ -10995,6 +10999,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-1130: IEEE 754 bit reinterpret cast.
     ("float_to_bits", builtin_float_to_bits),
     ("float_from_bits", builtin_float_from_bits),
+    // RES-1134: bitwise + construction ops on Bytes. Pure leaf
+    // builtins; module-isolated in `bytes_bitwise.rs`. Appended at
+    // the end of BUILTINS per the perf rule established in PR #1125.
+    ("bytes_xor", crate::bytes_bitwise::builtin_bytes_xor),
+    ("bytes_and", crate::bytes_bitwise::builtin_bytes_and),
+    ("bytes_or", crate::bytes_bitwise::builtin_bytes_or),
+    ("bytes_not", crate::bytes_bitwise::builtin_bytes_not),
+    ("bytes_fill", crate::bytes_bitwise::builtin_bytes_fill),
+    ("bytes_reverse", crate::bytes_bitwise::builtin_bytes_reverse),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

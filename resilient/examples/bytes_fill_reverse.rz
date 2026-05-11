@@ -1,0 +1,24 @@
+// RES-1134 demo: bytes_fill(n, byte) builds a uniform buffer;
+// bytes_reverse(b) flips byte order (involution).
+
+fn main(int _d) {
+    // Zero buffer of length 4 — classic IV / padding seed.
+    println(bytes_to_hex(bytes_fill(4, 0)));    // 00000000
+
+    // Sentinel buffer of length 5 with byte 0xCC.
+    println(bytes_to_hex(bytes_fill(5, 204)));  // cccccccccc
+
+    // Reverse a 5-byte sequence.
+    println(bytes_to_hex(bytes_reverse(b"\x01\x02\x03\x04\x05")));  // 0504030201
+
+    // Reversing twice is identity.
+    let back = bytes_reverse(bytes_reverse(b"\xDE\xAD\xBE\xEF"));
+    println(bytes_to_hex(back));                // deadbeef
+
+    // Empty fill produces empty bytes.
+    println(bytes_len(bytes_fill(0, 0)));       // 0
+
+    return 0;
+}
+
+main(0);
