@@ -56,6 +56,9 @@ mod bytes_conversions;
 // RES-1178: bytes slicing primitives — take / drop / take_last / drop_last.
 // Pure leaf builtins; module-isolated.
 mod bytes_slicing;
+// RES-1182: integer bit rotation + scalar signum.
+// Pure leaf builtins; module-isolated.
+mod int_rotate;
 // RES-1162: deterministic hash builtins — hash_int / hash_string /
 // hash_bytes / hash_combine. Pure leaf builtins; module-isolated.
 mod compiler;
@@ -11418,6 +11421,12 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("ln_1p", crate::precision_math::builtin_ln_1p),
     ("mul_add", crate::precision_math::builtin_mul_add),
     ("recip", crate::precision_math::builtin_recip),
+    // RES-1182: integer bit rotation + scalar signum. Pure leaf builtins;
+    // module-isolated in `int_rotate.rs`. Appended at the end of BUILTINS
+    // per the perf rule from PR #1125.
+    ("rotate_left", crate::int_rotate::builtin_rotate_left),
+    ("rotate_right", crate::int_rotate::builtin_rotate_right),
+    ("signum", crate::int_rotate::builtin_signum),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
