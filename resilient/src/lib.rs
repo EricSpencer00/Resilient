@@ -15,6 +15,9 @@ mod alignment_helpers;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
+// RES-1158: array set-style helpers + fallback-safe first/last +
+// index_of_last. Pure leaf builtins; module-isolated.
+mod array_set_helpers;
 // RES-1156: per-bit accessors on i64 — set / clear / get / flip.
 // Pure leaf builtins; module-isolated.
 mod bit_manipulation;
@@ -11242,6 +11245,30 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("clear_bit", crate::bit_manipulation::builtin_clear_bit),
     ("get_bit", crate::bit_manipulation::builtin_get_bit),
     ("flip_bit", crate::bit_manipulation::builtin_flip_bit),
+    // RES-1158: array set-style helpers + fallback-safe first/last +
+    // index_of_last. Pure leaf builtins; module-isolated in
+    // `array_set_helpers.rs`. Appended at the end of BUILTINS per the
+    // perf rule from PR #1125.
+    (
+        "array_difference",
+        crate::array_set_helpers::builtin_array_difference,
+    ),
+    (
+        "array_intersection",
+        crate::array_set_helpers::builtin_array_intersection,
+    ),
+    (
+        "array_index_of_last",
+        crate::array_set_helpers::builtin_array_index_of_last,
+    ),
+    (
+        "array_first_or",
+        crate::array_set_helpers::builtin_array_first_or,
+    ),
+    (
+        "array_last_or",
+        crate::array_set_helpers::builtin_array_last_or,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

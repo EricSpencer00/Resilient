@@ -1,0 +1,27 @@
+// RES-1158 demo: array_difference / array_intersection /
+// array_index_of_last / array_first_or / array_last_or.
+
+fn main(int _d) {
+    // array_difference: a minus b, preserving a's order + dups.
+    println(array_difference([1, 2, 3, 4], [2, 4]));     // [1, 3]
+    println(array_difference([1, 2, 1, 3, 1], [3]));     // [1, 2, 1, 1]
+
+    // array_intersection: elements of a that are also in b.
+    println(array_intersection([1, 2, 3, 4], [2, 4, 6]));// [2, 4]
+    println(array_intersection([1, 2, 1, 3, 1], [1]));   // [1, 1, 1]
+
+    // array_index_of_last: last position where element matches.
+    println(array_index_of_last([1, 2, 3, 2, 1], 1));    // 4
+    println(array_index_of_last([1, 2, 3, 2, 1], 2));    // 3
+    println(array_index_of_last([1, 2, 3], 99));         // -1
+
+    // array_first_or / array_last_or: fallback-safe accessors.
+    println(array_first_or([10, 20, 30], -1));           // 10
+    println(array_first_or([], -1));                      // -1
+    println(array_last_or([10, 20, 30], -1));            // 30
+    println(array_last_or([], -1));                       // -1
+
+    return 0;
+}
+
+main(0);

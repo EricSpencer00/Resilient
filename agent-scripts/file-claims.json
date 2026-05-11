@@ -13,6 +13,7 @@
       "branch": "res-1154-set-result-option",
       "claimed_at": "2026-05-11T16:32:00Z"
 =======
+<<<<<<< HEAD
       "branch": "res-1156-bit-manipulation",
       "claimed_at": "2026-05-11T16:42:00Z"
     },
@@ -20,6 +21,15 @@
       "branch": "res-1156-bit-manipulation",
       "claimed_at": "2026-05-11T16:42:00Z"
 >>>>>>> 92a172f (RES-1156: set_bit / clear_bit / get_bit / flip_bit — 4 bit-manipulation builtins)
+=======
+      "branch": "res-1158-array-set-helpers",
+      "claimed_at": "2026-05-11T16:52:00Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1158-array-set-helpers",
+      "claimed_at": "2026-05-11T16:52:00Z"
+>>>>>>> f63cfa8 (RES-1158: array_difference / intersection / index_of_last / first_or / last_or)
+>>>>>>> 58c791f (RES-1158: array_difference / intersection / index_of_last / first_or / last_or)
     }
   }
 }
