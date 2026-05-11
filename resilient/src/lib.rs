@@ -53,6 +53,9 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
+// RES-1164: iteration helpers — enumerate, array_zip3, string_truncate.
+// Pure leaf builtins; module-isolated.
+mod iter_helpers;
 // RES-1166: rounding builtins — round / trunc / round_to_int / trunc_to_int.
 // Pure leaf builtins; module-isolated.
 mod rounding;
@@ -11304,6 +11307,15 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_argmin_string",
         crate::array_argminmax::builtin_array_argmin_string,
+    ),
+    // RES-1164: iteration helpers — enumerate, array_zip3, string_truncate.
+    // Pure leaf builtins; module-isolated in `iter_helpers.rs`. Appended
+    // at the end of BUILTINS per the perf rule from PR #1125.
+    ("enumerate", crate::iter_helpers::builtin_enumerate),
+    ("array_zip3", crate::iter_helpers::builtin_array_zip3),
+    (
+        "string_truncate",
+        crate::iter_helpers::builtin_string_truncate,
     ),
     // RES-1166: rounding builtins — round / trunc + int variants.
     // Pure leaf builtins; module-isolated in `rounding.rs`. Appended
