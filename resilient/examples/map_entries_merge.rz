@@ -1,0 +1,34 @@
+// RES-1144 demo: map_entries / map_merge / map_is_empty.
+
+fn main(int _d) {
+    // map_entries returns [[k, v], ...] sorted by key.
+    let m = map_new();
+    let m = map_insert(m, "carol", 42);
+    let m = map_insert(m, "alice", 17);
+    let m = map_insert(m, "bob", 23);
+    println(map_entries(m));         // [[alice, 17], [bob, 23], [carol, 42]]
+    println(len(map_entries(m)));    // 3
+
+    // map_merge — second map overrides first on conflict.
+    let a = map_new();
+    let a = map_insert(a, "x", 1);
+    let a = map_insert(a, "y", 2);
+    let b = map_new();
+    let b = map_insert(b, "y", 200);  // conflict — b wins
+    let b = map_insert(b, "z", 3);
+    let merged = map_merge(a, b);
+    println(map_len(merged));        // 3
+    println(map_keys(merged));       // [x, y, z]
+    println(map_values(merged));     // [1, 200, 3]
+
+    // map_is_empty.
+    println(map_is_empty(map_new()));    // true
+    println(map_is_empty(merged));       // false
+
+    // hashmap_* aliases share behaviour.
+    println(hashmap_is_empty(map_new()));  // true
+
+    return 0;
+}
+
+main(0);

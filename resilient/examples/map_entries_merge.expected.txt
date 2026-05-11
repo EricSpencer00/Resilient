@@ -1,0 +1,9 @@
+[["alice", 17], ["bob", 23], ["carol", 42]]
+3
+3
+["x", "y", "z"]
+[1, 200, 3]
+true
+false
+true
+Program executed successfully
