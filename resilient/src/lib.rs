@@ -12,6 +12,9 @@ use std::rc::Rc;
 // Pure leaf builtins; module-isolated so adding new bytes/int helpers
 // doesn't have to dodge each other inside lib.rs.
 mod alignment_helpers;
+// RES-1142: array chunking + striding + rotation primitives.
+// Pure leaf builtins; module-isolated.
+mod array_chunking;
 mod bytecode;
 // RES-1134: bitwise + construction ops on `Value::Bytes` —
 // xor / and / or / not / fill / reverse. Pure leaf builtins; wires
@@ -11050,6 +11053,23 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "float_sign_bit",
         crate::float_predicates::builtin_float_sign_bit,
+    ),
+    // RES-1142: array chunking + striding + rotation primitives.
+    // Pure leaf builtins; module-isolated in `array_chunking.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    ("array_chunks", crate::array_chunking::builtin_array_chunks),
+    (
+        "array_chunks_exact",
+        crate::array_chunking::builtin_array_chunks_exact,
+    ),
+    ("array_step", crate::array_chunking::builtin_array_step),
+    (
+        "array_rotate_left",
+        crate::array_chunking::builtin_array_rotate_left,
+    ),
+    (
+        "array_rotate_right",
+        crate::array_chunking::builtin_array_rotate_right,
     ),
 ];
 

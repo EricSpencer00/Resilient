@@ -1332,6 +1332,16 @@ impl TypeChecker {
         env.set("float_is_normal".to_string(), fn_float_to_bool());
         env.set("float_is_subnormal".to_string(), fn_float_to_bool());
         env.set("float_sign_bit".to_string(), fn_float_to_bool());
+        // RES-1142: array chunking + striding + rotation primitives.
+        let fn_array_int_to_array = || Type::Function {
+            params: vec![Type::Array, Type::Int],
+            return_type: Box::new(Type::Array),
+        };
+        env.set("array_chunks".to_string(), fn_array_int_to_array());
+        env.set("array_chunks_exact".to_string(), fn_array_int_to_array());
+        env.set("array_step".to_string(), fn_array_int_to_array());
+        env.set("array_rotate_left".to_string(), fn_array_int_to_array());
+        env.set("array_rotate_right".to_string(), fn_array_int_to_array());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6102,6 +6112,12 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "float_is_normal",
         "float_is_subnormal",
         "float_sign_bit",
+        // RES-1142: array chunking + striding + rotation.
+        "array_chunks",
+        "array_chunks_exact",
+        "array_step",
+        "array_rotate_left",
+        "array_rotate_right",
         // String/collection.
         "len",
         "push",
