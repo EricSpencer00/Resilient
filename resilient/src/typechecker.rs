@@ -2996,6 +2996,15 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-1160: argmax / argmin for float and string arrays.
+        let fn_array_to_int = || Type::Function {
+            params: vec![Type::Array],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("array_argmax_float".to_string(), fn_array_to_int());
+        env.set("array_argmin_float".to_string(), fn_array_to_int());
+        env.set("array_argmax_string".to_string(), fn_array_to_int());
+        env.set("array_argmin_string".to_string(), fn_array_to_int());
 
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
@@ -6771,6 +6780,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "set_from_array",
         "result_and",
         "option_and",
+        // RES-1160: argmax / argmin for float and string arrays.
+        "array_argmax_float",
+        "array_argmin_float",
+        "array_argmax_string",
+        "array_argmin_string",
         "set_new",
         "set_insert",
         "set_remove",

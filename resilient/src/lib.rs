@@ -12,6 +12,9 @@ use std::rc::Rc;
 // Pure leaf builtins; module-isolated so adding new bytes/int helpers
 // doesn't have to dodge each other inside lib.rs.
 mod alignment_helpers;
+// RES-1160: argmax / argmin for float and string arrays.
+// Pure leaf builtins; module-isolated.
+mod array_argminmax;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -11280,6 +11283,25 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("hash_string", crate::hash_builtins::builtin_hash_string),
     ("hash_bytes", crate::hash_builtins::builtin_hash_bytes),
     ("hash_combine", crate::hash_builtins::builtin_hash_combine),
+    // RES-1160: argmax / argmin for float and string arrays.
+    // Pure leaf builtins; module-isolated in `array_argminmax.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    (
+        "array_argmax_float",
+        crate::array_argminmax::builtin_array_argmax_float,
+    ),
+    (
+        "array_argmin_float",
+        crate::array_argminmax::builtin_array_argmin_float,
+    ),
+    (
+        "array_argmax_string",
+        crate::array_argminmax::builtin_array_argmax_string,
+    ),
+    (
+        "array_argmin_string",
+        crate::array_argminmax::builtin_array_argmin_string,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

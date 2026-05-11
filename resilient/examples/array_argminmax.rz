@@ -1,0 +1,25 @@
+// RES-1160 demo: array_argmax / array_argmin for float and string.
+
+fn main(int _d) {
+    // argmax_float: index of the maximum element.
+    println(array_argmax_float([1.0, 3.0, 2.0, 5.0, 4.0]));  // 3
+    println(array_argmin_float([3.0, 1.0, 5.0, 2.0]));       // 1
+
+    // Ties: first match wins.
+    println(array_argmax_float([3.0, 1.0, 3.0, 2.0]));       // 0
+    println(array_argmin_float([1.0, 3.0, 1.0]));            // 0
+
+    // -inf is the minimum under total order.
+    println(array_argmin_float([0.0, -1.0, 0.0 - 1.0 / 0.0, 1.0]));  // 2
+
+    // Strings: lex byte order.
+    println(array_argmax_string(["a", "c", "b"]));            // 1
+    println(array_argmin_string(["carol", "alice", "bob"])); // 1
+
+    // Byte-wise lex puts uppercase < lowercase.
+    println(array_argmax_string(["Z", "a", "B"]));            // 1
+
+    return 0;
+}
+
+main(0);
