@@ -1279,6 +1279,27 @@ impl TypeChecker {
                 return_type: Box::new(Type::Float),
             },
         );
+        // RES-1134: bitwise + construction ops on Bytes.
+        let fn_bytes_bytes_to_bytes = || Type::Function {
+            params: vec![Type::Bytes, Type::Bytes],
+            return_type: Box::new(Type::Bytes),
+        };
+        let fn_bytes_to_bytes = || Type::Function {
+            params: vec![Type::Bytes],
+            return_type: Box::new(Type::Bytes),
+        };
+        env.set("bytes_xor".to_string(), fn_bytes_bytes_to_bytes());
+        env.set("bytes_and".to_string(), fn_bytes_bytes_to_bytes());
+        env.set("bytes_or".to_string(), fn_bytes_bytes_to_bytes());
+        env.set("bytes_not".to_string(), fn_bytes_to_bytes());
+        env.set(
+            "bytes_fill".to_string(),
+            Type::Function {
+                params: vec![Type::Int, Type::Int],
+                return_type: Box::new(Type::Bytes),
+            },
+        );
+        env.set("bytes_reverse".to_string(), fn_bytes_to_bytes());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6033,6 +6054,13 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-1130: IEEE 754 bit reinterpret cast.
         "float_to_bits",
         "float_from_bits",
+        // RES-1134: bitwise + construction ops on Bytes.
+        "bytes_xor",
+        "bytes_and",
+        "bytes_or",
+        "bytes_not",
+        "bytes_fill",
+        "bytes_reverse",
         // String/collection.
         "len",
         "push",

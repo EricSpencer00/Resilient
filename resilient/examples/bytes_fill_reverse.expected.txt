@@ -1,0 +1,6 @@
+00000000
+cccccccccc
+0504030201
+deadbeef
+0
+Program executed successfully

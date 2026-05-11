@@ -1,0 +1,26 @@
+// RES-1134 demo: bytes_xor(a, b) — element-wise XOR of two equal-length
+// Bytes. Classic one-time-pad / stream-cipher mask helper.
+
+fn main(int _d) {
+    // Basic XOR — masking bits with 0xAA toggles every other bit.
+    let masked = bytes_xor(b"\xFF\x0F\xAA", b"\xAA\xAA\xAA");
+    println(bytes_to_hex(masked));     // 55a500
+
+    // Self-XOR yields all zeros (idempotent erase).
+    let zeros = bytes_xor(b"hello", b"hello");
+    println(bytes_to_hex(zeros));      // 0000000000
+
+    // Round-trip: encrypt then decrypt with the same key.
+    let msg = b"\xDE\xAD\xBE\xEF";
+    let key = b"\x12\x34\x56\x78";
+    let ct = bytes_xor(msg, key);
+    let back = bytes_xor(ct, key);
+    println(bytes_to_hex(back));       // deadbeef
+
+    // Empty XOR empty is empty.
+    println(bytes_len(bytes_xor(b"", b"")));   // 0
+
+    return 0;
+}
+
+main(0);
