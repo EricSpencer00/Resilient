@@ -6,6 +6,7 @@
     },
     "resilient/src/lib.rs": {
 <<<<<<< HEAD
+<<<<<<< HEAD
       "branch": "res-1162-hash-builtins",
       "claimed_at": "2026-05-11T17:12:00Z"
     },
@@ -20,6 +21,14 @@
       "branch": "res-1160-array-argmin-argmax",
       "claimed_at": "2026-05-11T17:02:00Z"
 >>>>>>> fe1909d (RES-1160: array_argmax_float / argmin_float / argmax_string / argmin_string)
+=======
+      "branch": "res-1166-rounding",
+      "claimed_at": "2026-05-11T17:32:00Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1166-rounding",
+      "claimed_at": "2026-05-11T17:32:00Z"
+>>>>>>> b2b2d07 (RES-1166: round / trunc / round_to_int / trunc_to_int)
     }
   }
 }
