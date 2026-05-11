@@ -1,0 +1,21 @@
+// RES-1174 demo: unix_time_s / unix_time_ms / unix_time_ns.
+// Non-deterministic values — we only verify invariants, not exact output.
+
+fn main(int _d) {
+    let t_s = unix_time_s();
+    let t_ms = unix_time_ms();
+    let t_ns = unix_time_ns();
+
+    // All three are positive (we're after 1970).
+    println(t_s > 0);                 // true
+    println(t_ms > 0);                // true
+    println(t_ns > 0);                // true
+
+    // Scale invariants.
+    println(t_ms > t_s);              // true (ms has 1000x more units)
+    println(t_ns > t_ms);             // true
+
+    return 0;
+}
+
+main(0);

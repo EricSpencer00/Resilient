@@ -1558,6 +1558,14 @@ impl TypeChecker {
                 return_type: Box::new(Type::Bool),
             },
         );
+        // RES-1174: wall-clock unix time. @io / impure.
+        let fn_zero_to_int = || Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("unix_time_s".to_string(), fn_zero_to_int());
+        env.set("unix_time_ms".to_string(), fn_zero_to_int());
+        env.set("unix_time_ns".to_string(), fn_zero_to_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -5974,6 +5982,10 @@ const IMPURE_BUILTINS: &[&str] = &[
     "input",
     // RES-147: monotonic clock.
     "clock_ms",
+    // RES-1174: wall-clock unix time.
+    "unix_time_s",
+    "unix_time_ms",
+    "unix_time_ns",
     // RES-150: seedable PRNG — nondeterministic from the caller's
     // point of view even though the seed pins it globally.
     "random_int",
