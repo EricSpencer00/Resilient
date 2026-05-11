@@ -137,6 +137,68 @@ impl std::fmt::Display for Type {
     }
 }
 
+/// RES-1112 / RES-1113: does every path through `node` end in an
+/// unconditional control-flow terminator (`return`, `break`,
+/// `continue`)?
+///
+/// Used by:
+/// - RES-1112: a non-void function whose body does not terminate on
+///   every path may fall off the end and return `void` — caught at
+///   compile time below.
+/// - RES-1113: a statement in a `Block` is unreachable when an
+///   earlier statement in the same block returned `true` here.
+///
+/// Conservative: returns `false` whenever the answer is ambiguous,
+/// so any positive diagnosis is a real bug rather than a guess.
+pub(crate) fn node_terminates(node: &Node) -> bool {
+    match node {
+        Node::ReturnStatement { .. } | Node::Break { .. } | Node::Continue { .. } => true,
+        Node::Block { stmts, .. } => stmts.iter().any(node_terminates),
+        Node::IfStatement {
+            consequence,
+            alternative: Some(alt),
+            ..
+        } => node_terminates(consequence) && node_terminates(alt),
+        Node::Match { arms, .. } if !arms.is_empty() => {
+            arms.iter().all(|(_, _, body)| node_terminates(body))
+        }
+        // RES-1112: a `live { ... }` block terminates if its body does
+        // — the retry harness only re-executes the body, it doesn't
+        // skip the terminator on success.
+        Node::LiveBlock { body, .. } => node_terminates(body),
+        // RES-1112: a `try { ... } catch V { ... }` terminates when
+        // the body terminates AND every handler terminates — both
+        // paths must end in `return`/`break`/`continue` for the whole
+        // construct to be guaranteed terminating.
+        Node::TryCatch { body, handlers, .. } => {
+            body.iter().any(node_terminates)
+                && handlers
+                    .iter()
+                    .all(|(_, hstmts)| hstmts.iter().any(node_terminates))
+        }
+        _ => false,
+    }
+}
+
+/// RES-1112: a function body "yields a value" when every path
+/// terminates with an explicit `return`, OR the body's last statement
+/// is an expression statement (implicit-return form like
+/// `fn id(int x) -> int { x }`). Returns `true` in that case;
+/// `false` means the body can fall off the end without producing a
+/// value of the declared return type.
+pub(crate) fn body_yields_value(body: &Node) -> bool {
+    if node_terminates(body) {
+        return true;
+    }
+    if let Node::Block { stmts, .. } = body
+        && let Some(last) = stmts.last()
+        && matches!(last, Node::ExpressionStatement { .. })
+    {
+        return true;
+    }
+    false
+}
+
 /// RES-053: Two types are compatible if they're equal or if either is
 /// Any. Used everywhere we need "same type, or we don't know yet."
 ///
@@ -3007,6 +3069,7 @@ impl TypeChecker {
                             requires,
                             ensures,
                             fails,
+                            return_type,
                             span,
                             ..
                         } => {
@@ -3023,6 +3086,41 @@ impl TypeChecker {
                             // the rich type-mismatch path can point at
                             // the declaration.
                             self.fn_decl_spans.insert(name.clone(), *span);
+                            // RES-1105 + RES-1106: also register the
+                            // function name in `self.env` so identifier
+                            // lookups in self-recursive and forward-
+                            // reference call sites resolve. Without this
+                            // pre-binding, `fn fact(int n) -> int { ...
+                            // fact(n-1) ... }` errors with
+                            // "Undefined variable 'fact'" even though
+                            // the contract table sees it for runtime
+                            // hoisting. The post-body pass at the
+                            // Node::Function arm refreshes this entry
+                            // with the inferred-or-declared return type.
+                            //
+                            // Type resolution is best-effort: if a
+                            // parameter or return annotation fails to
+                            // parse (e.g. references a yet-to-hoist
+                            // alias), fall back to Type::Any so the
+                            // body still gets to run and surface the
+                            // real diagnostic at its definition site.
+                            let param_types: Vec<Type> = parameters
+                                .iter()
+                                .map(|(ty_name, _)| {
+                                    self.parse_type_name(ty_name).unwrap_or(Type::Any)
+                                })
+                                .collect();
+                            let ret_type = match return_type {
+                                Some(ty_name) => self.parse_type_name(ty_name).unwrap_or(Type::Any),
+                                None => Type::Any,
+                            };
+                            self.env.set(
+                                name.clone(),
+                                Type::Function {
+                                    params: param_types,
+                                    return_type: Box::new(ret_type),
+                                },
+                            );
                         }
                         Node::TypeAlias { name, target, .. } => {
                             self.type_aliases.insert(name.clone(), target.clone());
@@ -3819,6 +3917,21 @@ impl TypeChecker {
                             name, declared, body_type
                         ));
                     }
+                    // RES-1112: a non-`void` return type requires every
+                    // control-flow path to yield a value — either an
+                    // explicit `return EXPR` on every branch, or an
+                    // implicit-return ExpressionStatement as the body's
+                    // last statement. Without this check, the typechecker
+                    // happily accepts `fn f() -> int { if c { return 1; } }`
+                    // because the `if`'s consequence_type matches `int`,
+                    // even though the else path falls off and yields void
+                    // at runtime.
+                    if declared != Type::Void && declared != Type::Any && !body_yields_value(body) {
+                        return Err(format!(
+                            "fn {}: missing return on at least one path — declared `{}`, but the body can fall off the end without returning a value",
+                            name, declared
+                        ));
+                    }
                     declared
                 } else {
                     body_type
@@ -3925,13 +4038,39 @@ impl TypeChecker {
                 let mut block_env = TypeEnvironment::new_enclosed(self.env.clone());
                 std::mem::swap(&mut self.env, &mut block_env);
 
+                // RES-1113: track reachability. Once a statement
+                // unconditionally terminates (return / break /
+                // continue, or an if/match whose every branch does),
+                // any subsequent statement in the same block is
+                // unreachable and rejected with a clean diagnostic.
+                let mut reachable = true;
+                let mut block_err: Option<String> = None;
                 for stmt in statements {
+                    if !reachable {
+                        let kind = match stmt {
+                            Node::ReturnStatement { .. } => "return",
+                            Node::Break { .. } => "break",
+                            Node::Continue { .. } => "continue",
+                            _ => "statement",
+                        };
+                        block_err = Some(format!(
+                            "unreachable code: {} after an earlier return/break/continue",
+                            kind
+                        ));
+                        break;
+                    }
                     result_type = self.check_node(stmt)?;
+                    if node_terminates(stmt) {
+                        reachable = false;
+                    }
                 }
 
                 // Restore original environment
                 std::mem::swap(&mut self.env, &mut block_env);
 
+                if let Some(e) = block_err {
+                    return Err(e);
+                }
                 Ok(result_type)
             }
 
@@ -4653,12 +4792,29 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::ForInStatement { iterable, body, .. } => {
+            Node::ForInStatement {
+                name,
+                iterable,
+                body,
+                ..
+            } => {
                 let _ = self.check_node(iterable)?;
                 // RES-910: track loop depth so nested `break`/`continue`
                 // are accepted only inside the body.
                 self.loop_depth += 1;
+
+                // RES-1104: bind the loop variable so the body can
+                // reference it without a false "Undefined variable"
+                // diagnostic. Element type isn't statically tracked
+                // yet — `Type::Any` flows through the typechecker
+                // without spurious errors. The binding is confined
+                // to the body via a fresh enclosed env.
+                let mut loop_env = TypeEnvironment::new_enclosed(self.env.clone());
+                loop_env.set(name.clone(), Type::Any);
+                std::mem::swap(&mut self.env, &mut loop_env);
                 let body_result = self.check_node(body);
+                std::mem::swap(&mut self.env, &mut loop_env);
+
                 self.loop_depth -= 1;
                 let _ = body_result?;
                 Ok(Type::Void)
@@ -7665,5 +7821,202 @@ mod res402_polymorphic_array_tests {
             "diagnostic missing 'actor boundaries require ownership-by-value': {}",
             err
         );
+    }
+}
+
+// RES-1104..RES-1106 + RES-1112 + RES-1113: regression suite for the
+// typechecker scope / reachability fixes shipped together. Each test
+// uses `parse` + `TypeChecker::check_program` so it exercises the
+// real driver path. A bug introduced into any of these fixes must
+// surface here before reaching CI.
+#[cfg(test)]
+mod scope_and_reachability_tests {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check(src: &str) -> Result<(), String> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new().check_program(&prog).map(|_| ())
+    }
+
+    // --- RES-1104: for-in loop variable binding ------------------------------
+
+    #[test]
+    fn res1104_for_in_array_binds_loop_var() {
+        check(
+            "fn main() { \
+                let xs = [1, 2, 3]; \
+                let total = 0; \
+                for x in xs { total = total + x; } \
+            }",
+        )
+        .expect("for x in xs should bind x for the body");
+    }
+
+    #[test]
+    fn res1104_for_in_range_binds_loop_var() {
+        check(
+            "fn main() { \
+                let total = 0; \
+                for i in 0..5 { total = total + i; } \
+            }",
+        )
+        .expect("for i in 0..5 should bind i for the body");
+    }
+
+    #[test]
+    fn res1104_loop_var_does_not_leak_past_block() {
+        // After RES-1104 + RES-1111 the loop variable is confined to
+        // the for body's enclosed env, so referring to it after the
+        // loop is a clean "Undefined variable" diagnostic rather than
+        // accidentally typechecking against the leaked binding.
+        let err = check(
+            "fn main() { \
+                for x in [1, 2, 3] { } \
+                let y = x; \
+            }",
+        )
+        .expect_err("loop var should be undefined after the for body");
+        assert!(
+            err.contains("Undefined variable 'x'"),
+            "expected undefined-x diagnostic, got: {err}"
+        );
+    }
+
+    // --- RES-1105: direct self-recursion -------------------------------------
+
+    #[test]
+    fn res1105_self_recursion_resolves_in_typechecker() {
+        check(
+            "fn fact(int n) -> int { \
+                if n <= 1 { return 1; } \
+                return n * fact(n - 1); \
+            }",
+        )
+        .expect("self-recursive fact should typecheck");
+    }
+
+    // --- RES-1106: forward / mutual recursion --------------------------------
+
+    #[test]
+    fn res1106_forward_call_resolves_in_typechecker() {
+        check(
+            "fn caller() -> int { return helper(); } \
+             fn helper() -> int { return 7; }",
+        )
+        .expect("forward fn references should typecheck");
+    }
+
+    #[test]
+    fn res1106_mutual_recursion_resolves_in_typechecker() {
+        check(
+            "fn even(int n) -> bool { \
+                if n == 0 { return true; } \
+                return odd(n - 1); \
+            } \
+            fn odd(int n) -> bool { \
+                if n == 0 { return false; } \
+                return even(n - 1); \
+            }",
+        )
+        .expect("mutual recursion (even/odd) should typecheck");
+    }
+
+    // --- RES-1112: missing return on non-void fn -----------------------------
+
+    #[test]
+    fn res1112_missing_return_rejects_if_without_else() {
+        let err = check(
+            "fn maybe(int n) -> int { \
+                if n > 0 { return 1; } \
+            }",
+        )
+        .expect_err("missing return on else path should be rejected");
+        assert!(
+            err.contains("missing return"),
+            "expected missing-return diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn res1112_both_branches_return_passes() {
+        check(
+            "fn pick(int n) -> int { \
+                if n > 0 { return 1; } else { return 0; } \
+            }",
+        )
+        .expect("both branches returning should typecheck");
+    }
+
+    #[test]
+    fn res1112_implicit_return_expression_passes() {
+        check("fn id(int x) -> int { x }").expect("implicit-return form should typecheck");
+    }
+
+    #[test]
+    fn res1112_void_fn_can_fall_off_end() {
+        check("fn main() { let x = 1; }").expect("void fn need not return");
+    }
+
+    #[test]
+    fn res1112_live_block_with_return_passes() {
+        // RES-1112: `live { ... return X; ... }` is recognised as a
+        // terminating construct so safety-critical examples using
+        // live-block retry still typecheck without spurious errors.
+        check(
+            "fn safe() -> int { \
+                live { \
+                    let x = 5; \
+                    return x; \
+                } \
+            }",
+        )
+        .expect("live { return X } should count as a terminating body");
+    }
+
+    // --- RES-1113: unreachable code after return -----------------------------
+
+    #[test]
+    fn res1113_statement_after_return_rejected() {
+        let err = check(
+            "fn classify(int n) -> string { \
+                return \"a\"; \
+                return \"b\"; \
+            }",
+        )
+        .expect_err("unreachable return should be rejected");
+        assert!(
+            err.contains("unreachable code"),
+            "expected unreachable-code diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn res1113_statement_after_return_in_main_rejected() {
+        let err = check(
+            "fn main() { \
+                return; \
+                let x = 1; \
+            }",
+        )
+        .expect_err("statement after bare return should be rejected");
+        assert!(
+            err.contains("unreachable code"),
+            "expected unreachable-code diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn res1113_conditional_return_does_not_make_rest_unreachable() {
+        // `if cond { return X; }` is NOT unconditional — the code
+        // following the if is reachable when cond is false.
+        check(
+            "fn main() { \
+                if true { return; } \
+                let x = 1; \
+            }",
+        )
+        .expect("conditional return must not flag subsequent code");
     }
 }

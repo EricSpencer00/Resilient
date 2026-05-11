@@ -1,0 +1,28 @@
+// RES-1107: `&&` and `||` short-circuit. The right-hand side is only
+// evaluated when its result is required to determine the operator's
+// outcome. This is essential for guard idioms like
+// `x != 0 && y / x > 0`.
+
+fn side(int x) -> bool {
+    println("called");
+    return x > 0;
+}
+
+fn main() {
+    // `false && _` returns false WITHOUT touching the right side.
+    let a = false && side(1);
+    println(a);
+
+    // `true || _` returns true WITHOUT touching the right side.
+    let b = true || side(2);
+    println(b);
+
+    // Both sides DO run when the left is the not-yet-determined value.
+    let c = true && side(3);
+    println(c);
+
+    let d = false || side(4);
+    println(d);
+}
+
+main();

@@ -20231,6 +20231,87 @@ struct Interpreter {
     inject_checked_failures: bool,
 }
 
+/// RES-1108 + RES-1109 + RES-1110: structural equality for compound
+/// values (Array, Tuple, Struct). Returns `Some(true)` / `Some(false)`
+/// when both operands are the same compound shape. Returns `None` when
+/// the operands are not both compounds — in that case the caller falls
+/// through to the existing primitive / mismatch dispatch so cross-type
+/// comparisons (`[1] == "x"`) still error.
+///
+/// Recursion uses `values_strict_eq` which treats any type mismatch
+/// inside the recursion as `false` rather than an error, so element-wise
+/// comparisons inside arrays / tuples are total.
+fn compound_values_equal(left: &Value, right: &Value) -> Option<bool> {
+    match (left, right) {
+        (Value::Array(l), Value::Array(r)) => Some(slices_strict_eq(l, r)),
+        (Value::Tuple(l), Value::Tuple(r)) => Some(slices_strict_eq(l, r)),
+        (
+            Value::Struct {
+                name: ln,
+                fields: lf,
+            },
+            Value::Struct {
+                name: rn,
+                fields: rf,
+            },
+        ) => {
+            if ln != rn {
+                return Some(false);
+            }
+            Some(struct_fields_strict_eq(lf, rf))
+        }
+        _ => None,
+    }
+}
+
+/// Strict structural equality between two `Value`s, used inside
+/// `compound_values_equal`. Mismatched kinds return `false` rather
+/// than erroring — equality stays total once we've crossed the
+/// compound boundary.
+fn values_strict_eq(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Int(l), Value::Int(r)) => l == r,
+        (Value::Float(l), Value::Float(r)) => l == r,
+        (Value::String(l), Value::String(r)) => l == r,
+        (Value::Bool(l), Value::Bool(r)) => l == r,
+        (Value::Bytes(l), Value::Bytes(r)) => l == r,
+        (Value::Void, Value::Void) => true,
+        (Value::Array(l), Value::Array(r)) => slices_strict_eq(l, r),
+        (Value::Tuple(l), Value::Tuple(r)) => slices_strict_eq(l, r),
+        (
+            Value::Struct {
+                name: ln,
+                fields: lf,
+            },
+            Value::Struct {
+                name: rn,
+                fields: rf,
+            },
+        ) => ln == rn && struct_fields_strict_eq(lf, rf),
+        _ => false,
+    }
+}
+
+fn slices_strict_eq(l: &[Value], r: &[Value]) -> bool {
+    l.len() == r.len() && l.iter().zip(r.iter()).all(|(a, b)| values_strict_eq(a, b))
+}
+
+fn struct_fields_strict_eq(l: &[(String, Value)], r: &[(String, Value)]) -> bool {
+    if l.len() != r.len() {
+        return false;
+    }
+    // Match by field name so synthetic field-order differences don't
+    // produce false negatives. Struct values are constructed in
+    // declaration order today, but matching by name is the contract.
+    for (name, lv) in l {
+        match r.iter().find(|(rn, _)| rn == name) {
+            Some((_, rv)) if values_strict_eq(lv, rv) => continue,
+            _ => return false,
+        }
+    }
+    true
+}
+
 impl Interpreter {
     fn new() -> Self {
         let mut env = Environment::new();
@@ -20636,6 +20717,28 @@ impl Interpreter {
                 right,
                 ..
             } => {
+                // RES-1107: `&&` and `||` short-circuit. Evaluate the
+                // left operand first; only evaluate the right when the
+                // result is not yet determined. Non-bool left operands
+                // fall through to `eval_infix_expression` so the
+                // existing "Logical '&&' requires bool operands" error
+                // still fires.
+                if operator == "&&" {
+                    let left_val = self.eval(left)?;
+                    if let Value::Bool(false) = left_val {
+                        return Ok(Value::Bool(false));
+                    }
+                    let right_val = self.eval(right)?;
+                    return self.eval_infix_expression(operator, left_val, right_val);
+                }
+                if operator == "||" {
+                    let left_val = self.eval(left)?;
+                    if let Value::Bool(true) = left_val {
+                        return Ok(Value::Bool(true));
+                    }
+                    let right_val = self.eval(right)?;
+                    return self.eval_infix_expression(operator, left_val, right_val);
+                }
                 let left_val = self.eval(left)?;
                 let right_val = self.eval(right)?;
                 self.eval_infix_expression(operator, left_val, right_val)
@@ -21819,18 +21922,42 @@ impl Interpreter {
     }
 
     fn eval_block_statement(&mut self, statements: &[Node]) -> RResult<Value> {
+        // RES-1111: push a fresh enclosed env so `let` declarations
+        // inside the block are confined to the block. Without this,
+        // `if true { let x = 99; } println(x)` clobbered any outer
+        // `x` because every let landed in the function frame. The
+        // typechecker already runs each block in an enclosed env;
+        // this brings the runtime into the same posture.
+        //
+        // Reassignment (`x = 5`) still walks the outer chain, so
+        // updating an outer binding from inside a block works as
+        // before. Loop-variable bindings happen in the for/while
+        // setup which is one frame above this push, so they remain
+        // visible to the body via the chain.
+        let inner = Environment::new_enclosed(self.env.clone());
+        let saved = std::mem::replace(&mut self.env, inner);
+
         let mut result = Value::Void;
-
         for statement in statements {
-            result = self.eval(statement)?;
-
-            // RES-910: Break/Continue propagate through blocks just like
-            // Return — the enclosing While/ForIn evaluator consumes them.
-            if matches!(result, Value::Return(_) | Value::Break | Value::Continue) {
-                return Ok(result);
+            match self.eval(statement) {
+                Ok(v) => {
+                    result = v;
+                    // RES-910: Break/Continue propagate through blocks
+                    // just like Return — the enclosing While/ForIn
+                    // evaluator consumes them.
+                    if matches!(result, Value::Return(_) | Value::Break | Value::Continue) {
+                        self.env = saved;
+                        return Ok(result);
+                    }
+                }
+                Err(e) => {
+                    self.env = saved;
+                    return Err(e);
+                }
             }
         }
 
+        self.env = saved;
         Ok(result)
     }
 
@@ -22393,6 +22520,22 @@ impl Interpreter {
                 }
                 return Ok(Value::String(s.repeat(n as usize)));
             }
+        }
+
+        // RES-1108 + RES-1109 + RES-1110: structural equality for
+        // Array, Struct, and Tuple values. The typechecker accepts
+        // `xs == ys` for compound types but the runtime previously
+        // fell through to "Type mismatch". Equality is recursive:
+        // two compound values are equal when their element / field
+        // sets are pairwise structurally equal. Different shapes
+        // (length / arity / struct name) compare unequal rather
+        // than erroring — this matches what every standard language
+        // does and keeps `==` total on these types.
+        if (operator == "==" || operator == "!=")
+            && let Some(eq) = compound_values_equal(&left, &right)
+        {
+            let result = if operator == "==" { eq } else { !eq };
+            return Ok(Value::Bool(result));
         }
 
         match (left.clone(), right.clone()) {

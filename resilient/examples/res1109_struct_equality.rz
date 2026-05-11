@@ -1,0 +1,20 @@
+// RES-1109: structural `==` / `!=` for struct values. Same struct
+// name + same field set + element-wise field equality. Different
+// struct names compare unequal rather than panic.
+
+struct Point { int x, int y, }
+struct Other { int x, int y, }
+
+fn main() {
+    let a = new Point { x: 1, y: 2 };
+    let b = new Point { x: 1, y: 2 };
+    let c = new Point { x: 1, y: 3 };
+    let d = new Other { x: 1, y: 2 };
+
+    println(a == b);    // true  — identical
+    println(a == c);    // false — field diff
+    println(a == d);    // false — different struct names
+    println(a != c);    // true  — inverse of ==
+}
+
+main();
