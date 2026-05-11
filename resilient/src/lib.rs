@@ -35,6 +35,9 @@ mod map_entries_merge;
 // xor / and / or / not / fill / reverse. Pure leaf builtins; wires
 // into BUILTINS, typechecker env-seed, and PURE_BUILTINS only.
 mod bytes_bitwise;
+// RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
+// Pure leaf builtins; module-isolated.
+mod bytes_helpers;
 mod compiler;
 mod const_fold;
 mod disasm;
@@ -11200,6 +11203,18 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_range_float",
         crate::array_stats::builtin_array_range_float,
+    ),
+    // RES-1152: per-byte helpers — repeat / count_byte / replace_byte.
+    // Pure leaf builtins; module-isolated in `bytes_helpers.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    ("bytes_repeat", crate::bytes_helpers::builtin_bytes_repeat),
+    (
+        "bytes_count_byte",
+        crate::bytes_helpers::builtin_bytes_count_byte,
+    ),
+    (
+        "bytes_replace_byte",
+        crate::bytes_helpers::builtin_bytes_replace_byte,
     ),
 ];
 
