@@ -1255,6 +1255,30 @@ impl TypeChecker {
         // RES-1124: integer-only math primitives.
         env.set("isqrt".to_string(), fn_int_to_int());
         env.set("ipow".to_string(), fn_int_int_to_int());
+        // RES-1126..1128: direction-rounded + Euclidean + midpoint.
+        env.set("div_ceil".to_string(), fn_int_int_to_int());
+        env.set("div_floor".to_string(), fn_int_int_to_int());
+        env.set("div_euclid".to_string(), fn_int_int_to_int());
+        env.set("rem_euclid".to_string(), fn_int_int_to_int());
+        env.set("midpoint".to_string(), fn_int_int_to_int());
+        // RES-1129: integer logarithms.
+        env.set("ilog2".to_string(), fn_int_to_int());
+        env.set("ilog10".to_string(), fn_int_to_int());
+        // RES-1130: IEEE 754 bit reinterpret cast.
+        env.set(
+            "float_to_bits".to_string(),
+            Type::Function {
+                params: vec![Type::Float],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "float_from_bits".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Float),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -5997,6 +6021,18 @@ fn is_known_pure_builtin(name: &str) -> bool {
         // RES-1124: integer-only math primitives.
         "isqrt",
         "ipow",
+        // RES-1126..1128: direction-rounded + Euclidean + midpoint.
+        "div_ceil",
+        "div_floor",
+        "div_euclid",
+        "rem_euclid",
+        "midpoint",
+        // RES-1129: integer logarithms.
+        "ilog2",
+        "ilog10",
+        // RES-1130: IEEE 754 bit reinterpret cast.
+        "float_to_bits",
+        "float_from_bits",
         // String/collection.
         "len",
         "push",

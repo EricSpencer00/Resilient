@@ -10981,6 +10981,20 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-1124: integer-only math primitives.
     ("isqrt", builtin_isqrt),
     ("ipow", builtin_ipow),
+    // RES-1126: direction-rounded division.
+    ("div_ceil", builtin_div_ceil),
+    ("div_floor", builtin_div_floor),
+    // RES-1127: Euclidean division — non-negative remainder.
+    ("div_euclid", builtin_div_euclid),
+    ("rem_euclid", builtin_rem_euclid),
+    // RES-1128: overflow-safe arithmetic mean.
+    ("midpoint", builtin_midpoint),
+    // RES-1129: integer logarithms (no f64 round-trip).
+    ("ilog2", builtin_ilog2),
+    ("ilog10", builtin_ilog10),
+    // RES-1130: IEEE 754 bit reinterpret cast.
+    ("float_to_bits", builtin_float_to_bits),
+    ("float_from_bits", builtin_float_from_bits),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -11991,6 +12005,216 @@ fn builtin_ipow(args: &[Value]) -> RResult<Value> {
         }
         [a, b] => Err(format!("ipow: expected (int, int), got ({}, {})", a, b)),
         _ => Err(format!("ipow: expected 2 arguments, got {}", args.len())),
+    }
+}
+
+// === RES-1126: direction-rounded division ================================
+// Built-in `/` truncates toward zero; these provide explicit rounding
+// toward +∞ / -∞ for chunking, tile-grid alignment, fixed-point math.
+
+/// RES-1126: `div_ceil(a, b)` — divide `a` by `b`, rounding the result
+/// toward positive infinity regardless of operand signs. Returns a
+/// typed error on division by zero and on the `i64::MIN / -1` overflow.
+/// Mathematically: `⌈a/b⌉`.
+///
+/// `i64::div_ceil` is still unstable (`int_roundings` feature), so the
+/// computation is hand-rolled on stable: truncate-toward-zero divide,
+/// then bump up by 1 when the remainder is non-zero AND has the same
+/// sign as the divisor (i.e., the truncation rounded the wrong way).
+fn builtin_div_ceil(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("div_ceil: division by zero".to_string());
+            }
+            if *a == i64::MIN && *b == -1 {
+                return Err("div_ceil: overflow (i64::MIN / -1)".to_string());
+            }
+            let q = a / b;
+            let r = a % b;
+            // r != 0 && sign(r) == sign(b) means truncate-toward-zero
+            // landed below the true quotient; bump up by 1.
+            let needs_bump = r != 0 && ((r > 0) == (*b > 0));
+            Ok(Value::Int(if needs_bump { q + 1 } else { q }))
+        }
+        [a, b] => Err(format!("div_ceil: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "div_ceil: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1126: `div_floor(a, b)` — divide `a` by `b`, rounding the result
+/// toward negative infinity regardless of operand signs. Returns a
+/// typed error on division by zero and on the `i64::MIN / -1` overflow.
+/// Mathematically: `⌊a/b⌋`.
+///
+/// `i64::div_floor` is still unstable; the computation is hand-rolled
+/// (truncate-toward-zero divide, then bump *down* by 1 when the
+/// remainder is non-zero AND has the opposite sign from the divisor).
+fn builtin_div_floor(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("div_floor: division by zero".to_string());
+            }
+            if *a == i64::MIN && *b == -1 {
+                return Err("div_floor: overflow (i64::MIN / -1)".to_string());
+            }
+            let q = a / b;
+            let r = a % b;
+            // r != 0 && sign(r) != sign(b) means truncate-toward-zero
+            // landed above the true quotient; bump down by 1.
+            let needs_bump = r != 0 && ((r > 0) != (*b > 0));
+            Ok(Value::Int(if needs_bump { q - 1 } else { q }))
+        }
+        [a, b] => Err(format!(
+            "div_floor: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "div_floor: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+// === RES-1127: Euclidean division ========================================
+// The Euclidean remainder is ALWAYS non-negative — the mathematically
+// correct definition for modular arithmetic, hashing into buckets, and
+// circular-buffer indexing. The default `%` operator returns a remainder
+// with the sign of the dividend, which is wrong for these uses.
+
+/// RES-1127: `div_euclid(a, b)` — Euclidean integer division. The
+/// quotient is the largest integer `q` such that `q*b <= a` when `b > 0`
+/// (and the smallest such `q` when `b < 0`); paired with `rem_euclid`,
+/// the remainder is always non-negative.
+fn builtin_div_euclid(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("div_euclid: division by zero".to_string());
+            }
+            Ok(Value::Int(a.div_euclid(*b)))
+        }
+        [a, b] => Err(format!(
+            "div_euclid: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "div_euclid: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1127: `rem_euclid(a, b)` — Euclidean remainder. Always
+/// non-negative, regardless of the sign of `a` or `b`. Satisfies
+/// `0 <= rem_euclid(a, b) < |b|`.
+fn builtin_rem_euclid(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => {
+            if *b == 0 {
+                return Err("rem_euclid: division by zero".to_string());
+            }
+            Ok(Value::Int(a.rem_euclid(*b)))
+        }
+        [a, b] => Err(format!(
+            "rem_euclid: expected (int, int), got ({}, {})",
+            a, b
+        )),
+        _ => Err(format!(
+            "rem_euclid: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+// === RES-1128: overflow-safe midpoint ====================================
+
+/// RES-1128: `midpoint(a, b)` — overflow-safe arithmetic mean of two
+/// integers. Equivalent to `(a + b) / 2` but never overflows, so it is
+/// safe for binary search and rolling averages with large-magnitude
+/// samples. Rounding direction matches `i64::midpoint`.
+fn builtin_midpoint(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(a), Value::Int(b)] => Ok(Value::Int(a.midpoint(*b))),
+        [a, b] => Err(format!("midpoint: expected (int, int), got ({}, {})", a, b)),
+        _ => Err(format!(
+            "midpoint: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+// === RES-1129: integer logarithms ========================================
+
+/// RES-1129: `ilog2(n)` — floor of log₂(n) computed entirely in i64.
+/// Unlike `log2(int)` which routes through f64 and loses precision for
+/// inputs above 2^53, this is exact. Domain: `n > 0`.
+fn builtin_ilog2(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n <= 0 {
+                return Err(format!(
+                    "ilog2: domain error — argument must be positive, got {}",
+                    n
+                ));
+            }
+            Ok(Value::Int(n.ilog2() as i64))
+        }
+        [other] => Err(format!("ilog2: expected int, got {}", other)),
+        _ => Err(format!("ilog2: expected 1 argument, got {}", args.len())),
+    }
+}
+
+/// RES-1129: `ilog10(n)` — floor of log₁₀(n) computed entirely in i64.
+/// Useful for digit-counting and decimal-bucketing without f64 round-trip.
+/// Domain: `n > 0`.
+fn builtin_ilog10(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(n)] => {
+            if *n <= 0 {
+                return Err(format!(
+                    "ilog10: domain error — argument must be positive, got {}",
+                    n
+                ));
+            }
+            Ok(Value::Int(n.ilog10() as i64))
+        }
+        [other] => Err(format!("ilog10: expected int, got {}", other)),
+        _ => Err(format!("ilog10: expected 1 argument, got {}", args.len())),
+    }
+}
+
+// === RES-1130: IEEE 754 bit reinterpret ===================================
+
+/// RES-1130: `float_to_bits(f)` — reinterpret an IEEE 754 `f64` as its
+/// 64-bit pattern. Sign / exponent / mantissa inspection and
+/// serialisation of floats in binary protocols (pair with `to_be_bytes`).
+fn builtin_float_to_bits(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Float(f)] => Ok(Value::Int(f.to_bits() as i64)),
+        [other] => Err(format!("float_to_bits: expected float, got {}", other)),
+        _ => Err(format!(
+            "float_to_bits: expected 1 argument, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-1130: `float_from_bits(i)` — reinterpret a 64-bit integer as an
+/// IEEE 754 `f64`. Inverse of `float_to_bits`. Round-trip is
+/// bitwise-equal for non-NaN values; NaN payload is preserved.
+fn builtin_float_from_bits(args: &[Value]) -> RResult<Value> {
+    match args {
+        [Value::Int(i)] => Ok(Value::Float(f64::from_bits(*i as u64))),
+        [other] => Err(format!("float_from_bits: expected int, got {}", other)),
+        _ => Err(format!(
+            "float_from_bits: expected 1 argument, got {}",
+            args.len()
+        )),
     }
 }
 
@@ -33918,6 +34142,309 @@ mod tests {
     fn ipow_overflow_errors() {
         let err = builtin_ipow(&[Value::Int(2), Value::Int(63)]).unwrap_err();
         assert!(err.contains("overflow"), "err was: {}", err);
+    }
+
+    // --- RES-1126..1130: direction-rounded div + Euclidean + midpoint + ilog + float-bits ---
+
+    // RES-1126: div_ceil — direction-rounded toward +inf.
+    #[test]
+    fn div_ceil_positive() {
+        assert_eq!(
+            as_int(builtin_div_ceil(&[Value::Int(10), Value::Int(3)]).unwrap()),
+            4
+        );
+        assert_eq!(
+            as_int(builtin_div_ceil(&[Value::Int(9), Value::Int(3)]).unwrap()),
+            3
+        );
+    }
+    #[test]
+    fn div_ceil_negative_dividend() {
+        // -10/3 = -3.33; ceil = -3.
+        assert_eq!(
+            as_int(builtin_div_ceil(&[Value::Int(-10), Value::Int(3)]).unwrap()),
+            -3
+        );
+    }
+    #[test]
+    fn div_ceil_negative_divisor() {
+        // 10/-3 = -3.33; ceil = -3.
+        assert_eq!(
+            as_int(builtin_div_ceil(&[Value::Int(10), Value::Int(-3)]).unwrap()),
+            -3
+        );
+        // -10/-3 = 3.33; ceil = 4.
+        assert_eq!(
+            as_int(builtin_div_ceil(&[Value::Int(-10), Value::Int(-3)]).unwrap()),
+            4
+        );
+    }
+    #[test]
+    fn div_ceil_zero_dividend() {
+        assert_eq!(
+            as_int(builtin_div_ceil(&[Value::Int(0), Value::Int(5)]).unwrap()),
+            0
+        );
+    }
+    #[test]
+    fn div_ceil_errors() {
+        assert!(
+            builtin_div_ceil(&[Value::Int(10), Value::Int(0)])
+                .unwrap_err()
+                .contains("division by zero")
+        );
+        assert!(
+            builtin_div_ceil(&[Value::Int(i64::MIN), Value::Int(-1)])
+                .unwrap_err()
+                .contains("overflow")
+        );
+    }
+
+    // RES-1126: div_floor — direction-rounded toward -inf.
+    #[test]
+    fn div_floor_positive() {
+        assert_eq!(
+            as_int(builtin_div_floor(&[Value::Int(10), Value::Int(3)]).unwrap()),
+            3
+        );
+    }
+    #[test]
+    fn div_floor_negative_dividend() {
+        // -10/3 = -3.33; floor = -4.
+        assert_eq!(
+            as_int(builtin_div_floor(&[Value::Int(-10), Value::Int(3)]).unwrap()),
+            -4
+        );
+    }
+    #[test]
+    fn div_floor_negative_divisor() {
+        // 10/-3 = -3.33; floor = -4.
+        assert_eq!(
+            as_int(builtin_div_floor(&[Value::Int(10), Value::Int(-3)]).unwrap()),
+            -4
+        );
+        // -10/-3 = 3.33; floor = 3.
+        assert_eq!(
+            as_int(builtin_div_floor(&[Value::Int(-10), Value::Int(-3)]).unwrap()),
+            3
+        );
+    }
+    #[test]
+    fn div_floor_errors() {
+        assert!(
+            builtin_div_floor(&[Value::Int(10), Value::Int(0)])
+                .unwrap_err()
+                .contains("division by zero")
+        );
+        assert!(
+            builtin_div_floor(&[Value::Int(i64::MIN), Value::Int(-1)])
+                .unwrap_err()
+                .contains("overflow")
+        );
+    }
+
+    // RES-1127: div_euclid + rem_euclid — non-negative remainder.
+    #[test]
+    fn div_euclid_signs() {
+        assert_eq!(
+            as_int(builtin_div_euclid(&[Value::Int(7), Value::Int(3)]).unwrap()),
+            2
+        );
+        assert_eq!(
+            as_int(builtin_div_euclid(&[Value::Int(-7), Value::Int(3)]).unwrap()),
+            -3
+        );
+        assert_eq!(
+            as_int(builtin_div_euclid(&[Value::Int(7), Value::Int(-3)]).unwrap()),
+            -2
+        );
+        assert_eq!(
+            as_int(builtin_div_euclid(&[Value::Int(-7), Value::Int(-3)]).unwrap()),
+            3
+        );
+        assert_eq!(
+            as_int(builtin_div_euclid(&[Value::Int(0), Value::Int(5)]).unwrap()),
+            0
+        );
+    }
+    #[test]
+    fn rem_euclid_always_non_negative() {
+        for (a, b) in [(7, 3), (-7, 3), (7, -3), (-7, -3), (0, 5), (1, 2), (-1, 2)] {
+            let r = as_int(builtin_rem_euclid(&[Value::Int(a), Value::Int(b)]).unwrap());
+            assert!(
+                r >= 0,
+                "rem_euclid({}, {}) = {} should be non-negative",
+                a,
+                b,
+                r
+            );
+            assert!(
+                r < b.abs(),
+                "rem_euclid({}, {}) = {} should be < |{}|",
+                a,
+                b,
+                r,
+                b
+            );
+        }
+    }
+    #[test]
+    fn euclid_div_zero_errors() {
+        assert!(
+            builtin_div_euclid(&[Value::Int(10), Value::Int(0)])
+                .unwrap_err()
+                .contains("division by zero")
+        );
+        assert!(
+            builtin_rem_euclid(&[Value::Int(10), Value::Int(0)])
+                .unwrap_err()
+                .contains("division by zero")
+        );
+    }
+
+    // RES-1128: midpoint — overflow-safe arithmetic mean.
+    #[test]
+    fn midpoint_basic() {
+        assert_eq!(
+            as_int(builtin_midpoint(&[Value::Int(1), Value::Int(9)]).unwrap()),
+            5
+        );
+        assert_eq!(
+            as_int(builtin_midpoint(&[Value::Int(-4), Value::Int(4)]).unwrap()),
+            0
+        );
+    }
+    #[test]
+    fn midpoint_overflow_safe() {
+        // The naive (a + b) / 2 would overflow; midpoint must not.
+        assert_eq!(
+            as_int(builtin_midpoint(&[Value::Int(i64::MAX), Value::Int(i64::MAX)]).unwrap()),
+            i64::MAX
+        );
+        assert_eq!(
+            as_int(builtin_midpoint(&[Value::Int(i64::MIN), Value::Int(i64::MIN)]).unwrap()),
+            i64::MIN
+        );
+        // i64::MAX + 1 in concept; result fits.
+        let m = as_int(builtin_midpoint(&[Value::Int(i64::MAX), Value::Int(1)]).unwrap());
+        // Per i64::midpoint contract, this is (i64::MAX + 1) / 2.
+        // Computed by 'a + (b - a) / 2'-ish recipe.
+        // i64::MAX is odd; midpoint rounds toward -inf for negative results
+        // and toward zero for positive results. Either 2^62 or 2^62 - 1.
+        assert!(
+            (4_611_686_018_427_387_903..=4_611_686_018_427_387_904).contains(&m),
+            "midpoint(MAX, 1) = {}",
+            m
+        );
+    }
+
+    // RES-1129: ilog2 + ilog10 — integer logarithms.
+    #[test]
+    fn ilog2_powers() {
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(1)]).unwrap()), 0);
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(2)]).unwrap()), 1);
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(3)]).unwrap()), 1);
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(4)]).unwrap()), 2);
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(1023)]).unwrap()), 9);
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(1024)]).unwrap()), 10);
+        assert_eq!(as_int(builtin_ilog2(&[Value::Int(i64::MAX)]).unwrap()), 62);
+    }
+    #[test]
+    fn ilog2_domain_errors() {
+        assert!(
+            builtin_ilog2(&[Value::Int(0)])
+                .unwrap_err()
+                .contains("positive")
+        );
+        assert!(
+            builtin_ilog2(&[Value::Int(-1)])
+                .unwrap_err()
+                .contains("positive")
+        );
+    }
+    #[test]
+    fn ilog10_powers() {
+        assert_eq!(as_int(builtin_ilog10(&[Value::Int(1)]).unwrap()), 0);
+        assert_eq!(as_int(builtin_ilog10(&[Value::Int(9)]).unwrap()), 0);
+        assert_eq!(as_int(builtin_ilog10(&[Value::Int(10)]).unwrap()), 1);
+        assert_eq!(as_int(builtin_ilog10(&[Value::Int(999)]).unwrap()), 2);
+        assert_eq!(as_int(builtin_ilog10(&[Value::Int(1000)]).unwrap()), 3);
+        assert_eq!(as_int(builtin_ilog10(&[Value::Int(i64::MAX)]).unwrap()), 18);
+    }
+    #[test]
+    fn ilog10_domain_errors() {
+        assert!(
+            builtin_ilog10(&[Value::Int(0)])
+                .unwrap_err()
+                .contains("positive")
+        );
+        assert!(
+            builtin_ilog10(&[Value::Int(-5)])
+                .unwrap_err()
+                .contains("positive")
+        );
+    }
+
+    // RES-1130: float_to_bits + float_from_bits — IEEE 754 reinterpret.
+    #[test]
+    fn float_to_bits_known() {
+        assert_eq!(
+            as_int(builtin_float_to_bits(&[Value::Float(0.0)]).unwrap()),
+            0
+        );
+        // -0.0 has the sign bit set: 0x8000_0000_0000_0000.
+        assert_eq!(
+            as_int(builtin_float_to_bits(&[Value::Float(-0.0)]).unwrap()),
+            i64::MIN
+        );
+        // 1.0 has the canonical IEEE 754 encoding 0x3FF0_0000_0000_0000.
+        assert_eq!(
+            as_int(builtin_float_to_bits(&[Value::Float(1.0)]).unwrap()),
+            0x3FF0_0000_0000_0000i64
+        );
+        // +inf is 0x7FF0_0000_0000_0000.
+        assert_eq!(
+            as_int(builtin_float_to_bits(&[Value::Float(f64::INFINITY)]).unwrap()),
+            0x7FF0_0000_0000_0000i64
+        );
+    }
+    #[test]
+    fn float_from_bits_known() {
+        match builtin_float_from_bits(&[Value::Int(0)]).unwrap() {
+            Value::Float(f) => assert_eq!(f.to_bits(), 0),
+            _ => panic!("expected Float"),
+        }
+        match builtin_float_from_bits(&[Value::Int(0x3FF0_0000_0000_0000i64)]).unwrap() {
+            Value::Float(f) => assert_eq!(f, 1.0),
+            _ => panic!("expected Float"),
+        }
+    }
+    #[test]
+    fn float_bits_round_trip() {
+        for x in [
+            0.0f64,
+            1.0,
+            -1.0,
+            0.5,
+            -0.5,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            let bits = as_int(builtin_float_to_bits(&[Value::Float(x)]).unwrap());
+            match builtin_float_from_bits(&[Value::Int(bits)]).unwrap() {
+                Value::Float(f) => {
+                    assert_eq!(
+                        f.to_bits(),
+                        x.to_bits(),
+                        "round-trip failed for {} (bits={})",
+                        x,
+                        bits
+                    );
+                }
+                _ => panic!("expected Float"),
+            }
+        }
     }
 
     // --- RES-143: file_read / file_write builtins ---
