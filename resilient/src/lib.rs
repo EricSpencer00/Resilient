@@ -18,6 +18,9 @@ mod array_argminmax;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
+// RES-1170: cumulative reductions + combined min/max.
+// Pure leaf builtins; module-isolated.
+mod array_cumulative;
 // RES-1158: array set-style helpers + fallback-safe first/last +
 // index_of_last. Pure leaf builtins; module-isolated.
 mod array_set_helpers;
@@ -11324,6 +11327,22 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("trunc", crate::rounding::builtin_trunc),
     ("round_to_int", crate::rounding::builtin_round_to_int),
     ("trunc_to_int", crate::rounding::builtin_trunc_to_int),
+    // RES-1170: cumulative reductions + combined min/max.
+    // Pure leaf builtins; module-isolated in `array_cumulative.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    (
+        "array_cumsum",
+        crate::array_cumulative::builtin_array_cumsum,
+    ),
+    (
+        "array_cumprod",
+        crate::array_cumulative::builtin_array_cumprod,
+    ),
+    ("array_diffs", crate::array_cumulative::builtin_array_diffs),
+    (
+        "array_min_max",
+        crate::array_cumulative::builtin_array_min_max,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

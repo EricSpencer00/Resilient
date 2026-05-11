@@ -5,12 +5,11 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
-<<<<<<< HEAD
-<<<<<<< HEAD
-      "branch": "res-1162-hash-builtins",
-      "claimed_at": "2026-05-11T17:12:00Z"
+      "branch": "res-1170-cumulative-ops",
+      "claimed_at": "2026-05-11T17:52:00Z"
     },
     "resilient/src/typechecker.rs": {
+<<<<<<< HEAD
       "branch": "res-1162-hash-builtins",
       "claimed_at": "2026-05-11T17:12:00Z"
 =======
@@ -41,6 +40,10 @@
 >>>>>>> cfbc288 (RES-1164: enumerate / array_zip3 / string_truncate — 3 iteration helpers)
 >>>>>>> 475108d (RES-1164: enumerate / array_zip3 / string_truncate — 3 iteration helpers)
 >>>>>>> f037c48 (RES-1164: enumerate / array_zip3 / string_truncate — 3 iteration helpers)
+=======
+      "branch": "res-1170-cumulative-ops",
+      "claimed_at": "2026-05-11T17:52:00Z"
+>>>>>>> 189bc81 (RES-1170: array_cumsum / array_cumprod / array_diffs / array_min_max)
     }
   }
 }

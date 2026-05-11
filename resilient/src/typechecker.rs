@@ -1525,6 +1525,15 @@ impl TypeChecker {
         env.set("trunc".to_string(), fn_float_to_float());
         env.set("round_to_int".to_string(), fn_float_to_int());
         env.set("trunc_to_int".to_string(), fn_float_to_int());
+        // RES-1170: cumulative reductions + combined min/max.
+        let fn_array_to_array_int = || Type::Function {
+            params: vec![Type::Array],
+            return_type: Box::new(Type::Array),
+        };
+        env.set("array_cumsum".to_string(), fn_array_to_array_int());
+        env.set("array_cumprod".to_string(), fn_array_to_array_int());
+        env.set("array_diffs".to_string(), fn_array_to_array_int());
+        env.set("array_min_max".to_string(), fn_array_to_array_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6437,6 +6446,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "trunc",
         "round_to_int",
         "trunc_to_int",
+        // RES-1170: cumulative reductions + combined min/max.
+        "array_cumsum",
+        "array_cumprod",
+        "array_diffs",
+        "array_min_max",
         // String/collection.
         "len",
         "push",
