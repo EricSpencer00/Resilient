@@ -5,12 +5,12 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-1136-alignment-helpers",
-      "claimed_at": "2026-05-11T15:08:45Z"
+      "branch": "res-1138-float-predicates",
+      "claimed_at": "2026-05-11T15:15:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1136-alignment-helpers",
-      "claimed_at": "2026-05-11T15:08:45Z"
+      "branch": "res-1138-float-predicates",
+      "claimed_at": "2026-05-11T15:15:00Z"
     }
   }
 }
