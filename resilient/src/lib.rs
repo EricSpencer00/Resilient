@@ -15,6 +15,9 @@ mod alignment_helpers;
 // RES-1142: array chunking + striding + rotation primitives.
 // Pure leaf builtins; module-isolated.
 mod array_chunking;
+// RES-1140: ASCII char-class predicates — rounds out the RES-459 family.
+// Pure leaf builtins; module-isolated.
+mod ascii_predicates;
 mod bytecode;
 // RES-1134: bitwise + construction ops on `Value::Bytes` —
 // xor / and / or / not / fill / reverse. Pure leaf builtins; wires
@@ -11070,6 +11073,34 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "array_rotate_right",
         crate::array_chunking::builtin_array_rotate_right,
+    ),
+    // RES-1140: ASCII char-class predicates. Pure leaf builtins;
+    // module-isolated in `ascii_predicates.rs`. Appended at the end
+    // of BUILTINS per the perf rule established in PR #1125.
+    ("is_ascii", crate::ascii_predicates::builtin_is_ascii),
+    (
+        "is_ascii_whitespace",
+        crate::ascii_predicates::builtin_is_ascii_whitespace,
+    ),
+    (
+        "is_ascii_hexdigit",
+        crate::ascii_predicates::builtin_is_ascii_hexdigit,
+    ),
+    (
+        "is_ascii_uppercase",
+        crate::ascii_predicates::builtin_is_ascii_uppercase,
+    ),
+    (
+        "is_ascii_lowercase",
+        crate::ascii_predicates::builtin_is_ascii_lowercase,
+    ),
+    (
+        "is_ascii_punctuation",
+        crate::ascii_predicates::builtin_is_ascii_punctuation,
+    ),
+    (
+        "is_ascii_control",
+        crate::ascii_predicates::builtin_is_ascii_control,
     ),
 ];
 
