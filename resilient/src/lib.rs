@@ -67,6 +67,9 @@ mod unix_time;
 // RES-1164: iteration helpers — enumerate, array_zip3, string_truncate.
 // Pure leaf builtins; module-isolated.
 mod iter_helpers;
+// RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+// Pure leaf builtins; module-isolated.
+mod precision_math;
 // RES-1166: rounding builtins — round / trunc / round_to_int / trunc_to_int.
 // Pure leaf builtins; module-isolated.
 mod rounding;
@@ -11392,6 +11395,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "bytes_to_string",
         crate::bytes_conversions::builtin_bytes_to_string,
     ),
+    // RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+    // Pure leaf builtins; module-isolated in `precision_math.rs`. Appended
+    // at the end of BUILTINS per the perf rule from PR #1125.
+    ("expm1", crate::precision_math::builtin_expm1),
+    ("ln_1p", crate::precision_math::builtin_ln_1p),
+    ("mul_add", crate::precision_math::builtin_mul_add),
+    ("recip", crate::precision_math::builtin_recip),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

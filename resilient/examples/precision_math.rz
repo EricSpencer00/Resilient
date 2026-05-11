@@ -1,0 +1,26 @@
+// RES-1168 demo: precision-sensitive math — expm1, ln_1p, mul_add, recip.
+
+fn main(int _d) {
+    // expm1 = exp(x) - 1, accurate for small x.
+    println(expm1(0.0));            // 0
+    println(expm1(1.0));            // ~1.71828
+
+    // ln_1p = ln(1 + x), accurate for small x.
+    println(ln_1p(0.0));            // 0
+    println(ln_1p(1.0));            // ln(2) ≈ 0.6931...
+
+    // mul_add: a*b + c with single rounding.
+    println(mul_add(2.0, 3.0, 4.0));  // 10
+    println(mul_add(0.0, 5.0, 7.0));  // 7
+    println(mul_add(-2.0, 3.0, 1.0)); // -5
+
+    // recip: 1/x.
+    println(recip(2.0));            // 0.5
+    println(recip(4.0));            // 0.25
+    println(recip(-2.0));           // -0.5
+    println(recip(1.0));            // 1
+
+    return 0;
+}
+
+main(0);
