@@ -1,0 +1,36 @@
+// RES-1178 demo: bytes_take / bytes_drop / bytes_take_last / bytes_drop_last.
+// Four bytes slicing primitives, parallel to RES-421/RES-537 for arrays.
+
+fn main(int _d) {
+    let payload = b"Hello, World!";
+
+    // --- bytes_take: first n bytes ("Hello" -> 5 bytes).
+    println(bytes_len(bytes_take(payload, 5)));   // 5
+    println(bytes_len(bytes_take(payload, 0)));   // 0
+    println(bytes_len(bytes_take(payload, 99)));  // 13 (clamps to len)
+
+    // --- bytes_drop: drop first n bytes (skip past "Hello, " — 7 bytes).
+    println(bytes_len(bytes_drop(payload, 7)));   // 6
+    println(bytes_len(bytes_drop(payload, 0)));   // 13
+    println(bytes_len(bytes_drop(payload, 99)));  // 0 (clamps)
+
+    // --- bytes_take_last: last n bytes.
+    println(bytes_len(bytes_take_last(payload, 6)));  // 6 ("World!")
+    println(bytes_len(bytes_take_last(payload, 0)));  // 0
+    println(bytes_len(bytes_take_last(payload, 99))); // 13
+
+    // --- bytes_drop_last: drop last n bytes.
+    println(bytes_len(bytes_drop_last(payload, 7)));  // 6 ("Hello,")
+    println(bytes_len(bytes_drop_last(payload, 0)));  // 13
+    println(bytes_len(bytes_drop_last(payload, 99))); // 0
+
+    // --- composite: take + drop is a complete bisect.
+    // bytes_take(b, 5) ++ bytes_drop(b, 5) == b
+    let head = bytes_take(payload, 5);
+    let tail = bytes_drop(payload, 5);
+    println(bytes_eq(bytes_concat(head, tail), payload));  // true
+
+    return 0;
+}
+
+main(0);
