@@ -5,6 +5,7 @@
       "claimed_at": "2026-05-11T14:34:56Z"
     },
     "resilient/src/lib.rs": {
+<<<<<<< HEAD
       "branch": "res-1170-cumulative-ops",
       "claimed_at": "2026-05-11T17:52:00Z"
     },
@@ -44,6 +45,14 @@
       "branch": "res-1170-cumulative-ops",
       "claimed_at": "2026-05-11T17:52:00Z"
 >>>>>>> 189bc81 (RES-1170: array_cumsum / array_cumprod / array_diffs / array_min_max)
+=======
+      "branch": "res-1172-string-array-misc",
+      "claimed_at": "2026-05-11T18:02:00Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1172-string-array-misc",
+      "claimed_at": "2026-05-11T18:02:00Z"
+>>>>>>> f4d5d5e (RES-1172: string_split_once / rsplit_once / from_chars / array_is_empty)
     }
   }
 }

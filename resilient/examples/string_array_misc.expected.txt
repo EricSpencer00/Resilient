@@ -1,0 +1,11 @@
+api_token
+secret=admin
+1
+path/to
+file.ext
+hello
+
+🌟hi
+true
+false
+Program executed successfully

@@ -1,0 +1,30 @@
+// RES-1172 demo: string_split_once / string_rsplit_once /
+// string_from_chars / array_is_empty.
+
+fn main(int _d) {
+    // string_split_once — key=value parsing, splits at FIRST '='.
+    let kv = string_split_once("api_token=secret=admin", "=");
+    println(kv[0]);                              // api_token
+    println(kv[1]);                              // secret=admin
+
+    // No match returns a 1-element array.
+    println(len(string_split_once("hello", "=")));    // 1
+
+    // string_rsplit_once — path-style: split at LAST '/'.
+    let path = string_rsplit_once("path/to/file.ext", "/");
+    println(path[0]);                            // path/to
+    println(path[1]);                            // file.ext
+
+    // string_from_chars — inverse of string_chars.
+    println(string_from_chars(["h", "e", "l", "l", "o"]));    // hello
+    println(string_from_chars([]));                            // (empty)
+    println(string_from_chars(["🌟", "h", "i"]));              // 🌟hi
+
+    // array_is_empty — predicate.
+    println(array_is_empty([]));                 // true
+    println(array_is_empty([1, 2, 3]));          // false
+
+    return 0;
+}
+
+main(0);
