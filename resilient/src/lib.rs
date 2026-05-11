@@ -10404,35 +10404,6 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("count_zeros", builtin_count_zeros),
     ("leading_zeros", builtin_leading_zeros),
     ("trailing_zeros", builtin_trailing_zeros),
-    // RES-1115..1118: overflow-safe integer arithmetic — safety-critical
-    // embedded code needs an explicit overflow policy, not silent wrap.
-    ("saturating_add", builtin_saturating_add),
-    ("saturating_sub", builtin_saturating_sub),
-    ("saturating_mul", builtin_saturating_mul),
-    ("wrapping_add", builtin_wrapping_add),
-    ("wrapping_sub", builtin_wrapping_sub),
-    ("wrapping_mul", builtin_wrapping_mul),
-    ("checked_add", builtin_checked_add),
-    ("checked_sub", builtin_checked_sub),
-    ("checked_mul", builtin_checked_mul),
-    ("checked_div", builtin_checked_div),
-    // RES-1119..1121: bit manipulation. Building blocks for crypto,
-    // CRC, FFT bit-reversal, and endianness fixups.
-    ("rotate_left_int", builtin_rotate_left_int),
-    ("rotate_right_int", builtin_rotate_right_int),
-    ("reverse_bits", builtin_reverse_bits),
-    ("swap_bytes", builtin_swap_bytes),
-    // RES-1122..1123: int ↔ bytes endianness conversion. Closes the
-    // authoring gap in the bytes_* family for fixed-size integer
-    // framing of binary protocols.
-    ("to_be_bytes", builtin_to_be_bytes),
-    ("to_le_bytes", builtin_to_le_bytes),
-    ("from_be_bytes", builtin_from_be_bytes),
-    ("from_le_bytes", builtin_from_le_bytes),
-    // RES-1124: integer-only math primitives — no f64 round-trip, so
-    // suitable for no_std targets without an FPU.
-    ("isqrt", builtin_isqrt),
-    ("ipow", builtin_ipow),
     // RES-147: monotonic ms clock, std-only.
     ("clock_ms", builtin_clock_ms),
     // RES-358: monotonic ns clock builtins. @io (non-pure).
@@ -10979,6 +10950,37 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("spawn", builtin_spawn),
     ("send", builtin_send),
     ("receive", builtin_receive),
+    // RES-1115..1124: appended to the end of BUILTINS so the O(N)
+    // `apply_builtin_by_name` linear scan keeps the hot-path entries
+    // (println, len, push, ...) at their existing positions. Front-loading
+    // the new builtins regressed the fib(25) VM benchmark by ~23%; placing
+    // them last keeps that gate green while leaving the new surface fully
+    // available.
+    // RES-1115..1118: overflow-safe integer arithmetic — safety-critical
+    // embedded code needs an explicit overflow policy, not silent wrap.
+    ("saturating_add", builtin_saturating_add),
+    ("saturating_sub", builtin_saturating_sub),
+    ("saturating_mul", builtin_saturating_mul),
+    ("wrapping_add", builtin_wrapping_add),
+    ("wrapping_sub", builtin_wrapping_sub),
+    ("wrapping_mul", builtin_wrapping_mul),
+    ("checked_add", builtin_checked_add),
+    ("checked_sub", builtin_checked_sub),
+    ("checked_mul", builtin_checked_mul),
+    ("checked_div", builtin_checked_div),
+    // RES-1119..1121: bit manipulation.
+    ("rotate_left_int", builtin_rotate_left_int),
+    ("rotate_right_int", builtin_rotate_right_int),
+    ("reverse_bits", builtin_reverse_bits),
+    ("swap_bytes", builtin_swap_bytes),
+    // RES-1122..1123: int ↔ bytes endianness conversion.
+    ("to_be_bytes", builtin_to_be_bytes),
+    ("to_le_bytes", builtin_to_le_bytes),
+    ("from_be_bytes", builtin_from_be_bytes),
+    ("from_le_bytes", builtin_from_le_bytes),
+    // RES-1124: integer-only math primitives.
+    ("isqrt", builtin_isqrt),
+    ("ipow", builtin_ipow),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
