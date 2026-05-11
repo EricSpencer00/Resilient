@@ -1,0 +1,38 @@
+// RES-1140 demo: complete the ASCII char-class predicate surface.
+// is_ascii_alpha / digit / alnum already shipped in RES-459; this
+// example exercises the seven new predicates added in RES-1140.
+
+fn main(int _d) {
+    // Plain ASCII vs UTF-8.
+    println(is_ascii("hello"));            // true
+    println(is_ascii("café"));             // false (é is U+00E9)
+
+    // Whitespace recognition.
+    println(is_ascii_whitespace(" \t\n")); // true
+    println(is_ascii_whitespace("hi"));    // false
+
+    // Hex digit recognition — covers all three cases.
+    println(is_ascii_hexdigit("DeadBeef"));// true
+    println(is_ascii_hexdigit("0x12"));    // false (x is not hex)
+
+    // Case predicates.
+    println(is_ascii_uppercase("HELLO"));  // true
+    println(is_ascii_uppercase("Hello"));  // false
+    println(is_ascii_lowercase("hello"));  // true
+
+    // Punctuation.
+    println(is_ascii_punctuation("!@#")); // true
+    println(is_ascii_punctuation("a"));   // false
+
+    // Control chars — tab / newline / CR are all ASCII control.
+    println(is_ascii_control("\t\n\r")); // true
+    println(is_ascii_control("a"));      // false
+
+    // Empty input is vacuously true for the entire family.
+    println(is_ascii(""));                 // true
+    println(is_ascii_whitespace(""));      // true
+
+    return 0;
+}
+
+main(0);

@@ -1342,6 +1342,18 @@ impl TypeChecker {
         env.set("array_step".to_string(), fn_array_int_to_array());
         env.set("array_rotate_left".to_string(), fn_array_int_to_array());
         env.set("array_rotate_right".to_string(), fn_array_int_to_array());
+        // RES-1140: ASCII char-class predicates.
+        let fn_string_to_bool = || Type::Function {
+            params: vec![Type::String],
+            return_type: Box::new(Type::Bool),
+        };
+        env.set("is_ascii".to_string(), fn_string_to_bool());
+        env.set("is_ascii_whitespace".to_string(), fn_string_to_bool());
+        env.set("is_ascii_hexdigit".to_string(), fn_string_to_bool());
+        env.set("is_ascii_uppercase".to_string(), fn_string_to_bool());
+        env.set("is_ascii_lowercase".to_string(), fn_string_to_bool());
+        env.set("is_ascii_punctuation".to_string(), fn_string_to_bool());
+        env.set("is_ascii_control".to_string(), fn_string_to_bool());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6118,6 +6130,14 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_step",
         "array_rotate_left",
         "array_rotate_right",
+        // RES-1140: ASCII char-class predicates.
+        "is_ascii",
+        "is_ascii_whitespace",
+        "is_ascii_hexdigit",
+        "is_ascii_uppercase",
+        "is_ascii_lowercase",
+        "is_ascii_punctuation",
+        "is_ascii_control",
         // String/collection.
         "len",
         "push",
