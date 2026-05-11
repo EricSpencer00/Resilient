@@ -1586,6 +1586,15 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-1178: bytes slicing primitives — (Bytes, Int) -> Bytes.
+        let fn_bytes_int_to_bytes = || Type::Function {
+            params: vec![Type::Bytes, Type::Int],
+            return_type: Box::new(Type::Bytes),
+        };
+        env.set("bytes_take".to_string(), fn_bytes_int_to_bytes());
+        env.set("bytes_drop".to_string(), fn_bytes_int_to_bytes());
+        env.set("bytes_take_last".to_string(), fn_bytes_int_to_bytes());
+        env.set("bytes_drop_last".to_string(), fn_bytes_int_to_bytes());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6516,6 +6525,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bytes_strip_prefix",
         "bytes_strip_suffix",
         "bytes_to_string",
+        // RES-1178: bytes slicing primitives.
+        "bytes_take",
+        "bytes_drop",
+        "bytes_take_last",
+        "bytes_drop_last",
         // String/collection.
         "len",
         "push",
