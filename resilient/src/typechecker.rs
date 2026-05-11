@@ -1438,6 +1438,35 @@ impl TypeChecker {
             },
         );
         env.set("flip_bit".to_string(), fn_int_int_to_int());
+        // RES-1158: array set-style helpers + fallback-safe first/last
+        // + index_of_last.
+        let fn_array_array_to_array = || Type::Function {
+            params: vec![Type::Array, Type::Array],
+            return_type: Box::new(Type::Array),
+        };
+        env.set("array_difference".to_string(), fn_array_array_to_array());
+        env.set("array_intersection".to_string(), fn_array_array_to_array());
+        env.set(
+            "array_index_of_last".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Any],
+                return_type: Box::new(Type::Int),
+            },
+        );
+        env.set(
+            "array_first_or".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
+        env.set(
+            "array_last_or".to_string(),
+            Type::Function {
+                params: vec![Type::Array, Type::Any],
+                return_type: Box::new(Type::Any),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6321,6 +6350,12 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "clear_bit",
         "get_bit",
         "flip_bit",
+        // RES-1158: array set-style helpers.
+        "array_difference",
+        "array_intersection",
+        "array_index_of_last",
+        "array_first_or",
+        "array_last_or",
         // String/collection.
         "len",
         "push",
