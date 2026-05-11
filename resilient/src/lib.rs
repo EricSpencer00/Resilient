@@ -53,6 +53,9 @@ mod compiler;
 mod const_fold;
 mod disasm;
 mod hash_builtins;
+// RES-1166: rounding builtins — round / trunc / round_to_int / trunc_to_int.
+// Pure leaf builtins; module-isolated.
+mod rounding;
 // RES-1154: set_is_empty / set_from_array / result_and / option_and.
 // Pure leaf builtins; module-isolated.
 mod set_result_option;
@@ -11302,6 +11305,13 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "array_argmin_string",
         crate::array_argminmax::builtin_array_argmin_string,
     ),
+    // RES-1166: rounding builtins — round / trunc + int variants.
+    // Pure leaf builtins; module-isolated in `rounding.rs`. Appended
+    // at the end of BUILTINS per the perf rule from PR #1125.
+    ("round", crate::rounding::builtin_round),
+    ("trunc", crate::rounding::builtin_trunc),
+    ("round_to_int", crate::rounding::builtin_round_to_int),
+    ("trunc_to_int", crate::rounding::builtin_trunc_to_int),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.

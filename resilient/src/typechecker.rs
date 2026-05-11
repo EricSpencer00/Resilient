@@ -1490,6 +1490,19 @@ impl TypeChecker {
             },
         );
         env.set("hash_combine".to_string(), fn_int_int_to_int());
+        // RES-1166: rounding builtins.
+        let fn_float_to_float = || Type::Function {
+            params: vec![Type::Float],
+            return_type: Box::new(Type::Float),
+        };
+        let fn_float_to_int = || Type::Function {
+            params: vec![Type::Float],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("round".to_string(), fn_float_to_float());
+        env.set("trunc".to_string(), fn_float_to_float());
+        env.set("round_to_int".to_string(), fn_float_to_int());
+        env.set("trunc_to_int".to_string(), fn_float_to_int());
         env.set(
             "log".to_string(),
             Type::Function {
@@ -6393,6 +6406,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "hash_string",
         "hash_bytes",
         "hash_combine",
+        // RES-1166: rounding builtins.
+        "round",
+        "trunc",
+        "round_to_int",
+        "trunc_to_int",
         // String/collection.
         "len",
         "push",
