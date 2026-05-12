@@ -739,11 +739,20 @@ fn walk_call_sites(
             }
 
             // Identify the callee by name.
-            let callee_name = match function.as_ref() {
-                Node::Identifier { name, .. } => name.clone(),
+            // RES-1483: borrow the callee name as `&str` from the
+            // call's `function` sub-node. The previous shape did
+            // `name.clone()` to produce an owned `String`, then used
+            // `&callee_name` for the `HashMap::get` lookup (which
+            // accepts `&str` via `Borrow<str>`) and finally embedded
+            // it in the rare error-message `format!`. `fns_by_name`
+            // looks up natively against `&str`; `format!` accepts
+            // any `Display`. The owned `String` was pure waste on
+            // every call-expression walk.
+            let callee_name: &str = match function.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
                 _ => return Ok(()),
             };
-            let callee = match fns_by_name.get(&callee_name) {
+            let callee = match fns_by_name.get(callee_name) {
                 Some(c) => *c,
                 None => return Ok(()),
             };
