@@ -25,10 +25,29 @@ pub fn suggest<'a>(target: &str, candidates: impl Iterator<Item = &'a str>) -> V
         return Vec::new();
     }
 
+    // RES-1513: drop the `to_string()` clone for candidates that the
+    // distance filter would reject. The previous shape mapped every
+    // candidate to `(levenshtein, c.to_string())` first, then filtered
+    // out distance > 2, allocating a `String` per candidate even
+    // though most got discarded. Diagnostic pools (locals + builtins +
+    // imported names) are typically 30-200 entries with only 0-2
+    // matches; the discarded allocations dominated. Also short-circuit
+    // the O(n*m) Levenshtein when `|len(a) - len(b)| > 2` — that bound
+    // is a tight lower bound on edit distance, so no real match can
+    // fit. Together: only candidates that pass the cheap length-diff
+    // gate run the full DP, and only matches that pass the distance
+    // filter allocate a `String`.
+    let target_len = target.chars().count();
     let mut scored: Vec<(usize, String)> = candidates
         .filter(|c| !c.is_empty() && *c != target)
-        .map(|c| (levenshtein(target, c), c.to_string()))
-        .filter(|(d, _)| *d <= 2)
+        .filter_map(|c| {
+            let c_len = c.chars().count();
+            if c_len.abs_diff(target_len) > 2 {
+                return None;
+            }
+            let d = levenshtein(target, c);
+            (d <= 2).then(|| (d, c.to_string()))
+        })
         .collect();
 
     // Stable sort: distance asc, then name asc. Dedup by name in case
