@@ -147,6 +147,10 @@
     "resilient/src/generics.rs": {
       "branch": "res-1288-generics-fast-reject",
       "claimed_at": "2026-05-12T04:38:37Z"
+    },
+    "resilient/src/verifier_liveness.rs": {
+      "branch": "res-1290-liveness-fast-reject",
+      "claimed_at": "2026-05-12T04:46:14Z"
     }
   }
 }

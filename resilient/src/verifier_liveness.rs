@@ -492,6 +492,20 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         Node::Program(s) => s,
         _ => return Ok(()),
     };
+    // RES-1290: fast-reject. The bounded liveness verifier only runs
+    // per `Node::ActorDecl` with non-empty `eventually_clauses`. For
+    // programs with no such clause anywhere — the overwhelming
+    // majority of `cargo test` inputs and the entire `examples/`
+    // tree — the inner `if eventually_clauses.is_empty() continue`
+    // fires for every iteration, but we still destructure every
+    // top-level statement. Pre-scan once over the statement list
+    // and skip the whole loop when no eventually clause exists.
+    let has_eventually = statements.iter().any(|s| {
+        matches!(&s.node, Node::ActorDecl { eventually_clauses, .. } if !eventually_clauses.is_empty())
+    });
+    if !has_eventually {
+        return Ok(());
+    }
     let mut refuted: Vec<String> = Vec::new();
     for stmt in statements {
         if let Node::ActorDecl {
