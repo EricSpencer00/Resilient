@@ -25953,7 +25953,12 @@ fn execute_file(
             // fixpoint only when its result is consumed. `--audit`
             // and `--explain-effects` both read `stats.fn_effects`;
             // every other invocation skips the fixpoint.
-            .with_audit_stats(audit || explain_effects);
+            .with_audit_stats(audit || explain_effects)
+            // RES-1357: opt into populating `tc.certificates` only
+            // when `--emit-certificate <DIR>` will consume it.
+            // Every other invocation drops the captured certs on
+            // TypeChecker drop; skip the per-discharge allocations.
+            .with_capture_certificates(emit_cert_dir.is_some());
         // RES-354: apply the --z3-theory flag when z3 feature is on.
         #[cfg(feature = "z3")]
         let mut tc = tc_base.with_z3_theory(z3_theory);

@@ -482,7 +482,14 @@ mod tests {
         // program doesn't reach the verifier with an out-of-loop
         // `invariant` statement.
         crate::loop_invariants::check(&p, "<test>").expect("loop_invariants check failed");
-        let mut tc = TypeChecker::new().with_warn_unverified(false);
+        // RES-1357: opt into cert capture so
+        // `push_loop_invariant_certificate` actually writes into
+        // `tc.certificates` — the test counts pushes via
+        // `loop_invariant_certificate_count`, and the helper now
+        // no-ops when the flag is off (default).
+        let mut tc = TypeChecker::new()
+            .with_warn_unverified(false)
+            .with_capture_certificates(true);
         let before = tc.loop_invariant_certificate_count();
         super::verify_and_capture(&mut tc, &p);
         tc.loop_invariant_certificate_count() - before

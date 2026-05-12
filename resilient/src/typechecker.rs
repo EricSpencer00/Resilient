@@ -1036,6 +1036,13 @@ pub struct TypeChecker {
     /// `let` only to drop the Vec on TypeChecker drop. Default
     /// `false`; the LSP path flips it via `with_capture_inlay_hints(true)`.
     capture_inlay_hints: bool,
+    /// RES-1357: opt-in flag for populating `certificates`. The vec
+    /// is consumed only by `emit_certificates` under the
+    /// `--emit-certificate <DIR>` driver path. Every default-mode
+    /// compile pushes one `CapturedCertificate` per Z3-proven
+    /// obligation only to drop the vec on TypeChecker drop. Default
+    /// `false`; the cert-emit driver flips it on.
+    capture_certificates: bool,
 }
 
 impl TypeChecker {
@@ -3501,6 +3508,9 @@ impl TypeChecker {
             // populating `let_type_hints` (it's only consumed by the
             // inlay-hint provider).
             capture_inlay_hints: false,
+            // RES-1357: opt-in. `--emit-certificate` driver sets this;
+            // default-mode runs skip populating `certificates`.
+            capture_certificates: false,
         }
     }
 
@@ -3567,6 +3577,17 @@ impl TypeChecker {
         self
     }
 
+    /// RES-1357: opt into pushing `CapturedCertificate` entries into
+    /// `self.certificates`. The vector is consumed only by
+    /// `emit_certificates` under the `--emit-certificate <DIR>`
+    /// driver path; every other invocation discards it on
+    /// TypeChecker drop. Default `false`; the cert-emit driver
+    /// flips it on.
+    pub fn with_capture_certificates(mut self, on: bool) -> Self {
+        self.capture_certificates = on;
+        self
+    }
+
     /// RES-318: read accessor for the verifier pass.
     #[allow(dead_code)]
     pub(crate) fn verifier_timeout_ms(&self) -> u32 {
@@ -3583,12 +3604,14 @@ impl TypeChecker {
     /// participates in the regular `--emit-certificate <DIR>` dump.
     #[allow(dead_code)]
     pub(crate) fn push_loop_invariant_certificate(&mut self, idx: usize, smt2: String) {
-        self.certificates.push(CapturedCertificate {
-            fn_name: "<loop>".to_string(),
-            kind: "loop_invariant",
-            idx,
-            smt2,
-        });
+        if self.capture_certificates {
+            self.certificates.push(CapturedCertificate {
+                fn_name: "<loop>".to_string(),
+                kind: "loop_invariant",
+                idx,
+                smt2,
+            });
+        }
         self.stats.loop_invariants_proven += 1;
     }
 
@@ -4273,7 +4296,12 @@ impl TypeChecker {
                         verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
-                            if let Some(smt2) = cert {
+                            // RES-1357: only store the cert when the
+                            // emit-certificate driver is going to
+                            // consume it.
+                            if self.capture_certificates
+                                && let Some(smt2) = cert
+                            {
                                 self.certificates.push(CapturedCertificate {
                                     fn_name: name.clone(),
                                     kind: "decl",
@@ -4417,7 +4445,12 @@ impl TypeChecker {
                     // can dump it alongside requires/ensures certs.
                     if matches!(verdict, Some(true)) {
                         self.stats.requires_discharged_by_z3 += 1;
-                        if let Some(smt2) = cert_smt2 {
+                        // RES-1357: only store the cert when the
+                        // emit-certificate driver is going to consume
+                        // it.
+                        if self.capture_certificates
+                            && let Some(smt2) = cert_smt2
+                        {
                             self.certificates.push(CapturedCertificate {
                                 fn_name: name.clone(),
                                 kind: "recovers_to",
@@ -5881,7 +5914,10 @@ impl TypeChecker {
                             if verdict.is_none() && self.warn_unverified {
                                 emit_partial_proof_warning(&self.source_path, clause);
                             }
+                            // RES-1357: only store the cert when the
+                            // emit-certificate driver will consume it.
                             if matches!(verdict, Some(true))
+                                && self.capture_certificates
                                 && let Some(smt2) = cert
                             {
                                 self.certificates.push(CapturedCertificate {
