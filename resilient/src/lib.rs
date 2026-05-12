@@ -24852,7 +24852,13 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     let lexer = Lexer::new(src);
     let mut parser = Parser::new(lexer);
     let mut program = parser.parse_program();
-    let mut errs: Vec<String> = parser.errors.into_iter().map(|e| e.to_string()).collect();
+    // RES-1343: `parser.errors` is already `Vec<String>`; move it
+    // directly instead of the round-trip
+    // `.into_iter().map(|e| e.to_string()).collect()` shape — every
+    // `String::to_string` allocated a fresh `String` identical to
+    // its source. Saves one heap alloc per recorded parser error
+    // (zero on the clean-parse fast path, since the Vec is empty).
+    let mut errs: Vec<String> = parser.errors;
     // RES-325: lower named call arguments to positional ones for
     // every call whose callee is a known top-level fn or impl
     // method. Failures here (unknown name, duplicate target, etc.)
