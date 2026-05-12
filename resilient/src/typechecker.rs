@@ -3672,7 +3672,22 @@ impl TypeChecker {
                 // Unsupported verdicts emit a stderr warning but do
                 // not fail the check (matching how partial proofs
                 // of `requires` / `ensures` are handled — RES-217).
-                let obligations = collect_actor_obligations(statements, self.verifier_timeout_ms);
+                //
+                // RES-1313: short-circuit when no `ActorDecl` exists.
+                // `collect_actor_obligations` would iterate `statements`
+                // filtering ActorDecls and call `verifier_actors::verify_actor`
+                // for each — for programs with zero actors the inner
+                // loop never enters, but the dispatch + Z3 setup call
+                // still happens. Pre-check once with a single
+                // `iter().any` on the top-level statement slice.
+                let has_actor = statements
+                    .iter()
+                    .any(|s| matches!(&s.node, Node::ActorDecl { .. }));
+                let obligations = if has_actor {
+                    collect_actor_obligations(statements, self.verifier_timeout_ms)
+                } else {
+                    Vec::new()
+                };
                 let mut refuted: Vec<String> = Vec::new();
                 for o in obligations {
                     match o.result {
