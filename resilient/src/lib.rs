@@ -24919,6 +24919,30 @@ pub(crate) fn check_region_aliasing(program: &Node, source_path: &str) -> Vec<St
         _ => return errors,
     };
 
+    // RES-1320: fast-reject. The pairwise aliasing check only emits
+    // diagnostics for functions that declare ≥ 2 reference-typed
+    // parameters, and `build_region_map` only inserts entries for
+    // `&`-prefixed parameters/locals (its consumer here is the
+    // `(None, None)` arm reached only when two unlabeled refs exist
+    // on the same fn). For programs without any `&`-typed parameter —
+    // the overwhelming majority of `examples/` and the test suite
+    // outside the region-types feature tests — both the `build_region_map`
+    // body walk and the per-fn pairwise loop are pure overhead.
+    //
+    // Pre-scan the top-level functions once. When no Function has
+    // any `&`-prefixed parameter, skip everything except the
+    // call-site check (which already fast-rejects on empty
+    // `callee_table` for the same shape). Same pattern as
+    // RES-1281 / RES-1290 / RES-1294 / RES-1297 / RES-1311 /
+    // RES-1316.
+    let has_ref_param = stmts.iter().any(|s| {
+        matches!(&s.node, Node::Function { parameters, .. }
+            if parameters.iter().any(|(ty, _)| ty.starts_with('&')))
+    });
+    if !has_ref_param {
+        return crate::region_inference::check_call_site_region_aliasing(program, source_path);
+    }
+
     // Collect the set of declared region names.
     let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
     for stmt in stmts {

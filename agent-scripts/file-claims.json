@@ -4,14 +4,6 @@
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"
     },
-    "resilient/Cargo.toml": {
-      "branch": "res-1202-cert-deps-feature-gate",
-      "claimed_at": "2026-05-12T01:37:00Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-1202-cert-deps-feature-gate",
-      "claimed_at": "2026-05-12T01:37:00Z"
-    },
     "resilient/src/region_inference.rs": {
       "branch": "res-1202-region-inference-dead-work",
       "claimed_at": "2026-05-12T01:33:01Z"
@@ -195,6 +187,10 @@
     "resilient/src/named_args.rs": {
       "branch": "res-1317-named-args-fast-reject",
       "claimed_at": "2026-05-12T05:37:55Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1321-region-aliasing-fast-reject",
+      "claimed_at": "2026-05-12T05:52:53Z"
     }
   }
 }
