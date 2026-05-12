@@ -103,6 +103,15 @@ pub fn evaluate(body: &Node, env: &HashMap<String, ConstValue>) -> Option<ConstV
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let names = collect_names();
+    // RES-1238: fast-reject. The diagnostic / body-registration only
+    // fires for functions annotated `#[const_fn]`. When no such
+    // attribute exists in the program (the overwhelming common case),
+    // `names` is empty, every `names.contains(name)` call returns
+    // false, and the per-statement loop produces no output. Skip the
+    // loop entirely. Same shape as RES-1236 (`crash_only_cert`).
+    if names.is_empty() {
+        return Ok(());
+    }
     let Node::Program(stmts) = program else {
         return Ok(());
     };
