@@ -61,11 +61,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_priorities(
-    node: &Node,
+// RES-1539: borrow the callee name through to the diagnostic site
+// rather than cloning. The walker's only consumer (the priority-
+// inversion `format!` in `check`) just `Display`s the returned name
+// — `&str` works the same as `String`, and the borrow chain is
+// sound: `name` lives in `Node::Identifier` inside the program AST,
+// which outlives the walk + format call. Same pattern as RES-1500 /
+// RES-1525 etc.
+fn walk_priorities<'a>(
+    node: &'a Node,
     holding: u32,
     table: &HashMap<String, PrioritySpec>,
-) -> Option<(String, u32)> {
+) -> Option<(&'a str, u32)> {
     match node {
         Node::CallExpression {
             function,
@@ -75,7 +82,7 @@ fn walk_priorities(
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if let Some(p) = table.get(name) {
                     if p.priority < holding {
-                        return Some((name.clone(), p.priority));
+                        return Some((name.as_str(), p.priority));
                     }
                 }
             }
