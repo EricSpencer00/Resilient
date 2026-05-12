@@ -22264,22 +22264,33 @@ impl Interpreter {
                         // two (outer name + inner pattern bindings). The
                         // enclosed scope is restored on arm exit so bindings
                         // don't leak into subsequent arms or outer scope.
-                        let saved = self.env.clone();
-                        let had_scope = !bindings.is_empty();
-                        if had_scope {
-                            self.env = Environment::new_enclosed(saved.clone());
+                        //
+                        // RES-1379: skip the env clone when the pattern
+                        // binds nothing (Wildcard / Literal), and when it
+                        // does bind, build the enclosed inner from a
+                        // single `self.env.clone()` and `mem::replace` it
+                        // in — mirroring the RES-1320 typechecker shape.
+                        // `Environment::clone` is an `Rc` bump, but every
+                        // skipped bump matters in match-heavy code where
+                        // most arms are wildcard / literal patterns.
+                        let saved = if bindings.is_empty() {
+                            None
+                        } else {
+                            let inner = Environment::new_enclosed(self.env.clone());
+                            let outer = std::mem::replace(&mut self.env, inner);
                             for (name, value) in bindings {
                                 self.env.set(name, value);
                             }
-                        }
+                            Some(outer)
+                        };
                         let guard_pass = match guard {
                             Some(g) => {
                                 let gv = self.eval(g);
                                 match gv {
                                     Ok(v) => self.is_truthy(&v),
                                     Err(e) => {
-                                        if had_scope {
-                                            self.env = saved.clone();
+                                        if let Some(s) = saved {
+                                            self.env = s;
                                         }
                                         return Err(e);
                                     }
@@ -22288,14 +22299,14 @@ impl Interpreter {
                             None => true,
                         };
                         if !guard_pass {
-                            if had_scope {
-                                self.env = saved;
+                            if let Some(s) = saved {
+                                self.env = s;
                             }
                             continue; // try next arm
                         }
                         let result = self.eval(body);
-                        if had_scope {
-                            self.env = saved;
+                        if let Some(s) = saved {
+                            self.env = s;
                         }
                         return result;
                     }
