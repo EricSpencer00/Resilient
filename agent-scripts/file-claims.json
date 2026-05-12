@@ -33,8 +33,8 @@
       "claimed_at": "2026-05-12T01:43:21Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1206-z3-verdict-cache",
-      "claimed_at": "2026-05-12T01:45:28Z"
+      "branch": "res-1528-z3-args-borrow",
+      "claimed_at": "2026-05-12T13:55:00Z"
     },
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1509-isr-graph-name-borrow",
@@ -185,8 +185,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1525-pure-fns-borrow",
-      "claimed_at": "2026-05-12T13:50:00Z"
+      "branch": "res-1530-pure-builtins-hashset",
+      "claimed_at": "2026-05-12T14:15:00Z"
     },
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
