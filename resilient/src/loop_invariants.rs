@@ -61,6 +61,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let Node::Program(statements) = program else {
         return Ok(());
     };
+    // RES-1274: fast-reject. `walk` only produces a diagnostic when
+    // it encounters `Node::InvariantStatement` outside a `while`/`for`
+    // body. Programs with no `InvariantStatement` anywhere — the
+    // overwhelming majority, since `invariant` is a verifier-only
+    // construct — have nothing to validate. Pre-scan the program once
+    // with the early-terminating `any_node` (RES-1238) and skip the
+    // per-stmt recursion entirely when no `InvariantStatement` exists.
+    let has_invariant =
+        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::InvariantStatement { .. }));
+    if !has_invariant {
+        return Ok(());
+    }
     for spanned in statements {
         walk(&spanned.node, /*in_loop=*/ false, source_path)?;
     }

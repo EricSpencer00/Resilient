@@ -173,6 +173,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let Node::Program(statements) = program else {
         return Ok(());
     };
+    // RES-1274: fast-reject. The fn_fails table is only consulted by
+    // `walk` when it encounters a `Node::TryCatch`. For programs with
+    // no `TryCatch` anywhere — the overwhelming majority, including
+    // every fixture in `examples/` — both the table-building pass and
+    // the per-function descent produce nothing. Pre-scan the program
+    // once with the early-terminating `any_node` (RES-1238) and skip
+    // both passes when no `TryCatch` exists.
+    let has_try_catch =
+        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::TryCatch { .. }));
+    if !has_try_catch {
+        return Ok(());
+    }
     // Collect the table of each fn's declared `fails` set so we can
     // resolve call sites inside try bodies without round-tripping
     // through the main typechecker.
