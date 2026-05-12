@@ -47,9 +47,17 @@ impl CallGraph {
             return vec![];
         }
 
+        // RES-1501: pre-size the per-pass `visited` set and the
+        // `finish_stack` to `self.graph.len()`. Both grow exactly to
+        // that bound (every node is visited and pushed exactly once).
+        // The previous shape used `HashSet::new()` + `Vec::new()`,
+        // triggering rehashes/reallocs at every default-bucket
+        // boundary. Mirrors RES-1497 (transpose pre-size).
+        let n = self.graph.len();
+
         // Step 1: DFS on original graph to get finish times (stack order).
-        let mut visited = HashSet::new();
-        let mut finish_stack = Vec::new();
+        let mut visited = HashSet::with_capacity(n);
+        let mut finish_stack: Vec<String> = Vec::with_capacity(n);
         for node in self.graph.keys() {
             if !visited.contains(node) {
                 dfs_finish_order(node, &self.graph, &mut visited, &mut finish_stack);
@@ -58,7 +66,7 @@ impl CallGraph {
 
         // Step 2: DFS on transposed graph in reverse finish order.
         let transposed = self.transpose();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::with_capacity(n);
         let mut sccs = Vec::new();
         for node in finish_stack.into_iter().rev() {
             if !visited.contains(&node) {
