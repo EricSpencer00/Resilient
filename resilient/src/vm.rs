@@ -824,7 +824,12 @@ fn run_inner(
                 stack.push(Value::Struct { name, fields });
             }
             Op::GetField { name_const } => {
-                let field = constant_as_string(chunk, name_const, "GetField (field name)")?;
+                // RES-1433: borrow field name from the constant pool
+                // instead of cloning. The owned String was only ever
+                // moved into the (rare) UnknownField error; the hot
+                // success path compared `k == &field` and pushed the
+                // found value without ever using ownership.
+                let field = constant_as_str(chunk, name_const, "GetField (field name)")?;
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 let Value::Struct {
                     name: sname,
@@ -835,20 +840,22 @@ fn run_inner(
                 };
                 let found = fields
                     .iter()
-                    .find(|(k, _)| k == &field)
+                    .find(|(k, _)| k.as_str() == field)
                     .map(|(_, v)| v.clone());
                 match found {
                     Some(val) => stack.push(val),
                     None => {
                         return Err(VmError::UnknownField {
                             struct_name: sname,
-                            field,
+                            field: field.to_string(),
                         });
                     }
                 }
             }
             Op::SetField { name_const } => {
-                let field = constant_as_string(chunk, name_const, "SetField (field name)")?;
+                // RES-1433: borrow field name from the constant pool —
+                // same justification as the GetField arm above.
+                let field = constant_as_str(chunk, name_const, "SetField (field name)")?;
                 let v = stack.pop().ok_or(VmError::EmptyStack)?;
                 let tgt = stack.pop().ok_or(VmError::EmptyStack)?;
                 let Value::Struct {
@@ -858,13 +865,13 @@ fn run_inner(
                 else {
                     return Err(VmError::TypeMismatch("SetField (non-struct target)"));
                 };
-                let slot = fields.iter_mut().find(|(k, _)| k == &field);
+                let slot = fields.iter_mut().find(|(k, _)| k.as_str() == field);
                 match slot {
                     Some((_, existing)) => *existing = v,
                     None => {
                         return Err(VmError::UnknownField {
                             struct_name: sname,
-                            field,
+                            field: field.to_string(),
                         });
                     }
                 }
@@ -891,6 +898,32 @@ fn constant_as_string(chunk: &Chunk, idx: u16, context: &'static str) -> Result<
         .ok_or(VmError::ConstantOutOfBounds(idx))?;
     match v {
         Value::String(s) => Ok(s.clone()),
+        _ => Err(VmError::TypeMismatch(context)),
+    }
+}
+
+/// RES-1433: like [`constant_as_string`] but returns `&str` borrowed
+/// directly from the constant pool. Use this when the caller only
+/// needs to compare against the string or pass it on by reference;
+/// avoids the per-dispatch `String::clone` that
+/// `constant_as_string` pays even when the owned String is dropped
+/// at the end of the arm.
+///
+/// The returned `&str` lives as long as the input `chunk` borrow,
+/// which in the VM's dispatch loop is `&'p Chunk` borrowed from the
+/// program — independent of the mutable `state.stack` borrow that
+/// the surrounding handler does next.
+fn constant_as_str<'a>(
+    chunk: &'a Chunk,
+    idx: u16,
+    context: &'static str,
+) -> Result<&'a str, VmError> {
+    let v = chunk
+        .constants
+        .get(idx as usize)
+        .ok_or(VmError::ConstantOutOfBounds(idx))?;
+    match v {
+        Value::String(s) => Ok(s.as_str()),
         _ => Err(VmError::TypeMismatch(context)),
     }
 }
@@ -1635,8 +1668,11 @@ fn h_get_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::GetField { name_const } = op else {
         unreachable!()
     };
+    // RES-1433: borrow the field name from the constant pool. Same
+    // justification as the match-dispatch GetField arm above —
+    // owned String was only used in the (rare) UnknownField error.
     let chunk = state.current_chunk();
-    let field = constant_as_string(chunk, name_const, "GetField (field name)")?;
+    let field = constant_as_str(chunk, name_const, "GetField (field name)")?;
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let Value::Struct {
         name: sname,
@@ -1647,7 +1683,7 @@ fn h_get_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     };
     let found = fields
         .iter()
-        .find(|(k, _)| k == &field)
+        .find(|(k, _)| k.as_str() == field)
         .map(|(_, v)| v.clone());
     match found {
         Some(val) => {
@@ -1656,7 +1692,7 @@ fn h_get_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
         }
         None => Err(VmError::UnknownField {
             struct_name: sname,
-            field,
+            field: field.to_string(),
         }),
     }
 }
@@ -1666,8 +1702,10 @@ fn h_set_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::SetField { name_const } = op else {
         unreachable!()
     };
+    // RES-1433: borrow the field name from the constant pool. Same
+    // justification as the GetField handler above.
     let chunk = state.current_chunk();
-    let field = constant_as_string(chunk, name_const, "SetField (field name)")?;
+    let field = constant_as_str(chunk, name_const, "SetField (field name)")?;
     let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let tgt = state.stack.pop().ok_or(VmError::EmptyStack)?;
     let Value::Struct {
@@ -1677,13 +1715,13 @@ fn h_set_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     else {
         return Err(VmError::TypeMismatch("SetField (non-struct target)"));
     };
-    let slot = fields.iter_mut().find(|(k, _)| k == &field);
+    let slot = fields.iter_mut().find(|(k, _)| k.as_str() == field);
     match slot {
         Some((_, existing)) => *existing = v,
         None => {
             return Err(VmError::UnknownField {
                 struct_name: sname,
-                field,
+                field: field.to_string(),
             });
         }
     }
