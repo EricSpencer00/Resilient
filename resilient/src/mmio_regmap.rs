@@ -92,8 +92,12 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     if maps.is_empty() {
         return Ok(());
     }
-    install(maps.clone());
-    // Detect overlapping address ranges — a real bug.
+    // RES-1491: validate (overlap check) before `install` so `maps`
+    // moves in instead of cloning. Same shape as RES-1481 (derives)
+    // / RES-1485 (recursive_types) / RES-1487 (ghost+async). The
+    // overlap check returns Err on real bug — install never runs on
+    // failure, which is the right behavior (don't pollute the
+    // registry with overlapping maps).
     for (i, a) in maps.iter().enumerate() {
         for b in &maps[i + 1..] {
             let a_end = a.base_addr.saturating_add(a.size_bytes);
@@ -107,6 +111,7 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
             }
         }
     }
+    install(maps);
     Ok(())
 }
 

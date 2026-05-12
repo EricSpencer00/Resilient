@@ -71,20 +71,21 @@ pub fn for_actor(actor: &str) -> Vec<DistributedInvariant> {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1308: gate `install` on the non-empty case. Skips a
-    // wasted RwLock write per compile and the wipe-on-empty race
-    // documented in RES-1302.
+    // RES-1308: gate `install` on the non-empty case. The historical
+    // wiring called `install(invs.clone())` before the early-out,
+    // burning a RwLock write per compile and creating the
+    // wipe-on-empty test race documented in RES-1302.
     let invs = collect();
     if invs.is_empty() {
         return Ok(());
     }
-    // RES-1489: validate against actor names BEFORE installing
-    // (validation reads `invs` locally, not via the installed
-    // global), then `install(invs)` by move. The previous shape
-    // did `install(invs.clone())` ahead of validation, paying a
-    // `Vec` clone for nothing — the validation loop never reads
-    // through the global registry. Mirrors RES-1481 (derives) and
-    // RES-1485 (recursive_types).
+    // RES-1491: validate before `install` so `invs` moves in instead
+    // of cloning. Same shape as RES-1481 (derives) / RES-1485
+    // (recursive_types) / RES-1487 (ghost+async). Validation only
+    // emits `eprintln!` warnings, so the install runs at the same
+    // point on the success path. The non-Program early-return also
+    // installs first so the global registry reflects this compile's
+    // invs even on the unusual path.
     let Node::Program(stmts) = program else {
         install(invs);
         return Ok(());
