@@ -18,9 +18,27 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{for_each_function, visit};
+use crate::uniqueness_walk::{any_node, for_each_function, visit};
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1274: fast-reject. The per-function `visit` collects every
+    // call to a function whose identifier matches `_epoch<N>`, then
+    // pairs consecutive calls to detect out-of-order epochs. Programs
+    // with zero `_epoch<N>`-named calls produce an empty `sequence`
+    // and no windows-of-2 pairs, so every per-function walk is dead
+    // work. Pre-scan with the early-terminating `any_node` (RES-1238)
+    // for any `CallExpression` whose identifier matches `epoch_of`,
+    // and skip the per-function loop entirely when none exist.
+    let has_epoch_call = any_node(program, |n| match n {
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => epoch_of(name).is_some(),
+            _ => false,
+        },
+        _ => false,
+    });
+    if !has_epoch_call {
+        return Ok(());
+    }
     for_each_function(program, |fname, _params, body| {
         let mut sequence: Vec<(String, u32)> = Vec::new();
         visit(body, &mut |n| {
