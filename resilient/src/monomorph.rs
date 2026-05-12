@@ -72,7 +72,7 @@ pub fn lower(program: &Node) -> Node {
 
     // Append specialized monomorphic clones after the existing declarations.
     for (fn_name, instances) in &instantiations {
-        if let Some(fn_node) = generic_fns.get(fn_name) {
+        if let Some(fn_node) = generic_fns.get(fn_name.as_str()) {
             let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             for type_args in instances {
                 let mangled = mangle_name(fn_name, type_args);
@@ -91,7 +91,16 @@ pub fn lower(program: &Node) -> Node {
 // Phase 1: collect generic function declarations
 // ---------------------------------------------------------------------------
 
-fn collect_generic_fns(stmts: &[span::Spanned<Node>]) -> HashMap<String, Node> {
+// RES-1536: borrow each generic-fn declaration into the index instead
+// of cloning the full `Node` tree per entry. The map's only consumers
+// (`try_infer_call`, `rewrite_node`'s CallExpression arm, and the
+// `lower`-time specialization loop) all just read the fn node to
+// inspect parameters / type_params or pass it to `specialize_fn`
+// (which itself takes `&Node`). Cloning a `Node::Function` per entry
+// — a deep tree clone including body, requires, ensures, etc. — was
+// pure overhead, paid even when no call site actually instantiated
+// the fn. The borrow keeps every reference inside the `stmts` slice.
+fn collect_generic_fns(stmts: &[span::Spanned<Node>]) -> HashMap<&str, &Node> {
     let mut map = HashMap::new();
     for spanned in stmts {
         if let Node::Function {
@@ -99,7 +108,7 @@ fn collect_generic_fns(stmts: &[span::Spanned<Node>]) -> HashMap<String, Node> {
         } = &spanned.node
             && !type_params.is_empty()
         {
-            map.insert(name.clone(), spanned.node.clone());
+            map.insert(name.as_str(), &spanned.node);
         }
     }
     map
@@ -111,7 +120,7 @@ fn collect_generic_fns(stmts: &[span::Spanned<Node>]) -> HashMap<String, Node> {
 
 fn collect_in_node(
     node: &Node,
-    generic_fns: &HashMap<String, Node>,
+    generic_fns: &HashMap<&str, &Node>,
     out: &mut HashMap<String, Vec<Vec<Type>>>,
 ) {
     match node {
@@ -205,7 +214,7 @@ fn collect_in_node(
 fn try_infer_call(
     fn_name: &str,
     arguments: &[Node],
-    generic_fns: &HashMap<String, Node>,
+    generic_fns: &HashMap<&str, &Node>,
 ) -> Option<Vec<Type>> {
     let fn_node = generic_fns.get(fn_name)?;
     let (type_params, parameters) = match fn_node {
@@ -259,7 +268,7 @@ fn infer_literal_type(node: &Node) -> Option<Type> {
 /// inferred from literals.
 fn rewrite_node(
     node: &Node,
-    generic_fns: &HashMap<String, Node>,
+    generic_fns: &HashMap<&str, &Node>,
     instantiations: &HashMap<String, Vec<Vec<Type>>>,
 ) -> Node {
     match node {
