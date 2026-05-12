@@ -298,13 +298,19 @@ pub(crate) fn check(node: &Node, env: &TypeEnvironment) -> Result<(), String> {
                 return Err("supervisor must have at least one child".to_string());
             }
 
-            // Track child IDs to detect duplicates
-            let mut seen_ids = std::collections::HashSet::new();
+            // Track child IDs to detect duplicates.
+            //
+            // RES-1467: store `&str` borrows from the AST instead of
+            // cloning each child id into an owned `String`. Lifetime
+            // is tied to `children` (owned by the AST node passed
+            // in). Same shape as RES-1431 (pattern_bindings) /
+            // RES-1439 (info_flow walk_calls).
+            let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
             // Validate each child
             for child in children {
                 // Check for duplicate IDs
-                if !seen_ids.insert(child.id.clone()) {
+                if !seen_ids.insert(child.id.as_str()) {
                     return Err(format!("duplicate child id `{}` in supervisor", child.id));
                 }
 
