@@ -69,7 +69,21 @@ pub fn derives_trait(type_name: &str, trait_name: &str) -> bool {
 }
 
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1402: gate `install` on the non-empty case. The historical
+    // wiring called `install(sets.clone())` before the trait-validation
+    // loop, burning a `DERIVES.write()` lock + `g.clear()` per compile
+    // regardless of whether any `#[derive]` attribute was present, AND
+    // creating the wipe-on-empty test race shape documented in
+    // RES-1302: a parallel test that called `install(...)` directly
+    // under `feature_attrs::lock_for_test()` would have its registry
+    // wiped by a concurrent typecheck whose `collect()` returned empty.
+    // Same pattern as RES-1306 / RES-1308 already applied to
+    // `async_await`, `default_trait_methods`, `mmio_regmap`,
+    // `distributed_invariants`, `ghost_types`, and friends.
     let sets = collect();
+    if sets.is_empty() {
+        return Ok(());
+    }
     install(sets.clone());
     for s in &sets {
         for t in &s.traits {
