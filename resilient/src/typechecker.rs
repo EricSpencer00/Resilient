@@ -389,7 +389,7 @@ fn struct_pattern_matches_nominal_type(sname: &str, decl: &[(String, Type)], p: 
 fn pattern_is_exhaustive_wrt_scrutinee(
     scrut: &Type,
     p: &Pattern,
-    struct_fields: &HashMap<String, Vec<(String, Type)>>,
+    struct_fields: &HashMap<String, std::rc::Rc<Vec<(String, Type)>>>,
 ) -> bool {
     match scrut {
         Type::Struct(sname) => {
@@ -989,7 +989,13 @@ pub struct TypeChecker {
     /// the declared field's type instead of `Type::Any`, and by
     /// `FieldAssignment` to reject writes to non-existent fields
     /// statically.
-    struct_fields: HashMap<String, Vec<(String, Type)>>,
+    /// RES-1365: stored behind `Rc` so the per-FieldAccess /
+    /// FieldAssignment / Match-pattern reads at 4152 / 4831 etc. tick
+    /// a single refcount instead of deep-cloning the
+    /// `Vec<(String, Type)>` (which can be large for structs with
+    /// many fields, especially when entries carry `Type::Function`
+    /// with their own nested Vecs).
+    struct_fields: HashMap<String, std::rc::Rc<Vec<(String, Type)>>>,
     /// RES-400: enum name → variant list. Populated when we visit each
     /// `EnumDecl`. Used by the `Match` exhaustiveness check to ensure
     /// every declared variant is covered, and by `match_pattern_binding_types`
@@ -5324,7 +5330,11 @@ impl TypeChecker {
                 // no further reader in this arm, so `.clone()` was
                 // pure dead allocation (one extra `Vec` + one extra
                 // `String` per state field).
-                self.struct_fields.insert(name.clone(), resolved_fields);
+                //
+                // RES-1365: wrap in `Rc` so per-FieldAccess reads on
+                // the actor state can clone a single refcount.
+                self.struct_fields
+                    .insert(name.clone(), std::rc::Rc::new(resolved_fields));
                 for clause in always_clauses {
                     let ty = self.check_node(clause)?;
                     if ty != Type::Bool && ty != Type::Any {
@@ -5394,7 +5404,10 @@ impl TypeChecker {
                     let ty = self.parse_type_name(type_name)?;
                     resolved.push((field_name.clone(), ty));
                 }
-                self.struct_fields.insert(name.clone(), resolved);
+                // RES-1365: wrap in `Rc` so per-FieldAccess reads
+                // clone a single refcount.
+                self.struct_fields
+                    .insert(name.clone(), std::rc::Rc::new(resolved));
                 Ok(Type::Void)
             }
 
