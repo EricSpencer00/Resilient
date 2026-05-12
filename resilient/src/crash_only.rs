@@ -42,6 +42,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // AST into the lookup set. The contains check below uses
     // `&str` (via `Borrow<str>`), so the cloned `String` keys were
     // pure overhead. Same pattern as RES-1495 / RES-1500 etc.
+    //
+    // RES-1521: also reuse a single `needed` buffer for the
+    // `recover_<suffix>` lookup key across iterations, instead of
+    // `format!`-allocating a fresh `String` per `crash_*` function.
     let names: HashSet<&str> = stmts
         .iter()
         .filter_map(|s| {
@@ -52,9 +56,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             }
         })
         .collect();
+    let mut needed = String::new();
     for n in &names {
         if let Some(suffix) = n.strip_prefix("crash_") {
-            let needed = format!("recover_{suffix}");
+            needed.clear();
+            needed.push_str("recover_");
+            needed.push_str(suffix);
             if !names.contains(needed.as_str()) {
                 eprintln!(
                     "warning: crash-only contract: '{n}' has no matching \
