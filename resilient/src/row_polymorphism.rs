@@ -74,7 +74,14 @@ pub fn validate(fn_name: &str, fields: &[(String, String)]) -> Result<(), String
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    install(collect());
+    // RES-1308: gate `install` on the non-empty case — see RES-1302
+    // for the wipe-on-empty race rationale; same pattern saves a
+    // wasted RwLock write per compile in the common case.
+    let specs = collect();
+    if specs.is_empty() {
+        return Ok(());
+    }
+    install(specs);
     Ok(())
 }
 

@@ -41,11 +41,15 @@ pub fn is_ghost(name: &str) -> bool {
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1308: gate `install` on the non-empty case. The historical
+    // wiring called `install(ghosts.clone())` before the early-out,
+    // burning a RwLock write per compile and creating the
+    // wipe-on-empty test race documented in RES-1302.
     let ghosts = collect();
-    install(ghosts.clone());
     if ghosts.is_empty() {
         return Ok(());
     }
+    install(ghosts.clone());
     let Node::Program(stmts) = program else {
         return Ok(());
     };
