@@ -52,10 +52,12 @@ struct FnDefaults {
 pub fn lower_program(program: &mut Node) {
     let mut sigs: HashMap<String, FnDefaults> = HashMap::new();
     collect_defaults(program, &mut sigs);
-    let any_default = sigs
-        .values()
-        .any(|s| s.defaults.iter().any(|d| d.is_some()));
-    if !any_default {
+    // RES-1475: `collect_defaults` now only inserts functions that
+    // have at least one declared default, so `sigs.is_empty()`
+    // implies no default anywhere. The previous shape iterated every
+    // entry to re-check `defaults.iter().any(|d| d.is_some())` even
+    // though the same check is now the insertion gate.
+    if sigs.is_empty() {
         return;
     }
     rewrite_calls(program, &sigs);
@@ -75,12 +77,24 @@ fn collect_defaults(node: &Node, sigs: &mut HashMap<String, FnDefaults>) {
                 collect_defaults(&s.node, sigs);
             }
         }
+        // RES-1475: skip insertion for functions whose defaults
+        // slice is entirely None. The downstream `rewrite_calls`
+        // only fills in MISSING trailing args from declared
+        // defaults; for a function with no Some(_) slot, no
+        // rewrite would ever fire even if its name is in `sigs`.
+        // The previous shape cloned the full
+        // `Vec<Option<Box<Node>>>` per Function — for programs
+        // where no function declares any default (the overwhelming
+        // majority), the entire `sigs` HashMap was populated only
+        // to be discarded at the `any_default` check in
+        // `lower_program`. Use a match guard so newer clippy's
+        // `collapsible_match` is happy.
         Node::Function {
             name,
             parameters,
             defaults,
             ..
-        } => {
+        } if defaults.iter().any(|d| d.is_some()) => {
             sigs.insert(
                 name.clone(),
                 FnDefaults {
@@ -97,6 +111,7 @@ fn collect_defaults(node: &Node, sigs: &mut HashMap<String, FnDefaults>) {
                     defaults,
                     ..
                 } = m
+                    && defaults.iter().any(|d| d.is_some())
                 {
                     sigs.insert(
                         name.clone(),
