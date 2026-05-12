@@ -41,6 +41,19 @@ const BUDGETS: &[(usize, &str)] = &[
 ];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1222: fast-reject — see stack_budget for the same pattern.
+    // Skip the closure dispatch for programs that declare no
+    // `_iobytes{N}` suffix.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let has_budget = stmts.iter().any(|s| {
+        matches!(&s.node, Node::Function { name, .. }
+            if BUDGETS.iter().any(|(_, suf)| name.ends_with(*suf)))
+    });
+    if !has_budget {
+        return Ok(());
+    }
     for_each_function(program, |fname, _params, body| {
         let Some(budget) = BUDGETS
             .iter()
