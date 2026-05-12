@@ -3025,12 +3025,21 @@ impl Parser {
     }
 
     fn next_token(&mut self) {
-        self.current_token = self.peek_token.clone();
+        // RES-1345: swap with `mem::replace` instead of
+        // `peek_token.clone()`. Most token variants are unit-like
+        // and clone trivially, but `Token::Identifier(String)` and
+        // `Token::StringLiteral(String)` clone an owned heap String
+        // each — and this function fires once per token consumed
+        // (~50K calls for a 10K-line program). The new tokens
+        // produced by `lexer.next_token()` replace `peek_token` in
+        // place; the previous `peek_token` moves into
+        // `current_token`. No clone, identical state transitions.
         self.current_line = self.peek_line;
         self.current_column = self.peek_column;
-        self.peek_token = self.lexer.next_token();
+        let new_token = self.lexer.next_token();
         self.peek_line = self.lexer.last_token_line;
         self.peek_column = self.lexer.last_token_column;
+        self.current_token = std::mem::replace(&mut self.peek_token, new_token);
     }
 
     fn parse_program(&mut self) -> Node {
