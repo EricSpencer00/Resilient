@@ -1030,6 +1030,12 @@ pub struct TypeChecker {
     /// consulted. Default `false`; the audit/explain-effects drivers
     /// set it via `with_audit_stats(true)`.
     audit_stats: bool,
+    /// RES-1353: opt-in flag for populating `let_type_hints`. The
+    /// hints are only consumed by `lsp_server`'s inlay-hint provider,
+    /// so every non-LSP compile pushed a `LetTypeHint` per inferred
+    /// `let` only to drop the Vec on TypeChecker drop. Default
+    /// `false`; the LSP path flips it via `with_capture_inlay_hints(true)`.
+    capture_inlay_hints: bool,
 }
 
 impl TypeChecker {
@@ -3491,6 +3497,10 @@ impl TypeChecker {
             // the LSP/REPL, every `cargo test` typecheck) skip the
             // `infer_fn_effects` fixpoint.
             audit_stats: false,
+            // RES-1353: opt-in. LSP sets this; default-mode runs skip
+            // populating `let_type_hints` (it's only consumed by the
+            // inlay-hint provider).
+            capture_inlay_hints: false,
         }
     }
 
@@ -3542,6 +3552,18 @@ impl TypeChecker {
     /// flips this on for the audit/explain-effects paths.
     pub fn with_audit_stats(mut self, on: bool) -> Self {
         self.audit_stats = on;
+        self
+    }
+
+    /// RES-1353: opt into populating `self.let_type_hints` with an
+    /// entry per inferred `let` binding. The LSP backend reads
+    /// these to produce inlay hints; every other entry point
+    /// (default `rz prog.rz` path, REPL, every `cargo test`
+    /// typecheck call) discards them on TypeChecker drop. Default
+    /// `false`; LSP flips this on before running typecheck.
+    #[allow(dead_code)] // only called behind the `lsp` feature
+    pub fn with_capture_inlay_hints(mut self, on: bool) -> Self {
+        self.capture_inlay_hints = on;
         self
     }
 
@@ -4681,7 +4703,15 @@ impl TypeChecker {
                     // (shouldn't happen for a let, but guard
                     // against it) or `Var` (inference artifact
                     // that shouldn't leak to users).
-                    if !matches!(value_type, Type::Any | Type::Void | Type::Var(..)) {
+                    //
+                    // RES-1353: opt-in. Only the LSP consumes
+                    // `let_type_hints`; every other entry point
+                    // dropped the Vec on TypeChecker drop. Gate
+                    // the push (plus its `name.chars().count()` walk
+                    // and `value_type.clone()`) on the flag.
+                    if self.capture_inlay_hints
+                        && !matches!(value_type, Type::Any | Type::Void | Type::Var(..))
+                    {
                         self.let_type_hints.push(LetTypeHint {
                             span: *span,
                             name_len_chars: name.chars().count(),

@@ -2257,7 +2257,14 @@ impl LanguageServer for Backend {
         // Run the typechecker purely for its hint side-channel.
         // Ignore the return value — errors don't invalidate hints
         // collected up to the error point.
-        let mut tc = typechecker::TypeChecker::new();
+        //
+        // RES-1353: opt into populating `let_type_hints`. Other
+        // typechecker call sites (diagnostics in `did_open` /
+        // `did_change`, every CLI `rz prog.rz` run, every
+        // `cargo test`) leave the flag off so the per-`let`
+        // allocations don't fire on hot paths that never read the
+        // hints.
+        let mut tc = typechecker::TypeChecker::new().with_capture_inlay_hints(true);
         let _ = tc.check_program_with_source(&program, uri.as_str());
         let let_hints: Vec<InlayHint> = tc.let_type_hints.iter().map(inlay_hint_from_let).collect();
 
@@ -2663,7 +2670,7 @@ mod tests {
             }\n";
         let (program, errs) = parse(src);
         assert!(errs.is_empty(), "parse errors: {errs:?}");
-        let mut tc = typechecker::TypeChecker::new();
+        let mut tc = typechecker::TypeChecker::new().with_capture_inlay_hints(true);
         let _ = tc.check_program_with_source(&program, "file:///tmp/test.rs");
         let hints = &tc.let_type_hints;
         assert_eq!(
@@ -2685,7 +2692,7 @@ mod tests {
         // information and clutters the editor.
         let src = "fn main(int _d) { let x = println(\"hi\"); return 0; }\n";
         let (program, _) = parse(src);
-        let mut tc = typechecker::TypeChecker::new();
+        let mut tc = typechecker::TypeChecker::new().with_capture_inlay_hints(true);
         let _ = tc.check_program_with_source(&program, "<t>");
         // `println` returns Void, so `x` is Void → skipped.
         assert_eq!(tc.let_type_hints.len(), 0);
