@@ -689,16 +689,28 @@ fn run_inner(
             // builtin returns `RResult<Value>` (`Result<Value, String>`);
             // we wrap the error string in `BuiltinCallFailed`.
             Op::CallBuiltin { name_const, arity } => {
+                // RES-1421: hold the builtin name as `&str` borrowed
+                // from the chunk's constant pool. The previous shape
+                // cloned `s.clone()` into an owned `String` just to
+                // pass `&name` into `lookup_builtin`, then cloned again
+                // for the (rare) `UnknownBuiltin` error path. Builtin
+                // dispatch fires on every `println` / `len` / etc.
+                // call site — the per-call String alloc adds up.
+                // After RES-1411 made `lookup_builtin` O(1) on `&str`,
+                // dropping the alloc is the next obvious win. The
+                // `chunk` borrow lives for the dispatch arm; the
+                // `&str` is valid through `lookup_builtin` and the
+                // `to_string()` on the `UnknownBuiltin` path.
                 let name_val = chunk
                     .constants
                     .get(name_const as usize)
                     .ok_or(VmError::ConstantOutOfBounds(name_const))?;
-                let name = match name_val {
-                    Value::String(s) => s.clone(),
+                let name: &str = match name_val {
+                    Value::String(s) => s.as_str(),
                     _ => return Err(VmError::TypeMismatch("CallBuiltin (non-string name)")),
                 };
-                let func = crate::lookup_builtin(&name)
-                    .ok_or_else(|| VmError::UnknownBuiltin(name.clone()))?;
+                let func = crate::lookup_builtin(name)
+                    .ok_or_else(|| VmError::UnknownBuiltin(name.to_string()))?;
                 let n = arity as usize;
                 if stack.len() < n {
                     return Err(VmError::EmptyStack);
@@ -1558,16 +1570,21 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let Op::CallBuiltin { name_const, arity } = op else {
         unreachable!()
     };
+    // RES-1421: hold the builtin name as `&str` borrowed from the
+    // chunk's constant pool — same justification as the match-dispatch
+    // arm in `run_inner`. Saves a `String::clone` per builtin
+    // dispatch in the direct-threaded VM path.
     let chunk = state.current_chunk();
     let name_val = chunk
         .constants
         .get(name_const as usize)
         .ok_or(VmError::ConstantOutOfBounds(name_const))?;
-    let name = match name_val {
-        Value::String(s) => s.clone(),
+    let name: &str = match name_val {
+        Value::String(s) => s.as_str(),
         _ => return Err(VmError::TypeMismatch("CallBuiltin (non-string name)")),
     };
-    let func = crate::lookup_builtin(&name).ok_or_else(|| VmError::UnknownBuiltin(name.clone()))?;
+    let func =
+        crate::lookup_builtin(name).ok_or_else(|| VmError::UnknownBuiltin(name.to_string()))?;
     let n = arity as usize;
     if state.stack.len() < n {
         return Err(VmError::EmptyStack);
