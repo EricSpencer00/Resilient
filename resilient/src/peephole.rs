@@ -86,6 +86,11 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
     let mut new_code: Vec<Op> = Vec::with_capacity(chunk.code.len());
     let mut new_line_info: Vec<u32> = Vec::with_capacity(chunk.code.len());
     let mut old_to_new: Vec<usize> = vec![usize::MAX; chunk.code.len() + 1];
+    // RES-1407: track whether any rule fired so the jump-fixup loop
+    // (O(n²) worst case per the comment below) can be skipped when
+    // no rewrite happened. Mirrors `const_fold.rs::fold_pass`'s
+    // `folded_any` early-out at line 230.
+    let mut optimized_any = false;
     let mut i = 0;
     while i < chunk.code.len() {
         // Record the mapping for the START of each rule window
@@ -97,6 +102,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         // Rule 1 — drop `Const(k==0); Add`. Skip if `Add` is a
         // jump target (a jump into the middle of the pattern).
         if rule_add_zero_identity(chunk, i, &targets) {
+            optimized_any = true;
             i += 2;
             continue;
         }
@@ -105,11 +111,13 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(idx) = rule_inc_local(chunk, i, &targets) {
             new_code.push(Op::IncLocal(idx));
             new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
             i += 4;
             continue;
         }
         // Rule 3 — drop `Jump(0)` (fall-through).
         if rule_dead_jump(chunk, i) {
+            optimized_any = true;
             i += 1;
             continue;
         }
@@ -117,11 +125,13 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         if let Some(off) = rule_not_jif_to_jit(chunk, i, &targets) {
             new_code.push(Op::JumpIfTrue(off));
             new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
             i += 2;
             continue;
         }
         // Rule 5 — drop `Const(k==1); Mul` (×1 identity).
         if rule_mul_one_identity(chunk, i, &targets) {
+            optimized_any = true;
             i += 2;
             continue;
         }
@@ -138,6 +148,7 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             };
             new_code.push(Op::Const(zero_k));
             new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
             i += 2;
             continue;
         }
@@ -149,6 +160,18 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
     }
     // Sentinel for "end of code" target (fall-off-end PC).
     old_to_new[chunk.code.len()] = new_code.len();
+
+    // RES-1407: if no rule fired, the rewritten stream is byte-
+    // identical to `chunk.code`. The jump-fixup loop below would
+    // recompute offsets that already equal themselves (mapping
+    // identity-PCs through `old_to_new`, which is also identity
+    // for every position when no fold happened). Skip the O(n²)
+    // worst-case scan + the unchanged `chunk.code = new_code`
+    // assignment entirely. The const-fold pass uses the same
+    // pattern (`folded_any` early-out at const_fold.rs:230).
+    if !optimized_any {
+        return Ok(());
+    }
 
     // Re-link jump offsets. For each JUMP op in new_code, look up
     // which old PC it originated from (scan old_to_new), fetch
