@@ -287,6 +287,27 @@ fn inline_into_chunk(
     callees: &[Option<Function>],
     own_idx: Option<u16>,
 ) -> Result<bool, InlineError> {
+    // RES-1396: fast-reject. The inliner only ever rewrites
+    // `Op::Call(idx)` opcodes (the `if let Op::Call(callee_idx) =
+    // chunk.code[i]` arm below). Chunks containing zero call sites
+    // — which is most chunks in a typical program: every leaf
+    // helper, every arithmetic-only top-level statement, every
+    // chunk that has already been fully inlined in a prior pass —
+    // walk to the end emitting `new_code.push(chunk.code[i])` and
+    // then memcpy the result back over `chunk.code` unchanged. The
+    // four pre-allocated Vecs (`orig_targets`, `new_code`,
+    // `new_lines`, `old_to_new`) plus the re-linking jump-fixup
+    // loop after the rewrite are all dead work in that case.
+    //
+    // A single linear scan for any `Op::Call` short-circuits the
+    // entire transform. Each pass of the inliner re-asks the same
+    // question on every callee chunk plus main; for programs where
+    // few chunks carry calls, this avoids the 4-Vec allocate-and-
+    // copy churn per pass per call-less chunk.
+    if !chunk.code.iter().any(|op| matches!(op, Op::Call(_))) {
+        return Ok(false);
+    }
+
     // Build the new code stream linearly. Internal jump offsets within
     // the inlined body are pre-relative and unchanged; the caller's
     // own jumps need relinking through an old→new PC fixup table the
