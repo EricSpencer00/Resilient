@@ -126,6 +126,23 @@ fn try_fold_const_branch(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<Fo
 /// `JumpIfTrue` offsets are re-linked via an `old_pc → new_pc` table
 /// so the relative offsets stay correct.
 fn fold_constant_branches(chunk: &mut Chunk) {
+    // RES-1415: fast-reject — `try_fold_const_branch` can only return
+    // `Some(...)` when position `i` holds an `Op::Const(_)` that maps
+    // to a `Value::Bool`. Without any `Op::Const` op in the chunk at
+    // all, no fold can fire and the four allocations below
+    // (`orig_targets`, `new_code`, `new_lines`, `old_to_new`,
+    // `replacement_jumps`) plus the O(jumps × code.len()) jump-fixup
+    // post-pass run for no observable change. The const-fold pass
+    // already filters its own input, but this DCE pass runs on every
+    // chunk regardless, even on those the const-folder reduced to no
+    // Op::Const ops (e.g. fully folded leaf arithmetic).
+    //
+    // Same shape as RES-1407 (peephole skip-fixup) and the
+    // `folded_any` early-out in `const_fold::fold_pass`.
+    if !chunk.code.iter().any(|op| matches!(op, Op::Const(_))) {
+        return;
+    }
+
     // Precompute absolute target PC for each instruction using original offsets.
     let orig_targets: Vec<Option<usize>> = chunk
         .code
@@ -143,6 +160,11 @@ fn fold_constant_branches(chunk: &mut Chunk) {
     let mut old_to_new: Vec<usize> = vec![usize::MAX; chunk.code.len() + 1];
     // For folded Const+cond-jump → Jump replacements: (new_pc, orig_abs_target).
     let mut replacement_jumps: Vec<(usize, usize)> = Vec::new();
+    // RES-1415: track whether any fold fired so the jump-fixup pass
+    // (O(jumps × code.len()) per the post-pass linear scan below)
+    // can be skipped when no Const+cond-jump pair matched. Mirrors
+    // the `optimized_any` early-out in `peephole::optimize` (RES-1407).
+    let mut folded_any = false;
 
     let mut i = 0;
     while i < chunk.code.len() {
@@ -155,6 +177,7 @@ fn fold_constant_branches(chunk: &mut Chunk) {
                 FoldAction::RemoveBoth => {
                     // Both ops dropped; the second old_pc maps to the next slot.
                     old_to_new[i + 1] = new_code.len();
+                    folded_any = true;
                     i += 2;
                     continue;
                 }
@@ -166,6 +189,7 @@ fn fold_constant_branches(chunk: &mut Chunk) {
                     new_line_info.push(chunk.line_info[i]);
                     replacement_jumps.push((new_pc, old_target_pc));
                     old_to_new[i + 1] = new_code.len(); // second op is dropped
+                    folded_any = true;
                     i += 2;
                     continue;
                 }
@@ -179,6 +203,15 @@ fn fold_constant_branches(chunk: &mut Chunk) {
     }
     // Sentinel: end-of-code target.
     old_to_new[chunk.code.len()] = new_code.len();
+
+    // RES-1415: skip the relink pass + Vec swap when no fold fired.
+    // `new_code` is byte-identical to `chunk.code` in that case and
+    // every `old_to_new[i] == i`, so the jump fixup would recompute
+    // offsets that already equal themselves. Same pattern as
+    // `peephole::optimize`'s `optimized_any` early-out (RES-1407).
+    if !folded_any {
+        return;
+    }
 
     // Re-link pass for all surviving jump ops (not the replacement Jumps,
     // which are handled separately below).
