@@ -175,3 +175,40 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # inline Resilient source.
 name = "interpreter"
 harness = false
+
+# RES-1184: dev-iteration speedups for the compiler crate.
+#
+# `lib.rs` is ~55k lines of compiler code, so any constant-factor
+# reduction in codegen / link cost is a real wall-clock win for every
+# `cargo build`, `cargo test`, and `cargo clippy` run. Two tunings:
+#
+# 1. `debug = "line-tables-only"` — drops the bulk of DWARF entries
+#    (variables, type info) and keeps just the call-frame mapping.
+#    `panic = "unwind"` still produces useful backtraces (function +
+#    line), which is all the compiler's diagnostic infrastructure
+#    relies on; the typed `Error` path carries its own `line:col`.
+#    Cuts the codegen and linker work proportional to debuginfo size.
+#
+# 2. `[profile.{dev,test}.package."*"] opt-level = 1` — heavy
+#    third-party crates in the dep tree (criterion, notify,
+#    ed25519-dalek, sha2, rustyline, clap) are inlining-shaped: their
+#    generic instantiations explode at `opt-level = 0`. Building deps
+#    at `opt-level = 1` is slower one-time but produces tighter object
+#    files, smaller link inputs, and faster downstream rebuilds when
+#    only local code changes. `Swatinem/rust-cache@v2` in CI caches
+#    these dep artifacts, so the one-time cost is amortized across
+#    every PR. The main `resilient` crate stays at the default
+#    `opt-level = 0` so its own iteration stays fast.
+#
+# Release profile is unchanged — these are dev/test-only knobs.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+opt-level = 1
