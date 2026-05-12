@@ -183,15 +183,29 @@ pub(crate) fn eval_tuple_index(
 ) -> RResult<Value> {
     let v = interp.eval(tuple)?;
     match v {
-        Value::Tuple(items) => items.get(index).cloned().ok_or_else(|| {
-            format!(
-                "{}:{}: tuple index {} out of range (length {})",
-                span.start.line,
-                span.start.column,
-                index,
-                items.len()
-            )
-        }),
+        Value::Tuple(mut items) => {
+            // RES-1452: `items` is owned (destructured from
+            // `Value::Tuple`). The previous shape did
+            // `items.get(index).cloned()` which cloned the element
+            // and then dropped the remaining `items` Vec — for tuples
+            // containing heap-allocated values (Strings, nested
+            // tuples/arrays, structs), the clone was the expensive
+            // part. `swap_remove` moves the element out by ownership
+            // (O(1)); the remaining `items` drops at end of scope as
+            // before. Mirrors RES-1436 (eval IndexExpression) /
+            // RES-1437 (vm LoadIndex).
+            if index < items.len() {
+                Ok(items.swap_remove(index))
+            } else {
+                Err(format!(
+                    "{}:{}: tuple index {} out of range (length {})",
+                    span.start.line,
+                    span.start.column,
+                    index,
+                    items.len()
+                ))
+            }
+        }
         // RES-928: tuple-struct constructors produce a `Value::Struct`
         // with synthesized field names "0", "1", ..., so `.N` against a
         // struct should look up the field with that name rather than
