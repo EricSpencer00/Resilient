@@ -169,8 +169,15 @@ fn format_simple_expr(node: &Node) -> String {
     }
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    let _ = infer_program(program);
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1206: this pass historically called `infer_program` and
+    // discarded the returned `Vec<InferredContracts>`. The real
+    // consumers (the `--suggest-contracts` CLI flag and any external
+    // integrator) call `infer_program` directly when they need the
+    // suggestions, so the work here was unobservable. The entry point
+    // is kept so the `EXTENSION_PASSES` block in `typechecker.rs`
+    // stays undisturbed and a future use can flow data through this
+    // slot.
     Ok(())
 }
 

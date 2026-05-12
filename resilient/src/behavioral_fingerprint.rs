@@ -147,8 +147,15 @@ pub fn diff_fingerprints(
     changed
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    let _ = fingerprint_program(program);
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1206: this pass historically called `fingerprint_program`
+    // and discarded the returned `HashMap<String, Fingerprint>`. The
+    // CLI's `--check-fingerprints` mode (and any external integrator)
+    // builds its own map from `fingerprint_program(program)` when it
+    // needs one, so the work here was unobservable. The entry point
+    // is kept so the `EXTENSION_PASSES` block in `typechecker.rs`
+    // stays undisturbed and a future use can flow data through this
+    // slot.
     Ok(())
 }
 
