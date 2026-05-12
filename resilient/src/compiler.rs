@@ -123,7 +123,15 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
             // Parameters occupy locals 0..arity. Map each param name
             // to its slot; additional `let` bindings in the body bump
             // `next_local` from there.
-            let mut locals: HashMap<String, u16> = HashMap::new();
+            //
+            // RES-1575: pre-size to `parameters.len() * 2` (params + a
+            // heuristic body-let allowance), floored at 8 so empty
+            // fns don't double-rehash from the default 0→4→8 grow
+            // path. Compiling N functions previously paid up to two
+            // rehashes per fn; one upfront `with_capacity` avoids
+            // them on the hot per-fn loop.
+            let mut locals: HashMap<String, u16> =
+                HashMap::with_capacity(parameters.len().saturating_mul(2).max(8));
             let mut next_local: u16 = 0;
             for (_type_name, pname) in parameters {
                 locals.insert(pname.clone(), next_local);
