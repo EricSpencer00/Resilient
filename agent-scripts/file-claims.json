@@ -223,6 +223,10 @@
     "resilient/src/vm.rs": {
       "branch": "res-1437-vm-load-index-swap-remove",
       "claimed_at": "2026-05-12T10:59:54Z"
+    },
+    "resilient/src/tuples.rs": {
+      "branch": "res-1452-tuples-index-swap-remove",
+      "claimed_at": "2026-05-12T11:24:39Z"
     }
   }
 }
