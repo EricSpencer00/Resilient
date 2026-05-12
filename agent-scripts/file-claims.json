@@ -33,8 +33,8 @@
       "claimed_at": "2026-05-12T01:43:21Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1528-z3-args-borrow",
-      "claimed_at": "2026-05-12T13:55:00Z"
+      "branch": "res-1532-z3-idents-borrow",
+      "claimed_at": "2026-05-12T14:30:00Z"
     },
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1509-isr-graph-name-borrow",
@@ -247,6 +247,14 @@
     "resilient/src/deadlock_freedom.rs": {
       "branch": "res-1522-deadlock-actors-borrow",
       "claimed_at": "2026-05-12T13:34:45Z"
+    },
+    "resilient/src/typestate_types.rs": {
+      "branch": "res-1549-typestate-validate-call-borrow",
+      "claimed_at": "2026-05-12T14:27:56Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-1533-lint-l0001-borrow",
+      "claimed_at": "2026-05-12T14:35:00Z"
     }
   }
 }

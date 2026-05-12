@@ -284,16 +284,19 @@ fn run_l0001_unused_local(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn l0001_check_body(body: &Node, out: &mut Vec<Lint>) {
-    let mut lets: Vec<(String, Span)> = Vec::new();
+    // RES-1533: borrow let-binding names and identifier-read names
+    // from the AST into the `lets` Vec and `used` HashSet rather
+    // than cloning every name. Same pattern as RES-1500 / RES-1525.
+    let mut lets: Vec<(&str, Span)> = Vec::new();
     collect_lets_in(body, &mut lets);
     if !lets.is_empty() {
-        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
         collect_identifier_reads_in(body, &mut used);
         for (name, span) in &lets {
             if name.starts_with('_') {
                 continue;
             }
-            if !used.contains(name) {
+            if !used.contains(*name) {
                 out.push(Lint {
                     code: "L0001".into(),
                     severity: Severity::Warning,
@@ -314,11 +317,11 @@ fn l0001_check_body(body: &Node, out: &mut Vec<Lint>) {
 
 /// RES-259: collect the names bound by a pattern (one level of binding
 /// per pattern, recursing into `Or` first-branch and `Bind` inner).
-fn collect_pattern_bindings(pattern: &Pattern) -> Vec<String> {
+fn collect_pattern_bindings(pattern: &Pattern) -> Vec<&str> {
     match pattern {
-        Pattern::Identifier(name) => vec![name.clone()],
+        Pattern::Identifier(name) => vec![name.as_str()],
         Pattern::Bind(name, inner) => {
-            let mut names = vec![name.clone()];
+            let mut names = vec![name.as_str()];
             names.extend(collect_pattern_bindings(inner));
             names
         }
@@ -399,7 +402,7 @@ fn l0001_check_match_arms(node: &Node, out: &mut Vec<Lint>) {
                 let bindings = collect_pattern_bindings(pattern);
                 if !bindings.is_empty() {
                     // Collect reads from the guard (if any) and the arm body.
-                    let mut used: std::collections::HashSet<String> =
+                    let mut used: std::collections::HashSet<&str> =
                         std::collections::HashSet::new();
                     if let Some(g) = guard {
                         collect_identifier_reads_in(g, &mut used);
@@ -415,7 +418,7 @@ fn l0001_check_match_arms(node: &Node, out: &mut Vec<Lint>) {
                         if name.starts_with('_') {
                             continue;
                         }
-                        if !used.contains(name) {
+                        if !used.contains(*name) {
                             out.push(Lint {
                                 code: "L0001".into(),
                                 severity: Severity::Warning,
@@ -474,18 +477,18 @@ fn l0001_check_match_arms(node: &Node, out: &mut Vec<Lint>) {
     }
 }
 
-fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
+fn collect_lets_in<'a>(node: &'a Node, out: &mut Vec<(&'a str, Span)>) {
     match node {
         Node::LetStatement {
             name, value, span, ..
         } => {
-            out.push((name.clone(), *span));
+            out.push((name.as_str(), *span));
             collect_lets_in(value, out);
         }
         Node::StaticLet {
             name, value, span, ..
         } => {
-            out.push((name.clone(), *span));
+            out.push((name.as_str(), *span));
             collect_lets_in(value, out);
         }
         Node::Block { stmts, .. } => {
@@ -519,7 +522,7 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
             ..
         } => {
             if !name.starts_with('_') {
-                out.push((name.clone(), *span));
+                out.push((name.as_str(), *span));
             }
             collect_lets_in(iterable, out);
             collect_lets_in(body, out);
@@ -545,7 +548,7 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
             ..
         } => {
             for (_field_name, local_name) in fields {
-                out.push((local_name.clone(), *span));
+                out.push((local_name.as_str(), *span));
             }
             collect_lets_in(value, out);
         }
@@ -553,10 +556,10 @@ fn collect_lets_in(node: &Node, out: &mut Vec<(String, Span)>) {
     }
 }
 
-fn collect_identifier_reads_in(node: &Node, out: &mut std::collections::HashSet<String>) {
+fn collect_identifier_reads_in<'a>(node: &'a Node, out: &mut std::collections::HashSet<&'a str>) {
     match node {
         Node::Identifier { name, .. } => {
-            out.insert(name.clone());
+            out.insert(name.as_str());
         }
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
             collect_identifier_reads_in(value, out);
@@ -1766,18 +1769,19 @@ fn run_l0011_unused_variable(program: &Node, out: &mut Vec<Lint>) {
 }
 
 fn l0011_check_body(body: &Node, out: &mut Vec<Lint>) {
-    let mut lets: Vec<(String, Span)> = Vec::new();
+    // RES-1533: same borrow pattern as `l0001_check_body`.
+    let mut lets: Vec<(&str, Span)> = Vec::new();
     l0011_collect_let_bindings(body, &mut lets);
     if lets.is_empty() {
         return;
     }
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
     collect_identifier_reads_in(body, &mut used);
     for (name, span) in &lets {
         if name.starts_with('_') {
             continue;
         }
-        if !used.contains(name) {
+        if !used.contains(*name) {
             out.push(Lint {
                 code: "L0011".into(),
                 severity: Severity::Warning,
@@ -1793,18 +1797,18 @@ fn l0011_check_body(body: &Node, out: &mut Vec<Lint>) {
 /// scoped to the let-style forms named by the ticket: plain `let`,
 /// `static let`, and struct-destructure. `for`-loop induction
 /// variables are deliberately skipped — L0001 already flags those.
-fn l0011_collect_let_bindings(node: &Node, out: &mut Vec<(String, Span)>) {
+fn l0011_collect_let_bindings<'a>(node: &'a Node, out: &mut Vec<(&'a str, Span)>) {
     match node {
         Node::LetStatement {
             name, value, span, ..
         } => {
-            out.push((name.clone(), *span));
+            out.push((name.as_str(), *span));
             l0011_collect_let_bindings(value, out);
         }
         Node::StaticLet {
             name, value, span, ..
         } => {
-            out.push((name.clone(), *span));
+            out.push((name.as_str(), *span));
             l0011_collect_let_bindings(value, out);
         }
         Node::LetDestructureStruct {
@@ -1814,7 +1818,7 @@ fn l0011_collect_let_bindings(node: &Node, out: &mut Vec<(String, Span)>) {
             ..
         } => {
             for (_field_name, local_name) in fields {
-                out.push((local_name.clone(), *span));
+                out.push((local_name.as_str(), *span));
             }
             l0011_collect_let_bindings(value, out);
         }
