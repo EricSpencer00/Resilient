@@ -5971,106 +5971,125 @@ impl TypeChecker {
                             ));
                         }
                     }
+                    // RES-1399: skip the `bindings` HashMap allocation
+                    // and the per-arg `fold_const_i64` probe when the
+                    // callee declares no `requires` clauses. `bindings`
+                    // is consumed exclusively by the `for clause in
+                    // info.requires.iter()` loop below (passed to
+                    // `fold_const_bool` + the Z3 prover). When
+                    // `info.requires.is_empty()` the loop never enters
+                    // and every line that populates `bindings` is dead
+                    // work. The vast majority of user functions declare
+                    // no pre-conditions, so this saves the HashMap +
+                    // per-arg `fold_const_i64` probe at every call
+                    // site to such a function. The fails-variant
+                    // propagation loop above this point still runs
+                    // unconditionally; only the bindings + clause work
+                    // is gated.
                     if !info.requires.is_empty() {
                         self.stats.contracted_call_sites += 1;
-                    }
-                    let mut bindings: HashMap<String, i64> = HashMap::new();
-                    for ((_ty, pname), arg) in info.parameters.iter().zip(arguments.iter()) {
-                        if let Some(v) = fold_const_i64(arg, &self.const_bindings) {
-                            bindings.insert(pname.clone(), v);
+                        let mut bindings: HashMap<String, i64> = HashMap::new();
+                        for ((_ty, pname), arg) in info.parameters.iter().zip(arguments.iter()) {
+                            if let Some(v) = fold_const_i64(arg, &self.const_bindings) {
+                                bindings.insert(pname.clone(), v);
+                            }
                         }
-                    }
-                    for (clause_idx, clause) in info.requires.iter().enumerate() {
-                        // Try the cheap hand-rolled folder first.
-                        let mut verdict = fold_const_bool(clause, &bindings);
-                        // RES-136: slot for Z3's counterexample; only
-                        // populated if Z3 runs (folder came back None).
-                        let mut call_counterexample: Option<String> = None;
-                        // RES-067: if undecidable, fall back to Z3
-                        // (only when the binary was built --features z3).
-                        if verdict.is_none() {
-                            // RES-071: also capture certificate.
-                            // RES-354: use theory-aware prover.
-                            let (v, cert, cx, timed_out) = {
-                                #[cfg(feature = "z3")]
-                                {
-                                    z3_prove_with_cert_theory(
-                                        clause,
-                                        &bindings,
-                                        self.verifier_timeout_ms,
-                                        self.z3_theory,
-                                    )
+                        for (clause_idx, clause) in info.requires.iter().enumerate() {
+                            // Try the cheap hand-rolled folder first.
+                            let mut verdict = fold_const_bool(clause, &bindings);
+                            // RES-136: slot for Z3's counterexample; only
+                            // populated if Z3 runs (folder came back None).
+                            let mut call_counterexample: Option<String> = None;
+                            // RES-067: if undecidable, fall back to Z3
+                            // (only when the binary was built --features z3).
+                            if verdict.is_none() {
+                                // RES-071: also capture certificate.
+                                // RES-354: use theory-aware prover.
+                                let (v, cert, cx, timed_out) = {
+                                    #[cfg(feature = "z3")]
+                                    {
+                                        z3_prove_with_cert_theory(
+                                            clause,
+                                            &bindings,
+                                            self.verifier_timeout_ms,
+                                            self.z3_theory,
+                                        )
+                                    }
+                                    #[cfg(not(feature = "z3"))]
+                                    {
+                                        z3_prove_with_cert(
+                                            clause,
+                                            &bindings,
+                                            self.verifier_timeout_ms,
+                                        )
+                                    }
+                                };
+                                verdict = v;
+                                if verdict.is_some() {
+                                    self.stats.requires_discharged_by_z3 += 1;
                                 }
-                                #[cfg(not(feature = "z3"))]
-                                {
-                                    z3_prove_with_cert(clause, &bindings, self.verifier_timeout_ms)
+                                if timed_out {
+                                    // RES-137: soft-failure — runtime
+                                    // check stays in; audit bumps.
+                                    self.stats.verifier_timeouts += 1;
+                                    eprintln!(
+                                        "hint: proof timed out after {}ms — runtime check retained (call to fn {})",
+                                        self.verifier_timeout_ms, callee_name
+                                    );
                                 }
-                            };
-                            verdict = v;
-                            if verdict.is_some() {
-                                self.stats.requires_discharged_by_z3 += 1;
+                                // RES-217: any unresolved verdict (timeout
+                                // OR a genuine Z3 `Unknown`) is a partial
+                                // proof. Emit the structured diagnostic
+                                // with the specific assertion's source
+                                // position; suppressed on
+                                // `--no-warn-unverified`.
+                                if verdict.is_none() && self.warn_unverified {
+                                    emit_partial_proof_warning(&self.source_path, clause);
+                                }
+                                // RES-1357: only stash the cert when the
+                                // `--emit-certificate` driver asked for it.
+                                if matches!(verdict, Some(true))
+                                    && self.emit_certificates
+                                    && let Some(smt2) = cert
+                                {
+                                    self.certificates.push(CapturedCertificate {
+                                        fn_name: callee_name.clone(),
+                                        kind: "callsite_requires",
+                                        idx: clause_idx,
+                                        smt2,
+                                    });
+                                }
+                                call_counterexample = cx;
                             }
-                            if timed_out {
-                                // RES-137: soft-failure — runtime
-                                // check stays in; audit bumps.
-                                self.stats.verifier_timeouts += 1;
-                                eprintln!(
-                                    "hint: proof timed out after {}ms — runtime check retained (call to fn {})",
-                                    self.verifier_timeout_ms, callee_name
-                                );
-                            }
-                            // RES-217: any unresolved verdict (timeout
-                            // OR a genuine Z3 `Unknown`) is a partial
-                            // proof. Emit the structured diagnostic
-                            // with the specific assertion's source
-                            // position; suppressed on
-                            // `--no-warn-unverified`.
-                            if verdict.is_none() && self.warn_unverified {
-                                emit_partial_proof_warning(&self.source_path, clause);
-                            }
-                            // RES-1357: only stash the cert when the
-                            // `--emit-certificate` driver asked for it.
-                            if matches!(verdict, Some(true))
-                                && self.emit_certificates
-                                && let Some(smt2) = cert
-                            {
-                                self.certificates.push(CapturedCertificate {
-                                    fn_name: callee_name.clone(),
-                                    kind: "callsite_requires",
-                                    idx: clause_idx,
-                                    smt2,
-                                });
-                            }
-                            call_counterexample = cx;
-                        }
-                        match verdict {
-                            Some(false) => {
-                                // RES-136: append counterexample when
-                                // Z3 found one.
-                                let base = format!(
-                                    "Contract violation: call to fn {} would fail `requires` clause at compile time",
-                                    callee_name
-                                );
-                                return Err(match call_counterexample {
-                                    Some(cx) => format!("{} — counterexample: {}", base, cx),
-                                    None => base,
-                                });
-                            }
-                            Some(true) => {
-                                self.stats.requires_discharged_at_compile += 1;
-                                *self
-                                    .stats
-                                    .per_fn_discharged
-                                    .entry(callee_name.clone())
-                                    .or_insert(0) += 1;
-                            }
-                            None => {
-                                self.stats.requires_left_for_runtime += 1;
-                                *self
-                                    .stats
-                                    .per_fn_runtime
-                                    .entry(callee_name.clone())
-                                    .or_insert(0) += 1;
+                            match verdict {
+                                Some(false) => {
+                                    // RES-136: append counterexample when
+                                    // Z3 found one.
+                                    let base = format!(
+                                        "Contract violation: call to fn {} would fail `requires` clause at compile time",
+                                        callee_name
+                                    );
+                                    return Err(match call_counterexample {
+                                        Some(cx) => format!("{} — counterexample: {}", base, cx),
+                                        None => base,
+                                    });
+                                }
+                                Some(true) => {
+                                    self.stats.requires_discharged_at_compile += 1;
+                                    *self
+                                        .stats
+                                        .per_fn_discharged
+                                        .entry(callee_name.clone())
+                                        .or_insert(0) += 1;
+                                }
+                                None => {
+                                    self.stats.requires_left_for_runtime += 1;
+                                    *self
+                                        .stats
+                                        .per_fn_runtime
+                                        .entry(callee_name.clone())
+                                        .or_insert(0) += 1;
+                                }
                             }
                         }
                     }
