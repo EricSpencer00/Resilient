@@ -480,22 +480,42 @@ fn fold_const_bool(n: &Node, bindings: &HashMap<String, i64>) -> Option<bool> {
             right,
             ..
         } => match operator.as_str() {
-            "&&" => match (
-                fold_const_bool(left, bindings),
-                fold_const_bool(right, bindings),
-            ) {
-                (Some(a), Some(b)) => Some(a && b),
-                (Some(false), _) | (_, Some(false)) => Some(false),
-                _ => None,
-            },
-            "||" => match (
-                fold_const_bool(left, bindings),
-                fold_const_bool(right, bindings),
-            ) {
-                (Some(a), Some(b)) => Some(a || b),
-                (Some(true), _) | (_, Some(true)) => Some(true),
-                _ => None,
-            },
+            // RES-1353: short-circuit `&&` / `||` before recursing
+            // on the right operand. The old pattern-match form
+            // (`match (fold(left), fold(right)) { … }`) eagerly
+            // folded *both* sides before inspecting the verdicts,
+            // so a `Some(false) && expensive_right` clause walked
+            // `expensive_right`'s subtree only to discard the
+            // verdict. Mirrors the logical-short-circuit semantics
+            // the operator already has at runtime.
+            "&&" => {
+                let l = fold_const_bool(left, bindings);
+                if matches!(l, Some(false)) {
+                    return Some(false);
+                }
+                let r = fold_const_bool(right, bindings);
+                if matches!(r, Some(false)) {
+                    return Some(false);
+                }
+                match (l, r) {
+                    (Some(true), Some(true)) => Some(true),
+                    _ => None,
+                }
+            }
+            "||" => {
+                let l = fold_const_bool(left, bindings);
+                if matches!(l, Some(true)) {
+                    return Some(true);
+                }
+                let r = fold_const_bool(right, bindings);
+                if matches!(r, Some(true)) {
+                    return Some(true);
+                }
+                match (l, r) {
+                    (Some(false), Some(false)) => Some(false),
+                    _ => None,
+                }
+            }
             "==" | "!=" | "<" | ">" | "<=" | ">=" => {
                 let l = fold_const_i64(left, bindings)?;
                 let r = fold_const_i64(right, bindings)?;
