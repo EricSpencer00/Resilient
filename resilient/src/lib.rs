@@ -10177,7 +10177,18 @@ impl Environment {
     /// the top-level frame at construction time. Caller is responsible
     /// for filtering / sorting.
     fn local_names(&self) -> Vec<String> {
-        self.inner.borrow().store.keys().cloned().collect()
+        // RES-1453: walk the outer chain so the REPL completion and
+        // its binding_names() consumer see builtins that live in the
+        // shared thread_local BUILTIN_ENV (formerly populated into
+        // the immediate frame via register_builtins). Names from the
+        // innermost frame are listed first, then each outer frame's
+        // names appended.
+        let frame = self.inner.borrow();
+        let mut out: Vec<String> = frame.store.keys().cloned().collect();
+        if let Some(outer) = &frame.outer {
+            out.extend(outer.local_names());
+        }
+        out
     }
 }
 
@@ -10310,7 +10321,12 @@ fn stringify_for_concat(v: &Value) -> Option<String> {
 
 // RES-050: Environment methods take &self; this signature could now be
 // `&Environment`, but `&mut` is harmless and signals "we're populating".
-fn register_builtins(env: &mut Environment) {
+fn register_builtins(env: &Environment) {
+    // RES-1453: takes `&Environment` (not `&mut`) because
+    // `Environment::set` already takes `&self` — the inner
+    // `Rc<RefCell<EnvFrame>>` handles interior mutation. The `&mut`
+    // shape was a historical artifact and prevented this from being
+    // called from inside the `thread_local!` initializer.
     for (name, func) in BUILTINS {
         env.set((*name).to_string(), Value::Builtin { name, func: *func });
     }
@@ -21440,11 +21456,33 @@ fn struct_fields_strict_eq(l: &[(String, Value)], r: &[(String, Value)]) -> bool
 
 impl Interpreter {
     fn new() -> Self {
-        let mut env = Environment::new();
-        register_builtins(&mut env);
-        // RES-375: register `None` as the absent-Option constant.
-        // `Some` is already in the builtins table as a function.
-        env.set("None".to_string(), Value::Option(None));
+        // RES-1453: share the populated builtin Environment across
+        // every `Interpreter::new()` via a thread-local. Pre-running
+        // `register_builtins` (454 `String::to_string` allocations
+        // plus 454 HashMap inserts) + the `"None"` constant for each
+        // fresh Interpreter was the same cost paid for every test in
+        // the suite that called `Interpreter::new()` — ~250
+        // interpreters × 455 entries × per-entry allocation. The
+        // initializer runs once per thread; each subsequent
+        // `Interpreter::new()` does an `Rc`-clone of the shared
+        // frame (cheap) and wraps it as the outer of a fresh empty
+        // inner via `Environment::new_enclosed`. Mutations via
+        // `env.set` go to the per-Interpreter inner frame; lookups
+        // fall through to the shared outer for builtins (and the
+        // `None` constant). Same shape as the RES-1349 builtin-env
+        // cache for `TypeChecker`. `Environment` wraps
+        // `Rc<RefCell<EnvFrame>>` and is `!Sync`, so the cache
+        // lives in `thread_local!` rather than `LazyLock`.
+        thread_local! {
+            static BUILTIN_ENV: Environment = {
+                let env = Environment::new();
+                register_builtins(&env);
+                // RES-375: `None` is the absent-Option constant.
+                env.set("None".to_string(), Value::Option(None));
+                env
+            };
+        }
+        let env = BUILTIN_ENV.with(|e| Environment::new_enclosed(e.clone()));
         Interpreter {
             env,
             statics: Rc::new(RefCell::new(HashMap::new())),
