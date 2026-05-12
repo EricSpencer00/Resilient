@@ -48,6 +48,21 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1211: fast-reject. The pass only emits diagnostics for ISR
+    // functions and their transitive callees; if the program declares
+    // no ISR, every later step is a no-op (`isr_roots` stays empty
+    // and the BFS never enters its loop). Scan the top-level function
+    // names first — that's O(N) over toplevel statements with a cheap
+    // suffix/prefix string check — and skip the per-body
+    // `collect_callees` walks, which would otherwise dominate this
+    // pass on non-embedded programs (the overwhelming majority of
+    // `examples/` and the test suite).
+    let has_isr = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { name, .. } if is_isr_name(name)));
+    if !has_isr {
+        return Ok(());
+    }
     let mut callees: HashMap<String, HashSet<String>> = HashMap::new();
     let mut isr_roots: Vec<String> = Vec::new();
     for stmt in stmts {

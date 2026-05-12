@@ -39,6 +39,10 @@
     "resilient/src/verifier_z3.rs": {
       "branch": "res-1206-z3-verdict-cache",
       "claimed_at": "2026-05-12T01:45:28Z"
+    },
+    "resilient/src/isr_call_graph.rs": {
+      "branch": "res-1211-isr-fast-reject",
+      "claimed_at": "2026-05-12T01:57:48Z"
     }
   }
 }
