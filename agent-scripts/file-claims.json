@@ -191,6 +191,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-1372-typeenv-outer-rc",
       "claimed_at": "2026-05-12T08:45:01Z"
+    },
+    "resilient/src/quantifiers.rs": {
+      "branch": "res-1376-quantifier-eval-clone",
+      "claimed_at": "2026-05-12T08:58:44Z"
     }
   }
 }
