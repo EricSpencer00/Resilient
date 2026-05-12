@@ -107,11 +107,16 @@ pub fn install(map: BlameMap) {
 }
 
 pub fn callers_of(callee: &str) -> Vec<(String, usize)> {
+    // RES-1544: hold the read guard for the lookup so we can borrow
+    // through the `Option<BlameMap>` and clone only the value Vec.
+    // The previous shape cloned the entire `BlameMap` (a HashMap
+    // keyed by every callee in the program) on every call before
+    // looking up one row — pure waste when the diagnostic path only
+    // wants the callers of one specific callee.
     BLAME_MAP
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .and_then(|m| m.edges.get(callee).cloned())
+        .and_then(|g| g.as_ref()?.edges.get(callee).cloned())
         .unwrap_or_default()
 }
 
