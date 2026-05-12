@@ -31,6 +31,7 @@
 
 use crate::{ActorHandler, Node};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write as _;
 use z3::Sort;
 use z3::ast::{Array, Ast, BV, Bool, Int};
 
@@ -387,40 +388,45 @@ fn prove_with_axioms_and_timeout_in(
         let mut arr_args: BTreeSet<String> = BTreeSet::new();
         collect_array_args(expr, &mut arr_args);
 
+        // RES-1383: write the SMT-LIB cert via `writeln!` into `smt2`
+        // directly — `String` implements `fmt::Write`, so the format
+        // machinery copies straight into the buffer with no
+        // intermediate `String` allocations from `format!`. The
+        // emitted text is byte-identical to the previous shape.
         let mut smt2 = String::new();
         smt2.push_str("; RES-071 verification certificate\n");
         smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
         smt2.push_str("(set-logic AUFLIA)\n");
         for name in &idents {
-            smt2.push_str(&format!("(declare-const {} Int)\n", name));
+            writeln!(&mut smt2, "(declare-const {} Int)", name).unwrap();
         }
         // RES-131: declare one Int const per `len(<arg>)` call
         // seen in the formula + emit its `>= 0` axiom so a
         // stock Z3 re-verifying the cert gets the same
         // context the prover used.
         for arg in &len_args {
-            smt2.push_str(&format!("(declare-const len_{} Int)\n", arg));
+            writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
         }
         // RES-408: declare arrays referenced via `a[i]` with the
         // `(Array Int Int)` sort so the cert is self-contained for
         // stock Z3 re-verification.
         for arg in &arr_args {
-            smt2.push_str(&format!("(declare-const arr_{} (Array Int Int))\n", arg));
+            writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
         }
         for arg in &len_args {
-            smt2.push_str(&format!("(assert (>= len_{} 0))\n", arg));
+            writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
         }
         // Bound identifiers: pin them to their concrete value with an
         // equality assertion. Free identifiers are left unconstrained
         // so the proof is universal over them.
         for name in &idents {
             if let Some(v) = bindings.get(name) {
-                smt2.push_str(&format!("(assert (= {} {}))\n", name, v));
+                writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
             }
         }
         // The negated goal — Z3 ASTs Display as SMT-LIB2 syntax, so
         // we get a faithful round-trip via `negated.to_string()`.
-        smt2.push_str(&format!("(assert {})\n", negated));
+        writeln!(&mut smt2, "(assert {})", negated).unwrap();
         smt2.push_str("(check-sat)\n");
 
         return (Some(true), Some(ProofCertificate { smt2 }), None, false);
@@ -565,28 +571,31 @@ fn prove_tautology_with_axioms_and_timeout_in(
     let mut arr_args: BTreeSet<String> = BTreeSet::new();
     collect_array_args(expr, &mut arr_args);
 
+    // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
+    // cert builder above — eliminates the intermediate `format!`
+    // String allocations per declaration / axiom / assertion.
     let mut smt2 = String::new();
     smt2.push_str("; RES-071 verification certificate\n");
     smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
     smt2.push_str("(set-logic AUFLIA)\n");
     for name in &idents {
-        smt2.push_str(&format!("(declare-const {} Int)\n", name));
+        writeln!(&mut smt2, "(declare-const {} Int)", name).unwrap();
     }
     for arg in &len_args {
-        smt2.push_str(&format!("(declare-const len_{} Int)\n", arg));
+        writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
     }
     for arg in &arr_args {
-        smt2.push_str(&format!("(declare-const arr_{} (Array Int Int))\n", arg));
+        writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
     }
     for arg in &len_args {
-        smt2.push_str(&format!("(assert (>= len_{} 0))\n", arg));
+        writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
     }
     for name in &idents {
         if let Some(v) = bindings.get(name) {
-            smt2.push_str(&format!("(assert (= {} {}))\n", name, v));
+            writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
         }
     }
-    smt2.push_str(&format!("(assert {})\n", negated));
+    writeln!(&mut smt2, "(assert {})", negated).unwrap();
     smt2.push_str("(check-sat)\n");
 
     (true, Some(ProofCertificate { smt2 }), false)
