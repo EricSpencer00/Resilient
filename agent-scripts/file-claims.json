@@ -235,6 +235,10 @@
     "resilient/src/imports.rs": {
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
+    },
+    "resilient/src/full_modules.rs": {
+      "branch": "res-1517-full-modules-dfs-borrow",
+      "claimed_at": "2026-05-12T13:25:00Z"
     }
   }
 }
