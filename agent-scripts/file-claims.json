@@ -240,9 +240,13 @@
       "branch": "res-1517-full-modules-dfs-borrow",
       "claimed_at": "2026-05-12T13:25:00Z"
     },
-    "resilient/src/info_flow.rs": {
-      "branch": "res-1527-info-flow-public-empty",
-      "claimed_at": "2026-05-12T13:30:48Z"
+    "resilient/src/crash_only.rs": {
+      "branch": "res-1520-crash-only-name-borrow",
+      "claimed_at": "2026-05-12T13:33:00Z"
+    },
+    "resilient/src/deadlock_freedom.rs": {
+      "branch": "res-1522-deadlock-actors-borrow",
+      "claimed_at": "2026-05-12T13:34:45Z"
     }
   }
 }
