@@ -85,6 +85,28 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo fmt --check
 
+      # RES-1263: emit a `cargo build --timings` HTML report from a clean
+      # build and upload it as an artifact. The next round of speedup PRs
+      # needs profiling data (per-crate compile time, frontend vs codegen
+      # split, critical-path graph) rather than static reads of `Cargo.toml`
+      # to know where to spend effort. Cargo writes
+      # `target/cargo-timings/cargo-timing-<timestamp>.html` per invocation;
+      # we upload the whole directory glob so re-runs accumulate inside the
+      # same artifact. `if-no-files-found: ignore` keeps the step silent on
+      # docs-only fast paths where cargo never ran. 14-day retention matches
+      # GitHub's default for CI artifacts.
+      - name: cargo build --timings
+        if: needs.changes.outputs.docs_only != 'true'
+        run: cargo build --locked --timings
+      - name: Upload cargo --timings report
+        if: needs.changes.outputs.docs_only != 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-${{ github.run_id }}
+          path: resilient/target/cargo-timings/cargo-timing-*.html
+          retention-days: 14
+          if-no-files-found: ignore
+
   z3_ci:
     name: build / test with --features z3
     needs: [changes]
