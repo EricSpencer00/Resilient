@@ -155,6 +155,38 @@
     "resilient/src/feature_attrs.rs": {
       "branch": "res-1303-feature-attrs-kind-index",
       "claimed_at": "2026-05-12T05:08:27Z"
+    },
+    "resilient/src/associated_constants.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/macros.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/phantom_types.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/recursive_types.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/probabilistic_contracts.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/row_polymorphism.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/distributed_invariants.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/ghost_types.rs": {
+      "branch": "res-1308-skip-empty-install-8-passes",
+      "claimed_at": "2026-05-12T05:18:02Z"
     }
   }
 }

@@ -80,7 +80,18 @@ pub fn lookup(type_name: &str, const_name: &str) -> Option<String> {
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    install(collect());
+    // RES-1308: gate `install` on the non-empty case. The previous
+    // wiring wrote to `ASSOC` on every typecheck, burning a
+    // RwLock write acquisition + replace on every program that
+    // declares no `#[assoc_const]` attribute. It also created the
+    // wipe-on-empty test race documented in RES-1302 against any
+    // test that calls `install` directly under
+    // `feature_attrs::lock_for_test()`.
+    let items = collect();
+    if items.is_empty() {
+        return Ok(());
+    }
+    install(items);
     Ok(())
 }
 

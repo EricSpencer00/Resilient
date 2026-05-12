@@ -71,11 +71,15 @@ pub fn for_actor(actor: &str) -> Vec<DistributedInvariant> {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1308: gate `install` on the non-empty case. The historical
+    // wiring called `install(invs.clone())` before the early-out,
+    // burning a RwLock write per compile and creating the
+    // wipe-on-empty test race documented in RES-1302.
     let invs = collect();
-    install(invs.clone());
     if invs.is_empty() {
         return Ok(());
     }
+    install(invs.clone());
     let Node::Program(stmts) = program else {
         return Ok(());
     };

@@ -72,7 +72,14 @@ pub fn expand(name: &str, args: &[String]) -> Option<String> {
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    install(collect());
+    // RES-1308: gate `install` on the non-empty case — see RES-1302
+    // for the wipe-on-empty race rationale; same pattern saves a
+    // wasted RwLock write per compile in the common case.
+    let macros = collect();
+    if macros.is_empty() {
+        return Ok(());
+    }
+    install(macros);
     Ok(())
 }
 
