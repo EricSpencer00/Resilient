@@ -857,7 +857,16 @@ fn clause_span(node: &Node) -> Span {
 /// diagnostic that includes a primary span on the offending argument
 /// and a secondary span on the function declaration.
 fn rich_diag_enabled() -> bool {
-    std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1")
+    // RES-1361: cache the env-var lookup. Called per type-mismatch
+    // diagnostic during `check_node`'s `CallExpression` arm; the
+    // raw `std::env::var` is a syscall (typically 100ns-1µs hot).
+    // `LazyLock` reads the env once per process; every subsequent
+    // call is a relaxed atomic load of the cached `bool`. Mirrors
+    // RES-1341 for `RESILIENT_CONST_FOLD`. No test in the codebase
+    // flips this var mid-process.
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("RESILIENT_RICH_DIAG").as_deref() == Ok("1"));
+    *ENABLED
 }
 
 /// RES-340: format a rich type-mismatch diagnostic. Loads source
