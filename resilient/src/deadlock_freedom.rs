@@ -96,25 +96,34 @@ fn walk_sends(node: &Node, actors: &HashSet<String>, out: &mut HashSet<String>) 
     }
 }
 
-pub fn detect_cycles(graph: &ActorGraph) -> Vec<Vec<String>> {
+// RES-1477: borrow into `graph.edges` for the DFS instead of cloning
+// every node name into `visited`, the stack frames, and each path
+// extension. Return cycles as `Vec<Vec<&'a str>>`; the production
+// caller (`deadlock_freedom::check`) immediately `.join(" -> ")`s
+// them (works on `&[&str]`), and the test uses `.is_empty()`. The
+// graph lives at least as long as the returned cycles, so the
+// borrow chain is sound.
+pub fn detect_cycles<'a>(graph: &'a ActorGraph) -> Vec<Vec<&'a str>> {
     let mut cycles = Vec::new();
-    let mut visited = HashSet::new();
+    let mut visited: HashSet<&'a str> = HashSet::new();
     for start in graph.edges.keys() {
+        let start = start.as_str();
         if visited.contains(start) {
             continue;
         }
-        let mut stack = vec![(start.clone(), vec![start.clone()])];
+        let mut stack: Vec<(&'a str, Vec<&'a str>)> = vec![(start, vec![start])];
         while let Some((cur, path)) = stack.pop() {
-            visited.insert(cur.clone());
-            if let Some(adj) = graph.edges.get(&cur) {
+            visited.insert(cur);
+            if let Some(adj) = graph.edges.get(cur) {
                 for n in adj {
-                    if path.contains(n) {
-                        let cycle_start = path.iter().position(|x| x == n).unwrap();
+                    let n_str = n.as_str();
+                    if path.contains(&n_str) {
+                        let cycle_start = path.iter().position(|x| *x == n_str).unwrap();
                         cycles.push(path[cycle_start..].to_vec());
                     } else {
                         let mut new_path = path.clone();
-                        new_path.push(n.clone());
-                        stack.push((n.clone(), new_path));
+                        new_path.push(n_str);
+                        stack.push((n_str, new_path));
                     }
                 }
             }
