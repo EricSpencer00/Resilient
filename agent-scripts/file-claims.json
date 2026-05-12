@@ -196,9 +196,9 @@
       "branch": "res-1376-quantifier-eval-clone",
       "claimed_at": "2026-05-12T08:58:44Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-1379-match-arm-clone",
-      "claimed_at": "2026-05-12T09:02:14Z"
+    "resilient/src/unify.rs": {
+      "branch": "res-1381-apply-hop-counter",
+      "claimed_at": "2026-05-12T09:05:25Z"
     }
   }
 }

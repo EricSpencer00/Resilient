@@ -95,18 +95,33 @@ impl Substitution {
                 // Follow the chain; break on cycles defensively
                 // (shouldn't happen — `unify`'s occurs check prevents
                 // cycles — but a bug elsewhere shouldn't deadlock).
-                let mut seen: Vec<u32> = Vec::new();
+                //
+                // RES-1381: bounded hop counter instead of a `Vec<u32>`
+                // of seen ids. Every `apply` on a `Type::Var` used to
+                // allocate the Vec, push the chain ids, and drop it,
+                // even when the chain is 0-hop (var not in `inner`, so
+                // we return after the very first `inner.get`). With
+                // `unify` triggering two `apply` calls per invocation
+                // and `infer` doing many `unify`s per top-level query,
+                // the cumulative Vec churn is real for no per-call
+                // benefit (the occurs check already prevents cycles).
+                // A chain of >256 hops is the same "broken invariant"
+                // bail the cycle check produced — strictly better
+                // because the O(1) counter replaces the O(N) linear
+                // `seen.contains` scan as well.
+                const MAX_HOPS: u32 = 256;
+                let mut hops: u32 = 0;
                 let mut cur_id = *id;
                 // Preserve the origin span (type-hole position) through
                 // chain following so Display can still show "type hole at X:Y".
                 let mut cur_span = *origin_span;
                 loop {
-                    if seen.contains(&cur_id) {
+                    if hops >= MAX_HOPS {
                         // Broken invariant — return the original var
                         // rather than loop forever.
                         return Type::Var(cur_id, cur_span);
                     }
-                    seen.push(cur_id);
+                    hops += 1;
                     match self.inner.get(&cur_id) {
                         None => return Type::Var(cur_id, cur_span),
                         Some(Type::Var(next_id, next_span)) => {
