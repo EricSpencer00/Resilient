@@ -255,6 +255,7 @@
     "resilient/src/lint.rs": {
       "branch": "res-1533-lint-l0001-borrow",
       "claimed_at": "2026-05-12T14:35:00Z"
+    },
     "resilient/src/blame_attribution.rs": {
       "branch": "res-1544-blame-attribution-callers-borrow",
       "claimed_at": "2026-05-12T14:23:18Z"
