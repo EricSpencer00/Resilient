@@ -195,6 +195,10 @@
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
       "claimed_at": "2026-05-12T08:58:44Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1379-match-arm-clone",
+      "claimed_at": "2026-05-12T09:02:14Z"
     }
   }
 }
