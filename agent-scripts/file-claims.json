@@ -221,8 +221,8 @@
       "claimed_at": "2026-05-12T11:56:23Z"
     },
     "resilient/src/lsp_server.rs": {
-      "branch": "res-1508-lsp-name-borrow",
-      "claimed_at": "2026-05-12T12:59:48Z"
+      "branch": "res-1531-lsp-completion-lazy-clone",
+      "claimed_at": "2026-05-12T14:20:00Z"
     },
     "resilient/src/recovery_checker.rs": {
       "branch": "res-1511-recovery-checker-borrow",
