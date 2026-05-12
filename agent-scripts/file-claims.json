@@ -208,17 +208,13 @@
       "branch": "res-1391-traits-fast-reject",
       "claimed_at": "2026-05-12T09:32:26Z"
     },
-    "resilient/src/derives.rs": {
-      "branch": "res-1402-derives-empty-install",
-      "claimed_at": "2026-05-12T10:01:28Z"
+    "resilient/src/inline.rs": {
+      "branch": "res-1396-inline-chunk-fast-reject",
+      "claimed_at": "2026-05-12T09:48:19Z"
     },
-    "resilient/src/peephole.rs": {
-      "branch": "res-1407-peephole-skip-fixup",
-      "claimed_at": "2026-05-12T10:12:24Z"
-    },
-    "resilient/src/dce.rs": {
-      "branch": "res-1415-dce-skip-fixup",
-      "claimed_at": "2026-05-12T10:22:07Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-1411-builtin-lookup-hashmap",
+      "claimed_at": "2026-05-12T10:17:10Z"
     }
   }
 }

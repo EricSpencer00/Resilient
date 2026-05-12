@@ -10335,7 +10335,26 @@ pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
 /// and by the VM to dispatch that opcode through the same function
 /// pointer the tree-walker invokes.
 pub(crate) fn lookup_builtin(name: &str) -> Option<BuiltinFn> {
-    BUILTINS.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
+    // RES-1411: convert the linear scan over the ~500-entry
+    // `BUILTINS` slice into an O(1) `HashMap` lookup. Each
+    // `Op::CallBuiltin` emission in `compiler::compile_expr` and
+    // every dispatch in `vm.rs` calls this — for programs with N
+    // call sites that resolve to builtins, the linear shape was
+    // N × |BUILTINS| string comparisons per compile-or-run. The
+    // lookup happens often enough during a fresh build that the
+    // cost was visible in CI timings; a `LazyLock<HashMap>` pays
+    // the (one-time) per-process table construction in exchange
+    // for every subsequent lookup being a single hash + bucket
+    // walk.
+    //
+    // Same shape as RES-1349 (cached `BUILTIN_ENV`) and RES-1398
+    // (cached `BUILTIN_ENUM_DECLS`): `LazyLock` is `Sync`-safe and
+    // each `BUILTINS` entry is `(&'static str, BuiltinFn)` —
+    // `Copy`-only payload, so the HashMap holds plain values, no
+    // ref-bumping needed on lookup.
+    static BUILTIN_MAP: std::sync::LazyLock<HashMap<&'static str, BuiltinFn>> =
+        std::sync::LazyLock::new(|| BUILTINS.iter().copied().collect());
+    BUILTIN_MAP.get(name).copied()
 }
 
 /// RES-487: enumerate every builtin name. Feeds `did_you_mean::suggest`
