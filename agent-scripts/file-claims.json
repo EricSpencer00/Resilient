@@ -189,8 +189,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1365-struct-fields-rc",
-      "claimed_at": "2026-05-12T08:19:30Z"
+      "branch": "res-1372-typeenv-outer-rc",
+      "claimed_at": "2026-05-12T08:45:01Z"
     }
   }
 }

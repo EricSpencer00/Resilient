@@ -596,10 +596,27 @@ fn fold_const_i64(n: &Node, bindings: &HashMap<String, i64>) -> Option<i64> {
 }
 
 // Environment for storing type information
+//
+// RES-1372: `outer` is `Arc<TypeEnvironment>` (not `Box`) so cloning a
+// `TypeEnvironment` is O(current store) instead of O(sum of stores
+// along the outer chain). The typechecker enters a new scope (via
+// `self.env.clone()` + `new_enclosed`) at every function body, block,
+// fn-literal, actor body, handler, while/for loop, and quantifier
+// binding — hundreds of times per non-trivial program. With the old
+// `Box`, each clone walked the entire outer chain and deep-cloned
+// every frame's `store` HashMap. With `Arc`, the chain-clone is a
+// refcount bump; only the current scope's own `store` clones for real.
+// `Arc` (not `Rc`) so the type stays `Send + Sync` — required because
+// the RES-1349 builtin-env `LazyLock<TypeEnvironment>` is a `Sync`
+// static. Atomic refcount ops are still trivially cheaper than the
+// deep HashMap clone they replace.
+// Mutation safety: `set` / `remove` only touch `self.store`; `get` /
+// `all_names` only read through `&self.outer`. Nothing ever mutates
+// through the indirection, so the Arc share is sound.
 #[derive(Debug, Clone)]
 pub struct TypeEnvironment {
     store: HashMap<String, Type>,
-    outer: Option<Box<TypeEnvironment>>,
+    outer: Option<std::sync::Arc<TypeEnvironment>>,
 }
 
 impl TypeEnvironment {
@@ -613,7 +630,7 @@ impl TypeEnvironment {
     pub fn new_enclosed(outer: TypeEnvironment) -> Self {
         TypeEnvironment {
             store: HashMap::new(),
-            outer: Some(Box::new(outer)),
+            outer: Some(std::sync::Arc::new(outer)),
         }
     }
 
