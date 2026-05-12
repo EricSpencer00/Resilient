@@ -121,16 +121,23 @@ impl Context {
                 arguments,
                 ..
             } => {
-                if let Some(fn_name) = self.extract_identifier(function) {
-                    if self.extern_fns.contains(&fn_name) {
+                // RES-1534: borrow the callee name as `&str` from the
+                // function-position AST node. The previous shape cloned
+                // every call-site name into an owned `String` even though
+                // both branches only read it: `extern_fns.contains(...)`
+                // accepts `&str` via `Borrow<str>`, and the self-call
+                // check compares against `current.as_deref()`. Same
+                // pattern as RES-1500 / RES-1525 / RES-1533.
+                if let Some(fn_name) = Self::extract_identifier(function) {
+                    if self.extern_fns.contains(fn_name) {
                         eprintln!(
                             "warning: opaque FFI call to '{}' in recovery body \
                             cannot be modeled as TLA+ action",
                             fn_name
                         );
-                    } else if let Some(ref current) = self.current_fn {
+                    } else if let Some(current) = self.current_fn.as_deref() {
                         #[allow(clippy::collapsible_if)]
-                        if &fn_name == current {
+                        if fn_name == current {
                             eprintln!(
                                 "warning: function '{}' recursively calls itself in recovery body",
                                 current
@@ -217,9 +224,9 @@ impl Context {
         }
     }
 
-    fn extract_identifier(&self, node: &Node) -> Option<String> {
+    fn extract_identifier(node: &Node) -> Option<&str> {
         match node {
-            Node::Identifier { name, .. } => Some(name.clone()),
+            Node::Identifier { name, .. } => Some(name.as_str()),
             _ => None,
         }
     }
