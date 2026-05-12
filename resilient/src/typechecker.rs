@@ -1056,6 +1056,14 @@ pub struct TypeChecker {
     /// `let` only to drop the Vec on TypeChecker drop. Default
     /// `false`; the LSP path flips it via `with_capture_inlay_hints(true)`.
     capture_inlay_hints: bool,
+    /// RES-1357: opt-in flag for pushing `CapturedCertificate`
+    /// entries onto `self.certificates`. The only consumer is the
+    /// `--emit-certificate <DIR>` CLI driver (lib.rs:26008) — every
+    /// other invocation (default `rz prog.rz`, LSP/REPL, every
+    /// `cargo test` typecheck) pushed certs onto a Vec it dropped
+    /// on TypeChecker drop. Default `false`; the cert-emit driver
+    /// flips it via `with_emit_certificates(true)`.
+    emit_certificates: bool,
 }
 
 impl TypeChecker {
@@ -3521,6 +3529,11 @@ impl TypeChecker {
             // populating `let_type_hints` (it's only consumed by the
             // inlay-hint provider).
             capture_inlay_hints: false,
+            // RES-1357: opt-in. The `--emit-certificate` driver flips
+            // this; every other invocation skips pushing
+            // `CapturedCertificate` onto the Vec it'd drop on
+            // TypeChecker drop.
+            emit_certificates: false,
         }
     }
 
@@ -3587,6 +3600,17 @@ impl TypeChecker {
         self
     }
 
+    /// RES-1357: opt into pushing `CapturedCertificate` entries onto
+    /// `self.certificates`. The only consumer is the
+    /// `--emit-certificate <DIR>` driver in lib.rs; every other
+    /// path leaves the flag off so the per-push `fn_name.clone()` +
+    /// Vec growth doesn't fire on hot paths that never read the
+    /// certs.
+    pub fn with_emit_certificates(mut self, on: bool) -> Self {
+        self.emit_certificates = on;
+        self
+    }
+
     /// RES-318: read accessor for the verifier pass.
     #[allow(dead_code)]
     pub(crate) fn verifier_timeout_ms(&self) -> u32 {
@@ -3601,14 +3625,21 @@ impl TypeChecker {
 
     /// RES-318: push a loop-invariant proof certificate so it
     /// participates in the regular `--emit-certificate <DIR>` dump.
+    ///
+    /// RES-1357: only stores the cert when `emit_certificates` is
+    /// on. The `loop_invariants_proven` stat counter increments
+    /// unconditionally so the audit summary still reports the
+    /// total — only the SMT-LIB2 body Vec push is gated.
     #[allow(dead_code)]
     pub(crate) fn push_loop_invariant_certificate(&mut self, idx: usize, smt2: String) {
-        self.certificates.push(CapturedCertificate {
-            fn_name: "<loop>".to_string(),
-            kind: "loop_invariant",
-            idx,
-            smt2,
-        });
+        if self.emit_certificates {
+            self.certificates.push(CapturedCertificate {
+                fn_name: "<loop>".to_string(),
+                kind: "loop_invariant",
+                idx,
+                smt2,
+            });
+        }
         self.stats.loop_invariants_proven += 1;
     }
 
@@ -4293,7 +4324,11 @@ impl TypeChecker {
                         verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
-                            if let Some(smt2) = cert {
+                            // RES-1357: only stash the SMT-LIB2 cert
+                            // when a consumer asked for it.
+                            if self.emit_certificates
+                                && let Some(smt2) = cert
+                            {
                                 self.certificates.push(CapturedCertificate {
                                     fn_name: name.clone(),
                                     kind: "decl",
@@ -4437,7 +4472,11 @@ impl TypeChecker {
                     // can dump it alongside requires/ensures certs.
                     if matches!(verdict, Some(true)) {
                         self.stats.requires_discharged_by_z3 += 1;
-                        if let Some(smt2) = cert_smt2 {
+                        // RES-1357: only stash the cert when the
+                        // `--emit-certificate` driver asked for it.
+                        if self.emit_certificates
+                            && let Some(smt2) = cert_smt2
+                        {
                             self.certificates.push(CapturedCertificate {
                                 fn_name: name.clone(),
                                 kind: "recovers_to",
@@ -5901,7 +5940,10 @@ impl TypeChecker {
                             if verdict.is_none() && self.warn_unverified {
                                 emit_partial_proof_warning(&self.source_path, clause);
                             }
+                            // RES-1357: only stash the cert when the
+                            // `--emit-certificate` driver asked for it.
                             if matches!(verdict, Some(true))
+                                && self.emit_certificates
                                 && let Some(smt2) = cert
                             {
                                 self.certificates.push(CapturedCertificate {
