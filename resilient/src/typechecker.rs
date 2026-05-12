@@ -1586,6 +1586,29 @@ impl TypeChecker {
                 return_type: Box::new(Type::Any),
             },
         );
+        // RES-1178: bytes slicing primitives — (Bytes, Int) -> Bytes.
+        let fn_bytes_int_to_bytes = || Type::Function {
+            params: vec![Type::Bytes, Type::Int],
+            return_type: Box::new(Type::Bytes),
+        };
+        env.set("bytes_take".to_string(), fn_bytes_int_to_bytes());
+        env.set("bytes_drop".to_string(), fn_bytes_int_to_bytes());
+        env.set("bytes_take_last".to_string(), fn_bytes_int_to_bytes());
+        env.set("bytes_drop_last".to_string(), fn_bytes_int_to_bytes());
+        // RES-1182: integer bit rotation + scalar signum.
+        let fn_int_int_to_int = || Type::Function {
+            params: vec![Type::Int, Type::Int],
+            return_type: Box::new(Type::Int),
+        };
+        env.set("rotate_left".to_string(), fn_int_int_to_int());
+        env.set("rotate_right".to_string(), fn_int_int_to_int());
+        env.set(
+            "signum".to_string(),
+            Type::Function {
+                params: vec![Type::Int],
+                return_type: Box::new(Type::Int),
+            },
+        );
         env.set(
             "log".to_string(),
             Type::Function {
@@ -3101,6 +3124,21 @@ impl TypeChecker {
         env.set("array_argmin_float".to_string(), fn_array_to_int());
         env.set("array_argmax_string".to_string(), fn_array_to_int());
         env.set("array_argmin_string".to_string(), fn_array_to_int());
+        // RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+        let fn_float_to_float_p = || Type::Function {
+            params: vec![Type::Float],
+            return_type: Box::new(Type::Float),
+        };
+        env.set("expm1".to_string(), fn_float_to_float_p());
+        env.set("ln_1p".to_string(), fn_float_to_float_p());
+        env.set(
+            "mul_add".to_string(),
+            Type::Function {
+                params: vec![Type::Float, Type::Float, Type::Float],
+                return_type: Box::new(Type::Float),
+            },
+        );
+        env.set("recip".to_string(), fn_float_to_float_p());
 
         // RES-149: Set builtins. Same permissive-Any convention as
         // Map — no dedicated `Type::Set<T>` until inference lands.
@@ -6516,6 +6554,15 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "bytes_strip_prefix",
         "bytes_strip_suffix",
         "bytes_to_string",
+        // RES-1178: bytes slicing primitives.
+        "bytes_take",
+        "bytes_drop",
+        "bytes_take_last",
+        "bytes_drop_last",
+        // RES-1182: integer bit rotation + scalar signum.
+        "rotate_left",
+        "rotate_right",
+        "signum",
         // String/collection.
         "len",
         "push",
@@ -6908,6 +6955,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_argmin_float",
         "array_argmax_string",
         "array_argmin_string",
+        // RES-1168: precision-sensitive math.
+        "expm1",
+        "ln_1p",
+        "mul_add",
+        "recip",
         "set_new",
         "set_insert",
         "set_remove",

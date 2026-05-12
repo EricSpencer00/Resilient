@@ -53,6 +53,12 @@ mod bytes_helpers;
 // RES-1176: bytes ↔ string conversions — strip_prefix / strip_suffix /
 // bytes_to_string. Pure leaf builtins; module-isolated.
 mod bytes_conversions;
+// RES-1178: bytes slicing primitives — take / drop / take_last / drop_last.
+// Pure leaf builtins; module-isolated.
+mod bytes_slicing;
+// RES-1182: integer bit rotation + scalar signum.
+// Pure leaf builtins; module-isolated.
+mod int_rotate;
 // RES-1162: deterministic hash builtins — hash_int / hash_string /
 // hash_bytes / hash_combine. Pure leaf builtins; module-isolated.
 mod compiler;
@@ -67,6 +73,9 @@ mod unix_time;
 // RES-1164: iteration helpers — enumerate, array_zip3, string_truncate.
 // Pure leaf builtins; module-isolated.
 mod iter_helpers;
+// RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+// Pure leaf builtins; module-isolated.
+mod precision_math;
 // RES-1166: rounding builtins — round / trunc / round_to_int / trunc_to_int.
 // Pure leaf builtins; module-isolated.
 mod rounding;
@@ -11392,6 +11401,32 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "bytes_to_string",
         crate::bytes_conversions::builtin_bytes_to_string,
     ),
+    // RES-1178: bytes slicing primitives — take / drop / take_last /
+    // drop_last. Pure leaf builtins; module-isolated in `bytes_slicing.rs`.
+    // Appended at the end of BUILTINS per the perf rule from PR #1125.
+    ("bytes_take", crate::bytes_slicing::builtin_bytes_take),
+    ("bytes_drop", crate::bytes_slicing::builtin_bytes_drop),
+    (
+        "bytes_take_last",
+        crate::bytes_slicing::builtin_bytes_take_last,
+    ),
+    (
+        "bytes_drop_last",
+        crate::bytes_slicing::builtin_bytes_drop_last,
+    ),
+    // RES-1168: precision-sensitive math — expm1 / ln_1p / mul_add / recip.
+    // Pure leaf builtins; module-isolated in `precision_math.rs`. Appended
+    // at the end of BUILTINS per the perf rule from PR #1125.
+    ("expm1", crate::precision_math::builtin_expm1),
+    ("ln_1p", crate::precision_math::builtin_ln_1p),
+    ("mul_add", crate::precision_math::builtin_mul_add),
+    ("recip", crate::precision_math::builtin_recip),
+    // RES-1182: integer bit rotation + scalar signum. Pure leaf builtins;
+    // module-isolated in `int_rotate.rs`. Appended at the end of BUILTINS
+    // per the perf rule from PR #1125.
+    ("rotate_left", crate::int_rotate::builtin_rotate_left),
+    ("rotate_right", crate::int_rotate::builtin_rotate_right),
+    ("signum", crate::int_rotate::builtin_signum),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
