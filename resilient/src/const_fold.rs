@@ -134,8 +134,16 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), FoldError> {
 /// shipped as a fully-tested but opt-in optimization. To enable in
 /// any compile pipeline (CLI, REPL, JIT codegen frontend), run
 /// with `RESILIENT_CONST_FOLD=1`.
+///
+/// RES-1341: cache the env-var lookup. `compiler.rs` calls this
+/// once per function chunk plus once for `main`, so a VM compile
+/// with N user fns paid N+1 `std::env::var` syscalls. `LazyLock`
+/// reads the env once per process; every subsequent call is a
+/// relaxed atomic load of the cached `bool`.
 pub fn optimize_if_enabled(chunk: &mut Chunk) -> Result<(), FoldError> {
-    if std::env::var("RESILIENT_CONST_FOLD").as_deref() == Ok("1") {
+    static CONST_FOLD_ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("RESILIENT_CONST_FOLD").as_deref() == Ok("1"));
+    if *CONST_FOLD_ENABLED {
         optimize(chunk)?;
     }
     Ok(())
