@@ -21763,8 +21763,15 @@ impl Interpreter {
                 }
                 if self.env.reassign(name, val.clone()) {
                     Ok(Value::Void)
-                } else if self.statics.borrow().contains_key(name) {
-                    self.statics.borrow_mut().insert(name.clone(), val);
+                } else if let Some(slot) = self.statics.borrow_mut().get_mut(name) {
+                    // RES-1463: `get_mut(&str)` does a single hashed
+                    // lookup AND skips both the redundant
+                    // `contains_key` (which used the shared borrow
+                    // before re-borrowing mutably) and the
+                    // `name.clone()` for the HashMap key. Mutate the
+                    // slot in place. Same shape as RES-1459 for
+                    // `Environment::reassign`.
+                    *slot = val;
                     Ok(Value::Void)
                 } else {
                     Err(format!("Cannot assign to undeclared variable '{}'", name))
