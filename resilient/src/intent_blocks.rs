@@ -65,22 +65,24 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    let fns: Vec<&Node> = stmts
-        .iter()
-        .map(|s| &s.node)
-        .filter(|n| matches!(n, Node::Function { .. }))
-        .collect();
-    let fn_names: Vec<&str> = fns
-        .iter()
-        .filter_map(|n| match n {
-            Node::Function { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
+    // RES-1517: collect function names directly into a `HashSet` and
+    // drop the intermediate `Vec<&Node>` pass. The previous shape
+    // walked `stmts` twice (filter, then filter_map) and then asked
+    // `Vec::contains` for every enforcer — O(M*N) for M enforcers and
+    // N functions. A HashSet lookup is O(1) per enforcer, and we walk
+    // `stmts` once. Pre-size to `stmts.len()` since the upper bound is
+    // every top-level statement being a function.
+    let mut fn_names: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(stmts.len());
+    for s in stmts {
+        if let Node::Function { name, .. } = &s.node {
+            fn_names.insert(name.as_str());
+        }
+    }
 
     for intent in &intents {
         for enforcer in &intent.enforcers {
-            if !fn_names.contains(&enforcer.as_str()) {
+            if !fn_names.contains(enforcer.as_str()) {
                 eprintln!(
                     "warning: intent on `{}` names enforcer `{}` which doesn't exist",
                     intent.item_name, enforcer
