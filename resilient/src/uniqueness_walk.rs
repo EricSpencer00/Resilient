@@ -125,14 +125,76 @@ pub(crate) fn for_each_function(
 }
 
 /// Returns true if any sub-node satisfies `pred`.
+///
+/// RES-1238: walks the AST with **early termination** on the first
+/// match. The previous implementation deferred to `visit`, which has
+/// no escape hatch — once the predicate matched, the closure became
+/// a no-op but the recursion still descended into every remaining
+/// sub-node, paying the per-node match dispatch in `walk_children`.
+/// For 20+ callsites across the typechecker (`secret_erasure`,
+/// `sensor_freshness`, `idempotent_handler`, `backpressure_safe`,
+/// `audit_log_required`, `degraded_mode`, `supervisor`, …) that was
+/// a measurable amount of wasted AST traversal per typecheck.
+///
+/// The Node-variant dispatch below mirrors `walk_children` exactly
+/// (same children visited in the same order) — the only difference
+/// is that we propagate `true` upward as soon as `pred` matches,
+/// short-circuiting siblings, aunts, and the rest of the tree.
 pub(crate) fn any_node(node: &Node, mut pred: impl FnMut(&Node) -> bool) -> bool {
-    let mut found = false;
-    visit(node, &mut |n| {
-        if !found && pred(n) {
-            found = true;
+    any_node_inner(node, &mut pred)
+}
+
+fn any_node_inner(node: &Node, pred: &mut impl FnMut(&Node) -> bool) -> bool {
+    if pred(node) {
+        return true;
+    }
+    match node {
+        Node::Program(items) => items.iter().any(|s| any_node_inner(&s.node, pred)),
+        Node::Function { body, .. } => any_node_inner(body, pred),
+        Node::Block { stmts, .. } => stmts.iter().any(|s| any_node_inner(s, pred)),
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. } => any_node_inner(value, pred),
+        Node::ReturnStatement { value: Some(v), .. } => any_node_inner(v, pred),
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            any_node_inner(condition, pred)
+                || any_node_inner(consequence, pred)
+                || alternative
+                    .as_ref()
+                    .is_some_and(|alt| any_node_inner(alt, pred))
         }
-    });
-    found
+        Node::WhileStatement {
+            condition, body, ..
+        } => any_node_inner(condition, pred) || any_node_inner(body, pred),
+        Node::ForInStatement { iterable, body, .. } => {
+            any_node_inner(iterable, pred) || any_node_inner(body, pred)
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => any_node_inner(function, pred) || arguments.iter().any(|a| any_node_inner(a, pred)),
+        Node::FieldAccess { target, .. } => any_node_inner(target, pred),
+        Node::FieldAssignment { target, value, .. } => {
+            any_node_inner(target, pred) || any_node_inner(value, pred)
+        }
+        Node::IndexExpression { target, index, .. } => {
+            any_node_inner(target, pred) || any_node_inner(index, pred)
+        }
+        Node::InfixExpression { left, right, .. } => {
+            any_node_inner(left, pred) || any_node_inner(right, pred)
+        }
+        Node::PrefixExpression { right, .. } => any_node_inner(right, pred),
+        Node::ArrayLiteral { items, .. } => items.iter().any(|i| any_node_inner(i, pred)),
+        Node::ExpressionStatement { expr, .. } => any_node_inner(expr, pred),
+        _ => false,
+    }
 }
 
 /// Returns true if `node` is `Node::Identifier { name == target }`.

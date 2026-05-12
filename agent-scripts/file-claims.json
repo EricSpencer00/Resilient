@@ -95,6 +95,10 @@
     "resilient/src/actor_drain.rs": {
       "branch": "res-1232-actor-drain-noop",
       "claimed_at": "2026-05-12T02:37:38Z"
+    },
+    "resilient/src/uniqueness_walk.rs": {
+      "branch": "res-1238-any-node-early-terminate",
+      "claimed_at": "2026-05-12T02:48:11Z"
     }
   }
 }
