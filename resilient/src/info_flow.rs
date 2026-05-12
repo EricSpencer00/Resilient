@@ -43,16 +43,38 @@ pub fn check_program(program: &Node) -> Vec<String> {
     // `&str` borrows of identifier names (skipping the per-callee
     // `String::clone` it used to do), and the set membership check
     // `secret_fns.contains(callee)` works directly on `&str`.
-    let secret_fns: HashSet<&str> = labels
-        .iter()
-        .filter(|(_, l)| **l == Label::Secret)
-        .map(|(k, _)| k.as_str())
-        .collect();
-    let public_fns: HashSet<&str> = labels
-        .iter()
-        .filter(|(_, l)| **l == Label::Public)
-        .map(|(k, _)| k.as_str())
-        .collect();
+    //
+    // RES-1527: single-pass partition into `secret_fns` / `public_fns`
+    // instead of two filter walks over `labels`. The historic shape
+    // iterated `labels` twice with a filter+map per pass; this one walk
+    // dispatches each entry to its set in one match. Marginal on small
+    // registries but cleaner and reads better.
+    let mut secret_fns: HashSet<&str> = HashSet::new();
+    let mut public_fns: HashSet<&str> = HashSet::new();
+    for (k, l) in &labels {
+        match l {
+            Label::Secret => {
+                secret_fns.insert(k.as_str());
+            }
+            Label::Public => {
+                public_fns.insert(k.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    // RES-1527: skip the program walk when no `#[public]` function
+    // exists. The leak check only fires inside a `public_fns`-named
+    // function body, so without any public sink there is no possible
+    // diagnostic — and `walk_calls` produces nothing useful. The
+    // overwhelming majority of programs that ship `#[secret]` /
+    // `#[public]` attributes only tag a couple of fns with one or the
+    // other (not both); whichever side is empty, the walk is dead
+    // work. Same shape as the `crate::secret_erasure::check`
+    // empty-set fast-reject.
+    if public_fns.is_empty() {
+        return errors;
+    }
 
     let Node::Program(stmts) = program else {
         return errors;
