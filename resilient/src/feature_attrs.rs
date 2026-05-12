@@ -114,6 +114,12 @@ pub fn record(item_name: &str, record: AttrRecord) {
 
 /// Snapshot the registry for read-only inspection by an analysis pass.
 /// Returns an empty map if nothing has been registered yet.
+///
+/// RES-1224: `find_kind` no longer goes through this — it reads the
+/// registry directly under the `RwLock` to avoid the full-registry
+/// clone — but the function is kept public for callers that want the
+/// whole map (e.g. the `--audit` reporter and any external integrator).
+#[allow(dead_code)]
 pub fn snapshot() -> AttrMap {
     ATTR_REGISTRY
         .read()
@@ -124,13 +130,30 @@ pub fn snapshot() -> AttrMap {
 
 /// Lookup all attributes of a given kind across all items. Returns
 /// `(item_name, AttrRecord)` pairs.
+///
+/// RES-1224: read the registry under its `RwLock` without snapshotting.
+/// The previous implementation called `snapshot()`, which deep-cloned
+/// the whole `HashMap<String, Vec<AttrRecord>>` (and every `AttrRecord`
+/// inside, each carrying two owned `String`s), then filtered. With
+/// ~25 analysis passes calling `find_kind` per typecheck, every call
+/// allocated a full-registry clone on the way to discarding most of
+/// it. Walking the map directly and cloning only matching entries
+/// keeps the same return shape while allocating only the bytes the
+/// caller actually consumes. The lock is held read-only and the walk
+/// is bounded by `map.len()`, so concurrent readers (parallel tests)
+/// don't serialise.
 pub fn find_kind(kind: &str) -> Vec<(String, AttrRecord)> {
-    let snap = snapshot();
+    let Ok(g) = ATTR_REGISTRY.read() else {
+        return Vec::new();
+    };
+    let Some(map) = g.as_ref() else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    for (item, attrs) in snap {
+    for (item, attrs) in map {
         for a in attrs {
             if a.name == kind {
-                out.push((item.clone(), a));
+                out.push((item.clone(), a.clone()));
             }
         }
     }
