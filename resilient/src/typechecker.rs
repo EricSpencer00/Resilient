@@ -6093,19 +6093,29 @@ impl TypeChecker {
                                 }
                                 Some(true) => {
                                     self.stats.requires_discharged_at_compile += 1;
-                                    *self
-                                        .stats
-                                        .per_fn_discharged
-                                        .entry(callee_name.clone())
-                                        .or_insert(0) += 1;
+                                    // RES-1505: gate the owned-String key allocation
+                                    // on a real insertion. `HashMap::entry(K)` requires
+                                    // an owned key *every call*, allocating even on
+                                    // repeat hits — and the call-site loop hits the
+                                    // same callee many times for any fn with multiple
+                                    // `requires` clauses or many callers.
+                                    if let Some(c) =
+                                        self.stats.per_fn_discharged.get_mut(callee_name.as_str())
+                                    {
+                                        *c += 1;
+                                    } else {
+                                        self.stats.per_fn_discharged.insert(callee_name.clone(), 1);
+                                    }
                                 }
                                 None => {
                                     self.stats.requires_left_for_runtime += 1;
-                                    *self
-                                        .stats
-                                        .per_fn_runtime
-                                        .entry(callee_name.clone())
-                                        .or_insert(0) += 1;
+                                    if let Some(c) =
+                                        self.stats.per_fn_runtime.get_mut(callee_name.as_str())
+                                    {
+                                        *c += 1;
+                                    } else {
+                                        self.stats.per_fn_runtime.insert(callee_name.clone(), 1);
+                                    }
                                 }
                             }
                         }
