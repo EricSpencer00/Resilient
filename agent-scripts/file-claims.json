@@ -23,6 +23,10 @@
     "resilient/src/region_inference.rs": {
       "branch": "res-1202-region-inference-dead-work",
       "claimed_at": "2026-05-12T01:33:01Z"
+    },
+    "resilient/.cargo/config.toml": {
+      "branch": "res-1192-cargo-config-linker",
+      "claimed_at": "2026-05-12T01:09:57Z"
     }
   }
 }
