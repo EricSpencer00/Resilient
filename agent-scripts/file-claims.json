@@ -263,6 +263,10 @@
     "resilient/src/type_aliases.rs": {
       "branch": "res-1537-type-aliases-borrow",
       "claimed_at": "2026-05-12T15:11:20Z"
+    },
+    "resilient/src/termination.rs": {
+      "branch": "res-1538-termination-fn-info-borrow",
+      "claimed_at": "2026-05-12T15:15:14Z"
     }
   }
 }
