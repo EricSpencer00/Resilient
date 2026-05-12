@@ -151,14 +151,23 @@ fn inline_pass(program: &mut Program) -> Result<bool, InlineError> {
         return Ok(false);
     }
 
-    // Snapshot every callee chunk + metadata so we can borrow the
-    // caller mutably while reading the callee. Cloning is cheap here
-    // — chunks are small by definition (≤ INLINE_THRESHOLD ops).
-    let callees: Vec<(Function, bool)> = program
+    // RES-1389: only clone callees that are actually inlineable.
+    // `inline_into_chunk` consumes a callee entry only when the
+    // `inlineable` flag is true (see the `Some((callee, true))`
+    // pattern below) — non-inlineable entries' cloned `Function`
+    // payloads are never read. For programs with many functions
+    // where only a handful are inlineable, the old shape cloned
+    // every non-inlineable function (bytecode + line_info Vec +
+    // metadata) once per inline pass for no consumer.
+    //
+    // `Option<Function>` keeps the slot in place at the same index
+    // so the existing `callees.get(callee_idx as usize)` lookup
+    // is unchanged; non-inlineable callees just hold `None`.
+    let callees: Vec<Option<Function>> = program
         .functions
         .iter()
-        .cloned()
-        .zip(inlineable.iter().copied())
+        .enumerate()
+        .map(|(i, f)| if inlineable[i] { Some(f.clone()) } else { None })
         .collect();
 
     let mut inlined_any = false;
@@ -275,7 +284,7 @@ fn main_local_count(chunk: &Chunk) -> u16 {
 fn inline_into_chunk(
     chunk: &mut Chunk,
     local_count: &mut u16,
-    callees: &[(Function, bool)],
+    callees: &[Option<Function>],
     own_idx: Option<u16>,
 ) -> Result<bool, InlineError> {
     // Build the new code stream linearly. Internal jump offsets within
@@ -299,7 +308,7 @@ fn inline_into_chunk(
         old_to_new[i] = new_code.len();
         if let Op::Call(callee_idx) = chunk.code[i]
             && Some(callee_idx) != own_idx
-            && let Some((callee, true)) = callees.get(callee_idx as usize)
+            && let Some(Some(callee)) = callees.get(callee_idx as usize)
         {
             // Allocate fresh slots for the callee's locals.
             let base = *local_count;
