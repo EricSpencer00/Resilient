@@ -3025,12 +3025,24 @@ impl Parser {
     }
 
     fn next_token(&mut self) {
-        self.current_token = self.peek_token.clone();
+        // RES-1345: shift the lookahead with a single `mem::replace`
+        // instead of `peek_token.clone()`. The clone was a per-token
+        // heap allocation for every `Token::Identifier(String)` /
+        // `Token::StringLiteral(String)` payload — for a 1k-line
+        // program (~5k tokens) that meant ~5k `String` allocations
+        // on the parse hot path. `mem::replace` swaps the freshly-
+        // lexed peek into `self.peek_token` and returns the old peek
+        // by value, with no allocation; the old `current_token` is
+        // dropped exactly as it would have been under the previous
+        // assignment.
+        let new_peek = self.lexer.next_token();
+        let new_peek_line = self.lexer.last_token_line;
+        let new_peek_column = self.lexer.last_token_column;
+        self.current_token = std::mem::replace(&mut self.peek_token, new_peek);
         self.current_line = self.peek_line;
         self.current_column = self.peek_column;
-        self.peek_token = self.lexer.next_token();
-        self.peek_line = self.lexer.last_token_line;
-        self.peek_column = self.lexer.last_token_column;
+        self.peek_line = new_peek_line;
+        self.peek_column = new_peek_column;
     }
 
     fn parse_program(&mut self) -> Node {

@@ -191,6 +191,10 @@
     "resilient/src/const_fold.rs": {
       "branch": "res-1341-cache-opt-env-vars",
       "claimed_at": "2026-05-12T06:52:39Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1347-parser-next-token-no-clone",
+      "claimed_at": "2026-05-12T07:12:38Z"
     }
   }
 }
