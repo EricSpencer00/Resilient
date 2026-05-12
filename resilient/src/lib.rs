@@ -22664,7 +22664,7 @@ impl Interpreter {
                 let normalize =
                     |v: i64, len: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
                 match target_val {
-                    Value::Array(items) => {
+                    Value::Array(mut items) => {
                         let len = items.len() as i64;
                         let lo_i = normalize(lo_raw.unwrap_or(0), len);
                         let hi_norm = match hi_raw_opt {
@@ -22681,7 +22681,18 @@ impl Interpreter {
                         }
                         let lo_clamp = lo_i.min(len) as usize;
                         let hi_clamp = hi_excl.min(len) as usize;
-                        Ok(Value::Array(items[lo_clamp..hi_clamp].to_vec()))
+                        // RES-1447: `items` is owned (destructured from
+                        // `Value::Array`). The previous `items[..].to_vec()`
+                        // pattern cloned every element of the slice and
+                        // dropped the original `items` Vec — for arrays
+                        // of heap-allocated Values (Strings, nested
+                        // Arrays, Structs), the per-element clones were
+                        // the expensive part. `drain(lo..hi).collect()`
+                        // moves the elements out by ownership; the
+                        // remaining `items` drops at end of scope as
+                        // before. Same shape as RES-1436 / RES-1437
+                        // (LoadIndex `swap_remove`) but for ranges.
+                        Ok(Value::Array(items.drain(lo_clamp..hi_clamp).collect()))
                     }
                     Value::String(s) => {
                         // RES-916: index by Unicode scalar, not bytes.
