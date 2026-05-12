@@ -350,7 +350,7 @@ fn compile_stmt(
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
             chunk.emit(Op::LoadLocal(slot), line);
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
-            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::SetField {
                     name_const: fname_idx,
@@ -566,7 +566,7 @@ fn compile_stmt_in_fn(
                 .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
             chunk.emit(Op::LoadLocal(slot), line);
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
-            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::SetField {
                     name_const: fname_idx,
@@ -754,7 +754,7 @@ fn compile_for_in(
     //    with the tree walker's iteration semantics — `len` on
     //    a non-array surfaces a typed error rather than a silent
     //    miscompile.
-    let len_name_const = chunk.add_constant(Value::String("len".to_string()))?;
+    let len_name_const = chunk.add_string_constant("len")?;
     chunk.emit(Op::LoadLocal(arr_slot), line);
     chunk.emit(
         Op::CallBuiltin {
@@ -847,7 +847,7 @@ fn compile_expr(
         // and dedup); routing the literal nodes here lets builtin args
         // round-trip without touching the runtime.
         Node::StringLiteral { value: s, .. } => {
-            let idx = chunk.add_constant(Value::String(s.clone()))?;
+            let idx = chunk.add_string_constant(s)?;
             chunk.emit(Op::Const(idx), line);
             Ok(())
         }
@@ -1005,7 +1005,7 @@ fn compile_expr(
                 if arguments.len() > u8::MAX as usize {
                     return Err(CompileError::Unsupported("builtin call with > 255 args"));
                 }
-                let name_const = chunk.add_constant(Value::String(callee_name.to_string()))?;
+                let name_const = chunk.add_string_constant(callee_name)?;
                 for arg in arguments {
                     compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
                 }
