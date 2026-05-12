@@ -21,6 +21,55 @@ jobs:
           BRANCH="${{ github.event.pull_request.head.ref }}"
           bash agent-scripts/release-claims.sh "$BRANCH"
 
+      # RES-1260: self-healing sweep. Stale claims from earlier merged
+      # PRs can re-enter `file-claims.json` if a subsequent PR's rebase
+      # of the same file accidentally re-adds them (the append-only
+      # JSON merge resolves by union, so removed entries come back).
+      # During this session we observed claims for branches deleted
+      # weeks ago still sitting in the file, blocking new agents from
+      # claiming the same path. Walk the current claim set, ask GitHub
+      # if each branch still exists on the remote, and drop the ones
+      # that don't. Runs after the specific-branch release so the
+      # "newly merged branch goes first" path stays primary.
+      - name: Sweep stale claims (branches no longer on remote)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          CLAIMS=agent-scripts/file-claims.json
+          [ -f "$CLAIMS" ] || { echo "no claims file — skip"; exit 0; }
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+          path = "agent-scripts/file-claims.json"
+          with open(path) as f:
+              data = json.load(f)
+          claims = data.get("claims", {})
+          remove = []
+          for file, info in claims.items():
+              branch = info.get("branch", "")
+              if not branch:
+                  continue
+              r = subprocess.run(
+                  ["gh", "api", "-H", "Accept: application/vnd.github+json",
+                   f"repos/{os.environ['GITHUB_REPOSITORY']}/branches/{branch}"],
+                  capture_output=True, text=True,
+              )
+              if r.returncode != 0:
+                  # 404 → branch gone → stale claim
+                  if "Not Found" in (r.stderr + r.stdout) or "Branch not found" in (r.stderr + r.stdout):
+                      remove.append(file)
+                      print(f"  sweeping stale claim: {file} ({branch})")
+          for f in remove:
+              del claims[f]
+          if remove:
+              with open(path, "w") as f:
+                  json.dump(data, f, indent=2)
+                  f.write("\n")
+              print(f"Swept {len(remove)} stale claim(s).")
+          else:
+              print("No stale claims found.")
+          PYEOF
+
       - name: Commit updated claims
         run: |
           git config user.name "github-actions[bot]"
@@ -29,6 +78,6 @@ jobs:
             echo "No claims to release."
           else
             git add agent-scripts/file-claims.json
-            git commit -m "chore: release file claims for ${{ github.event.pull_request.head.ref }}"
+            git commit -m "chore: release file claims (+ sweep stale) for ${{ github.event.pull_request.head.ref }}"
             git push
           fi
