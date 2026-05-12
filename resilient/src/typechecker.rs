@@ -918,7 +918,13 @@ fn emit_partial_proof_warning(source_path: &str, clause: &Node) {
 /// RES-071: a single SMT-LIB2 proof certificate that the typechecker
 /// captured when Z3 successfully discharged a contract obligation.
 /// Filename on disk: `{fn_name}__{kind}__{idx}.smt2`.
+///
+/// RES-1202: fields are only ever read by the z3-feature-gated
+/// `emit_certificates` / `dispatch_verify_*` flows in `lib.rs`,
+/// so a default-feature build sees them as dead. Suppress the
+/// lint under that exact condition rather than universally.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "z3"), allow(dead_code))]
 pub struct CapturedCertificate {
     pub fn_name: String,
     pub kind: &'static str,

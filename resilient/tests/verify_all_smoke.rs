@@ -1,17 +1,23 @@
 //! RES-195: integration tests for `resilient verify-all <dir>`.
 //!
-//! Without `--features z3` in the test build, the typechecker
-//! doesn't produce any real `.smt2` obligations, so these tests
-//! hand-craft a plausible cert directory (manifest.json +
-//! `.smt2` payload + optional signature) and drive the binary
-//! against it. That gives clean coverage of the manifest parser,
-//! the sha256 check, the per-obligation signature check, and
-//! the error paths — without depending on libz3 being present
-//! on the test host.
+//! RES-1202: gated on `feature = "z3"` because the `verify-all`
+//! subcommand it drives is z3-only (the cert_sign module that backs
+//! the manifest / sha256 / signature checks is feature-gated to
+//! drop ed25519-dalek + sha2 + serde_json from default builds).
+//! CI's `build / test with --features z3` job runs this file; the
+//! default test job skips it.
+//!
+//! Test fixtures still hand-craft plausible cert directories
+//! (manifest.json + `.smt2` payload + optional signature) instead
+//! of asking the verifier to produce them, so the file doesn't need
+//! a working libz3 at runtime — just the build's z3 feature to
+//! expose `verify-all` in the CLI surface.
 //!
 //! The signed variants use an ephemeral Ed25519 keypair; the
 //! `--pubkey` override on `verify-all` lets us supply the
 //! matching public key.
+
+#![cfg(feature = "z3")]
 
 use std::path::PathBuf;
 use std::process::Command;

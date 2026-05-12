@@ -1,6 +1,12 @@
 //! RES-194: integration tests for the `verify-cert` subcommand
 //! and the `--sign-cert` flag end-to-end.
 //!
+//! RES-1202: gated on `feature = "z3"` because the `verify-cert`
+//! subcommand and the entire `cert_sign` module it drives are
+//! z3-only in the default build (see lib.rs gating + Cargo.toml
+//! optional dep declarations). CI's `build / test with --features z3`
+//! job exercises this file; the default test job skips it.
+//!
 //! Strategy: every test drives the real `resilient` binary with
 //! a pair of ephemeral Ed25519 keys generated in-test. The
 //! `--pubkey` override on `verify-cert` lets us supply the
@@ -17,6 +23,8 @@
 //! - Tamper on payload: sign, then hand-edit an `.smt2` file,
 //!   verify → exit 1.
 //! - Missing cert.sig: exit 2.
+
+#![cfg(feature = "z3")]
 
 use std::path::PathBuf;
 use std::process::Command;

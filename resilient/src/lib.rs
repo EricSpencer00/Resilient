@@ -182,6 +182,13 @@ mod pkg_publish;
 // Pure algorithm + mini-PEM codec; consumed from main() when
 // `--sign-cert <path>` is passed and from the `verify-cert`
 // subcommand.
+//
+// RES-1202: cert-signing only matters when the Z3 verifier actually
+// produced obligations to sign, so gate the whole module — and its
+// ed25519-dalek + rand_core + sha2 + serde_json dependency chain —
+// behind `feature = "z3"`. Every caller of `cert_sign::*` is also
+// `#[cfg(feature = "z3")]` (see emit_certificates / dispatch_verify_*).
+#[cfg(feature = "z3")]
 mod cert_sign;
 // RES-198: starter linter. 5 lints with stable codes; consumed
 // from main() when the `lint <file>` subcommand runs.
@@ -25403,6 +25410,11 @@ pub(crate) fn encode_semantic_tokens(tokens: &[AbsSemToken]) -> Vec<u32> {
 /// index with the cert filename, sha256, and (when signing) a
 /// per-obligation Ed25519 signature. Consumed by the
 /// `verify-all` subcommand.
+///
+/// RES-1202: gated on `feature = "z3"`; without the Z3 verifier
+/// active there are no obligations to certify, so the function (and
+/// its `cert_sign` dependencies) only exists in z3 builds.
+#[cfg(feature = "z3")]
 fn emit_certificates(
     certificates: &[typechecker::CapturedCertificate],
     dir: &Path,
@@ -25693,7 +25705,16 @@ fn execute_file(
     // correctness (source-hash + compiler-version matching) and
     // persists entries on success; skipping the Chunk compilation on
     // a hit is tracked as a follow-up phase.
-    let source_hash = cert_sign::sha256_hex(contents.as_bytes());
+    //
+    // RES-1202: hash inline (was `cert_sign::sha256_hex`) so the
+    // incremental cache stays independent of the z3-feature-gated
+    // `cert_sign` module.
+    let source_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(contents.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
     let cache_dir = cache::cache_dir_for(filename);
     // Consume the result so a future phase can branch on it without
     // changing the call-site signature. Suppresses the unused-result
@@ -25890,6 +25911,10 @@ fn execute_file(
         // RES-071: dump SMT-LIB2 certificates for every Z3-discharged
         // obligation so a downstream consumer can re-verify with
         // stock Z3 and confirm the proof without trusting our binary.
+        //
+        // RES-1202: cert emission is z3-only — without the verifier
+        // running there are no obligations to sign.
+        #[cfg(feature = "z3")]
         if let Some(dir) = emit_cert_dir {
             let n = emit_certificates(&tc.certificates, dir, filename, sign_cert_key)?;
             println!(
@@ -25904,6 +25929,8 @@ fn execute_file(
                 );
             }
         }
+        #[cfg(not(feature = "z3"))]
+        let _ = (emit_cert_dir, sign_cert_key);
     }
 
     if use_jit {
@@ -26492,6 +26519,13 @@ fn print_pkg_publish_help() {
 ///
 /// Returns `None` when the first arg isn't `verify-cert`; the
 /// driver falls through to normal operation.
+///
+/// RES-1202: subcommand is z3-only — without the verifier active the
+/// `cert_sign` module (and ed25519-dalek / sha2 / serde_json) aren't
+/// linked into the binary, so the cert-verification CLI path goes
+/// with them. A default `cargo build` user who tries `rz verify-cert`
+/// falls through to the standard "unknown subcommand" handler.
+#[cfg(feature = "z3")]
 fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("verify-cert") {
         return None;
@@ -26616,6 +26650,9 @@ fn dispatch_verify_cert_subcommand(args: &[String]) -> Option<i32> {
 ///
 /// Prints a table of the per-obligation results. Exit 0 iff
 /// every obligation passed every applicable check.
+///
+/// RES-1202: subcommand is z3-only — see `dispatch_verify_cert_subcommand`.
+#[cfg(feature = "z3")]
 fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     if args.get(1).map(|s| s.as_str()) != Some("verify-all") {
         return None;
@@ -26786,12 +26823,18 @@ fn dispatch_verify_all_subcommand(args: &[String]) -> Option<i32> {
     }
 }
 
+// RES-1202: helper used only by `dispatch_verify_all_subcommand`,
+// which is itself gated on `feature = "z3"`.
+#[cfg(feature = "z3")]
 fn short_label(fn_name: &str, kind: &str, idx: usize) -> String {
     format!("{}::{}[{}]", fn_name, kind, idx)
 }
 
 /// Check whether `z3` is on PATH without shelling out at this
 /// point. Uses `which`-equivalent by walking `PATH`.
+///
+/// RES-1202: only called from the z3-gated verify-all dispatcher.
+#[cfg(feature = "z3")]
 fn which_z3() -> bool {
     let Some(path_env) = env::var_os("PATH") else {
         return false;
@@ -26807,6 +26850,9 @@ fn which_z3() -> bool {
 
 /// Run `z3 -smt2 <path>` and return `Ok(true)` iff the first line
 /// of stdout is `unsat`. Used by `--z3` under `verify-all`.
+///
+/// RES-1202: only called from the z3-gated verify-all dispatcher.
+#[cfg(feature = "z3")]
 fn run_z3_on(cert_path: &Path) -> RResult<bool> {
     let out = std::process::Command::new("z3")
         .arg("-smt2")
@@ -27442,6 +27488,13 @@ pub fn run_cli() {
     // RES-194: `verify-cert <dir>` — check the Ed25519 signature
     // of a RES-071 certificate directory against the binary's
     // embedded public key.
+    //
+    // RES-1202: cert verification depends on `cert_sign`, which is
+    // gated on `feature = "z3"` (it has no work to do without the
+    // verifier active and would otherwise drag ed25519-dalek + sha2
+    // + serde_json into every default build). Dispatch is therefore
+    // also feature-gated; without z3 the subcommand falls through.
+    #[cfg(feature = "z3")]
     if let Some(code) = dispatch_verify_cert_subcommand(&args) {
         std::process::exit(code);
     }
@@ -27449,6 +27502,7 @@ pub fn run_cli() {
     // RES-195: `verify-all <dir>` — walk `manifest.json` and
     // re-check every obligation's hash + signature (+ Z3 if
     // `--z3` is passed).
+    #[cfg(feature = "z3")]
     if let Some(code) = dispatch_verify_all_subcommand(&args) {
         std::process::exit(code);
     }
