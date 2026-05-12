@@ -25733,17 +25733,30 @@ fn execute_file(
     // RES-1202: hash inline (was `cert_sign::sha256_hex`) so the
     // incremental cache stays independent of the z3-feature-gated
     // `cert_sign` module.
-    let source_hash = {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(contents.as_bytes());
-        format!("{:x}", hasher.finalize())
+    //
+    // RES-1334: skip the SHA-256 + cache::check + cache_dir setup
+    // when `--no-cache` is set. All three downstream consumers
+    // (`cache::check` below + the `cache::write_entry` calls later)
+    // already gate on `!no_cache`; computing the inputs ahead of
+    // those gates was dead work for every `--no-cache` invocation.
+    // Typical full-source hashes are microseconds, large files
+    // (10K+ lines) push into milliseconds.
+    let (source_hash, cache_dir, _cache_hit) = if no_cache {
+        (String::new(), std::path::PathBuf::new(), false)
+    } else {
+        let source_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(contents.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let cache_dir = cache::cache_dir_for(filename);
+        // Consume the result so a future phase can branch on it without
+        // changing the call-site signature. Suppresses the unused-result
+        // warning while keeping the check exercised on every run.
+        let hit = cache::check(&cache_dir, &source_hash) == cache::CacheResult::Hit;
+        (source_hash, cache_dir, hit)
     };
-    let cache_dir = cache::cache_dir_for(filename);
-    // Consume the result so a future phase can branch on it without
-    // changing the call-site signature. Suppresses the unused-result
-    // warning while keeping the check exercised on every run.
-    let _cache_hit = !no_cache && cache::check(&cache_dir, &source_hash) == cache::CacheResult::Hit;
 
     let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
