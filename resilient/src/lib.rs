@@ -10117,9 +10117,18 @@ impl Environment {
     /// `true` if the name was found and updated, `false` if it doesn't
     /// exist anywhere in the chain.
     fn reassign(&self, name: &str, value: Value) -> bool {
+        // RES-1459: `get_mut(&str)` does a single hashed lookup AND
+        // skips the `to_string` allocation in the hit case. The
+        // previous shape did `contains_key` (1 hash) followed by
+        // `insert(name.to_string(), value)` (1 hash + 1 String
+        // alloc) — both extra lookups and the alloc are pure waste
+        // when the key is already present. Variable updates in
+        // loops (counter increments, accumulators) used to allocate
+        // a `String` per iteration; now zero allocations on the
+        // hot path.
         let mut frame = self.inner.borrow_mut();
-        if frame.store.contains_key(name) {
-            frame.store.insert(name.to_string(), value);
+        if let Some(slot) = frame.store.get_mut(name) {
+            *slot = value;
             return true;
         }
         // Drop the borrow before recursing so the outer's borrow_mut
