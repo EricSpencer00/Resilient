@@ -61,9 +61,18 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
                 }
 
                 // Flush the pending literal fragment.
+                //
+                // RES-1479: `mem::take` swaps in the default (empty
+                // String) and returns the original — exactly the
+                // clone-then-clear shape we need, but without the
+                // String alloc. The previous `literal_buf.clone() +
+                // literal_buf.clear()` allocated a new String for
+                // every interpolation `{expr}` boundary in a parsed
+                // template, dropping the literal_buf's owned heap
+                // bytes via `clear`. Now the literal_buf's owned
+                // bytes move into the StringPart directly.
                 if !literal_buf.is_empty() {
-                    parts.push(StringPart::Literal(literal_buf.clone()));
-                    literal_buf.clear();
+                    parts.push(StringPart::Literal(std::mem::take(&mut literal_buf)));
                 }
 
                 // Collect source up to the matching `}`.
