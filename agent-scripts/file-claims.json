@@ -49,8 +49,8 @@
       "claimed_at": "2026-05-12T02:00:42Z"
     },
     "resilient/src/bounded_blocking.rs": {
-      "branch": "res-1218-fast-reject-extras",
-      "claimed_at": "2026-05-12T02:10:00Z"
+      "branch": "res-1511-bounded-blocking-name-borrow",
+      "claimed_at": "2026-05-12T13:10:00Z"
     },
     "resilient/src/watchdog_feed.rs": {
       "branch": "res-1218-param-type-fast-reject",
