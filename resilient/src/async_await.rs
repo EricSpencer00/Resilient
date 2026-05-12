@@ -56,7 +56,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if async_fns.is_empty() {
         return Ok(());
     }
-    install(async_fns.clone());
+    // RES-1487: validate before `install` so `async_fns` moves into
+    // install instead of cloning. The previous shape did
+    // `install(async_fns.clone())` up front; the validation loop
+    // borrowed `&async_fns` and ran after. Reorder so install takes
+    // ownership at the end of the success path. Same shape as
+    // RES-1481 (derives) / RES-1485 (recursive_types).
     let Node::Program(stmts) = program else {
         return Ok(());
     };
@@ -79,6 +84,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             }
         }
     }
+    install(async_fns);
     Ok(())
 }
 
