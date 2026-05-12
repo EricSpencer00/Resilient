@@ -25767,8 +25767,18 @@ fn execute_file(
         ));
     }
 
-    if let Err(count) =
-        fail_on_error_lints(&program, &contents, filename, false, "safety-critical lint")
+    // RES-1332: gate `fail_on_error_lints` on safety-critical mode.
+    // `lint::check` only escalates a lint to `Severity::Error` when
+    // `safety_critical_mode()` is on (L0006 / assume(false)) — every
+    // other lint stays a Warning. Without `--safety-critical` set,
+    // the 13-pass lint walk produces only Warnings, the
+    // `Error`-severity filter drains them all, and the helper
+    // returns Ok(()). For the overwhelming majority of CLI
+    // invocations (and every test in the suite that hits this code
+    // path), gating skips ~13 AST walks per compile.
+    if lint::safety_critical_mode()
+        && let Err(count) =
+            fail_on_error_lints(&program, &contents, filename, false, "safety-critical lint")
     {
         return Err(format!("Safety-critical lint failed: {} error(s)", count));
     }
@@ -27174,13 +27184,20 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 
     lint::set_safety_critical_mode(safety_critical);
-    if let Err(_count) = fail_on_error_lints(
-        &program,
-        &src,
-        path.to_string_lossy().as_ref(),
-        quiet,
-        "safety-critical lint",
-    ) {
+    // RES-1332: skip the 13-pass lint walk when safety-critical
+    // mode is off — see the gate at lib.rs:25770 for the rationale.
+    // `safety_critical` is the local CLI flag value the atomic was
+    // just set from; using it directly avoids an unnecessary
+    // atomic load.
+    if safety_critical
+        && let Err(_count) = fail_on_error_lints(
+            &program,
+            &src,
+            path.to_string_lossy().as_ref(),
+            quiet,
+            "safety-critical lint",
+        )
+    {
         return Some(1);
     }
 
