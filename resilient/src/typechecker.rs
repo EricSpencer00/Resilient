@@ -4062,10 +4062,18 @@ impl TypeChecker {
         ty: Type,
         body: &Node,
     ) -> Result<Type, String> {
-        let saved = self.env.clone();
-        let mut inner = TypeEnvironment::new_enclosed(saved.clone());
+        // RES-1320: build the enclosed inner env from a single clone of
+        // the current env, then use `mem::replace` to swap it into
+        // `self.env` while capturing the original outer for restore.
+        // The previous shape did one clone for `saved` and another for
+        // `inner.outer`, paying two full `TypeEnvironment::clone`s on
+        // every quantifier the typechecker descends into. The body
+        // walk only ever reads `self.env` (via lookups that fall
+        // through to `inner.outer` on miss), so the moved original is
+        // safe to hand back unchanged after the recursive check.
+        let mut inner = TypeEnvironment::new_enclosed(self.env.clone());
         inner.set(var.to_string(), ty);
-        self.env = inner;
+        let saved = std::mem::replace(&mut self.env, inner);
         let result = self.check_node(body);
         self.env = saved;
         result
