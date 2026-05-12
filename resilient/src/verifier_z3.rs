@@ -35,6 +35,40 @@ use z3::Sort;
 use z3::ast::{Array, Ast, BV, Bool, Int};
 
 // ============================================================
+// RES-1188: process-local Z3 context reuse
+// ============================================================
+//
+// Every `prove_*` call used to do:
+//
+//     let cfg = z3::Config::new();
+//     let ctx = z3::Context::new(&cfg);
+//
+// which calls `Z3_mk_context_rc` inside libz3 — that allocates the
+// theory plugins, the AST manager, the symbol table, and assorted
+// per-context bookkeeping. For a single `cargo test --features z3`
+// run the verifier fires hundreds of these (one per bounds check, one
+// per loop-invariant induction step + base case, one per alias-
+// disjointness query, …), so the constant-factor setup cost adds up
+// to a measurable fraction of total wall time.
+//
+// Z3 contexts are inherently per-thread (their internal allocators
+// aren't synchronised), so a `thread_local!` is the right ownership
+// model: each test thread lazily initialises its own `Context` on
+// first use, every subsequent query in that thread reuses it, and
+// the per-context cleanup (`Z3_del_context`) fires once at thread
+// exit.
+//
+// Each query still creates its own `Solver` inside the shared
+// context, so query state remains isolated: asserting `formula` on
+// a fresh solver doesn't leak into the next solver's assertion set.
+// What's shared is the *infrastructure* (theory plugins, sort
+// canonicaliser, symbol interner), which is exactly the heavy bit.
+
+thread_local! {
+    static Z3_CTX: z3::Context = z3::Context::new(&z3::Config::new());
+}
+
+// ============================================================
 // RES-354: SMT theory selection
 // ============================================================
 
@@ -181,11 +215,18 @@ pub fn prove_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
+    Z3_CTX.with(|ctx| prove_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms))
+}
 
+fn prove_with_axioms_and_timeout_in(
+    ctx: &z3::Context,
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
     // Translate the expression to a Z3 boolean.
-    let formula = match translate_bool(&ctx, expr, bindings) {
+    let formula = match translate_bool(ctx, expr, bindings) {
         Some(f) => f,
         None => return (None, None, None, false),
     };
@@ -194,7 +235,7 @@ pub fn prove_with_axioms_and_timeout(
     // Z3's `"timeout"` param is in milliseconds; 0 disables it.
     let apply_timeout = |solver: &z3::Solver<'_>| {
         if timeout_ms > 0 {
-            let mut params = z3::Params::new(&ctx);
+            let mut params = z3::Params::new(ctx);
             params.set_u32("timeout", timeout_ms);
             solver.set_params(&params);
         }
@@ -210,8 +251,8 @@ pub fn prove_with_axioms_and_timeout(
     let len_axioms: Vec<(String, Bool<'_>)> = len_args
         .iter()
         .map(|arg| {
-            let c = Int::new_const(&ctx, format!("len_{}", arg));
-            let zero = Int::from_i64(&ctx, 0);
+            let c = Int::new_const(ctx, format!("len_{}", arg));
+            let zero = Int::from_i64(ctx, 0);
             let axiom = c.ge(&zero);
             (arg.clone(), axiom)
         })
@@ -224,12 +265,12 @@ pub fn prove_with_axioms_and_timeout(
     // (unsupported nodes) are silently dropped.
     let user_axioms: Vec<Bool<'_>> = axioms
         .iter()
-        .filter_map(|ax| translate_bool(&ctx, ax, bindings))
+        .filter_map(|ax| translate_bool(ctx, ax, bindings))
         .collect();
 
     // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
     // is always true regardless of any free variables.
-    let solver = z3::Solver::new(&ctx);
+    let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
     for (_, axiom) in &len_axioms {
         solver.assert(axiom);
@@ -252,7 +293,7 @@ pub fn prove_with_axioms_and_timeout(
     // check (which reuses a fresh solver) doesn't need to re-derive
     // it.
     let counterexample = if matches!(check, z3::SatResult::Sat) {
-        extract_counterexample(&ctx, &solver, expr, bindings)
+        extract_counterexample(ctx, &solver, expr, bindings)
     } else {
         None
     };
@@ -316,7 +357,7 @@ pub fn prove_with_axioms_and_timeout(
 
     // Contradiction check: is `formula` unsatisfiable? If yes, the
     // contract can never hold.
-    let solver = z3::Solver::new(&ctx);
+    let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
     for (_, axiom) in &len_axioms {
         solver.assert(axiom);
@@ -352,24 +393,30 @@ pub fn prove_bv(
     bindings: &HashMap<String, i64>,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
+    Z3_CTX.with(|ctx| prove_bv_in(ctx, expr, bindings, timeout_ms))
+}
 
-    let formula = match translate_bool_bv(&ctx, expr, bindings) {
+fn prove_bv_in(
+    ctx: &z3::Context,
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    let formula = match translate_bool_bv(ctx, expr, bindings) {
         Some(f) => f,
         None => return (None, None, None, false),
     };
 
     let apply_timeout = |solver: &z3::Solver<'_>| {
         if timeout_ms > 0 {
-            let mut params = z3::Params::new(&ctx);
+            let mut params = z3::Params::new(ctx);
             params.set_u32("timeout", timeout_ms);
             solver.set_params(&params);
         }
     };
 
     // Tautology check.
-    let solver = z3::Solver::new(&ctx);
+    let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
     let negated = formula.not();
     solver.assert(&negated);
@@ -382,13 +429,13 @@ pub fn prove_bv(
     }
 
     let counterexample = if matches!(check, z3::SatResult::Sat) {
-        extract_counterexample_bv(&ctx, &solver, expr, bindings)
+        extract_counterexample_bv(ctx, &solver, expr, bindings)
     } else {
         None
     };
 
     // Contradiction check.
-    let solver2 = z3::Solver::new(&ctx);
+    let solver2 = z3::Solver::new(ctx);
     apply_timeout(&solver2);
     solver2.assert(&formula);
     let contradiction = matches!(solver2.check(), z3::SatResult::Unsat);
@@ -1050,46 +1097,53 @@ fn check_pair_commute(a: &ActorHandler, b: &ActorHandler) -> CommutativityResult
         }
     };
 
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
+    Z3_CTX.with(|ctx| check_pair_commute_in(ctx, &a_rhs, &b_rhs, &a.name, &b.name))
+}
 
+fn check_pair_commute_in(
+    ctx: &z3::Context,
+    a_rhs: &Node,
+    b_rhs: &Node,
+    a_name: &str,
+    b_name: &str,
+) -> CommutativityResult {
     // Name conventions for the counterexample formatter:
     //   state_0         — the symbolic pre-state.
     //   state_after_<h> — abbreviations recovered from the model.
-    let pre = Int::new_const(&ctx, "state_0");
+    let pre = Int::new_const(ctx, "state_0");
 
     // Build the A-then-B chain.
-    let Some(ab_inter) = translate_state_rhs(&ctx, &a_rhs, &pre) else {
+    let Some(ab_inter) = translate_state_rhs(ctx, a_rhs, &pre) else {
         return CommutativityResult::Unknown {
             reason: format!(
                 "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
-                a.name,
+                a_name,
             ),
         };
     };
-    let Some(ab_final) = translate_state_rhs(&ctx, &b_rhs, &ab_inter) else {
+    let Some(ab_final) = translate_state_rhs(ctx, b_rhs, &ab_inter) else {
         return CommutativityResult::Unknown {
             reason: format!(
                 "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
-                b.name,
+                b_name,
             ),
         };
     };
 
     // Build the B-then-A chain.
-    let Some(ba_inter) = translate_state_rhs(&ctx, &b_rhs, &pre) else {
+    let Some(ba_inter) = translate_state_rhs(ctx, b_rhs, &pre) else {
         return CommutativityResult::Unknown {
             reason: format!(
                 "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
-                b.name,
+                b_name,
             ),
         };
     };
-    let Some(ba_final) = translate_state_rhs(&ctx, &a_rhs, &ba_inter) else {
+    let Some(ba_final) = translate_state_rhs(ctx, a_rhs, &ba_inter) else {
         return CommutativityResult::Unknown {
             reason: format!(
                 "handler `{}`: RHS contains unsupported operations (verifier only models +, -, *, /, %, and integer literals)",
-                a.name,
+                a_name,
             ),
         };
     };
@@ -1098,7 +1152,7 @@ fn check_pair_commute(a: &ActorHandler, b: &ActorHandler) -> CommutativityResult
     // If UNSAT → commute. If SAT → counterexample. If Unknown → Unknown.
     let goal = ab_final._eq(&ba_final);
     let negated = goal.not();
-    let solver = z3::Solver::new(&ctx);
+    let solver = z3::Solver::new(ctx);
     solver.assert(&negated);
     match solver.check() {
         z3::SatResult::Unsat => CommutativityResult::Commute,
@@ -1233,6 +1287,73 @@ fn translate_state_rhs<'c>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RES-1188: prove the same expression repeatedly in a single
+    /// thread — the thread-local `Z3_CTX` is reused across all
+    /// calls, and the result must remain consistent. A regression
+    /// where solver state leaks between calls would show up as
+    /// `Some(true)` flipping to `None` (or worse, `Some(false)`)
+    /// on the second invocation.
+    #[test]
+    fn repeated_prove_in_one_thread_is_consistent() {
+        let no_b = HashMap::new();
+        let expr = Node::InfixExpression {
+            left: Box::new(Node::IntegerLiteral {
+                value: 7,
+                span: crate::span::Span::default(),
+            }),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 3,
+                span: crate::span::Span::default(),
+            }),
+            span: crate::span::Span::default(),
+        };
+        let first = prove(&expr, &no_b);
+        let second = prove(&expr, &no_b);
+        let third = prove(&expr, &no_b);
+        assert_eq!(first, Some(true));
+        assert_eq!(second, Some(true));
+        assert_eq!(third, Some(true));
+    }
+
+    /// RES-1188: a tautology call followed by a contradiction call on
+    /// the same shared context must each return their own verdict.
+    /// The previous (per-call context) implementation had no shared
+    /// state to leak; this guards the new shared-context layout
+    /// against accidentally carrying assertion state across calls.
+    #[test]
+    fn alternating_tautology_and_contradiction_in_one_thread() {
+        let no_b = HashMap::new();
+        let taut = Node::InfixExpression {
+            left: Box::new(Node::IntegerLiteral {
+                value: 5,
+                span: crate::span::Span::default(),
+            }),
+            operator: "!=".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
+            span: crate::span::Span::default(),
+        };
+        let contra = Node::InfixExpression {
+            left: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
+            operator: "!=".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
+            span: crate::span::Span::default(),
+        };
+        assert_eq!(prove(&taut, &no_b), Some(true));
+        assert_eq!(prove(&contra, &no_b), Some(false));
+        assert_eq!(prove(&taut, &no_b), Some(true));
+        assert_eq!(prove(&contra, &no_b), Some(false));
+    }
 
     #[test]
     fn z3_proves_tautology_no_bindings() {

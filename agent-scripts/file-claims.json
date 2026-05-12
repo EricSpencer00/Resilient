@@ -8,9 +8,9 @@
       "branch": "res-1182-rotate-signum",
       "claimed_at": "2026-05-11T19:50:00Z"
     },
-    "resilient/Cargo.toml": {
-      "branch": "res-1189-cargo-build-override",
-      "claimed_at": "2026-05-12T01:03:52Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1188-z3-query-cache",
+      "claimed_at": "2026-05-12T00:55:04Z"
     }
   }
 }
