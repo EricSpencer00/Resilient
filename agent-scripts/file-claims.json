@@ -231,6 +231,10 @@
     "resilient/src/mutual_recursion_scc.rs": {
       "branch": "res-1514-scc-dfs-borrow",
       "claimed_at": "2026-05-12T13:13:18Z"
+    },
+    "resilient/src/imports.rs": {
+      "branch": "res-1523-imports-canon-move",
+      "claimed_at": "2026-05-12T13:18:45Z"
     }
   }
 }
