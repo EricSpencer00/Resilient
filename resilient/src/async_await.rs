@@ -63,7 +63,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
             if !async_fns.contains(name) {
-                let mut leaks = Vec::new();
+                // RES-1445: collect leaks as `&str` borrows from the
+                // AST instead of cloning callee names into owned
+                // Strings. Only the first leak (`leaks[0]`) makes it
+                // into the error message. Same shape as RES-1439 /
+                // RES-1441.
+                let mut leaks: Vec<&str> = Vec::new();
                 walk_async_calls(body, &async_fns, &mut leaks);
                 if !leaks.is_empty() {
                     return Err(format!(
@@ -77,7 +82,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_async_calls(node: &Node, async_fns: &HashSet<String>, out: &mut Vec<String>) {
+fn walk_async_calls<'a>(node: &'a Node, async_fns: &HashSet<String>, out: &mut Vec<&'a str>) {
     match node {
         Node::CallExpression {
             function,
@@ -90,7 +95,7 @@ fn walk_async_calls(node: &Node, async_fns: &HashSet<String>, out: &mut Vec<Stri
                     return;
                 }
                 if async_fns.contains(name) {
-                    out.push(name.clone());
+                    out.push(name.as_str());
                 }
             }
             for a in arguments {
