@@ -176,15 +176,15 @@ fn walk(
 
             // Collect the full invariant list — both pre-body
             // (RES-132a) and statement-form (RES-222) variants.
+            //
+            // RES-1394: chain the two sources directly into the
+            // try_prove_invariant loop instead of materialising an
+            // intermediate `Vec<&Node>`. Saves one Vec allocation +
+            // 2N pushes per WhileStatement with invariants. The
+            // emptiness short-circuit now checks the two sources
+            // directly (same semantic as the old `all.is_empty()`).
             let body_invs = crate::loop_invariants::collect_body_invariants(body);
-            let mut all: Vec<&Node> = Vec::new();
-            for inv in pre_invariants {
-                all.push(inv);
-            }
-            for inv in &body_invs {
-                all.push(*inv);
-            }
-            if all.is_empty() {
+            if pre_invariants.is_empty() && body_invs.is_empty() {
                 return;
             }
 
@@ -193,7 +193,7 @@ fn walk(
             let mut assigned: BTreeSet<String> = BTreeSet::new();
             collect_assigned_names(body, &mut assigned);
 
-            for inv in all {
+            for inv in pre_invariants.iter().chain(body_invs.iter().copied()) {
                 try_prove_invariant(
                     tc, inv, condition, body, bindings, &assigned, span, next_idx, timeout_ms,
                     verbose,
