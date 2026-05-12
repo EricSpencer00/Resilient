@@ -53,11 +53,17 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if set.is_empty() {
         return Ok(());
     }
-    install(set.clone());
-    // Validation: a recursive type must syntactically reference itself.
+    // RES-1485: run validation before `install` so we can move
+    // `set` into install rather than cloning. The previous shape
+    // did `install(set.clone())` ahead of the for-loop just so
+    // `&set` could still be iterated. Same shape as RES-1481 for
+    // `derives::check`. The warnings emitted during validation
+    // are eprintln only — no early return — so the install always
+    // runs at the same point in the success path.
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // Validation: a recursive type must syntactically reference itself.
     for s in stmts {
         if let Node::StructDecl { name, fields, .. } = &s.node {
             if set.contains(name) {
@@ -71,6 +77,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             }
         }
     }
+    install(set);
     Ok(())
 }
 
