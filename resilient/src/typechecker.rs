@@ -5696,11 +5696,16 @@ impl TypeChecker {
                 // `LITERAL == IDENT`), assume that equality inside the
                 // consequence by pushing the binding. Restore on exit
                 // so the assumption doesn't leak.
-                let assumption = extract_eq_assumption(condition);
-                let saved = if let Some((ref name, value)) = assumption {
-                    let prev = self.const_bindings.get(name).copied();
+                // RES-1410: destructure `assumption` by move so the
+                // owned `name` String can be cloned once for the
+                // HashMap insert and then moved into the `saved`
+                // tuple. The previous shape took `ref name` and
+                // cloned twice — once for the HashMap key (which
+                // takes ownership) and once for the rollback tuple.
+                let saved = if let Some((name, value)) = extract_eq_assumption(condition) {
+                    let prev = self.const_bindings.get(&name).copied();
                     self.const_bindings.insert(name.clone(), value);
-                    Some((name.clone(), prev))
+                    Some((name, prev))
                 } else {
                     None
                 };
