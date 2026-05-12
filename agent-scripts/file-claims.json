@@ -219,6 +219,10 @@
     "resilient/src/default_params.rs": {
       "branch": "res-1475-default-params-skip-no-defaults",
       "claimed_at": "2026-05-12T11:56:23Z"
+    },
+    "resilient/src/lsp_server.rs": {
+      "branch": "res-1508-lsp-name-borrow",
+      "claimed_at": "2026-05-12T12:59:48Z"
     }
   }
 }
