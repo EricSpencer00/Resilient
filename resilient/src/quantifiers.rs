@@ -162,9 +162,18 @@ pub(crate) fn eval_quantifier(
     body: &Node,
 ) -> RResult<Value> {
     let witnesses = collect_witnesses(interp, range)?;
-    let saved_env = interp.env.clone();
-    let inner_env = crate::Environment::new_enclosed(saved_env.clone());
-    interp.env = inner_env;
+    // RES-1376: build the enclosed inner from a single clone of the
+    // current env, then `mem::replace` the inner into `interp.env`
+    // while capturing the original outer for restore. Mirrors the
+    // RES-1320 shape from `TypeChecker::with_quantifier_binding`:
+    // the previous code did one clone for `saved` and another for
+    // `inner.outer`, paying two `Environment::clone`s (Rc bumps) per
+    // quantifier evaluation. The body walk only reads through the
+    // enclosed env (lookups fall through to the outer on miss), so
+    // the moved original is safe to hand back unchanged after the
+    // loop.
+    let inner_env = crate::Environment::new_enclosed(interp.env.clone());
+    let saved_env = std::mem::replace(&mut interp.env, inner_env);
 
     let mut result = match kind {
         QuantifierKind::Forall => true,
