@@ -1350,23 +1350,22 @@ fn rewrite_tail_calls(chunk: &mut crate::bytecode::Chunk, own_fn_idx: u16) {
     if len < 2 {
         return;
     }
-    // We need indices so we can write back; collect positions first.
-    let mut positions: Vec<usize> = Vec::new();
+    // RES-1581: fuse the two-pass collect-then-rewrite into a single
+    // walk. The intermediate `Vec<usize>` of positions was unnecessary
+    // — rewriting in place doesn't break the next iteration's read
+    // because the new `Op::Return` tombstone at `i+1` cannot itself
+    // match `Op::Call(own_fn_idx)` at any later i. Drops the Vec
+    // allocation and halves the linear scans.
     for i in 0..len - 1 {
         if chunk.code[i] == Op::Call(own_fn_idx) && chunk.code[i + 1] == Op::ReturnFromCall {
-            positions.push(i);
+            // Replace the Call with TailCall; mark the ReturnFromCall
+            // dead by overwriting with a no-op Return. The VM never
+            // reaches it because TailCall resets pc, but leaving a
+            // valid opcode keeps the chunk well-formed for the
+            // disassembler and any future static analyses.
+            chunk.code[i] = Op::TailCall(own_fn_idx);
+            chunk.code[i + 1] = Op::Return; // unreachable tombstone
         }
-    }
-    for pos in positions {
-        // Replace the Call with TailCall; mark the ReturnFromCall
-        // dead by overwriting with a no-op Return. The VM never
-        // reaches it because TailCall resets pc, but leaving a
-        // valid opcode keeps the chunk well-formed for the
-        // disassembler and any future static analyses.
-        chunk.code[pos] = Op::TailCall(own_fn_idx);
-        chunk.code[pos + 1] = Op::Return; // unreachable tombstone
-        // Preserve line info alignment by keeping the two slots;
-        // no shift needed.
     }
 }
 
