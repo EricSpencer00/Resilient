@@ -80,11 +80,18 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
     // Same pattern as RES-1306 / RES-1308 already applied to
     // `async_await`, `default_trait_methods`, `mmio_regmap`,
     // `distributed_invariants`, `ghost_types`, and friends.
+    // RES-1481: validate the trait set before `install` so we can
+    // move `sets` into `install` instead of cloning. The previous
+    // shape did `install(sets.clone())` ahead of the validation
+    // loop, burning a full Vec<DeriveSpec> clone per compile that
+    // had `#[derive]` attributes — the clone was thrown away once
+    // the for-loop finished iterating `&sets`. As a side benefit,
+    // an invalid-trait error now leaves the registry untouched
+    // rather than polluting it with an entry that then fails.
     let sets = collect();
     if sets.is_empty() {
         return Ok(());
     }
-    install(sets.clone());
     for s in &sets {
         for t in &s.traits {
             if !SUPPORTED.contains(&t.as_str()) {
@@ -95,6 +102,7 @@ pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
             }
         }
     }
+    install(sets);
     Ok(())
 }
 
