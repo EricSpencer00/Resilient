@@ -62,14 +62,28 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+// RES-1554: static `_alloc{N}` suffix table — the previous shape
+// allocated 9 `String`s per `parse_budget` call via `format!`. The
+// fast-reject `has_budget` check (scans every top-level fn) and the
+// `for_each_function` enforcement loop both call it, so allocation
+// volume scaled as 9·N for an N-function program with zero budgets.
+const ALLOC_BUDGET_SUFFIXES: &[(&str, usize)] = &[
+    ("_alloc0", 0),
+    ("_alloc1", 1),
+    ("_alloc2", 2),
+    ("_alloc3", 3),
+    ("_alloc4", 4),
+    ("_alloc5", 5),
+    ("_alloc6", 6),
+    ("_alloc7", 7),
+    ("_alloc8", 8),
+];
+
 fn parse_budget(name: &str) -> Option<usize> {
-    for n in 0..=8 {
-        let suf = format!("_alloc{n}");
-        if name.ends_with(&suf) {
-            return Some(n);
-        }
-    }
-    None
+    ALLOC_BUDGET_SUFFIXES
+        .iter()
+        .find(|(suf, _)| name.ends_with(suf))
+        .map(|(_, n)| *n)
 }
 
 fn count_allocs(body: &Node) -> usize {
