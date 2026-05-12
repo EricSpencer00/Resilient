@@ -207,6 +207,10 @@
     "resilient/src/traits.rs": {
       "branch": "res-1391-traits-fast-reject",
       "claimed_at": "2026-05-12T09:32:26Z"
+    },
+    "resilient/src/derives.rs": {
+      "branch": "res-1402-derives-empty-install",
+      "claimed_at": "2026-05-12T10:01:28Z"
     }
   }
 }
