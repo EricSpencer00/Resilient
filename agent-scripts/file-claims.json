@@ -12,9 +12,9 @@
       "branch": "res-1194-z3-tautology-only",
       "claimed_at": "2026-05-12T01:13:16Z"
     },
-    "resilient/Cargo.toml": {
-      "branch": "res-1198-bin-skip-test-bench",
-      "claimed_at": "2026-05-12T01:22:45Z"
+    ".github/workflows/embedded.yml": {
+      "branch": "res-1198-embedded-rust-cache",
+      "claimed_at": "2026-05-12T01:23:24Z"
     }
   }
 }

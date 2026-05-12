@@ -70,15 +70,17 @@ jobs:
           components: clippy
           targets: thumbv7em-none-eabihf
 
+      # RES-1198: rust-aware cache strips incremental compilation artifacts
+      # before saving (smaller cache, faster restore) and keys off
+      # Cargo.lock + Cargo.toml + rustc version + feature set
+      # automatically. Matches the caching strategy ci.yml's
+      # `default_ci` / `z3_ci` / `feature_matrix` jobs already use.
       - name: Cache cargo
         if: needs.changes.outputs.docs_only != 'true'
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            resilient-runtime-cortex-m-demo/target
-          key: cortex-m-${{ hashFiles('resilient-runtime-cortex-m-demo/Cargo.lock', 'resilient-runtime/Cargo.lock') }}
+          workspaces: resilient-runtime-cortex-m-demo
+          key: cortex-m
 
       - name: build_cortex_m_demo.sh
         if: needs.changes.outputs.docs_only != 'true'
@@ -103,15 +105,15 @@ jobs:
           components: clippy
           targets: riscv32imac-unknown-none-elf
 
+      # RES-1198: see notes on cortex_m above — rust-cache strips
+      # incremental compilation artifacts and uses a richer key than
+      # raw `hashFiles('Cargo.lock')`.
       - name: Cache cargo
         if: needs.changes.outputs.docs_only != 'true'
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            resilient-runtime/target
-          key: riscv32-${{ hashFiles('resilient-runtime/Cargo.lock') }}
+          workspaces: resilient-runtime
+          key: riscv32
 
       - name: build_riscv32.sh
         if: needs.changes.outputs.docs_only != 'true'
@@ -136,15 +138,15 @@ jobs:
           components: clippy
           targets: thumbv6m-none-eabi
 
+      # RES-1198: see notes on cortex_m above — rust-cache strips
+      # incremental compilation artifacts and uses a richer key than
+      # raw `hashFiles('Cargo.lock')`.
       - name: Cache cargo
         if: needs.changes.outputs.docs_only != 'true'
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            resilient-runtime/target
-          key: cortex-m0-${{ hashFiles('resilient-runtime/Cargo.lock') }}
+          workspaces: resilient-runtime
+          key: cortex-m0
 
       - name: build_cortex_m0.sh
         if: needs.changes.outputs.docs_only != 'true'
