@@ -5205,8 +5205,11 @@ impl TypeChecker {
                     self.env.set(field.clone(), resolved.clone());
                     resolved_fields.push((field.clone(), resolved));
                 }
-                self.struct_fields
-                    .insert(name.clone(), resolved_fields.clone());
+                // RES-1349: move `resolved_fields` directly — it has
+                // no further reader in this arm, so `.clone()` was
+                // pure dead allocation (one extra `Vec` + one extra
+                // `String` per state field).
+                self.struct_fields.insert(name.clone(), resolved_fields);
                 for clause in always_clauses {
                     let ty = self.check_node(clause)?;
                     if ty != Type::Bool && ty != Type::Any {
