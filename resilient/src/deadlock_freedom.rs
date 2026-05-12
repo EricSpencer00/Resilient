@@ -27,10 +27,15 @@ pub fn build(program: &Node) -> ActorGraph {
     let Node::Program(stmts) = program else {
         return g;
     };
-    let actor_names: HashSet<String> = stmts
+    // RES-1522: borrow each actor name as `&str` from the AST
+    // into the lookup set used by `walk_sends`. The set is only
+    // queried via `contains`, never extracted, so the cloned
+    // `String` keys were pure overhead. Same pattern as RES-1495
+    // / RES-1500 etc.
+    let actor_names: HashSet<&str> = stmts
         .iter()
         .filter_map(|s| match &s.node {
-            Node::ActorDecl { name, .. } => Some(name.clone()),
+            Node::ActorDecl { name, .. } => Some(name.as_str()),
             _ => None,
         })
         .collect();
@@ -55,7 +60,7 @@ pub fn build(program: &Node) -> ActorGraph {
     g
 }
 
-fn walk_sends(node: &Node, actors: &HashSet<String>, out: &mut HashSet<String>) {
+fn walk_sends(node: &Node, actors: &HashSet<&str>, out: &mut HashSet<String>) {
     match node {
         Node::CallExpression {
             function,
@@ -65,7 +70,7 @@ fn walk_sends(node: &Node, actors: &HashSet<String>, out: &mut HashSet<String>) 
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if name == "send" {
                     if let Some(Node::Identifier { name: tgt, .. }) = arguments.first() {
-                        if actors.contains(tgt) {
+                        if actors.contains(tgt.as_str()) {
                             out.insert(tgt.clone());
                         }
                     }
