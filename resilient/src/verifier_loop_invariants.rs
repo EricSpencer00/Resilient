@@ -47,6 +47,27 @@ use std::collections::{BTreeSet, HashMap};
 /// only line of defense.
 #[cfg(feature = "z3")]
 pub(crate) fn verify_and_capture(tc: &mut crate::typechecker::TypeChecker, program: &Node) {
+    // RES-1297: fast-reject. The recursive `walk` only does Z3 work
+    // when it finds a `WhileStatement` whose `invariants` field is
+    // non-empty OR whose body contains a `Node::InvariantStatement`.
+    // For programs with no `invariant(P);` clauses anywhere — the
+    // overwhelming majority of `cargo test --features z3` inputs —
+    // the walk descends into every block / fn / for / while only to
+    // find empty invariant lists everywhere.
+    //
+    // Pre-scan via `any_node` (RES-1238 early-terminating) for any
+    // node that signals an invariant: either a `WhileStatement`
+    // with non-empty `invariants`, or a body-statement
+    // `InvariantStatement`. If neither is present, no per-while
+    // work would have anything to do.
+    let has_invariant = crate::uniqueness_walk::any_node(program, |n| match n {
+        Node::WhileStatement { invariants, .. } => !invariants.is_empty(),
+        Node::InvariantStatement { .. } => true,
+        _ => false,
+    });
+    if !has_invariant {
+        return;
+    }
     let timeout_ms = tc.verifier_timeout_ms();
     let verbose = tc.verbose_loop_invariants();
     let mut bindings: HashMap<String, i64> = HashMap::new();
