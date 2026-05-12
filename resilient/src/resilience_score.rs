@@ -54,7 +54,10 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
 
     // Build a call-reference index so we can credit a fn for being
     // called from somewhere. We only need names → reference count.
-    let mut call_refs: HashMap<String, u32> = HashMap::new();
+    // RES-1507: borrow each call-site name as `&str` from the AST
+    // instead of cloning. Same pattern applied to `vibe_debt::analyze`
+    // in this PR; mirrors RES-1495 / RES-1500 / RES-1503.
+    let mut call_refs: HashMap<&str, u32> = HashMap::new();
     for s in stmts {
         collect_call_names(&s.node, &mut call_refs);
     }
@@ -93,7 +96,7 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
 
             // Subtract self-references so a recursive fn can't earn
             // coverage credit by calling itself.
-            let raw_refs = call_refs.get(name).copied().unwrap_or(0);
+            let raw_refs = call_refs.get(name.as_str()).copied().unwrap_or(0);
             let self_refs = count_self_calls(body, name);
             let external_refs = raw_refs.saturating_sub(self_refs);
             score.coverage_pts = match external_refs {
@@ -122,7 +125,7 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
     out
 }
 
-fn collect_call_names(node: &Node, out: &mut HashMap<String, u32>) {
+fn collect_call_names<'a>(node: &'a Node, out: &mut HashMap<&'a str, u32>) {
     match node {
         Node::CallExpression {
             function,
@@ -130,7 +133,7 @@ fn collect_call_names(node: &Node, out: &mut HashMap<String, u32>) {
             ..
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
-                *out.entry(name.clone()).or_insert(0) += 1;
+                *out.entry(name.as_str()).or_insert(0) += 1;
             }
             for a in arguments {
                 collect_call_names(a, out);
@@ -183,7 +186,7 @@ fn collect_call_names(node: &Node, out: &mut HashMap<String, u32>) {
 }
 
 fn count_self_calls(node: &Node, target: &str) -> u32 {
-    let mut tmp: HashMap<String, u32> = HashMap::new();
+    let mut tmp: HashMap<&str, u32> = HashMap::new();
     collect_call_names(node, &mut tmp);
     tmp.get(target).copied().unwrap_or(0)
 }
