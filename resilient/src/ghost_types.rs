@@ -56,7 +56,11 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
             if !ghosts.contains(name) {
-                let mut leaks = Vec::new();
+                // RES-1441: collect leaks as `&str` borrows from the
+                // AST instead of cloning callee names into owned
+                // `String`s. Only the first leak ever makes it into
+                // the error message; the rest were always discarded.
+                let mut leaks: Vec<&str> = Vec::new();
                 walk_calls(body, &ghosts, &mut leaks);
                 if !leaks.is_empty() {
                     return Err(format!(
@@ -70,7 +74,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn walk_calls(node: &Node, ghosts: &HashSet<String>, out: &mut Vec<String>) {
+fn walk_calls<'a>(node: &'a Node, ghosts: &HashSet<String>, out: &mut Vec<&'a str>) {
     match node {
         Node::CallExpression {
             function,
@@ -79,7 +83,7 @@ fn walk_calls(node: &Node, ghosts: &HashSet<String>, out: &mut Vec<String>) {
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if ghosts.contains(name) {
-                    out.push(name.clone());
+                    out.push(name.as_str());
                 }
             }
             for a in arguments {
