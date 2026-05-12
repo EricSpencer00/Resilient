@@ -1,0 +1,171 @@
+#  VSCE_PAT validity + expiry monitoring.
+#
+#  Azure DevOps personal access tokens expire (max 1 year). Without
+#  monitoring, the first sign a token has expired is a failed Marketplace
+#  publish on a real release — which means the binary release lands but
+#  the extension update does not, and we only notice when a user
+#  complains. This workflow probes the token weekly and opens a tracking
+#  issue if anything looks off.
+#
+#  On schedule (Mondays 10:00 UTC) or `workflow_dispatch`:
+#   1. Run `vsce verify-pat <publisher>` against the stored `VSCE_PAT`
+#      secret. This succeeds (exit 0) only if the token is valid and
+#      grants publish rights on the publisher account.
+#   2. (Optional) If the repo variable `VSCE_PAT_EXPIRY` is set as an
+#      ISO date (e.g. `2027-05-12`), warn when fewer than 30 days remain.
+#   3. On any failure or near-expiry warning, open (or update) a tracking
+#      issue tagged `urgent` so the maintainer sees it in the inbox.
+#      Idempotent: looks for an existing open issue with the same title
+#      before opening a new one.
+#
+#  Repo config:
+#   - Secret  `VSCE_PAT`         — Azure DevOps PAT (Marketplace: Manage scope)
+#   - Variable `VSCE_PAT_EXPIRY` — optional. ISO date string. If unset,
+#                                 only `verify-pat` is run (no proactive
+#                                 expiry warning).
+#   - Variable `VSCE_PUBLISHER`  — optional. Defaults to `fromamerica`.
+
+name: vsce-token-check
+
+on:
+  schedule:
+    # Mondays 10:00 UTC — runs before the 12:00 weekly-release so we
+    # know token health by the time a real publish would fire.
+    - cron: "0 10 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Verify VSCE_PAT
+    runs-on: ubuntu-latest
+    env:
+      PUBLISHER: ${{ vars.VSCE_PUBLISHER || 'fromamerica' }}
+      VSCE_PAT_EXPIRY: ${{ vars.VSCE_PAT_EXPIRY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify PAT
+        id: verify
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "status=missing" >> "$GITHUB_OUTPUT"
+            echo "::error::VSCE_PAT secret is not set."
+            exit 1
+          fi
+          if npx --yes @vscode/vsce verify-pat "$PUBLISHER" --pat "$VSCE_PAT"; then
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+            echo "VSCE_PAT is valid for publisher $PUBLISHER."
+          else
+            echo "status=invalid" >> "$GITHUB_OUTPUT"
+            echo "::error::VSCE_PAT verification failed for publisher $PUBLISHER."
+            exit 1
+          fi
+
+      - name: Check expiry window
+        id: expiry
+        if: env.VSCE_PAT_EXPIRY != ''
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime as dt, os
+          raw = os.environ["VSCE_PAT_EXPIRY"]
+          try:
+              expiry = dt.date.fromisoformat(raw)
+          except ValueError:
+              print(f"status=malformed")
+              print(f"days_remaining=-1")
+              raise SystemExit(0)
+          today = dt.date.today()
+          remaining = (expiry - today).days
+          print(f"days_remaining={remaining}")
+          if remaining <= 0:
+              print("status=expired")
+          elif remaining <= 30:
+              print("status=warning")
+          else:
+              print("status=ok")
+          PY
+
+      - name: Summarize
+        run: |
+          echo "verify status:  ${{ steps.verify.outputs.status }}"
+          echo "expiry status:  ${{ steps.expiry.outputs.status }}"
+          echo "days remaining: ${{ steps.expiry.outputs.days_remaining }}"
+
+      - name: Open or update tracking issue (on failure / warning)
+        if: failure() || steps.expiry.outputs.status == 'warning' || steps.expiry.outputs.status == 'expired' || steps.expiry.outputs.status == 'malformed'
+        uses: actions/github-script@v7
+        env:
+          VERIFY_STATUS: ${{ steps.verify.outputs.status }}
+          EXPIRY_STATUS: ${{ steps.expiry.outputs.status }}
+          DAYS_REMAINING: ${{ steps.expiry.outputs.days_remaining }}
+          PUBLISHER: ${{ vars.VSCE_PUBLISHER || 'fromamerica' }}
+        with:
+          script: |
+            const title = '[ops] VSCE_PAT needs attention';
+            const body = `
+            ## VSCE_PAT health check failed
+
+            The weekly token-health probe found a problem with the
+            \`VSCE_PAT\` secret used to publish \`${process.env.PUBLISHER}\`
+            extensions to the VS Code Marketplace.
+
+            | Field | Value |
+            |---|---|
+            | \`vsce verify-pat\` | \`${process.env.VERIFY_STATUS || 'not-run'}\` |
+            | Expiry status      | \`${process.env.EXPIRY_STATUS || 'not-configured'}\` |
+            | Days remaining     | \`${process.env.DAYS_REMAINING || 'unknown'}\` |
+
+            ### How to rotate the token
+
+            1. Sign in to https://dev.azure.com as a user with publisher
+               rights for \`${process.env.PUBLISHER}\`.
+            2. User Settings → Personal Access Tokens → **+ New Token**.
+            3. Scope: **Marketplace → Manage**. Expiration: 1 year (max).
+            4. Copy the token (only shown once).
+            5. GitHub → repo Settings → Secrets and variables → Actions →
+               update the **\`VSCE_PAT\`** repository secret.
+            6. GitHub → repo Settings → Secrets and variables → Actions →
+               **Variables** tab → update the **\`VSCE_PAT_EXPIRY\`**
+               variable to the new expiry date (ISO format,
+               e.g., \`2027-05-12\`).
+
+            After rotation, re-run this workflow from the Actions tab to
+            close the issue automatically (or close it manually).
+
+            Generated by \`.github/workflows/vsce-token-check.yml\`.
+            `;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const existing = await github.paginate(github.rest.search.issuesAndPullRequests, {
+              q: `repo:${owner}/${repo} is:issue is:open in:title "${title}"`,
+            });
+
+            if (existing.length > 0) {
+              const issueNumber = existing[0].number;
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `**Re-probe still failing** — check details above.`,
+              });
+              console.log(`Commented on existing issue #${issueNumber}`);
+            } else {
+              const res = await github.rest.issues.create({
+                owner, repo,
+                title,
+                body,
+                labels: ['urgent', 'ops'],
+              });
+              console.log(`Opened new issue #${res.data.number}`);
+            }
