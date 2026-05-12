@@ -259,11 +259,22 @@ thread_local! {
     /// because the key includes the full input, so stale entries can
     /// only be re-hit by an identical query (which would be correct
     /// either way).
+    #[allow(clippy::type_complexity)]
     static Z3_VERDICT_CACHE: std::cell::RefCell<
         std::collections::HashMap<
             String,
             (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
         >,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// RES-1309: thread-local cache for the tautology-only fast path.
+    /// Disjoint key namespace from `Z3_VERDICT_CACHE` (the keys carry
+    /// a `|TAUT` suffix). Same persistence rules: lifetime of the
+    /// thread, no inter-compilation reset needed because the key
+    /// includes the full input.
+    #[allow(clippy::type_complexity)]
+    static Z3_TAUTOLOGY_CACHE: std::cell::RefCell<
+        std::collections::HashMap<String, (bool, Option<ProofCertificate>, bool)>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
@@ -451,9 +462,32 @@ pub fn prove_tautology_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (bool, Option<ProofCertificate>, bool) {
-    Z3_CTX.with(|ctx| {
+    // RES-1309: thread-local verdict cache for the tautology-only
+    // entry point. RES-1206 already caches results going through
+    // `prove_with_axioms_and_timeout`, but this fast path is its own
+    // function and was bypassing the cache entirely. Its callers —
+    // `bounds_check::check_array_bounds` (every index expression),
+    // `verifier_loop_invariants::verify_and_capture` (every
+    // `invariant` clause), `prove_alias_disjoint` (every aliasing
+    // query) — re-asked Z3 the same question every time the input
+    // AST + bindings + axioms repeated.
+    //
+    // Key shape mirrors RES-1206: AST `Debug` of every input
+    // separated by `|`, with bindings sorted into a `BTreeMap` for
+    // deterministic ordering, and a `|TAUT` suffix so the cache key
+    // namespace stays disjoint from the verdict cache.
+    let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+    let key = format!("{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}|TAUT");
+    if let Some(cached) = Z3_TAUTOLOGY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
+    let result = Z3_CTX.with(|ctx| {
         prove_tautology_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms)
-    })
+    });
+    Z3_TAUTOLOGY_CACHE.with(|c| {
+        c.borrow_mut().insert(key, result.clone());
+    });
+    result
 }
 
 fn prove_tautology_with_axioms_and_timeout_in(
