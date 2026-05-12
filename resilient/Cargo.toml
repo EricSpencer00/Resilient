@@ -49,7 +49,7 @@ bench = false
 # The verifier uses our hand-rolled folder by default (RES-060..065)
 # and falls back to Z3 only when fold returns Unknown.
 default = []
-z3 = ["dep:z3"]
+z3 = ["dep:z3", "dep:ed25519-dalek", "dep:rand_core"]
 # RES-074: opt-in LSP server. Default off so the regular build
 # doesn't pull in tower-lsp/tokio's transitive-dep tree. Enable with:
 #
@@ -120,16 +120,30 @@ cranelift-module = { version = "0.108", optional = true }
 # doesn't widen the default build's dep tree; activate with
 # `--features proptest`.
 proptest = { version = "1", optional = true }
+# RES-1202: ed25519-dalek + rand_core are only consumed by
+# `cert_sign.rs` and its callers in `lib.rs` (the
+# `emit_certificates` / `dispatch_verify_*` paths), all of which
+# exist solely to materialise + verify RES-071 proof certificates
+# from the Z3 verifier. Gating them behind `feature = "z3"` drops
+# ed25519-dalek (with its curve25519-dalek / digest / signature
+# transitive subtree) and rand_core + getrandom off the
+# default-build dep graph. Net effect: a stock `cargo build` /
+# `cargo test` / `cargo clippy` (no `--features z3`) compiles
+# ~10 fewer dep crates.
+#
+# `sha2` stays unconditional because `lib.rs::check_program_with_…`
+# also computes a source-file SHA-256 for the incremental-cache
+# hit check (RES-355), independent of cert work. `serde_json`
+# likewise stays unconditional — `cache.rs` and `lsp_server.rs`
+# need it regardless of feature flags.
+#
 # RES-194: Ed25519 signatures on RES-071 verification certificates.
-# `rand_core` brings in the OS RNG we use for keypair generation
-# in the test helpers (see `resilient/src/cert_sign.rs`).
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
-# RES-195: SHA-256 for the cert manifest's per-obligation hash,
-# and serde_json for parsing/emitting the manifest itself. `sha2`
-# is already transitive via ed25519-dalek; we promote it to a
-# direct dep edge so the build doesn't depend on the transitive
-# tree for correctness.
+# `rand_core` brings in the OS RNG we use for keypair generation in
+# the test helpers (see `resilient/src/cert_sign.rs`).
+ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
+# RES-195: SHA-256 for the cert manifest's per-obligation hash AND
+# the incremental build cache's source-file hash. Always-on.
 sha2 = "0.10"
 serde_json = "1"
 
