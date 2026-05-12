@@ -79,12 +79,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // Build alias -> (target, span) map. Last write wins on duplicate
-    // declarations — matches the typechecker's HashMap insertion
-    // semantics so the two layers can't disagree.
-    let mut aliases: std::collections::HashMap<String, (String, crate::span::Span)> =
+    // RES-1537: borrow alias/target names from the AST throughout the
+    // cycle detector. The previous shape cloned each alias name into
+    // `aliases` keys, `decl_order` entries, and a fresh `color`
+    // HashMap key per entry — plus `node.to_string()` per DFS visit
+    // and `target.clone()` to close a detected cycle. None of the
+    // owned strings were needed: lookups, equality checks, and the
+    // final `chain.join(" -> ")` all work on `&str`. Mirror of
+    // RES-1514 (SCC DFS) and RES-1517 (full_modules DFS) applied to
+    // type-alias cycles.
+    let mut aliases: std::collections::HashMap<&str, (&str, crate::span::Span)> =
         std::collections::HashMap::new();
-    let mut decl_order: Vec<String> = Vec::new();
+    let mut decl_order: Vec<&str> = Vec::new();
 
     for spanned in statements {
         if let Node::TypeAlias { name, target, span } = &spanned.node {
@@ -92,27 +98,26 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 // Parser recovery already emitted a diagnostic; skip.
                 continue;
             }
-            if !aliases.contains_key(name) {
-                decl_order.push(name.clone());
+            let k = name.as_str();
+            if !aliases.contains_key(k) {
+                decl_order.push(k);
             }
-            aliases.insert(name.clone(), (target.clone(), *span));
+            aliases.insert(k, (target.as_str(), *span));
         }
     }
 
-    let mut color: std::collections::HashMap<String, Color> = aliases
-        .keys()
-        .map(|k| (k.clone(), Color::Unvisited))
-        .collect();
+    let mut color: std::collections::HashMap<&str, Color> =
+        aliases.keys().map(|k| (*k, Color::Unvisited)).collect();
 
-    for start in &decl_order {
+    for &start in &decl_order {
         if color[start] != Color::Unvisited {
             continue;
         }
-        let mut path: Vec<String> = Vec::new();
+        let mut path: Vec<&str> = Vec::new();
         if let Some(chain) = dfs(start, &aliases, &mut color, &mut path) {
             // Anchor the diagnostic to the first alias in the cycle —
             // its span points users at a real declaration in source.
-            let (_, span) = &aliases[&chain[0]];
+            let (_, span) = &aliases[chain[0]];
             return Err(format!(
                 "{}:{}:{}: type alias cycle: {}",
                 source_path,
@@ -129,25 +134,25 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 /// DFS over the alias graph. Returns `Some(chain)` on the first
 /// back-edge into the current stack; `chain` is the cycle in source
 /// order with the re-entered node repeated at the end (`A -> B -> A`).
-fn dfs(
-    node: &str,
-    aliases: &std::collections::HashMap<String, (String, crate::span::Span)>,
-    color: &mut std::collections::HashMap<String, Color>,
-    path: &mut Vec<String>,
-) -> Option<Vec<String>> {
-    color.insert(node.to_string(), Color::OnStack);
-    path.push(node.to_string());
+fn dfs<'a>(
+    node: &'a str,
+    aliases: &std::collections::HashMap<&'a str, (&'a str, crate::span::Span)>,
+    color: &mut std::collections::HashMap<&'a str, Color>,
+    path: &mut Vec<&'a str>,
+) -> Option<Vec<&'a str>> {
+    color.insert(node, Color::OnStack);
+    path.push(node);
 
-    let target = &aliases[node].0;
+    let target = aliases[node].0;
     if let Some(c) = color.get(target).copied() {
         match c {
             Color::OnStack => {
                 // Cycle. Reconstruct the chain from the first
                 // occurrence of `target` in `path` to the end, then
                 // append `target` again to close the loop visually.
-                let cut = path.iter().position(|n| n == target).unwrap_or(0);
-                let mut chain: Vec<String> = path[cut..].to_vec();
-                chain.push(target.clone());
+                let cut = path.iter().position(|n| *n == target).unwrap_or(0);
+                let mut chain: Vec<&'a str> = path[cut..].to_vec();
+                chain.push(target);
                 return Some(chain);
             }
             Color::Unvisited => {
@@ -163,7 +168,7 @@ fn dfs(
     // Else: target is not an alias — it's a terminal type name. No edge.
 
     path.pop();
-    color.insert(node.to_string(), Color::Done);
+    color.insert(node, Color::Done);
     None
 }
 
