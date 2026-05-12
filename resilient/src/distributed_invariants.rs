@@ -90,16 +90,21 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         install(invs);
         return Ok(());
     };
-    let actor_names: Vec<String> = stmts
+    // RES-1526: borrow each actor name as `&str` from the AST
+    // into the lookup Vec. The contains check below works on
+    // `Vec<&str>` (passing `&a.as_str()` matches the `&T` shape
+    // `Vec::contains` requires). Same pattern as RES-1495 / RES-1500
+    // etc.
+    let actor_names: Vec<&str> = stmts
         .iter()
         .filter_map(|s| match &s.node {
-            Node::ActorDecl { name, .. } => Some(name.clone()),
+            Node::ActorDecl { name, .. } => Some(name.as_str()),
             _ => None,
         })
         .collect();
     for inv in &invs {
         for a in &inv.actors {
-            if !actor_names.contains(a) {
+            if !actor_names.contains(&a.as_str()) {
                 eprintln!(
                     "warning: distributed_invariant `{}` references unknown actor `{}`",
                     inv.name, a
