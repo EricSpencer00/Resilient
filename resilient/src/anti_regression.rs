@@ -54,6 +54,19 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if specs.is_empty() {
         return Ok(());
     }
+    // RES-1529: gate the program-wide fingerprint walk on at least one
+    // spec actually carrying a `locked_digest`. The `#[stable(since =
+    // "X.Y")]` form without a `behavior = "<digest>"` argument is
+    // common during the "I want to mark this stable but haven't
+    // recorded the baseline yet" phase — collect_stable_specs returns
+    // a `StableSpec` with `locked_digest: None`. Without any locked
+    // digest, the body loop's `if let Some(locked) = s.locked_digest`
+    // never fires, so the `fingerprint_program(program)` walk (which
+    // visits and hashes every function body) is dead work. Same
+    // empty-set fast-reject shape as RES-1306 / RES-1527.
+    if !specs.iter().any(|s| s.locked_digest.is_some()) {
+        return Ok(());
+    }
     let fps = crate::behavioral_fingerprint::fingerprint_program(program);
     for s in &specs {
         if let Some(locked) = s.locked_digest {
