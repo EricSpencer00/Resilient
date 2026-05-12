@@ -945,22 +945,29 @@ pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candida
         Node::Program(s) => s,
         _ => return out,
     };
+    // RES-1531: borrow the decl name as `&str` for the prefix
+    // filter; only allocate the owned label string when the entry
+    // is actually going to land in `out`. The previous shape
+    // cloned every top-level decl name, then dropped most of them
+    // on the `!name.starts_with(prefix)` continue — wasted work
+    // proportional to the program's top-level decl count for every
+    // completion request.
     for spanned in stmts {
         let (name, kind, detail) = match &spanned.node {
             Node::Function {
                 name, parameters, ..
             } => (
-                name.clone(),
+                name.as_str(),
                 CandidateKind::Function,
                 Some(format!("fn ({} params)", parameters.len())),
             ),
             Node::StructDecl { name, fields, .. } => (
-                name.clone(),
+                name.as_str(),
                 CandidateKind::Struct,
                 Some(format!("struct ({} fields)", fields.len())),
             ),
             Node::TypeAlias { name, .. } => (
-                name.clone(),
+                name.as_str(),
                 CandidateKind::TypeAlias,
                 Some("type".to_string()),
             ),
@@ -970,7 +977,7 @@ pub(crate) fn completion_candidates(program: &Node, prefix: &str) -> Vec<Candida
             continue;
         }
         out.push(Candidate {
-            label: name,
+            label: name.to_string(),
             kind,
             detail,
         });
