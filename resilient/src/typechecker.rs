@@ -1025,7 +1025,7 @@ pub struct TypeChecker {
     /// (each variant carries an owned `String` name + a span + a
     /// payload, all duplicated per lookup). Mirrors RES-1363's
     /// `contract_table` and RES-1365's `struct_fields` refactors.
-    pub(crate) enum_decls: HashMap<String, std::rc::Rc<Vec<crate::EnumVariant>>>,
+    pub(crate) enum_decls: HashMap<String, std::sync::Arc<Vec<crate::EnumVariant>>>,
     /// RES-128: alias name → raw target type name. Populated by
     /// every `TypeAlias` node. Consulted by `parse_type_name` which
     /// walks the chain (with a `seen` set for cycle detection) and
@@ -3507,41 +3507,55 @@ impl TypeChecker {
             stats: VerificationStats::default(),
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
+            // RES-1398: clone the cached builtin enum_decls (Option /
+            // Result) HashMap instead of rebuilding it from scratch.
+            // Pattern mirrors RES-1349's BUILTIN_ENV cache — the data
+            // is invariant, so populate once per process via LazyLock
+            // and pay an Arc bump per `TypeChecker::new()` instead of
+            // 2 Vec allocations + 4 EnumVariant struct constructions
+            // + 4 `String::to_string()`s per call. `Arc` (not `Rc`)
+            // so the static can be `Sync`; atomic refcount ops are
+            // still trivially cheaper than the allocations they
+            // replace.
             enum_decls: {
-                let mut m: std::collections::HashMap<String, std::rc::Rc<Vec<crate::EnumVariant>>> =
-                    std::collections::HashMap::new();
-                let s = crate::span::Span::default();
-                m.insert(
-                    "Option".to_string(),
-                    std::rc::Rc::new(vec![
-                        crate::EnumVariant {
-                            name: "Some".to_string(),
-                            span: s,
-                            payload: crate::EnumPayload::None,
-                        },
-                        crate::EnumVariant {
-                            name: "None".to_string(),
-                            span: s,
-                            payload: crate::EnumPayload::None,
-                        },
-                    ]),
-                );
-                m.insert(
-                    "Result".to_string(),
-                    std::rc::Rc::new(vec![
-                        crate::EnumVariant {
-                            name: "Ok".to_string(),
-                            span: s,
-                            payload: crate::EnumPayload::None,
-                        },
-                        crate::EnumVariant {
-                            name: "Err".to_string(),
-                            span: s,
-                            payload: crate::EnumPayload::None,
-                        },
-                    ]),
-                );
-                m
+                static BUILTIN_ENUM_DECLS: std::sync::LazyLock<
+                    std::collections::HashMap<String, std::sync::Arc<Vec<crate::EnumVariant>>>,
+                > = std::sync::LazyLock::new(|| {
+                    let mut m = std::collections::HashMap::new();
+                    let s = crate::span::Span::default();
+                    m.insert(
+                        "Option".to_string(),
+                        std::sync::Arc::new(vec![
+                            crate::EnumVariant {
+                                name: "Some".to_string(),
+                                span: s,
+                                payload: crate::EnumPayload::None,
+                            },
+                            crate::EnumVariant {
+                                name: "None".to_string(),
+                                span: s,
+                                payload: crate::EnumPayload::None,
+                            },
+                        ]),
+                    );
+                    m.insert(
+                        "Result".to_string(),
+                        std::sync::Arc::new(vec![
+                            crate::EnumVariant {
+                                name: "Ok".to_string(),
+                                span: s,
+                                payload: crate::EnumPayload::None,
+                            },
+                            crate::EnumVariant {
+                                name: "Err".to_string(),
+                                span: s,
+                                payload: crate::EnumPayload::None,
+                            },
+                        ]),
+                    );
+                    m
+                });
+                BUILTIN_ENUM_DECLS.clone()
             },
             type_aliases: HashMap::new(),
             // RES-137: ticket's default is 5 seconds per query.
@@ -6153,11 +6167,15 @@ impl TypeChecker {
             // exhaustiveness and so `match_pattern_binding_types`
             // (future PR) can resolve payload-field types.
             Node::EnumDecl { name, variants, .. } => {
-                // RES-1368: store variants behind `Rc` so subsequent
-                // lookup-and-clone hot paths in `Match` checking
-                // pay a refcount bump instead of a full Vec clone.
+                // RES-1368: store variants behind a refcounted handle
+                // so subsequent lookup-and-clone hot paths in `Match`
+                // checking pay a refcount bump instead of a full Vec
+                // clone. RES-1398 promoted the storage from `Rc` to
+                // `Arc` so the builtin Option/Result entries can live
+                // in a `Sync` `LazyLock`; user-defined enum decls
+                // share the same Arc machinery.
                 self.enum_decls
-                    .insert(name.clone(), std::rc::Rc::new(variants.clone()));
+                    .insert(name.clone(), std::sync::Arc::new(variants.clone()));
                 Ok(Type::Void)
             }
             // RES-406: unsafe block. The volatile-call gate (compile-
