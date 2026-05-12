@@ -100,23 +100,27 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn transitive_blocking(
-    start: &str,
-    callees: &HashMap<String, Vec<String>>,
+// RES-1471: borrow callee names as `&'a str` instead of cloning each
+// one into the `seen` set and the BFS queue. All three parameters
+// share lifetime `'a` so the borrows from `callees` and `start` can
+// flow through `q` and `seen` without per-iteration `String::clone`.
+fn transitive_blocking<'a>(
+    start: &'a str,
+    callees: &'a HashMap<String, Vec<String>>,
     bn: &HashMap<String, usize>,
 ) -> usize {
     let mut total = 0;
-    let mut seen = HashSet::new();
-    let mut q = VecDeque::new();
-    q.push_back(start.to_string());
+    let mut seen: HashSet<&'a str> = HashSet::new();
+    let mut q: VecDeque<&'a str> = VecDeque::new();
+    q.push_back(start);
     while let Some(f) = q.pop_front() {
-        if !seen.insert(f.clone()) {
+        if !seen.insert(f) {
             continue;
         }
-        total += bn.get(&f).copied().unwrap_or(0);
-        if let Some(cs) = callees.get(&f) {
+        total += bn.get(f).copied().unwrap_or(0);
+        if let Some(cs) = callees.get(f) {
             for c in cs {
-                q.push_back(c.clone());
+                q.push_back(c.as_str());
             }
         }
     }
