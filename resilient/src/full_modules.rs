@@ -97,6 +97,21 @@ pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<String>> {
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1246: fast-reject. `build` walks every top-level statement
+    // looking for `Node::ModuleDecl` or `Node::Use`. For every
+    // program that declares neither — basically everything in
+    // `examples/` and most of the test suite — the walk produces an
+    // empty `ModuleGraph::deps` and `detect_cycle` returns None.
+    // Skip both calls by pre-scanning the top-level statement list
+    // for the only two variants that contribute to the graph.
+    if let Node::Program(stmts) = program {
+        let has_module_or_use = stmts
+            .iter()
+            .any(|s| matches!(&s.node, Node::ModuleDecl { .. } | Node::Use { .. }));
+        if !has_module_or_use {
+            return Ok(());
+        }
+    }
     let g = build(program);
     if let Some(cycle) = detect_cycle(&g) {
         return Err(format!(
