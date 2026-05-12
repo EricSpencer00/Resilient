@@ -141,12 +141,25 @@ fn walk(
         } => {
             // Both branches walked under a snapshot — neither
             // branch's bindings outlive the if.
+            //
+            // RES-1386: branch on `alternative` so the snapshot
+            // restore between consequence and alternative is only
+            // paid for when there *is* an alternative. The previous
+            // shape always did `*bindings = snap.clone()` followed
+            // by `*bindings = snap` (move), so bare `if` (no else)
+            // paid one wasted `HashMap::clone` per such node walked
+            // by the Z3 invariant verifier.
             let snap = bindings.clone();
             walk(consequence, bindings, tc, next_idx, timeout_ms, verbose);
-            *bindings = snap.clone();
-            if let Some(alt) = alternative {
-                walk(alt, bindings, tc, next_idx, timeout_ms, verbose);
-                *bindings = snap;
+            match alternative {
+                Some(alt) => {
+                    *bindings = snap.clone();
+                    walk(alt, bindings, tc, next_idx, timeout_ms, verbose);
+                    *bindings = snap;
+                }
+                None => {
+                    *bindings = snap;
+                }
             }
         }
         Node::WhileStatement {
