@@ -129,7 +129,21 @@ pub fn has_named(arguments: &[Node]) -> bool {
 /// replaces named-arg lists with the resolved positional vector.
 /// Returns the first resolution error (with `line:col`) if any
 /// call's named args fail validation.
+///
+/// RES-1316: fast-reject. `rewrite_calls` only mutates a
+/// `CallExpression` when `has_named(arguments)` is true. For every
+/// program where no call site uses named arguments — the
+/// overwhelming majority of `examples/` and the test suite — the
+/// walk is pure overhead. Pre-scan the AST once via
+/// `uniqueness_walk::any_node` (early-terminating since RES-1238):
+/// if no `Node::NamedArg` exists anywhere, return immediately and
+/// skip the rewrite. Mirrors the shape of
+/// `crate::newtypes::lower_program` and
+/// `crate::default_params::lower_program` (RES-1311).
 pub fn lower_program(program: &mut Node) -> Result<(), String> {
+    if !crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::NamedArg { .. })) {
+        return Ok(());
+    }
     let mut sigs: HashMap<String, Vec<String>> = HashMap::new();
     collect_signatures(program, &mut sigs);
     rewrite_calls(program, &sigs)
