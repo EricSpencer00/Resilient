@@ -32,6 +32,13 @@ doctest = false
 [[bin]]
 name = "rz"
 path = "src/main.rs"
+# RES-1198: `main.rs` is a 12-line shim (`fn main() { resilient::run_cli(); }`)
+# with zero `#[test]` and zero `#[bench]` items, so re-linking it under the
+# test / bench profiles is pure waste — cargo otherwise rebuilds it under
+# every profile (dev, test, bench) plus when `cargo clippy --all-targets`
+# checks them. Saves a link per non-dev profile; nothing else changes.
+test = false
+bench = false
 
 [features]
 # RES-067: opt-in Z3 SMT verification. Default off so the build only
