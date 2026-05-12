@@ -24,6 +24,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1224: fast-reject. The diagnostic only fires for functions
+    // whose name starts with `crash_`, so if none exists the
+    // `HashSet<String>` of every top-level function name (N string
+    // allocations plus bucket overhead) is pure waste. Programs
+    // without `crash_*` functions — basically everything in
+    // `examples/` and the test suite — get to skip the allocation
+    // entirely. Same shape as RES-1211 / RES-1214 / RES-1217 /
+    // RES-1218 / RES-1222.
+    let has_crash = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { name, .. } if name.starts_with("crash_")));
+    if !has_crash {
+        return Ok(());
+    }
     let names: HashSet<String> = stmts
         .iter()
         .filter_map(|s| {
