@@ -121,21 +121,27 @@ impl Context {
                 arguments,
                 ..
             } => {
-                if let Some(fn_name) = self.extract_identifier(function) {
-                    if self.extern_fns.contains(&fn_name) {
+                // RES-1511: borrow the callee identifier as `&str` instead
+                // of cloning it. `extract_identifier` previously returned
+                // an owned `String` so the warning branches could compare
+                // against `current_fn`; both lookups
+                // (`HashSet<String>::contains` and the equality check
+                // against `self.current_fn`) accept a `&str` directly via
+                // `Borrow<str>`, so the clone-per-call-site was wasted.
+                if let Some(fn_name) = extract_identifier(function) {
+                    if self.extern_fns.contains(fn_name) {
                         eprintln!(
                             "warning: opaque FFI call to '{}' in recovery body \
                             cannot be modeled as TLA+ action",
                             fn_name
                         );
-                    } else if let Some(ref current) = self.current_fn {
-                        #[allow(clippy::collapsible_if)]
-                        if &fn_name == current {
-                            eprintln!(
-                                "warning: function '{}' recursively calls itself in recovery body",
-                                current
-                            );
-                        }
+                    } else if let Some(current) = self.current_fn.as_deref()
+                        && fn_name == current
+                    {
+                        eprintln!(
+                            "warning: function '{}' recursively calls itself in recovery body",
+                            current
+                        );
                     }
                 }
                 for arg in arguments {
@@ -216,11 +222,15 @@ impl Context {
             _ => {}
         }
     }
+}
 
-    fn extract_identifier(&self, node: &Node) -> Option<String> {
-        match node {
-            Node::Identifier { name, .. } => Some(name.clone()),
-            _ => None,
-        }
+/// RES-1511: borrow the identifier name out of the AST node instead of
+/// cloning it. The previous shape returned `Option<String>` so every
+/// call site paid a `to_string()` for a value only used as a lookup key
+/// or for a single `eprintln!`.
+fn extract_identifier(node: &Node) -> Option<&str> {
+    match node {
+        Node::Identifier { name, .. } => Some(name.as_str()),
+        _ => None,
     }
 }
