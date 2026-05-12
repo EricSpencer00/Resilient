@@ -6131,6 +6131,14 @@ fn check_program_purity(
         }
     }
 
+    // RES-1296: short-circuit. The second pass walks every top-level
+    // statement and only descends into `Node::Function { pure: true,
+    // ... }`. If no `@pure` fn was found above, no descent ever
+    // fires — every iteration is wasted match-dispatch overhead.
+    if pure_fns.is_empty() {
+        return Ok(());
+    }
+
     // Second pass: check each pure fn's body.
     for stmt in statements {
         if let Node::Function {
@@ -7280,6 +7288,19 @@ fn check_program_effects(
     statements: &[crate::span::Spanned<Node>],
     source_path: &str,
 ) -> Result<(), String> {
+    // RES-1296: short-circuit. `collect_fn_effects` builds a
+    // name→effects HashMap by iterating every top-level statement,
+    // and the per-stmt loop below only enters its body for `Function`
+    // nodes with `effects.pure == true`. Programs that don't declare
+    // any pure fn — the overwhelming majority — pay for both passes
+    // and produce nothing useful. Pre-scan once before doing either
+    // and bail when no pure fn exists.
+    let has_pure_fn = statements
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { effects, .. } if effects.pure));
+    if !has_pure_fn {
+        return Ok(());
+    }
     let fn_effects = collect_fn_effects(statements);
     for stmt in statements {
         if let Node::Function {
