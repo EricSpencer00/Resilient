@@ -185,8 +185,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1505-perfn-counter-gate-clone",
-      "claimed_at": "2026-05-12T12:50:00Z"
+      "branch": "res-1525-pure-fns-borrow",
+      "claimed_at": "2026-05-12T13:50:00Z"
     },
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
