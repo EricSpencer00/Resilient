@@ -55,28 +55,41 @@ impl CallGraph {
         // boundary. Mirrors RES-1497 (transpose pre-size).
         let n = self.graph.len();
 
+        // RES-1514: borrow each node name as `&str` from
+        // `self.graph` / `transposed` rather than cloning into the
+        // `visited` set, the `finish_stack`, and each per-SCC `Vec`.
+        // The previous shape called `node.to_string()` four times per
+        // DFS visit (visited.insert, finish_stack.push, second-pass
+        // visited.insert, scc.push) — pure overhead since the source
+        // strings already live in `self.graph` / `transposed`. The
+        // owned `Vec<Vec<String>>` allocation only happens once at
+        // the result-conversion step, matching what the return type
+        // requires.
+
         // Step 1: DFS on original graph to get finish times (stack order).
-        let mut visited = HashSet::with_capacity(n);
-        let mut finish_stack: Vec<String> = Vec::with_capacity(n);
+        let mut visited: HashSet<&str> = HashSet::with_capacity(n);
+        let mut finish_stack: Vec<&str> = Vec::with_capacity(n);
         for node in self.graph.keys() {
-            if !visited.contains(node) {
-                dfs_finish_order(node, &self.graph, &mut visited, &mut finish_stack);
+            if !visited.contains(node.as_str()) {
+                dfs_finish_order(node.as_str(), &self.graph, &mut visited, &mut finish_stack);
             }
         }
 
         // Step 2: DFS on transposed graph in reverse finish order.
         let transposed = self.transpose();
-        let mut visited = HashSet::with_capacity(n);
-        let mut sccs = Vec::new();
+        let mut visited: HashSet<&str> = HashSet::with_capacity(n);
+        let mut sccs: Vec<Vec<&str>> = Vec::new();
         for node in finish_stack.into_iter().rev() {
-            if !visited.contains(&node) {
-                let mut scc = Vec::new();
-                dfs_collect(&node, &transposed, &mut visited, &mut scc);
+            if !visited.contains(node) {
+                let mut scc: Vec<&str> = Vec::new();
+                dfs_collect(node, &transposed, &mut visited, &mut scc);
                 sccs.push(scc);
             }
         }
 
-        sccs
+        sccs.into_iter()
+            .map(|scc| scc.into_iter().map(str::to_string).collect())
+            .collect()
     }
 
     /// Find mutual recursion cycles (non-trivial SCCs of size > 1).
@@ -249,39 +262,39 @@ fn collect_called_functions(
 }
 
 /// DFS to establish finish order (first DFS pass of Kosaraju).
-fn dfs_finish_order(
-    node: &str,
-    graph: &HashMap<String, HashSet<String>>,
-    visited: &mut HashSet<String>,
-    finish_stack: &mut Vec<String>,
+fn dfs_finish_order<'a>(
+    node: &'a str,
+    graph: &'a HashMap<String, HashSet<String>>,
+    visited: &mut HashSet<&'a str>,
+    finish_stack: &mut Vec<&'a str>,
 ) {
-    visited.insert(node.to_string());
+    visited.insert(node);
 
     if let Some(neighbors) = graph.get(node) {
         for neighbor in neighbors {
-            if !visited.contains(neighbor) {
-                dfs_finish_order(neighbor, graph, visited, finish_stack);
+            if !visited.contains(neighbor.as_str()) {
+                dfs_finish_order(neighbor.as_str(), graph, visited, finish_stack);
             }
         }
     }
 
-    finish_stack.push(node.to_string());
+    finish_stack.push(node);
 }
 
 /// DFS to collect SCC nodes (second DFS pass of Kosaraju on transposed graph).
-fn dfs_collect(
-    node: &str,
-    transposed: &HashMap<String, HashSet<String>>,
-    visited: &mut HashSet<String>,
-    scc: &mut Vec<String>,
+fn dfs_collect<'a>(
+    node: &'a str,
+    transposed: &'a HashMap<String, HashSet<String>>,
+    visited: &mut HashSet<&'a str>,
+    scc: &mut Vec<&'a str>,
 ) {
-    visited.insert(node.to_string());
-    scc.push(node.to_string());
+    visited.insert(node);
+    scc.push(node);
 
     if let Some(neighbors) = transposed.get(node) {
         for neighbor in neighbors {
-            if !visited.contains(neighbor) {
-                dfs_collect(neighbor, transposed, visited, scc);
+            if !visited.contains(neighbor.as_str()) {
+                dfs_collect(neighbor.as_str(), transposed, visited, scc);
             }
         }
     }
