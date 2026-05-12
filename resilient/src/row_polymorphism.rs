@@ -57,10 +57,15 @@ pub fn install(specs: Vec<RowSpec>) {
 }
 
 pub fn validate(fn_name: &str, fields: &[(String, String)]) -> Result<(), String> {
-    let specs = SPECS.read().ok().map(|g| g.clone()).unwrap_or_default();
-    let spec = match specs.get(fn_name) {
-        Some(s) => s,
-        None => return Ok(()),
+    // RES-1558: hold the read guard so the `HashMap<String, RowSpec>`
+    // (each spec owns a `Vec<(String, String)>`) doesn't get cloned
+    // just to look up one fn by name. Same lock-then-borrow shape as
+    // RES-1544 / RES-1547 / RES-1549 / RES-1552.
+    let Ok(g) = SPECS.read() else {
+        return Ok(());
+    };
+    let Some(spec) = g.get(fn_name) else {
+        return Ok(());
     };
     for (req_name, req_ty) in &spec.required {
         let found = fields.iter().any(|(n, t)| n == req_name && t == req_ty);
