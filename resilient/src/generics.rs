@@ -239,11 +239,16 @@ fn check_node(node: &Node) -> Result<(), String> {
             // canonical body-consistency violation.
             let tp_set: std::collections::HashSet<&str> =
                 type_params.iter().map(String::as_str).collect();
-            let generic_locals: std::collections::HashSet<String> = parameters
+            // RES-1523: borrow each generic-typed parameter name
+            // as `&str` from the AST rather than cloning. The set
+            // is only used for `contains(name)` lookups inside
+            // `identifier_in_set` — the cloned `String` keys were
+            // pure overhead. Same pattern as RES-1495 / RES-1500 etc.
+            let generic_locals: std::collections::HashSet<&str> = parameters
                 .iter()
                 .filter_map(|(ty, pname)| {
                     if tp_set.contains(ty.as_str()) {
-                        Some(pname.clone())
+                        Some(pname.as_str())
                     } else {
                         None
                     }
@@ -264,7 +269,7 @@ fn check_body_for_constraints(
     body: &Node,
     fn_name: &str,
     type_params: &[String],
-    generic_locals: &std::collections::HashSet<String>,
+    generic_locals: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
     match body {
         Node::Block { stmts, .. } => {
@@ -338,9 +343,9 @@ fn check_body_for_constraints(
 
 /// True when `node` is a bare `Identifier { name }` whose name is in
 /// the supplied set.
-fn identifier_in_set(node: &Node, names: &std::collections::HashSet<String>) -> bool {
+fn identifier_in_set(node: &Node, names: &std::collections::HashSet<&str>) -> bool {
     if let Node::Identifier { name, .. } = node {
-        names.contains(name)
+        names.contains(name.as_str())
     } else {
         false
     }
