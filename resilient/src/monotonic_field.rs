@@ -21,7 +21,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::visit;
+use crate::uniqueness_walk::{any_node, visit};
 
 const MONO_PREFIXES: &[&str] = &["last_", "latest_", "max_", "monotonic_"];
 const MONO_SUFFIXES: &[&str] = &["_seq", "_clock", "_epoch", "_tick"];
@@ -30,6 +30,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1262: fast-reject. The per-stmt `visit` walks every top-level
+    // statement's full AST looking for a `FieldAssignment` whose field
+    // matches `is_monotonic_field`. For programs without any such
+    // assignment (the overwhelming majority of `cargo test` inputs and
+    // the entire `examples/` tree), every visit produces nothing. Pre-
+    // scan the program once via `any_node` (RES-1238 made this
+    // early-terminating) and skip the loop entirely.
+    let has_monotonic_assign = any_node(program, |n| match n {
+        Node::FieldAssignment { field, .. } => is_monotonic_field(field),
+        _ => false,
+    });
+    if !has_monotonic_assign {
+        return Ok(());
+    }
     for stmt in stmts {
         visit(&stmt.node, &mut |n| {
             if let Node::FieldAssignment {

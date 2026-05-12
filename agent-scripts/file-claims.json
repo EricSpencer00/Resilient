@@ -119,6 +119,10 @@
     "resilient/src/secret_erasure.rs": {
       "branch": "res-1256-secret-erasure-fast-reject",
       "claimed_at": "2026-05-12T03:39:06Z"
+    },
+    "resilient/src/monotonic_field.rs": {
+      "branch": "res-1262-monotonic-fast-reject",
+      "claimed_at": "2026-05-12T03:53:13Z"
     }
   }
 }
