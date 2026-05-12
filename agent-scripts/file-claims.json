@@ -43,6 +43,10 @@
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1211-isr-fast-reject",
       "claimed_at": "2026-05-12T01:57:48Z"
+    },
+    "resilient/src/incremental_verify.rs": {
+      "branch": "res-1210-incremental-verify-dead-work",
+      "claimed_at": "2026-05-12T01:53:15Z"
     }
   }
 }
