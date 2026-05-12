@@ -318,13 +318,16 @@ fn prove_with_axioms_and_timeout_in(
     // solver. Without the axiom the solver treats `len_xs` as an
     // unconstrained Int, which is too loose to prove
     // `len(xs) > 0 → len(xs) >= 1`.
-    let mut len_args: BTreeSet<String> = BTreeSet::new();
+    // RES-1528: borrow each `len(<arg>)` ident name as `&str` from
+    // the formula AST instead of cloning into a `BTreeSet<String>`.
+    // The set is iterated to (a) build the `len_axioms` Z3 vec and
+    // (b) emit `(declare-const len_X Int)` / `(assert (>= len_X 0))`
+    // lines into the SMT cert. Both consumers only read the name —
+    // the owned `String` keys were pure overhead, paid on *every*
+    // Z3 prove call across the entire typecheck. Mirror of RES-1427
+    // for the tuple element.
+    let mut len_args: BTreeSet<&str> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
-    // RES-1427: build `len_axioms` as `Vec<Bool<'_>>` (not
-    // `Vec<(String, Bool<'_>)>`) — every consumer destructures with
-    // `for (_, axiom) in &len_axioms { ... }`, throwing away the
-    // string. Dropping the unused tuple element eliminates one
-    // `String::clone` per arg per Z3 prove call.
     let len_axioms: Vec<Bool<'_>> = len_args
         .iter()
         .map(|arg| {
@@ -389,7 +392,7 @@ fn prove_with_axioms_and_timeout_in(
         // referenced *only* via `len(a)` (and not via index) keep
         // the historical behaviour — `len_a` Int const, no array
         // declaration needed.
-        let mut arr_args: BTreeSet<String> = BTreeSet::new();
+        let mut arr_args: BTreeSet<&str> = BTreeSet::new();
         collect_array_args(expr, &mut arr_args);
 
         // RES-1383: write the SMT-LIB cert via `writeln!` into `smt2`
@@ -533,13 +536,16 @@ fn prove_tautology_with_axioms_and_timeout_in(
 
     // Identical len-axiom and user-axiom setup as the full prover;
     // only the second `check()` (contradiction) is omitted.
-    let mut len_args: BTreeSet<String> = BTreeSet::new();
+    // RES-1528: borrow each `len(<arg>)` ident name as `&str` from
+    // the formula AST instead of cloning into a `BTreeSet<String>`.
+    // The set is iterated to (a) build the `len_axioms` Z3 vec and
+    // (b) emit `(declare-const len_X Int)` / `(assert (>= len_X 0))`
+    // lines into the SMT cert. Both consumers only read the name —
+    // the owned `String` keys were pure overhead, paid on *every*
+    // Z3 prove call across the entire typecheck. Mirror of RES-1427
+    // for the tuple element.
+    let mut len_args: BTreeSet<&str> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
-    // RES-1427: build `len_axioms` as `Vec<Bool<'_>>` (not
-    // `Vec<(String, Bool<'_>)>`) — every consumer destructures with
-    // `for (_, axiom) in &len_axioms { ... }`, throwing away the
-    // string. Dropping the unused tuple element eliminates one
-    // `String::clone` per arg per Z3 prove call.
     let len_axioms: Vec<Bool<'_>> = len_args
         .iter()
         .map(|arg| {
@@ -576,7 +582,7 @@ fn prove_tautology_with_axioms_and_timeout_in(
     // `prove_with_axioms_and_timeout` would have.
     let mut idents: BTreeSet<String> = BTreeSet::new();
     collect_int_identifiers(expr, &mut idents);
-    let mut arr_args: BTreeSet<String> = BTreeSet::new();
+    let mut arr_args: BTreeSet<&str> = BTreeSet::new();
     collect_array_args(expr, &mut arr_args);
 
     // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
@@ -992,11 +998,11 @@ fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
 /// certificate generator can emit
 /// `(declare-const arr_<name> (Array Int Int))`. Mirrors the shape
 /// of `collect_len_args`.
-fn collect_array_args(node: &Node, out: &mut BTreeSet<String>) {
+fn collect_array_args<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::IndexExpression { target, index, .. } => {
             if let Node::Identifier { name, .. } = target.as_ref() {
-                out.insert(name.clone());
+                out.insert(name.as_str());
             }
             collect_array_args(index, out);
         }
@@ -1199,7 +1205,7 @@ fn is_len_call(function: &Node, arguments: &[Node]) -> bool {
 /// a `len(<id>)` call within `node`. Returns the ARG names
 /// (not the synthesized `len_<arg>` z3 names) so callers can
 /// format the axiom / certificate consistently.
-fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
+fn collect_len_args<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::CallExpression {
             function,
@@ -1207,7 +1213,7 @@ fn collect_len_args(node: &Node, out: &mut BTreeSet<String>) {
             ..
         } if is_len_call(function, arguments) => {
             if let Node::Identifier { name, .. } = &arguments[0] {
-                out.insert(name.clone());
+                out.insert(name.as_str());
             }
         }
         Node::PrefixExpression { right, .. } => {
@@ -2200,12 +2206,9 @@ mod tests {
     #[test]
     fn collect_len_args_finds_all_references() {
         let expr = infix(infix(len_call("xs"), "+", len_call("ys")), ">", int_lit(0));
-        let mut out = BTreeSet::new();
+        let mut out: BTreeSet<&str> = BTreeSet::new();
         collect_len_args(&expr, &mut out);
-        assert_eq!(
-            out,
-            ["xs".to_string(), "ys".to_string()].into_iter().collect()
-        );
+        assert_eq!(out, ["xs", "ys"].into_iter().collect());
     }
 
     #[test]
@@ -2224,7 +2227,7 @@ mod tests {
             span: crate::span::Span::default(),
         };
         let expr = infix(infix(foo_call, "+", int_lit(1)), ">", int_lit(0));
-        let mut out = BTreeSet::new();
+        let mut out: BTreeSet<&str> = BTreeSet::new();
         collect_len_args(&expr, &mut out);
         assert!(out.is_empty());
     }
@@ -2531,12 +2534,9 @@ mod tests {
             "+",
             index_expr(ident("b"), ident("j")),
         );
-        let mut out = BTreeSet::new();
+        let mut out: BTreeSet<&str> = BTreeSet::new();
         collect_array_args(&expr, &mut out);
-        assert_eq!(
-            out,
-            ["a".to_string(), "b".to_string()].into_iter().collect()
-        );
+        assert_eq!(out, ["a", "b"].into_iter().collect());
     }
 
     #[test]
@@ -2545,9 +2545,9 @@ mod tests {
         // inside the body; collector must recurse.
         let body = infix(index_expr(ident("xs"), ident("i")), ">=", int(0));
         let q = forall_range("i", int(0), len_call("xs"), body);
-        let mut out = BTreeSet::new();
+        let mut out: BTreeSet<&str> = BTreeSet::new();
         collect_array_args(&q, &mut out);
-        assert_eq!(out, ["xs".to_string()].into_iter().collect());
+        assert_eq!(out, ["xs"].into_iter().collect());
     }
 
     #[test]
