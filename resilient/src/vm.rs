@@ -667,11 +667,14 @@ fn run_inner(
                 if stack.len() < arity {
                     return Err(VmError::EmptyStack);
                 }
-                // Args were pushed left-to-right; pop rightmost first, then reverse.
-                let mut args: Vec<crate::Value> = (0..arity)
-                    .map(|_| stack.pop().expect("checked above"))
-                    .collect();
-                args.reverse();
+                // RES-1459: drain the contiguous top-`arity` span instead
+                // of pop+reverse. Args were pushed left-to-right, so
+                // `stack[len-arity..len]` is already in source order;
+                // `drain` yields them in that order — no `reverse()`
+                // needed. Same shape as the existing `MakeArray` arm
+                // (line ~736).
+                let split_at = stack.len() - arity;
+                let args: Vec<crate::Value> = stack.drain(split_at..).collect();
                 let result = crate::ffi_trampolines::call_foreign(sym, &args)
                     .map_err(VmError::ForeignCallFailed)?;
                 stack.push(result);
@@ -715,10 +718,10 @@ fn run_inner(
                 if stack.len() < n {
                     return Err(VmError::EmptyStack);
                 }
-                let mut args: Vec<Value> = (0..n)
-                    .map(|_| stack.pop().expect("checked above"))
-                    .collect();
-                args.reverse();
+                // RES-1459: drain instead of pop+reverse — see CallForeign
+                // arm above for the same justification.
+                let split_at = stack.len() - n;
+                let args: Vec<Value> = stack.drain(split_at..).collect();
                 let result = func(&args).map_err(VmError::BuiltinCallFailed)?;
                 stack.push(result);
             }
@@ -1595,10 +1598,10 @@ fn h_call_foreign(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     if state.stack.len() < arity {
         return Err(VmError::EmptyStack);
     }
-    let mut args: Vec<crate::Value> = (0..arity)
-        .map(|_| state.stack.pop().expect("checked above"))
-        .collect();
-    args.reverse();
+    // RES-1459: drain instead of pop+reverse — see the match-dispatch
+    // CallForeign arm in run_inner for the justification.
+    let split_at = state.stack.len() - arity;
+    let args: Vec<crate::Value> = state.stack.drain(split_at..).collect();
     let result =
         crate::ffi_trampolines::call_foreign(sym, &args).map_err(VmError::ForeignCallFailed)?;
     state.stack.push(result);
@@ -1637,10 +1640,10 @@ fn h_call_builtin(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     if state.stack.len() < n {
         return Err(VmError::EmptyStack);
     }
-    let mut args: Vec<Value> = (0..n)
-        .map(|_| state.stack.pop().expect("checked above"))
-        .collect();
-    args.reverse();
+    // RES-1459: drain instead of pop+reverse — same as CallForeign /
+    // match-dispatch CallBuiltin above.
+    let split_at = state.stack.len() - n;
+    let args: Vec<Value> = state.stack.drain(split_at..).collect();
     let result = func(&args).map_err(VmError::BuiltinCallFailed)?;
     state.stack.push(result);
     Ok(Step::Continue)
