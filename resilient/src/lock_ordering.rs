@@ -66,16 +66,23 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             collect_pairs(name, body, &mut pair_sites);
         }
     }
-    let mut reported: HashSet<(String, String)> = HashSet::new();
+    // RES-1524: borrow lock-name pairs into the dedup set instead
+    // of cloning. The `pair_sites` map already owns the strings;
+    // `reported` only checks "have I warned on this canonical
+    // pair before". Same pattern as RES-1495 / RES-1500 / RES-1520
+    // applied to a tuple key. The `key_ba` lookup also doesn't
+    // need owned strings — `(&str, &str)` works via `Borrow` on
+    // tuple-of-borrows.
+    let mut reported: HashSet<(&str, &str)> = HashSet::new();
     for ((a, b), fns_ab) in &pair_sites {
         let key_ba = (b.clone(), a.clone());
         if let Some(fns_ba) = pair_sites.get(&key_ba) {
-            let canon = if a < b {
-                (a.clone(), b.clone())
+            let canon: (&str, &str) = if a < b {
+                (a.as_str(), b.as_str())
             } else {
-                (b.clone(), a.clone())
+                (b.as_str(), a.as_str())
             };
-            if !reported.insert(canon.clone()) {
+            if !reported.insert(canon) {
                 continue;
             }
             eprintln!(
