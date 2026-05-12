@@ -38,6 +38,26 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1218: fast-reject. The transitive-blocking analysis below
+    // only fires for functions whose name ends in one of the
+    // `_bound{N}` suffixes — the per-function `visit(body, ...)`
+    // walk that builds `callees` + `blocking_calls` is dead work for
+    // every other program. The overwhelming majority of `cargo test`
+    // inputs declare zero `_bound{N}` functions, so a cheap O(N)
+    // suffix scan over the top-level statement list short-circuits
+    // the entire AST walk in that case. Mirrors RES-1211's
+    // `isr_call_graph::check` fast-reject (which used the same shape
+    // for `is_isr_name`).
+    let has_bound_suffix = stmts.iter().any(|s| {
+        if let Node::Function { name, .. } = &s.node {
+            SUFFIXES.iter().any(|(suffix, _)| name.ends_with(*suffix))
+        } else {
+            false
+        }
+    });
+    if !has_bound_suffix {
+        return Ok(());
+    }
     let mut callees: HashMap<String, Vec<String>> = HashMap::new();
     let mut blocking_calls: HashMap<String, usize> = HashMap::new();
     let mut decls: Vec<String> = Vec::new();
