@@ -193,8 +193,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1350-typechecker-builtin-env-cache",
-      "claimed_at": "2026-05-12T07:18:36Z"
+      "branch": "res-1354-fold-const-bool-short-circuit",
+      "claimed_at": "2026-05-12T07:30:00Z"
     }
   }
 }
