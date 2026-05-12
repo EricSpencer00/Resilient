@@ -116,7 +116,32 @@ pub fn refine_int(value: i64, refinement_name: &str) -> Result<i64, String> {
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    install(collect_specs());
+    // RES-1302: skip the `install` call when the current program
+    // declares no `#[refinement]` attributes. The `install` helper
+    // *replaces* the process-global `REFINEMENTS` vector — calling
+    // it with an empty list wipes whatever the previous compilation
+    // (or, in `cargo test`, a parallel test that called `install`
+    // directly under `feature_attrs::lock_for_test()`) set.
+    //
+    // The race: `refine_int_enforces_predicate` holds
+    // `feature_attrs::lock_for_test()` and calls `install([Positive])`
+    // directly. That lock guards `ATTR_REGISTRY`, not `REFINEMENTS`.
+    // A parallel test that parses + typechecks a program with no
+    // refinement attribute lands here, where `collect_specs()`
+    // returns `[]`, and the unconditional `install(vec![])` clears
+    // `REFINEMENTS` between the test's install and its
+    // `refine_int(value, "Positive")` lookup. The lookup then
+    // returns `None`, `refine_int` passes the value through, and
+    // the `assert!(refine_int(-1, "Positive").is_err())` assertion
+    // fails. Skipping the call when the input is empty avoids the
+    // wipe; production compilation only mutates the global when the
+    // *current* program declares refinements, which is the only
+    // case the global is needed for that program anyway.
+    let specs = collect_specs();
+    if specs.is_empty() {
+        return Ok(());
+    }
+    install(specs);
     Ok(())
 }
 
