@@ -127,6 +127,10 @@
     "resilient/src/numeric_units.rs": {
       "branch": "res-1267-numeric-units-fast-reject",
       "claimed_at": "2026-05-12T03:58:58Z"
+    },
+    "resilient/src/age_bounded_data.rs": {
+      "branch": "res-1271-age-bounded-fast-reject",
+      "claimed_at": "2026-05-12T04:06:34Z"
     }
   }
 }
