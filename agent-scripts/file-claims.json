@@ -169,8 +169,8 @@
       "claimed_at": "2026-05-12T05:18:02Z"
     },
     "resilient/src/distributed_invariants.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
+      "branch": "res-1526-distributed-actors-borrow",
+      "claimed_at": "2026-05-12T13:55:00Z"
     },
     "resilient/src/ghost_types.rs": {
       "branch": "res-1308-skip-empty-install-8-passes",
