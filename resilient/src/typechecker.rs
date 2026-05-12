@@ -4830,10 +4830,25 @@ impl TypeChecker {
                 // remember the value so future call sites can use it.
                 // Otherwise REMOVE any prior binding (shadowing kills
                 // the old constant).
-                let no_b: HashMap<String, i64> = HashMap::new();
-                if let Some(v) = fold_const_i64(value, &no_b)
-                    .or_else(|| fold_const_i64(value, &self.const_bindings))
-                {
+                //
+                // RES-1390: single fold under the current const bindings.
+                // The previous shape was
+                //
+                //     let no_b = HashMap::new();
+                //     fold_const_i64(value, &no_b).or_else(|| fold_const_i64(value, &self.const_bindings))
+                //
+                // — the `&no_b` probe was redundant. `fold_const_i64`
+                // only consults `bindings` in the `Node::Identifier`
+                // arm; every other arm folds (literals / prefix /
+                // infix recursion) or returns `None` without touching
+                // the map. For a pure-literal value, both calls return
+                // the same `Some(v)`; for an identifier-referencing
+                // value, the `&no_b` call returns `None` and the
+                // `&self.const_bindings` call is what produces the
+                // result. Either way the simpler single-call shape
+                // gives identical results — and saves the empty
+                // HashMap allocation per LetStatement type-checked.
+                if let Some(v) = fold_const_i64(value, &self.const_bindings) {
                     self.const_bindings.insert(name.clone(), v);
                 } else {
                     self.const_bindings.remove(name);
