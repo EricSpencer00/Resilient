@@ -58,12 +58,19 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_bound_suffix {
         return Ok(());
     }
-    let mut callees: HashMap<String, Vec<String>> = HashMap::new();
-    let mut blocking_calls: HashMap<String, usize> = HashMap::new();
-    let mut decls: Vec<String> = Vec::new();
+    // RES-1511: borrow each top-level fn name as `&str` from the
+    // AST into the outer `callees` / `blocking_calls` HashMaps and
+    // the `decls` Vec. The inner `cs: Vec<String>` keeps owned
+    // Strings because `uniqueness_walk::visit` uses a HRTB closure
+    // that can't bind the AST lifetime (same limitation as
+    // RES-1509 for `isr_call_graph::collect_callees`). Mirror of
+    // RES-1495 / RES-1500 / RES-1503 / RES-1507 / RES-1509.
+    let mut callees: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut blocking_calls: HashMap<&str, usize> = HashMap::new();
+    let mut decls: Vec<&str> = Vec::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
-            decls.push(name.clone());
+            decls.push(name.as_str());
             let mut cs = Vec::new();
             let mut bn = 0;
             visit(body, &mut |n| {
@@ -77,11 +84,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     }
                 }
             });
-            callees.insert(name.clone(), cs);
-            blocking_calls.insert(name.clone(), bn);
+            callees.insert(name.as_str(), cs);
+            blocking_calls.insert(name.as_str(), bn);
         }
     }
-    for d in &decls {
+    for &d in &decls {
         let Some(budget) = SUFFIXES
             .iter()
             .find(|(s, _)| d.ends_with(*s))
@@ -106,8 +113,8 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 // flow through `q` and `seen` without per-iteration `String::clone`.
 fn transitive_blocking<'a>(
     start: &'a str,
-    callees: &'a HashMap<String, Vec<String>>,
-    bn: &HashMap<String, usize>,
+    callees: &'a HashMap<&'a str, Vec<String>>,
+    bn: &HashMap<&str, usize>,
 ) -> usize {
     let mut total = 0;
     let mut seen: HashSet<&'a str> = HashSet::new();
