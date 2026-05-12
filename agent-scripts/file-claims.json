@@ -243,6 +243,10 @@
     "resilient/src/crash_only.rs": {
       "branch": "res-1520-crash-only-name-borrow",
       "claimed_at": "2026-05-12T13:33:00Z"
+    },
+    "resilient/src/deadlock_freedom.rs": {
+      "branch": "res-1522-deadlock-actors-borrow",
+      "claimed_at": "2026-05-12T13:34:45Z"
     }
   }
 }
