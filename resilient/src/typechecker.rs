@@ -5144,7 +5144,15 @@ impl TypeChecker {
                 receive_handlers,
                 ..
             } => {
-                let saved_env = self.env.clone();
+                // RES-1323: mirror the block / function / loop env-scope
+                // pattern (one `.clone()` + `mem::swap` for restore) instead
+                // of the previous `let saved_env = self.env.clone()` shape
+                // that paid two full env clones per actor (one outer, one
+                // per handler). Lookups during state-field / always /
+                // eventually checking fall through the enclosed `outer` on
+                // miss, so the saved chain stays observable for free.
+                let mut actor_env = TypeEnvironment::new_enclosed(self.env.clone());
+                std::mem::swap(&mut self.env, &mut actor_env);
                 let mut resolved_fields: Vec<(String, Type)> = Vec::new();
                 for (ty, field, init) in state_fields {
                     // RES-777: reject reference types in actor state
@@ -5195,7 +5203,12 @@ impl TypeChecker {
                     }
                 }
                 for handler in receive_handlers {
-                    let handler_saved = self.env.clone();
+                    // RES-1323: per-handler scope via mem::swap (see the
+                    // outer comment above) — one clone of the actor env
+                    // for the enclosed handler env's outer, then swap in
+                    // and out instead of cloning + restoring.
+                    let mut handler_env = TypeEnvironment::new_enclosed(self.env.clone());
+                    std::mem::swap(&mut self.env, &mut handler_env);
                     self.env.set("self".to_string(), Type::Struct(name.clone()));
                     for (pty, pname) in &handler.parameters {
                         // RES-777: reject reference types in handler payloads
@@ -5215,9 +5228,9 @@ impl TypeChecker {
                         let _ = self.check_node(e)?;
                     }
                     let _ = self.check_node(&handler.body)?;
-                    self.env = handler_saved;
+                    std::mem::swap(&mut self.env, &mut handler_env);
                 }
-                self.env = saved_env;
+                std::mem::swap(&mut self.env, &mut actor_env);
                 Ok(Type::Void)
             }
 
