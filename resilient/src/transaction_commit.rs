@@ -38,6 +38,19 @@ const CLOSE_METHODS: &[&str] = &["commit", "rollback", "abort", "finish", "close
 const CLOSE_FREE_FNS: &[&str] = &["commit", "rollback", "abort_tx", "commit_tx"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1218: fast-reject — see watchdog_feed for the same pattern.
+    // Skip the closure dispatch + per-fn allocation for programs
+    // that declare no `Transaction`/`Tx`-typed parameter.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let has_tx = stmts.iter().any(|s| {
+        matches!(&s.node, Node::Function { parameters, .. }
+            if parameters.iter().any(|(ty, _)| TX_TYPES.contains(&ty.as_str())))
+    });
+    if !has_tx {
+        return Ok(());
+    }
     for_each_function(program, |fname, params, body| {
         let txs: Vec<&str> = params
             .iter()

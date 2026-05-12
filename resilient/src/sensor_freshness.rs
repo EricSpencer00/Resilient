@@ -28,6 +28,19 @@ const FRESH_METHODS: &[&str] = &["is_fresh", "fresh", "is_recent", "stamp"];
 const FRESH_FREE_FNS: &[&str] = &["is_fresh", "assert_fresh"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1218: fast-reject — see watchdog_feed for the same pattern.
+    // Skip the closure dispatch + per-fn allocation for programs
+    // that declare no `Sensor*`-typed parameter.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let has_sensor = stmts.iter().any(|s| {
+        matches!(&s.node, Node::Function { parameters, .. }
+            if parameters.iter().any(|(ty, _)| SENSOR_TYPE_PREFIXES.iter().any(|p| ty.starts_with(*p))))
+    });
+    if !has_sensor {
+        return Ok(());
+    }
     for_each_function(program, |name, params, body| {
         let sensors: Vec<&str> = params
             .iter()

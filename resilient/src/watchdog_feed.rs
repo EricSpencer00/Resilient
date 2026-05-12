@@ -33,6 +33,25 @@ const FEED_METHODS: &[&str] = &["feed", "kick", "pet", "reset"];
 const FEED_FREE_FNS: &[&str] = &["feed_watchdog", "kick_watchdog", "pet_watchdog"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1218: fast-reject. The pass only emits diagnostics for
+    // functions whose parameter list contains a `Watchdog`-typed
+    // entry. Programs that declare no such parameter pay the
+    // `for_each_function` closure dispatch plus the per-function
+    // `.collect::<Vec>()` allocation for every function — pure
+    // waste in the overwhelming majority of `examples/` and the
+    // test suite. Scan the top-level parameter lists once up front
+    // and bail; programs that do take a Watchdog hit the same
+    // code path they did before.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let has_watchdog = stmts.iter().any(|s| {
+        matches!(&s.node, Node::Function { parameters, .. }
+            if parameters.iter().any(|(ty, _)| WATCHDOG_TYPES.contains(&ty.as_str())))
+    });
+    if !has_watchdog {
+        return Ok(());
+    }
     for_each_function(program, |name, params, body| {
         let watchdogs: Vec<&str> = params
             .iter()

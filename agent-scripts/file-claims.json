@@ -55,6 +55,18 @@
     "resilient/src/bounded_blocking.rs": {
       "branch": "res-1218-fast-reject-extras",
       "claimed_at": "2026-05-12T02:10:00Z"
+    },
+    "resilient/src/watchdog_feed.rs": {
+      "branch": "res-1218-param-type-fast-reject",
+      "claimed_at": "2026-05-12T02:11:38Z"
+    },
+    "resilient/src/sensor_freshness.rs": {
+      "branch": "res-1218-param-type-fast-reject",
+      "claimed_at": "2026-05-12T02:11:38Z"
+    },
+    "resilient/src/transaction_commit.rs": {
+      "branch": "res-1218-param-type-fast-reject",
+      "claimed_at": "2026-05-12T02:11:38Z"
     }
   }
 }
