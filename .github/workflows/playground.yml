@@ -41,16 +41,20 @@ jobs:
             curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
           fi
 
+      # RES-1248: rust-aware cache strips incremental compilation
+      # artifacts before saving (smaller cache, faster restore) and
+      # keys off rustc version + Cargo.lock + Cargo.toml + the active
+      # feature set automatically. Matches the caching strategy
+      # ci.yml's `default_ci` / `z3_ci` / `feature_matrix` jobs and
+      # embedded.yml (post-RES-1198) already use. The `wasm32-unknown-
+      # unknown` target is keyed by rust-cache automatically; the
+      # explicit `key:` disambiguator keeps the cache scope readable
+      # in the Actions UI.
       - name: cache cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            playground/target
-          key: ${{ runner.os }}-playground-${{ hashFiles('playground/Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-playground-
+          workspaces: playground
+          key: playground-wasm
 
       - name: build playground (release, size-checked)
         run: |
