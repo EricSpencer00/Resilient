@@ -124,6 +124,21 @@ pub fn detect_cycles(graph: &ActorGraph) -> Vec<Vec<String>> {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1291: fast-reject. `build` collects an actor→actors graph
+    // by scanning every top-level statement, filtering ActorDecls,
+    // then walking each ActorDecl's handler bodies for `send` calls.
+    // Programs with zero `Node::ActorDecl` produce an empty graph
+    // (no nodes, no edges) and `detect_cycles` finds nothing. The
+    // overwhelming majority of programs — every fixture in
+    // `examples/` that doesn't model an actor network, every
+    // standalone-function unit test — pay this scan for zero output.
+    // Pre-scan with the early-terminating `any_node` (RES-1238) and
+    // skip both passes when no ActorDecl exists.
+    let has_actor =
+        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::ActorDecl { .. }));
+    if !has_actor {
+        return Ok(());
+    }
     let g = build(program);
     let cycles = detect_cycles(&g);
     for c in &cycles {
