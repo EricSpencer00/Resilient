@@ -69,9 +69,16 @@ jobs:
         with:
           workspaces: resilient
 
-      - name: cargo build
+      # RES-1263 + RES-1300: build with `--timings` so Cargo writes
+      # `target/cargo-timings/cargo-timing-<timestamp>.html` during
+      # the first (and only) compile of the workspace. The earlier
+      # wiring did a *second* `cargo build` after `clippy` / `test`
+      # / `fmt` solely to drop the report — wasted re-link of the
+      # 55k-line `resilient` lib on every PR. The merged invocation
+      # produces an identical timing artifact.
+      - name: cargo build --timings
         if: needs.changes.outputs.docs_only != 'true'
-        run: cargo build --locked --verbose
+        run: cargo build --locked --verbose --timings
 
       - name: cargo clippy
         if: needs.changes.outputs.docs_only != 'true'
@@ -85,19 +92,6 @@ jobs:
         if: needs.changes.outputs.docs_only != 'true'
         run: cargo fmt --check
 
-      # RES-1263: emit a `cargo build --timings` HTML report from a clean
-      # build and upload it as an artifact. The next round of speedup PRs
-      # needs profiling data (per-crate compile time, frontend vs codegen
-      # split, critical-path graph) rather than static reads of `Cargo.toml`
-      # to know where to spend effort. Cargo writes
-      # `target/cargo-timings/cargo-timing-<timestamp>.html` per invocation;
-      # we upload the whole directory glob so re-runs accumulate inside the
-      # same artifact. `if-no-files-found: ignore` keeps the step silent on
-      # docs-only fast paths where cargo never ran. 14-day retention matches
-      # GitHub's default for CI artifacts.
-      - name: cargo build --timings
-        if: needs.changes.outputs.docs_only != 'true'
-        run: cargo build --locked --timings
       - name: Upload cargo --timings report
         if: needs.changes.outputs.docs_only != 'true' && always()
         uses: actions/upload-artifact@v4
