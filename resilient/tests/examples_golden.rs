@@ -36,8 +36,21 @@ fn list_examples() -> Vec<PathBuf> {
     out
 }
 
+/// RES-1186: prefer a platform-specific sibling
+/// `<stem>.expected.<os>.txt` (`os` = `std::env::consts::OS`, e.g.
+/// `macos`, `linux`, `windows`) when present; fall back to the default
+/// `<stem>.expected.txt`. Lets a single example carry an OS-specific
+/// override for cases where the underlying libc rounds float printing
+/// differently (Apple Silicon libsystem_m vs Linux glibc both compute
+/// `f64::exp_m1(1.0)`'s shortest round-trip decimal at a different ULP,
+/// for instance — see `precision_math.expected.macos.txt`).
 fn expected_path(example: &Path) -> PathBuf {
     let stem = example.file_stem().and_then(|s| s.to_str()).unwrap();
+    let platform_specific =
+        example.with_file_name(format!("{stem}.expected.{}.txt", std::env::consts::OS));
+    if platform_specific.exists() {
+        return platform_specific;
+    }
     example.with_file_name(format!("{stem}.expected.txt"))
 }
 
