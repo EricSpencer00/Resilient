@@ -23,6 +23,23 @@ use crate::uniqueness_walk::{any_node, for_each_function, visit};
 const AUDIT_FNS: &[&str] = &["audit_log", "journal", "record_event", "emit_audit"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1254: fast-reject. The per-function `visit(body)` walk only
+    // does anything when it finds a `FieldAssignment` whose field name
+    // starts with `audited_` or ends with `_audited`. For programs
+    // that have no such fields (the overwhelming majority of test
+    // inputs and the entire `examples/` tree), every per-function
+    // visit produces nothing. Pre-scan the whole program once via
+    // `any_node` (RES-1238 made this early-terminating) and skip the
+    // pass entirely when no audited field exists.
+    let has_audited_field = any_node(program, |n| match n {
+        Node::FieldAssignment { field, .. } => {
+            field.starts_with("audited_") || field.ends_with("_audited")
+        }
+        _ => false,
+    });
+    if !has_audited_field {
+        return Ok(());
+    }
     for_each_function(program, |fname, _params, body| {
         let mut has_audited_write = false;
         visit(body, &mut |n| {
