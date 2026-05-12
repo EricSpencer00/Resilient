@@ -25733,17 +25733,33 @@ fn execute_file(
     // RES-1202: hash inline (was `cert_sign::sha256_hex`) so the
     // incremental cache stays independent of the z3-feature-gated
     // `cert_sign` module.
-    let source_hash = {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(contents.as_bytes());
-        format!("{:x}", hasher.finalize())
+    //
+    // RES-1334: gate the SHA-256 + cache lookup on `!no_cache`. The
+    // hash is consumed only by `cache::check` (here) and
+    // `cache::write_entry` (post-compile, gated on the same flag).
+    // When `--no-cache` is set both consumers short-circuit and the
+    // hash is dead work — full-source SHA-256 is microseconds for
+    // small files and pushes into milliseconds for 10k+-line inputs,
+    // so every `--no-cache` invocation paid that cost only to throw
+    // the result away. Bind the hash + cache_dir as `Option`s so the
+    // single post-compile write site can read them back.
+    let (source_hash, cache_dir) = if !no_cache {
+        let hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(contents.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let dir = cache::cache_dir_for(filename);
+        // Consume the result so a future phase can branch on it
+        // without changing the call-site signature. Suppresses the
+        // unused-result warning while keeping the check exercised
+        // on every cache-enabled run.
+        let _cache_hit = cache::check(&dir, &hash) == cache::CacheResult::Hit;
+        (Some(hash), Some(dir))
+    } else {
+        (None, None)
     };
-    let cache_dir = cache::cache_dir_for(filename);
-    // Consume the result so a future phase can branch on it without
-    // changing the call-site signature. Suppresses the unused-result
-    // warning while keeping the check exercised on every run.
-    let _cache_hit = !no_cache && cache::check(&cache_dir, &source_hash) == cache::CacheResult::Hit;
 
     let lexer = Lexer::new(contents.clone());
     let mut parser = Parser::new(lexer);
@@ -25985,8 +26001,8 @@ fn execute_file(
             let result = jit_backend::run(&program).map_err(|e| format!("{}: {}", filename, e))?;
             println!("{}", result);
             // RES-355: write cache entry on JIT success.
-            if !no_cache {
-                cache::write_entry(&cache_dir, &source_hash);
+            if let (Some(hash), Some(dir)) = (&source_hash, &cache_dir) {
+                cache::write_entry(dir, hash);
             }
             return Ok(());
         }
@@ -26036,8 +26052,8 @@ fn execute_file(
             println!("{}", result);
         }
         // RES-355: write cache entry on VM success.
-        if !no_cache {
-            cache::write_entry(&cache_dir, &source_hash);
+        if let (Some(hash), Some(dir)) = (&source_hash, &cache_dir) {
+            cache::write_entry(dir, hash);
         }
         return Ok(());
     }
@@ -26128,8 +26144,13 @@ fn execute_file(
     // that this source compiled successfully. Errors here are
     // silently ignored — a write failure must never turn a
     // successful compilation into a failure.
-    if !no_cache {
-        cache::write_entry(&cache_dir, &source_hash);
+    //
+    // RES-1334: `source_hash` and `cache_dir` are only populated
+    // when `!no_cache`; the `let-else` lift keeps the existing
+    // skip-on-no-cache behaviour and lets the SHA up at the top of
+    // the function avoid the unused work.
+    if let (Some(hash), Some(dir)) = (&source_hash, &cache_dir) {
+        cache::write_entry(dir, hash);
     }
 
     Ok(())
