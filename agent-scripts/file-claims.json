@@ -103,6 +103,10 @@
     ".github/workflows/playground.yml": {
       "branch": "res-1248-playground-rust-cache",
       "claimed_at": "2026-05-12T03:10:39Z"
+    },
+    "resilient/src/degraded_mode.rs": {
+      "branch": "res-1252-degraded-mode-fast-reject",
+      "claimed_at": "2026-05-12T03:27:30Z"
     }
   }
 }
