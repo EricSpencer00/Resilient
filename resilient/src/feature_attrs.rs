@@ -66,7 +66,18 @@ pub struct AttrRecord {
 /// One item may carry several attributes — they're appended in order.
 type AttrMap = HashMap<String, Vec<AttrRecord>>;
 
-static ATTR_REGISTRY: RwLock<Option<AttrMap>> = RwLock::new(None);
+/// RES-1303: dual-index registry. `by_item` keeps the historic
+/// item-keyed view that `snapshot()` exposes; `by_kind` is the
+/// reverse index `find_kind` reads from for O(matching-entries)
+/// lookup instead of O(total-registry-entries). Both indexes are
+/// maintained transactionally by `record` / `reset`.
+#[derive(Debug, Default, Clone)]
+struct Registry {
+    by_item: AttrMap,
+    by_kind: HashMap<String, Vec<(String, AttrRecord)>>,
+}
+
+static ATTR_REGISTRY: RwLock<Option<Registry>> = RwLock::new(None);
 
 /// 50-feature pass: any test that mutates the global attribute
 /// registry (i.e. calls `record` / `reset` / `find_kind` against
@@ -98,7 +109,7 @@ pub fn lock_for_test() -> MutexGuard<'static, ()> {
 #[allow(dead_code)]
 pub fn reset() {
     if let Ok(mut g) = ATTR_REGISTRY.write() {
-        *g = Some(AttrMap::new());
+        *g = Some(Registry::default());
     }
 }
 
@@ -107,8 +118,15 @@ pub fn reset() {
 /// feature module decides whether duplicates are an error).
 pub fn record(item_name: &str, record: AttrRecord) {
     if let Ok(mut g) = ATTR_REGISTRY.write() {
-        let map = g.get_or_insert_with(AttrMap::new);
-        map.entry(item_name.to_string()).or_default().push(record);
+        let reg = g.get_or_insert_with(Registry::default);
+        reg.by_item
+            .entry(item_name.to_string())
+            .or_default()
+            .push(record.clone());
+        reg.by_kind
+            .entry(record.name.clone())
+            .or_default()
+            .push((item_name.to_string(), record));
     }
 }
 
@@ -124,40 +142,34 @@ pub fn snapshot() -> AttrMap {
     ATTR_REGISTRY
         .read()
         .ok()
-        .and_then(|g| g.clone())
+        .and_then(|g| g.as_ref().map(|r| r.by_item.clone()))
         .unwrap_or_default()
 }
 
 /// Lookup all attributes of a given kind across all items. Returns
 /// `(item_name, AttrRecord)` pairs.
 ///
-/// RES-1224: read the registry under its `RwLock` without snapshotting.
-/// The previous implementation called `snapshot()`, which deep-cloned
-/// the whole `HashMap<String, Vec<AttrRecord>>` (and every `AttrRecord`
-/// inside, each carrying two owned `String`s), then filtered. With
-/// ~25 analysis passes calling `find_kind` per typecheck, every call
-/// allocated a full-registry clone on the way to discarding most of
-/// it. Walking the map directly and cloning only matching entries
-/// keeps the same return shape while allocating only the bytes the
-/// caller actually consumes. The lock is held read-only and the walk
-/// is bounded by `map.len()`, so concurrent readers (parallel tests)
-/// don't serialise.
+/// RES-1303: O(matching-entries) lookup via the kind-indexed reverse
+/// map. The previous implementation (RES-1224) walked every
+/// `(item, attrs)` pair in the item-keyed map filtering by
+/// `a.name == kind`. With ~31 analysis passes calling `find_kind`
+/// per typecheck and a registry that accumulates entries across
+/// parses, that cost scaled linearly with the *total* records in
+/// the registry regardless of whether the queried kind existed.
+/// Maintaining a parallel `by_kind` index in `record` collapses each
+/// lookup to a single `HashMap::get` + `Vec::clone` of only the
+/// matching entries — pays only for what the caller consumes.
+///
+/// The lock is held read-only so concurrent readers (parallel tests)
+/// don't serialise; insertion order within a kind is preserved.
 pub fn find_kind(kind: &str) -> Vec<(String, AttrRecord)> {
     let Ok(g) = ATTR_REGISTRY.read() else {
         return Vec::new();
     };
-    let Some(map) = g.as_ref() else {
+    let Some(reg) = g.as_ref() else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for (item, attrs) in map {
-        for a in attrs {
-            if a.name == kind {
-                out.push((item.clone(), a.clone()));
-            }
-        }
-    }
-    out
+    reg.by_kind.get(kind).cloned().unwrap_or_default()
 }
 
 /// The set of attribute names this registry recognises. Membership is

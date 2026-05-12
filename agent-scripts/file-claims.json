@@ -84,10 +84,6 @@
       "branch": "res-1228-rate-limit-fast-reject",
       "claimed_at": "2026-05-12T02:24:23Z"
     },
-    "resilient/src/feature_attrs.rs": {
-      "branch": "res-1224-feature-attrs-no-snapshot",
-      "claimed_at": "2026-05-12T02:18:56Z"
-    },
     "resilient/src/priority_inheritance.rs": {
       "branch": "res-1232-priority-fast-reject",
       "claimed_at": "2026-05-12T02:35:05Z"
@@ -155,6 +151,10 @@
     "resilient/src/verifier_loop_invariants.rs": {
       "branch": "res-1297-verifier-loop-inv-fast-reject",
       "claimed_at": "2026-05-12T04:57:49Z"
+    },
+    "resilient/src/feature_attrs.rs": {
+      "branch": "res-1303-feature-attrs-kind-index",
+      "claimed_at": "2026-05-12T05:08:27Z"
     }
   }
 }
