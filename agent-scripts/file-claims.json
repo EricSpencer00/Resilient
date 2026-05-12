@@ -251,6 +251,10 @@
     "resilient/src/typestate_types.rs": {
       "branch": "res-1549-typestate-validate-call-borrow",
       "claimed_at": "2026-05-12T14:27:56Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-1533-lint-l0001-borrow",
+      "claimed_at": "2026-05-12T14:35:00Z"
     }
   }
 }
