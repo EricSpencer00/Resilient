@@ -175,8 +175,15 @@ fn collect_refs(node: &Node, out: &mut HashMap<String, u32>) {
     }
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    let _ = analyze(program);
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1206: this pass historically called `analyze(program)` and
+    // immediately discarded the returned `VibeDebtReport`. The real
+    // consumer (`autopilot::run` at autopilot.rs:42) calls `analyze`
+    // directly when it needs the report, so the work here was
+    // unobservable: a HashMap allocation, an AST walk, and a Vec
+    // population, all dropped on function exit. The entry point is
+    // kept so the `EXTENSION_PASSES` block in `typechecker.rs` stays
+    // undisturbed and a future use can flow data through this slot.
     Ok(())
 }
 

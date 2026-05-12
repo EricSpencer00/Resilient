@@ -82,7 +82,14 @@ pub fn run_property(spec: &PropertySpec) -> PropertyResult {
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    let _ = collect();
+    // RES-1206: this pass historically called `collect()` and
+    // discarded the returned `Vec<PropertySpec>`. `collect` reads
+    // the static `feature_attrs` registry (no AST walk needed) and
+    // returns the property-test specs; the real consumer (the
+    // `--run-property-tests` driver) calls `collect` directly. The
+    // work here was unobservable. The entry point is kept so the
+    // `EXTENSION_PASSES` block in `typechecker.rs` stays undisturbed
+    // and a future use can flow data through this slot.
     Ok(())
 }
 

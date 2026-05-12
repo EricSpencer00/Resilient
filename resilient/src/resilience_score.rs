@@ -216,8 +216,16 @@ fn count_body_statements(node: &Node) -> usize {
     }
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    let _ = score_program(program);
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1206: this pass historically called `score_program` and
+    // discarded the returned `Vec<ResilienceScore>`. The real
+    // consumers (the `--score` CLI flag and any external integrator)
+    // call `score_program` directly when they need the scores, so the
+    // work here was unobservable: a call-reference HashMap build, an
+    // AST walk, and a Vec population, all dropped on function exit.
+    // The entry point is kept so the `EXTENSION_PASSES` block in
+    // `typechecker.rs` stays undisturbed and a future use can flow
+    // data through this slot.
     Ok(())
 }
 
