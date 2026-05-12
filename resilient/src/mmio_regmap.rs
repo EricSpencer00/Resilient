@@ -84,7 +84,14 @@ pub fn lookup(struct_name: &str) -> Option<MmioRegmap> {
 }
 
 pub(crate) fn check(_program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1306: gate `install` (and the overlap loop, which is
+    // already a no-op for empty maps) on the non-empty case —
+    // avoids a wasted RwLock write per compilation and removes the
+    // wipe-on-empty test race shape documented in RES-1302.
     let maps = collect();
+    if maps.is_empty() {
+        return Ok(());
+    }
     install(maps.clone());
     // Detect overlapping address ranges — a real bug.
     for (i, a) in maps.iter().enumerate() {
