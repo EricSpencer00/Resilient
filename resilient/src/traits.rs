@@ -535,11 +535,17 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Pass 3: validate generic-bound annotations refer to known traits,
     // and that direct calls passing a struct-typed literal as a bounded
     // type parameter satisfy the bound.
-    let fns_by_name: HashMap<String, &Node> = stmts
+    // RES-1500: borrow each function name as `&str` instead of
+    // cloning it into the HashMap key. The map's only consumer is
+    // `walk_call_sites`, which performs `fns_by_name.get(callee_name)`
+    // with a `&str` lookup (RES-1483). The owned `String` key was
+    // pure overhead — same pattern applied to `power_contracts` /
+    // `wcet_contracts` / `stack_contracts` in RES-1495.
+    let fns_by_name: HashMap<&str, &Node> = stmts
         .iter()
         .filter_map(|s| {
             if let Node::Function { name, .. } = &s.node {
-                Some((name.clone(), &s.node as &Node))
+                Some((name.as_str(), &s.node as &Node))
             } else {
                 None
             }
@@ -597,7 +603,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 /// corresponding type parameter.
 fn walk_call_sites(
     node: &Node,
-    fns_by_name: &HashMap<String, &Node>,
+    fns_by_name: &HashMap<&str, &Node>,
     traits: &HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)>,
     type_methods: &HashMap<String, HashMap<String, usize>>,
     explicit_impls: &HashSet<(String, String)>,
