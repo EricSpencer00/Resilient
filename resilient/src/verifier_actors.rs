@@ -233,7 +233,7 @@ fn straight_line_post(body: &Node, state_name: &str) -> Option<Node> {
     };
 
     let stmts = flatten_body(body)?;
-    for stmt in &stmts {
+    for stmt in stmts {
         match stmt {
             Node::FieldAssignment {
                 target,
@@ -268,7 +268,13 @@ fn straight_line_post(body: &Node, state_name: &str) -> Option<Node> {
 /// Unwrap nested `Block` nodes into a flat `Vec` of direct
 /// statements. Returns `None` if anything other than an assignment
 /// appears at a nesting level — callers treat that as Unsupported.
-fn flatten_body(body: &Node) -> Option<Vec<Node>> {
+///
+/// RES-1541: returns `Vec<&Node>` borrowed from `body` so the caller
+/// (`straight_line_post`) can pattern-match on each statement without
+/// paying a recursive `Node` clone per `FieldAssignment` /
+/// `Assignment`. The only consumer reads the entries through
+/// `target.as_ref()` / `value.as_ref()` and never moves them.
+fn flatten_body(body: &Node) -> Option<Vec<&Node>> {
     match body {
         Node::Block { stmts, .. } => {
             let mut out = Vec::new();
@@ -278,7 +284,7 @@ fn flatten_body(body: &Node) -> Option<Vec<Node>> {
                         out.extend(flatten_body(s)?);
                     }
                     Node::FieldAssignment { .. } | Node::Assignment { .. } => {
-                        out.push(s.clone());
+                        out.push(s);
                     }
                     // ExpressionStatement wrapping a pure expression
                     // could be allowed too, but we conservatively
@@ -288,7 +294,7 @@ fn flatten_body(body: &Node) -> Option<Vec<Node>> {
             }
             Some(out)
         }
-        Node::FieldAssignment { .. } | Node::Assignment { .. } => Some(vec![body.clone()]),
+        Node::FieldAssignment { .. } | Node::Assignment { .. } => Some(vec![body]),
         _ => None,
     }
 }
