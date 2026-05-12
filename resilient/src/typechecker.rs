@@ -7376,17 +7376,24 @@ fn is_known_pure_builtin(name: &str) -> bool {
 pub fn infer_fn_effects(
     statements: &[crate::span::Spanned<Node>],
 ) -> std::collections::HashMap<String, bool> {
-    // Step 1: collect user-fn names + their body references.
-    let mut fn_bodies: std::collections::HashMap<String, &Node> = std::collections::HashMap::new();
+    // RES-1503: build the intermediate fn-name maps keyed by `&str`,
+    // borrowing from each `Node::Function::name`. The previous shape
+    // allocated owned `String`s for every fn name three times: once
+    // for `fn_bodies`, once for the `effects` init clone, and once
+    // per fixpoint flip. The return type stays `HashMap<String, bool>`
+    // because `self.stats.fn_effects` is an owned field — the
+    // conversion happens once at the end (one `to_string()` per fn,
+    // matching what the return type already costs).
+    let mut fn_bodies: std::collections::HashMap<&str, &Node> = std::collections::HashMap::new();
     for stmt in statements {
         if let Node::Function { name, body, .. } = &stmt.node {
-            fn_bodies.insert(name.clone(), body.as_ref());
+            fn_bodies.insert(name.as_str(), body.as_ref());
         }
     }
 
     // Step 2: initialize every fn as pure.
-    let mut effects: std::collections::HashMap<String, bool> =
-        fn_bodies.keys().map(|n| (n.clone(), false)).collect();
+    let mut effects: std::collections::HashMap<&str, bool> =
+        fn_bodies.keys().map(|n| (*n, false)).collect();
 
     // Step 3: fixpoint — iterate body-walks until no effect flips.
     // Upper bound: one flip per fn, so at most |fns| passes.
@@ -7394,11 +7401,11 @@ pub fn infer_fn_effects(
     for _ in 0..max_passes {
         let mut changed = false;
         for (name, body) in &fn_bodies {
-            if *effects.get(name).unwrap_or(&false) {
+            if *effects.get(*name).unwrap_or(&false) {
                 continue; // already IO — nothing to update
             }
             if body_reaches_io(body, &effects) {
-                effects.insert(name.clone(), true);
+                effects.insert(*name, true);
                 changed = true;
             }
         }
@@ -7407,13 +7414,16 @@ pub fn infer_fn_effects(
         }
     }
     effects
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
 }
 
 /// RES-192: body-level check for IO reachability under the
 /// current `effects` snapshot. Used inside the fixpoint loop —
 /// each iteration treats `effects` as a frozen best-estimate and
 /// asks "does this body reach anything marked IO today?".
-fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<String, bool>) -> bool {
+fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<&str, bool>) -> bool {
     match node {
         Node::Block { stmts, .. } => stmts.iter().any(|s| body_reaches_io(s, effects)),
         Node::LetStatement { value, .. } | Node::StaticLet { value, .. } => {
@@ -7479,7 +7489,7 @@ fn body_reaches_io(node: &Node, effects: &std::collections::HashMap<String, bool
                 // best-estimate effect. Unknown user fn (rare —
                 // typechecker would have rejected earlier) →
                 // conservatively IO.
-                match effects.get(callee) {
+                match effects.get(callee.as_str()) {
                     Some(&true) => return true,
                     Some(&false) => return false,
                     None => return true, // unknown = IO (conservative)
