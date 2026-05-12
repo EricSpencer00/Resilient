@@ -121,8 +121,8 @@
       "claimed_at": "2026-05-12T04:06:34Z"
     },
     "resilient/src/lock_ordering.rs": {
-      "branch": "res-1275-lock-ordering-fast-reject",
-      "claimed_at": "2026-05-12T04:11:27Z"
+      "branch": "res-1524-lock-ordering-reported-borrow",
+      "claimed_at": "2026-05-12T13:45:00Z"
     },
     "resilient/src/unsafe_check.rs": {
       "branch": "res-1281-unsafe-check-fast-reject",
