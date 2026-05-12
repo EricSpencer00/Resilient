@@ -188,13 +188,9 @@
       "branch": "res-1317-named-args-fast-reject",
       "claimed_at": "2026-05-12T05:37:55Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1326-audit-stats-opt-in",
-      "claimed_at": "2026-05-12T06:05:30Z"
-    },
     "resilient/src/lib.rs": {
-      "branch": "res-1326-audit-stats-opt-in",
-      "claimed_at": "2026-05-12T06:05:30Z"
+      "branch": "res-1332-skip-lints-when-not-safety-critical",
+      "claimed_at": "2026-05-12T06:22:22Z"
     }
   }
 }
