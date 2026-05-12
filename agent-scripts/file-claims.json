@@ -143,6 +143,10 @@
     "resilient/src/cluster_verifier.rs": {
       "branch": "res-1285-cluster-fast-reject",
       "claimed_at": "2026-05-12T04:31:08Z"
+    },
+    "resilient/src/generics.rs": {
+      "branch": "res-1288-generics-fast-reject",
+      "claimed_at": "2026-05-12T04:38:37Z"
     }
   }
 }
