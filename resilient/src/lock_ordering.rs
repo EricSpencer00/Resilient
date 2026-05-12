@@ -27,7 +27,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::visit;
+use crate::uniqueness_walk::{any_node, visit};
 use std::collections::{HashMap, HashSet};
 
 const LOCK_FNS: &[&str] = &["lock", "acquire", "mutex_lock"];
@@ -37,6 +37,29 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1275: fast-reject. `collect_pairs` walks every function
+    // body looking for `lock`/`acquire`/`mutex_lock` calls (or names
+    // prefixed `lock_`/`unlock_`). If the program has no such call
+    // anywhere, the per-function `pair_sites` map is always empty
+    // and the inversion-check loop does nothing — but we still
+    // walked every body. Pre-scan once via `any_node` (RES-1238
+    // early-terminating) and skip the entire pass when no
+    // lock-style call exists.
+    let has_lock_call = any_node(program, |n| match n {
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => {
+                LOCK_FNS.contains(&name.as_str())
+                    || UNLOCK_FNS.contains(&name.as_str())
+                    || name.starts_with("lock_")
+                    || name.starts_with("unlock_")
+            }
+            _ => false,
+        },
+        _ => false,
+    });
+    if !has_lock_call {
+        return Ok(());
+    }
     let mut pair_sites: HashMap<(String, String), Vec<String>> = HashMap::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {

@@ -131,6 +131,10 @@
     "resilient/src/age_bounded_data.rs": {
       "branch": "res-1271-age-bounded-fast-reject",
       "claimed_at": "2026-05-12T04:06:34Z"
+    },
+    "resilient/src/lock_ordering.rs": {
+      "branch": "res-1275-lock-ordering-fast-reject",
+      "claimed_at": "2026-05-12T04:11:27Z"
     }
   }
 }
