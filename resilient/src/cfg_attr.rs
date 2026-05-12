@@ -86,15 +86,24 @@ pub fn set_active_config(cfg: CfgConfig) {
     }
 }
 
-/// Read the currently installed config. Returns the default (no features,
-/// no target) when nothing has been installed — that way unit tests that
-/// drive the parser directly don't need to set anything up.
-pub fn active_config() -> CfgConfig {
-    ACTIVE_CFG
-        .read()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_default()
+/// RES-1509: evaluate a predicate against the active config without
+/// cloning. The previous shape went through a `pub active_config()` that
+/// returned an owned `CfgConfig` clone — including the
+/// `features: HashSet<String>` — on every read, then dropped it after
+/// one `predicate.eval(&cfg)` call. For programs with N `#[cfg(...)]`
+/// attributes and a feature set of size S, that's N O(S) wasted
+/// HashSet clones per parse. Borrowing through the `RwLock` for the
+/// duration of `eval` keeps the predicate evaluation single-allocation-
+/// free in the common path. Falls back to the default config when the
+/// lock is poisoned or the slot is `None` (parser unit tests that
+/// don't install a config).
+fn eval_predicate(predicate: &CfgPredicate) -> bool {
+    if let Ok(guard) = ACTIVE_CFG.read()
+        && let Some(cfg) = guard.as_ref()
+    {
+        return predicate.eval(cfg);
+    }
+    predicate.eval(&CfgConfig::default())
 }
 
 /// Reset the active config. Used by `#[cfg(test)]` to keep tests
@@ -156,7 +165,9 @@ impl CfgAttribute {
     /// Build from a predicate, evaluating against the currently installed
     /// config. Centralised so every call site uses the same evaluator.
     pub fn from_predicate(predicate: CfgPredicate) -> Self {
-        let is_active = predicate.eval(&active_config());
+        // RES-1509: borrow the active config in-place instead of
+        // cloning the full `CfgConfig` per attribute.
+        let is_active = eval_predicate(&predicate);
         CfgAttribute {
             predicate,
             is_active,
