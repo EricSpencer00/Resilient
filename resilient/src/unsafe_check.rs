@@ -23,12 +23,34 @@
 //!   rather than as a guard inside the call typecheck arm.
 
 use crate::Node;
+use crate::uniqueness_walk::any_node;
 use crate::volatile::VOLATILE_INTRINSIC_NAMES;
 
 /// Walk `program`, returning a list of human-readable diagnostics
 /// for every privileged-builtin call that's not inside an `unsafe`
 /// block. Empty list means clean.
+///
+/// RES-1281: fast-reject. The recursive descent through every Node
+/// variant only produces a diagnostic when it hits a
+/// `CallExpression` whose function-name `Identifier` is in
+/// `VOLATILE_INTRINSIC_NAMES`. For programs that never call any
+/// volatile intrinsic — the overwhelming majority of `cargo test`
+/// inputs and the entire `examples/` tree outside the embedded
+/// smoke tests — the walk visits every Node only to return an
+/// empty `errs`. Pre-scan once via `any_node` (RES-1238 made this
+/// early-terminating) and return immediately when no volatile
+/// intrinsic call exists.
 pub fn check_program(program: &Node) -> Vec<String> {
+    let has_volatile_call = any_node(program, |n| match n {
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => VOLATILE_INTRINSIC_NAMES.contains(&name.as_str()),
+            _ => false,
+        },
+        _ => false,
+    });
+    if !has_volatile_call {
+        return Vec::new();
+    }
     let mut errs: Vec<String> = Vec::new();
     walk(program, false, &mut errs);
     errs
