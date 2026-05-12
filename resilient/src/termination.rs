@@ -130,13 +130,17 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let source = std::fs::read_to_string(source_path).unwrap_or_default();
     let lines: Vec<&str> = source.lines().collect();
 
-    // Build function location map for error reporting
-    let mut fn_info: HashMap<String, (usize, usize)> = HashMap::new();
+    // Build function location map for error reporting.
+    // RES-1538: borrow each fn name as `&str` from the AST into the
+    // lookup map. The map is only queried for span info — the owned
+    // String keys were pure overhead. Same pattern as RES-1495 /
+    // RES-1500 etc.
+    let mut fn_info: HashMap<&str, (usize, usize)> = HashMap::new();
     for spanned in stmts {
         if let Node::Function { name, span, .. } = &spanned.node
             && !name.is_empty()
         {
-            fn_info.insert(name.clone(), (span.start.line, span.start.column));
+            fn_info.insert(name.as_str(), (span.start.line, span.start.column));
         }
     }
 
@@ -147,7 +151,7 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Check mutual recursion cycles
     for cycle in cycles {
         for name in &cycle {
-            if let Some((fn_line, col)) = fn_info.get(name) {
+            if let Some((fn_line, col)) = fn_info.get(name.as_str()) {
                 if *fn_line < 2 {
                     let cycle_str = cycle.join(" → ");
                     return Err(format!(
