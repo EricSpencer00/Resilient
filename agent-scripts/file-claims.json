@@ -75,6 +75,10 @@
     "resilient/src/idempotent_handler.rs": {
       "branch": "res-1217-handler-suffix-fast-reject",
       "claimed_at": "2026-05-12T02:07:46Z"
+    },
+    "resilient/src/rate_limit_static.rs": {
+      "branch": "res-1228-rate-limit-fast-reject",
+      "claimed_at": "2026-05-12T02:24:23Z"
     }
   }
 }
