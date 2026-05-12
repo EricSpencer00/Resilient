@@ -201,8 +201,8 @@
       "claimed_at": "2026-05-12T09:18:45Z"
     },
     "resilient/src/traits.rs": {
-      "branch": "res-1391-traits-fast-reject",
-      "claimed_at": "2026-05-12T09:32:26Z"
+      "branch": "res-1500-traits-fns-borrow",
+      "claimed_at": "2026-05-12T12:35:00Z"
     },
     "resilient/src/inline.rs": {
       "branch": "res-1396-inline-chunk-fast-reject",
