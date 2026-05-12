@@ -267,6 +267,10 @@
     "resilient/src/termination.rs": {
       "branch": "res-1538-termination-fn-info-borrow",
       "claimed_at": "2026-05-12T15:15:14Z"
+    },
+    "resilient/src/lock_priority.rs": {
+      "branch": "res-1539-lock-priority-borrow",
+      "claimed_at": "2026-05-12T15:25:00Z"
     }
   }
 }
