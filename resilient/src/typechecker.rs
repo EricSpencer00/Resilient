@@ -1001,7 +1001,11 @@ pub struct TypeChecker {
     /// every declared variant is covered, and by `match_pattern_binding_types`
     /// (future PR) to produce proper payload-field types instead of
     /// the current `Any` fallback.
-    pub(crate) enum_decls: HashMap<String, Vec<crate::EnumVariant>>,
+    /// RES-1366: stored behind `Rc` so the Match-pattern reads at
+    /// typechecker.rs:5098 / 5868 tick a single refcount instead of
+    /// deep-cloning the `Vec<EnumVariant>` (which can carry nested
+    /// `EnumPayload::Tuple(Vec<String>)` payloads).
+    pub(crate) enum_decls: HashMap<String, std::rc::Rc<Vec<crate::EnumVariant>>>,
     /// RES-128: alias name → raw target type name. Populated by
     /// every `TypeAlias` node. Consulted by `parse_type_name` which
     /// walks the chain (with a `seen` set for cycle detection) and
@@ -3484,12 +3488,12 @@ impl TypeChecker {
             certificates: Vec::new(),
             struct_fields: HashMap::new(),
             enum_decls: {
-                let mut m: std::collections::HashMap<String, Vec<crate::EnumVariant>> =
+                let mut m: std::collections::HashMap<String, std::rc::Rc<Vec<crate::EnumVariant>>> =
                     std::collections::HashMap::new();
                 let s = crate::span::Span::default();
                 m.insert(
                     "Option".to_string(),
-                    vec![
+                    std::rc::Rc::new(vec![
                         crate::EnumVariant {
                             name: "Some".to_string(),
                             span: s,
@@ -3500,11 +3504,11 @@ impl TypeChecker {
                             span: s,
                             payload: crate::EnumPayload::None,
                         },
-                    ],
+                    ]),
                 );
                 m.insert(
                     "Result".to_string(),
-                    vec![
+                    std::rc::Rc::new(vec![
                         crate::EnumVariant {
                             name: "Ok".to_string(),
                             span: s,
@@ -3515,7 +3519,7 @@ impl TypeChecker {
                             span: s,
                             payload: crate::EnumPayload::None,
                         },
-                    ],
+                    ]),
                 );
                 m
             },
@@ -6114,7 +6118,10 @@ impl TypeChecker {
             // exhaustiveness and so `match_pattern_binding_types`
             // (future PR) can resolve payload-field types.
             Node::EnumDecl { name, variants, .. } => {
-                self.enum_decls.insert(name.clone(), variants.clone());
+                // RES-1366: wrap in `Rc` so per-Match reads clone a
+                // single refcount.
+                self.enum_decls
+                    .insert(name.clone(), std::rc::Rc::new(variants.clone()));
                 Ok(Type::Void)
             }
             // RES-406: unsafe block. The volatile-call gate (compile-
