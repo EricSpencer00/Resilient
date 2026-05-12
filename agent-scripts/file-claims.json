@@ -1,16 +1,16 @@
 {
   "claims": {
-    "resilient/src/lib.rs": {
-      "branch": "res-1182-rotate-signum",
-      "claimed_at": "2026-05-11T19:50:00Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1182-rotate-signum",
-      "claimed_at": "2026-05-11T19:50:00Z"
-    },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1188-z3-query-cache",
-      "claimed_at": "2026-05-12T00:55:04Z"
+      "branch": "res-1194-z3-tautology-only",
+      "claimed_at": "2026-05-12T01:13:16Z"
+    },
+    "resilient/src/bounds_check.rs": {
+      "branch": "res-1194-z3-tautology-only",
+      "claimed_at": "2026-05-12T01:13:16Z"
+    },
+    "resilient/src/verifier_loop_invariants.rs": {
+      "branch": "res-1194-z3-tautology-only",
+      "claimed_at": "2026-05-12T01:13:16Z"
     }
   }
 }

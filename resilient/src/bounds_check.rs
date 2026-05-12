@@ -408,12 +408,19 @@ fn build_bounds_goal(target_name: &str, index: &Node) -> Node {
 /// Feature-gated Z3 shim. With `--features z3` compiled in we call
 /// the real axiom-aware prover; otherwise only the literal-fold fast
 /// path in `check_index` can succeed.
+///
+/// RES-1194: the caller only acts on `Some(true)` to elide the
+/// runtime check; `Some(false)` (contradiction) and `None` (uncertain)
+/// both keep the check, so we use `prove_tautology_with_axioms_and_timeout`
+/// — that skips the contradiction-phase `solver.check()` entirely.
+/// The contract reduces from `Option<bool>` to `Some(true)` / `None`,
+/// which matches what `check_index` already does on the result.
 #[cfg(feature = "z3")]
 fn try_prove(goal: &Node, axioms: &[Node]) -> Option<bool> {
     let bindings: HashMap<String, i64> = HashMap::new();
-    let (verdict, _cert, _cx, _timed_out) =
-        crate::verifier_z3::prove_with_axioms_and_timeout(goal, &bindings, axioms, 5000);
-    verdict
+    let (proven, _cert, _timed_out) =
+        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(goal, &bindings, axioms, 5000);
+    if proven { Some(true) } else { None }
 }
 
 #[cfg(not(feature = "z3"))]
