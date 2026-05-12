@@ -87,8 +87,14 @@ pub fn install(specs: Vec<SessionSpec>) {
 }
 
 pub fn validate_step(channel: &str, step: usize, op: &SessionOp) -> Result<(), String> {
-    let specs = SPECS.read().ok().map(|g| g.clone()).unwrap_or_default();
-    let spec = specs
+    // RES-1552: hold the read guard so we don't clone the whole
+    // `HashMap<String, SessionSpec>` (each spec owns a `Vec<SessionOp>`)
+    // just to look up one channel by name. Same lock-then-borrow
+    // shape as RES-1544 / RES-1547 / RES-1549.
+    let g = SPECS
+        .read()
+        .map_err(|_| format!("no session protocol for `{channel}`"))?;
+    let spec = g
         .get(channel)
         .ok_or_else(|| format!("no session protocol for `{channel}`"))?;
     let expected = spec.protocol.get(step).ok_or_else(|| {
