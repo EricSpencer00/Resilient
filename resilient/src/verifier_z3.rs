@@ -215,7 +215,56 @@ pub fn prove_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
-    Z3_CTX.with(|ctx| prove_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms))
+    // RES-1206: thread-local verdict cache. Builds frequently re-ask
+    // the verifier the same `(expr, bindings, axioms, timeout)` —
+    // identical bounds checks on different call sites that share an
+    // axiom set, the same `requires` clause re-checked at every
+    // function callsite, etc. Each cache hit short-circuits the full
+    // Z3 round trip (solver construction + formula assertion +
+    // solve), which is by far the dominant cost even after RES-1188
+    // (thread-local libz3 context) and RES-1194 (tautology fast
+    // path) already paid down the setup cost.
+    //
+    // Key shape: AST debug-print of every input, separated by `|`
+    // sentinels. `Node` doesn't derive `Hash`, so we lean on its
+    // `Debug` impl — slower than a structural hash but still O(AST
+    // size) per key, comfortably cheaper than the dispatch + solve
+    // it replaces on a hit, and on a miss the format cost is
+    // amortised against the Z3 work that follows. Lives in a
+    // `RefCell` inside a `thread_local!` to match the
+    // existing `Z3_CTX` ownership model — each test thread (and the
+    // CLI's main thread) keeps its own cache without cross-thread
+    // synchronisation.
+    //
+    // `bindings` is sorted into a `BTreeMap` before formatting so
+    // identical input maps produce identical keys regardless of
+    // `HashMap`'s nondeterministic iteration order — otherwise the
+    // cache would miss on semantically equal queries.
+    let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+    let key = format!("{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}");
+    if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
+    let result = Z3_CTX
+        .with(|ctx| prove_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms));
+    Z3_VERDICT_CACHE.with(|c| {
+        c.borrow_mut().insert(key, result.clone());
+    });
+    result
+}
+
+thread_local! {
+    /// RES-1206: see `prove_with_axioms_and_timeout`. Stays the lifetime
+    /// of the thread; reset between top-level compiles isn't needed
+    /// because the key includes the full input, so stale entries can
+    /// only be re-hit by an identical query (which would be correct
+    /// either way).
+    static Z3_VERDICT_CACHE: std::cell::RefCell<
+        std::collections::HashMap<
+            String,
+            (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
+        >,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 fn prove_with_axioms_and_timeout_in(

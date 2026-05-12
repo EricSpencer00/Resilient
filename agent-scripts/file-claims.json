@@ -1,17 +1,5 @@
 {
   "claims": {
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1194-z3-tautology-only",
-      "claimed_at": "2026-05-12T01:13:16Z"
-    },
-    "resilient/src/bounds_check.rs": {
-      "branch": "res-1194-z3-tautology-only",
-      "claimed_at": "2026-05-12T01:13:16Z"
-    },
-    "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-1194-z3-tautology-only",
-      "claimed_at": "2026-05-12T01:13:16Z"
-    },
     ".github/workflows/embedded.yml": {
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"
@@ -47,6 +35,10 @@
     "resilient/src/property_tests.rs": {
       "branch": "res-1206-kill-dead-work-checks",
       "claimed_at": "2026-05-12T01:43:21Z"
+    },
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1206-z3-verdict-cache",
+      "claimed_at": "2026-05-12T01:45:28Z"
     }
   }
 }
