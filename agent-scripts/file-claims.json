@@ -189,8 +189,8 @@
       "claimed_at": "2026-05-12T05:37:55Z"
     },
     "resilient/src/lib.rs": {
-      "branch": "res-1332-skip-lints-when-not-safety-critical",
-      "claimed_at": "2026-05-12T06:22:22Z"
+      "branch": "res-1338-skip-canonicalize-when-no-use",
+      "claimed_at": "2026-05-12T06:39:38Z"
     }
   }
 }
