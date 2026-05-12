@@ -185,8 +185,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1372-typeenv-outer-rc",
-      "claimed_at": "2026-05-12T08:45:01Z"
+      "branch": "res-1503-infer-fn-effects-borrow",
+      "claimed_at": "2026-05-12T12:40:00Z"
     },
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
