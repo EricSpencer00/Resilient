@@ -4344,22 +4344,17 @@ impl TypeChecker {
                     let mut cert_smt2: Option<String> = None;
                     let mut timed_out_flag = false;
                     if verdict.is_none() {
-                        // RES-354: use theory-aware prover.
-                        let (_v, _cert, _c, _timed_out) = {
-                            #[cfg(feature = "z3")]
-                            {
-                                z3_prove_with_cert_theory(
-                                    clause,
-                                    &no_bindings,
-                                    self.verifier_timeout_ms,
-                                    self.z3_theory,
-                                )
-                            }
-                            #[cfg(not(feature = "z3"))]
-                            {
-                                z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms)
-                            }
-                        };
+                        // RES-1330: drop the dead `z3_prove_with_cert_theory`
+                        // call that previously sat here. Its result was
+                        // bound to `(_v, _cert, _c, _timed_out)` and
+                        // never read — `z3_prove_with_axioms_and_cert`
+                        // below was already the load-bearing call (it
+                        // admits `requires` preconditions + leading
+                        // `assume(P)` as axioms, the only correct shape
+                        // for the recovery point per RES-222). The
+                        // theory-aware call without axioms would only
+                        // ever be strictly weaker than the axioms-aware
+                        // one, so dropping it doesn't change the verdict.
                         let (v, cert, c, t) = z3_prove_with_axioms_and_cert(
                             clause,
                             &no_bindings,
