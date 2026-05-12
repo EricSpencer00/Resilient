@@ -45,21 +45,34 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_rate_limited {
         return Ok(());
     }
-    let mut decls: Vec<String> = Vec::new();
+    // RES-1515: borrow the top-level fn names into `decls` as `&str`
+    // instead of cloning. The `counts` HashMap still needs owned
+    // String keys because `uniqueness_walk::visit` uses a HRTB
+    // closure that can't bind the outer AST lifetime (same
+    // limitation hit by RES-1509 / RES-1511). For the counts
+    // map, apply the RES-1505 entry-clone gate: only allocate
+    // when the callee is new, falling back to `get_mut` for repeat
+    // hits. Mirrors RES-1495 / RES-1500 / RES-1503 / RES-1507 /
+    // RES-1508 / RES-1509 / RES-1511.
+    let mut decls: Vec<&str> = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
-            decls.push(name.clone());
+            decls.push(name.as_str());
             visit(body, &mut |n| {
                 if let Node::CallExpression { function, .. } = n {
                     if let Node::Identifier { name: callee, .. } = function.as_ref() {
-                        *counts.entry(callee.clone()).or_default() += 1;
+                        if let Some(c) = counts.get_mut(callee.as_str()) {
+                            *c += 1;
+                        } else {
+                            counts.insert(callee.clone(), 1);
+                        }
                     }
                 }
             });
         }
     }
-    for d in &decls {
+    for &d in &decls {
         let limit = if ONCE_SUFFIXES.iter().any(|s| d.ends_with(*s)) {
             Some(1)
         } else if d.ends_with(FEW_SUFFIX) {
