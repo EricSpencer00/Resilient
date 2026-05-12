@@ -627,10 +627,14 @@ fn truncate_to(set: &mut BTreeSet<String>, len: usize) {
     if set.len() <= len {
         return;
     }
-    let drained: Vec<String> = set.iter().cloned().collect();
-    set.clear();
-    for name in drained.into_iter().take(len) {
-        set.insert(name);
+    // RES-1564: use `BTreeSet::split_off` to discard the tail in
+    // place. The previous shape cloned every entry into a Vec,
+    // cleared the set, and reinserted the prefix — N String clones
+    // plus N reinserts for an N-entry set. `split_off(&pivot)`
+    // splits the BTreeSet in-place; we clone exactly one String
+    // (the pivot at index `len`).
+    if let Some(pivot) = set.iter().nth(len).cloned() {
+        let _tail = set.split_off(&pivot);
     }
 }
 
