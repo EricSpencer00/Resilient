@@ -31,6 +31,7 @@
 
 use crate::{ActorHandler, Node};
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write as _;
 use z3::Sort;
 use z3::ast::{Array, Ast, BV, Bool, Int};
 
