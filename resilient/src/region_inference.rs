@@ -302,10 +302,23 @@ pub fn build_region_map(program: &crate::Node) -> RegionMap {
 
 /// EXTENSION_PASSES entry point — runs after type-checking.
 ///
-/// Builds the region map for the program. D8 wires call-site substitution
-/// into `check_region_aliasing` via `check_call_site_region_aliasing`.
-pub fn infer(program: &crate::Node, _source_path: &str) -> Result<(), String> {
-    let _map = build_region_map(program);
+/// RES-1202: this pass was originally a placeholder slot for the D2/D5
+/// inference work that landed in `build_region_map`. The function body
+/// historically called `build_region_map(program)` and immediately
+/// *discarded* the returned `RegionMap`, then returned `Ok(())`.
+///
+/// The actual consumer of the region map (the alias-aliasing check at
+/// `lib.rs:check_region_aliasing`) builds its own copy via
+/// `build_region_map(program)` when it needs one, so the work here was
+/// unobservable: no thread-local, no global, no I/O — just an
+/// allocation and a tree walk whose result was dropped on function
+/// exit. For a single type-check that meant walking the AST twice for
+/// region inference (once here, once at the consumer) instead of once.
+///
+/// The entry point is kept (so the `EXTENSION_PASSES` block in
+/// `typechecker.rs` is undisturbed and a future use can flow data
+/// here) but the body is now empty.
+pub fn infer(_program: &crate::Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
 
