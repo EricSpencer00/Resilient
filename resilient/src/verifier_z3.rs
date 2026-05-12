@@ -276,6 +276,17 @@ thread_local! {
     static Z3_TAUTOLOGY_CACHE: std::cell::RefCell<
         std::collections::HashMap<String, (bool, Option<ProofCertificate>, bool)>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// RES-1316: thread-local cache for the BV32 entry point.
+    /// Disjoint key namespace (`|BV` suffix) from the LIA verdict
+    /// cache and the tautology cache. Same persistence rules.
+    #[allow(clippy::type_complexity)]
+    static Z3_BV_CACHE: std::cell::RefCell<
+        std::collections::HashMap<
+            String,
+            (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
+        >,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 fn prove_with_axioms_and_timeout_in(
@@ -599,7 +610,23 @@ pub fn prove_bv(
     bindings: &HashMap<String, i64>,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
-    Z3_CTX.with(|ctx| prove_bv_in(ctx, expr, bindings, timeout_ms))
+    // RES-1316: thread-local verdict cache for the BV32 entry point.
+    // RES-1206 caches the LIA path; RES-1309 the tautology fast path.
+    // This is the third uncached Z3 entry — routed to from
+    // `prove_auto` (and thus `z3_prove_with_cert_theory`) whenever
+    // the contract clause has bitwise operations. Same key shape as
+    // the other caches; suffix `|BV` keeps the namespace disjoint
+    // from `|TAUT` and the unsuffixed LIA cache.
+    let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+    let key = format!("{expr:?}|{bindings_sorted:?}|{timeout_ms}|BV");
+    if let Some(cached) = Z3_BV_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
+    let result = Z3_CTX.with(|ctx| prove_bv_in(ctx, expr, bindings, timeout_ms));
+    Z3_BV_CACHE.with(|c| {
+        c.borrow_mut().insert(key, result.clone());
+    });
+    result
 }
 
 fn prove_bv_in(
