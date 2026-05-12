@@ -54,6 +54,16 @@ fn is_safe_return(node: &Node) -> bool {
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let attrs = crate::feature_attrs::find_kind("crash_only_cert");
+    // RES-1236: fast-reject. The diagnostic only fires for functions
+    // annotated `#[crash_only_cert]`. When no such attribute exists
+    // in the program (the overwhelming common case — `examples/` and
+    // most tests don't use it), the inner `attrs.iter().any(...)`
+    // returns false for every function and the loop produces no
+    // output. Skip the loop entirely when the attribute set is
+    // empty. Same shape as the dead-walk fast-reject series.
+    if attrs.is_empty() {
+        return Ok(());
+    }
     let Node::Program(stmts) = program else {
         return Ok(());
     };
