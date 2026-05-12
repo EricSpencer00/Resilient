@@ -68,6 +68,16 @@ pub fn lookup(item: &str) -> Option<DependentSpec> {
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let specs = collect();
     install(specs.clone());
+    // RES-1242: fast-reject. The diagnostic only fires for functions
+    // annotated `#[dependent(length = "...")]`. When no such attribute
+    // exists in the program (the overwhelming common case), `specs`
+    // is empty after `collect()`, every `specs.iter().find()` call
+    // returns `None`, and the per-statement loop produces no output.
+    // `install` still runs so any stale SPECS from a previous compile
+    // gets cleared to an empty Vec; we just skip the walk.
+    if specs.is_empty() {
+        return Ok(());
+    }
     let Node::Program(stmts) = program else {
         return Ok(());
     };
