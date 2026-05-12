@@ -37,12 +37,27 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     // Pre-pass 0 (FFI v2): resolve all extern blocks so foreign symbols
     // are available before any call-site compilation. Builds an
     // ffi_index: name → u16 parallel to fn_index.
+    //
+    // RES-1577: pre-size `ffi_index` and `foreign_syms` to the total
+    // extern-decl count. Same shape as RES-1461's `fn_index` pre-size;
+    // skips the default-bucket rehash chain for programs with many
+    // FFI symbols. One linear pass over `stmts` to count, mirroring
+    // the existing `fn_count` block below.
+    #[cfg(feature = "ffi")]
+    let ffi_count: usize = stmts
+        .iter()
+        .filter_map(|s| match &s.node {
+            Node::Extern { decls, .. } => Some(decls.len()),
+            _ => None,
+        })
+        .sum();
     #[cfg(feature = "ffi")]
     let mut ffi_loader = crate::ffi::ForeignLoader::new();
     #[cfg(feature = "ffi")]
-    let mut ffi_index: HashMap<String, u16> = HashMap::new();
+    let mut ffi_index: HashMap<String, u16> = HashMap::with_capacity(ffi_count);
     #[cfg(feature = "ffi")]
-    let mut foreign_syms: Vec<std::sync::Arc<crate::ffi::ForeignSymbol>> = Vec::new();
+    let mut foreign_syms: Vec<std::sync::Arc<crate::ffi::ForeignSymbol>> =
+        Vec::with_capacity(ffi_count);
     #[cfg(feature = "ffi")]
     {
         for spanned in stmts {
