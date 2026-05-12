@@ -47,6 +47,10 @@
     "resilient/src/incremental_verify.rs": {
       "branch": "res-1210-incremental-verify-dead-work",
       "claimed_at": "2026-05-12T01:53:15Z"
+    },
+    "resilient/src/reentrancy_guard.rs": {
+      "branch": "res-1214-reentrancy-fast-reject",
+      "claimed_at": "2026-05-12T02:00:42Z"
     }
   }
 }
