@@ -289,6 +289,32 @@ impl Chunk {
         self.constants.push(v);
         Ok(idx)
     }
+
+    /// RES-1419: intern a `String` constant without the caller having
+    /// to clone the source first. The `add_constant(Value::String(s.clone()))`
+    /// callers cloned the source `String` unconditionally — even when
+    /// the constant was already in the pool. The cache-hit case
+    /// allocated and dropped the clone for nothing.
+    ///
+    /// Look up by `&str` (Rust's `String == &str` comparison works via
+    /// `Borrow<str>`), then allocate the owned `String` only on cache
+    /// miss. For programs with repeated string literals (assertion
+    /// messages, field name lookups in struct field-access code, etc.)
+    /// the savings compound across every duplicate.
+    pub fn add_string_constant(&mut self, s: &str) -> Result<u16, CompileError> {
+        if let Some(existing) = self.constants.iter().position(|c| match c {
+            Value::String(x) => x == s,
+            _ => false,
+        }) {
+            return Ok(existing as u16);
+        }
+        if self.constants.len() >= u16::MAX as usize {
+            return Err(CompileError::TooManyConstants);
+        }
+        let idx = self.constants.len() as u16;
+        self.constants.push(Value::String(s.to_string()));
+        Ok(idx)
+    }
 }
 
 /// Constant pool dedup. Only used for compile-time interning so we
