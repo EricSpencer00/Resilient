@@ -172,7 +172,18 @@ insta = { version = "1", features = ["filters"] }
 # bubble-sort, string-processing). Test-only dep; see
 # `resilient/benches/interpreter.rs` and the Performance section
 # of the repo README for how to run.
-criterion = { version = "0.5", features = ["html_reports"] }
+#
+# RES-1195: opt out of criterion's default-features. The bench code in
+# `benches/interpreter.rs` only touches the `Criterion`, `criterion_group`,
+# `criterion_main` surface — it doesn't render HTML reports, doesn't
+# generate plots, and the harness uses ten samples per workload so
+# rayon-parallelised sample collection isn't a needle-mover. Dropping
+# `html_reports` (tinytemplate), `plotters` (plotters-backend +
+# plotters-svg), and `rayon` removes a sizeable transitive dep
+# subtree from every `cargo test` build — none of those crates are
+# touched outside the bench, and as a `dev-dependencies` entry the
+# release binary's transitive tree is unaffected either way.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 # RES-218: Criterion-driven baselines for the tree-walker. `harness
