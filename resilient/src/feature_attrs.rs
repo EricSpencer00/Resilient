@@ -45,6 +45,7 @@
 #![allow(clippy::collapsible_if, clippy::doc_lazy_continuation)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, RwLock};
 
 /// One recorded attribute application. The arguments string is kept
@@ -79,6 +80,25 @@ struct Registry {
 
 static ATTR_REGISTRY: RwLock<Option<Registry>> = RwLock::new(None);
 
+/// RES-1374: cheap fast-reject mirror of "registry contains at least
+/// one recorded attribute." `find_kind` is called ~31 times per
+/// typecheck (one per analysis pass that owns a feature kind). The
+/// common case is a program with zero recognized attributes, in which
+/// every call would otherwise acquire the `ATTR_REGISTRY` `RwLock`
+/// just to discover the registry is empty. An atomic-bool gate skips
+/// the lock acquire entirely on the empty path.
+///
+/// Maintained transactionally:
+/// - `record` stores `true` (Release) after its registry write.
+/// - `reset` stores `false` (Release) so post-reset `find_kind` calls
+///   bypass the lock until the next `record`.
+/// - `find_kind` loads (Acquire) before optionally acquiring the lock.
+///
+/// The Release / Acquire pair ensures any registry write made before
+/// the `record`-side store is visible to a `find_kind` that took the
+/// lock after observing `true`.
+static ATTR_REGISTRY_HAS_ENTRIES: AtomicBool = AtomicBool::new(false);
+
 /// 50-feature pass: any test that mutates the global attribute
 /// registry (i.e. calls `record` / `reset` / `find_kind` against
 /// state it just installed) must hold this mutex for the duration
@@ -111,6 +131,9 @@ pub fn reset() {
     if let Ok(mut g) = ATTR_REGISTRY.write() {
         *g = Some(Registry::default());
     }
+    // RES-1374: registry is empty after reset; clear the fast-reject
+    // gate so `find_kind` bypasses the lock until the next `record`.
+    ATTR_REGISTRY_HAS_ENTRIES.store(false, Ordering::Release);
 }
 
 /// Record an attribute against an item name. Idempotent if called
@@ -128,6 +151,11 @@ pub fn record(item_name: &str, record: AttrRecord) {
             .or_default()
             .push((item_name.to_string(), record));
     }
+    // RES-1374: signal "registry now has entries" after the write
+    // commits. Release ordering pairs with the Acquire load in
+    // `find_kind` so the registry write is happens-before-visible to
+    // any reader that takes the lock after observing `true`.
+    ATTR_REGISTRY_HAS_ENTRIES.store(true, Ordering::Release);
 }
 
 /// Snapshot the registry for read-only inspection by an analysis pass.
@@ -163,6 +191,16 @@ pub fn snapshot() -> AttrMap {
 /// The lock is held read-only so concurrent readers (parallel tests)
 /// don't serialise; insertion order within a kind is preserved.
 pub fn find_kind(kind: &str) -> Vec<(String, AttrRecord)> {
+    // RES-1374: fast-reject before touching the `RwLock` when the
+    // registry has no recorded attributes. With ~31 EXTENSION_PASSES
+    // callers per typecheck and the common case being zero recorded
+    // attributes, skipping the read-lock acquire on the empty path
+    // is a measurable win — each call drops from a ~µs lock op to an
+    // atomic load. Acquire ordering pairs with the Release store in
+    // `record`.
+    if !ATTR_REGISTRY_HAS_ENTRIES.load(Ordering::Acquire) {
+        return Vec::new();
+    }
     let Ok(g) = ATTR_REGISTRY.read() else {
         return Vec::new();
     };
