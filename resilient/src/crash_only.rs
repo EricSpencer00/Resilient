@@ -38,11 +38,15 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_crash {
         return Ok(());
     }
-    let names: HashSet<String> = stmts
+    // RES-1520: borrow each top-level fn name as `&str` from the
+    // AST into the lookup set. The contains check below uses
+    // `&str` (via `Borrow<str>`), so the cloned `String` keys were
+    // pure overhead. Same pattern as RES-1495 / RES-1500 etc.
+    let names: HashSet<&str> = stmts
         .iter()
         .filter_map(|s| {
             if let Node::Function { name, .. } = &s.node {
-                Some(name.clone())
+                Some(name.as_str())
             } else {
                 None
             }
@@ -51,7 +55,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     for n in &names {
         if let Some(suffix) = n.strip_prefix("crash_") {
             let needed = format!("recover_{suffix}");
-            if !names.contains(&needed) {
+            if !names.contains(needed.as_str()) {
                 eprintln!(
                     "warning: crash-only contract: '{n}' has no matching \
                      recovery function '{needed}' — crash path is unrecoverable"
