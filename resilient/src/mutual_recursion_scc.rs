@@ -80,7 +80,16 @@ impl CallGraph {
 
     /// Return the transposed graph (edges reversed).
     fn transpose(&self) -> HashMap<String, HashSet<String>> {
-        let mut transposed: HashMap<String, HashSet<String>> = HashMap::new();
+        // RES-1497: pre-size the transposed map to the source's node
+        // count. The transposed graph has the same set of vertices
+        // (every src is also kept as a key via the
+        // `entry(src.clone()).or_default()` line, and every dest is
+        // a vertex in the source so it's already in `self.graph`).
+        // The default-bucket HashMap rehash chain triggered as we
+        // crossed 4/8/16/... bucket boundaries is avoidable with one
+        // upfront `with_capacity`.
+        let mut transposed: HashMap<String, HashSet<String>> =
+            HashMap::with_capacity(self.graph.len());
 
         for (src, dests) in &self.graph {
             transposed.entry(src.clone()).or_default();
