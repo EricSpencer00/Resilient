@@ -37,6 +37,23 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1291: fast-reject. The for-loop below filters every top-
+    // level statement looking for an `ImplBlock` whose trait_name is
+    // `"Iterator"`. Programs without any Iterator impl produce an
+    // empty set; the loop is dead work for them. Pre-scan with the
+    // early-terminating `any_node` (RES-1238) and short-circuit to
+    // an empty install when no matching ImplBlock exists. We still
+    // install an empty set so a prior program's iterator-impl
+    // registration doesn't leak into this compilation (the
+    // process-global ITERATORS otherwise retains stale entries).
+    let has_iterator_impl = crate::uniqueness_walk::any_node(program, |n| match n {
+        Node::ImplBlock { trait_name, .. } => trait_name.as_deref() == Some("Iterator"),
+        _ => false,
+    });
+    if !has_iterator_impl {
+        install_iterator_impls(HashSet::new());
+        return Ok(());
+    }
     let mut iters = HashSet::new();
     for s in stmts {
         if let Node::ImplBlock {

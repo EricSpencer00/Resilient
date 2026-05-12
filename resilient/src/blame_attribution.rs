@@ -116,6 +116,21 @@ pub fn callers_of(callee: &str) -> Vec<(String, usize)> {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1291: fast-reject. `build` walks every function body
+    // recursively, emitting one (caller, arg_index) edge per
+    // `CallExpression`. For programs with zero `CallExpression`
+    // anywhere, the walk visits every Node but emits nothing. Pre-
+    // scan with the early-terminating `any_node` (RES-1238) and skip
+    // the walk when no `CallExpression` exists. We still call
+    // `install` with an empty `BlameMap` so the process-global
+    // `BLAME_MAP` is reset between compilations and `callers_of(...)`
+    // doesn't return stale entries from a prior program.
+    let has_call =
+        crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::CallExpression { .. }));
+    if !has_call {
+        install(BlameMap::default());
+        return Ok(());
+    }
     install(build(program));
     Ok(())
 }
