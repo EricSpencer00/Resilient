@@ -93,24 +93,95 @@ pub fn safety_critical_mode() -> bool {
     SAFETY_CRITICAL_MODE.load(Ordering::Relaxed)
 }
 
+/// RES-1376: cached trigger-presence flags for the 13 lint passes.
+/// Built by `scan_lint_triggers` in one AST visit; each lint pass is
+/// gated on the flag for its trigger node so passes whose trigger
+/// never appears in the program don't pay for a full AST walk.
+#[derive(Default)]
+struct LintTriggers {
+    has_assume: bool,
+    has_index: bool,
+    has_match: bool,
+    has_division: bool,
+    has_infix: bool,
+    has_function: bool,
+    has_let: bool,
+    has_block: bool,
+}
+
+fn scan_lint_triggers(program: &Node) -> LintTriggers {
+    let mut t = LintTriggers::default();
+    scan_node(program, &mut t);
+    t
+}
+
+fn scan_node(node: &Node, t: &mut LintTriggers) {
+    match node {
+        Node::Assume { .. } => t.has_assume = true,
+        Node::IndexExpression { .. } => t.has_index = true,
+        Node::Match { .. } => t.has_match = true,
+        Node::InfixExpression { operator, .. } => {
+            t.has_infix = true;
+            if operator == "/" || operator == "%" {
+                t.has_division = true;
+            }
+        }
+        Node::Function { .. } => t.has_function = true,
+        Node::LetStatement { .. } => t.has_let = true,
+        Node::Block { .. } => t.has_block = true,
+        _ => {}
+    }
+    recurse_children(node, &mut |child| scan_node(child, t));
+}
+
 /// RES-198: top-level entry. Runs every lint, filters via the
 /// `// resilient: allow LXXXX` comments found in `source`, and
 /// returns the surviving diagnostics sorted by (line, column).
+///
+/// RES-1376: a single `scan_lint_triggers` AST visit caches which
+/// lint trigger nodes appear; each `run_l00XX` is gated on the
+/// matching flag. Lints whose trigger never appears are skipped —
+/// single visit replaces up to 13 separate walks.
 pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     let mut out = Vec::new();
-    run_l0001_unused_local(program, &mut out);
-    run_l0002_unreachable_arm(program, &mut out);
-    run_l0003_self_comparison(program, &mut out);
-    run_l0004_mixed_and_or(program, &mut out);
-    run_l0005_redundant_return(program, &mut out);
-    run_l0006_assume_false(program, &mut out);
-    run_l0007_unreachable_code(program, &mut out);
-    run_l0008_duplicate_struct_match_arm(program, &mut out);
-    run_l0009_division_by_zero(program, &mut out);
-    run_l0010_no_contract(program, &mut out);
-    run_l0011_unused_variable(program, &mut out);
-    run_l0012_spec_provenance(program, source, &mut out);
-    run_l0013_unchecked_indexing(program, &mut out);
+    let t = scan_lint_triggers(program);
+    if t.has_function {
+        run_l0001_unused_local(program, &mut out);
+    }
+    if t.has_match {
+        run_l0002_unreachable_arm(program, &mut out);
+    }
+    if t.has_infix {
+        run_l0003_self_comparison(program, &mut out);
+        run_l0004_mixed_and_or(program, &mut out);
+    }
+    if t.has_function {
+        run_l0005_redundant_return(program, &mut out);
+    }
+    if t.has_assume {
+        run_l0006_assume_false(program, &mut out);
+    }
+    if t.has_block {
+        run_l0007_unreachable_code(program, &mut out);
+    }
+    if t.has_match {
+        run_l0008_duplicate_struct_match_arm(program, &mut out);
+    }
+    if t.has_division {
+        run_l0009_division_by_zero(program, &mut out);
+    }
+    if t.has_function {
+        run_l0010_no_contract(program, &mut out);
+    }
+    if t.has_let {
+        run_l0011_unused_variable(program, &mut out);
+    }
+    if t.has_function {
+        run_l0012_spec_provenance(program, source, &mut out);
+    }
+    if t.has_index {
+        run_l0013_unchecked_indexing(program, &mut out);
+    }
 
     let safety_critical = safety_critical_mode();
     if safety_critical {
