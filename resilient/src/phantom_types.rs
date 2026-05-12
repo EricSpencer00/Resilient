@@ -64,8 +64,18 @@ pub fn unit_of(type_name: &str) -> Option<String> {
 }
 
 pub fn compatible(lhs: &str, rhs: &str) -> bool {
-    match (unit_of(lhs), unit_of(rhs)) {
-        (Some(a), Some(b)) => a == b,
+    // RES-1572: hold the read guard once and compare units in place.
+    // The previous shape called `unit_of` twice — each call acquired
+    // the `SPECS` RwLock and cloned the unit `String` from the
+    // matching spec, only to compare them and drop both. With the
+    // read guard held, both `g.get(...)` lookups borrow directly
+    // and the comparison runs on `&String` references. Zero clones,
+    // one lock acquire per call.
+    let Ok(g) = SPECS.read() else {
+        return true;
+    };
+    match (g.get(lhs), g.get(rhs)) {
+        (Some(a), Some(b)) => a.unit == b.unit,
         _ => true, // unknown unit pair: defer to base typechecker
     }
 }
