@@ -44,8 +44,15 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_nonreentrant {
         return Ok(());
     }
-    let mut callees: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut roots: Vec<String> = Vec::new();
+    // RES-1519: borrow each top-level fn name as `&str` from the
+    // AST into the `callees` HashMap and `roots` Vec. The inner
+    // `cs: HashSet<String>` keeps owned Strings because
+    // `uniqueness_walk::visit` uses a HRTB closure that can't bind
+    // the outer AST lifetime — same limitation hit by
+    // RES-1509 / RES-1511. Pair with `reaches_self` borrowing into
+    // the graph for the DFS (mirror of RES-1471 / RES-1474 / RES-1477).
+    let mut callees: HashMap<&str, HashSet<String>> = HashMap::new();
+    let mut roots: Vec<&str> = Vec::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             let mut cs = HashSet::new();
@@ -56,14 +63,14 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                     }
                 }
             });
-            callees.insert(name.clone(), cs);
+            callees.insert(name.as_str(), cs);
             if is_nonreentrant(name) {
-                roots.push(name.clone());
+                roots.push(name.as_str());
             }
         }
     }
     for root in roots {
-        if reaches_self(&callees, &root) {
+        if reaches_self(&callees, root) {
             eprintln!(
                 "warning: function '{root}' is non-reentrant (by name) but is \
                  transitively reachable from itself in the call graph — \
@@ -79,24 +86,22 @@ fn is_nonreentrant(name: &str) -> bool {
         || NR_SUFFIXES.iter().any(|s| name.ends_with(*s))
 }
 
-fn reaches_self(callees: &HashMap<String, HashSet<String>>, start: &str) -> bool {
-    let mut seen = HashSet::new();
-    let mut stack: Vec<String> = callees
+fn reaches_self<'a>(callees: &'a HashMap<&'a str, HashSet<String>>, start: &str) -> bool {
+    let mut seen: HashSet<&'a str> = HashSet::new();
+    let mut stack: Vec<&'a str> = callees
         .get(start)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
+        .map(|cs| cs.iter().map(String::as_str).collect())
+        .unwrap_or_default();
     while let Some(c) = stack.pop() {
         if c == start {
             return true;
         }
-        if !seen.insert(c.clone()) {
+        if !seen.insert(c) {
             continue;
         }
-        if let Some(cs) = callees.get(&c) {
+        if let Some(cs) = callees.get(c) {
             for cc in cs {
-                stack.push(cc.clone());
+                stack.push(cc.as_str());
             }
         }
     }
