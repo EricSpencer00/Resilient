@@ -19,7 +19,11 @@
 #![allow(
     clippy::collapsible_if,
     clippy::doc_lazy_continuation,
-    clippy::single_match
+    clippy::single_match,
+    // RES-1232: helpers are unreachable while `check` is a no-op
+    // pending the `Node::Actor` variant landing. Same shape as the
+    // dead-pass cleanups in RES-1202 / RES-1206.
+    dead_code
 )]
 
 use crate::Node;
@@ -27,13 +31,24 @@ use crate::Node;
 const STOP_HANDLERS: &[&str] = &["shutdown", "terminate", "on_stop", "stop"];
 const DRAIN_HANDLERS: &[&str] = &["drain", "flush", "drain_mailbox"];
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    let Node::Program(stmts) = program else {
-        return Ok(());
-    };
-    for stmt in stmts {
-        check_actor(&stmt.node);
-    }
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1232: dead pass — `actor_name_of` always returns `None`
+    // until `Node::Actor { name, .. }` is wired (see the comment on
+    // `actor_name_of` below). Consequently `collect_handler_names`
+    // always returns `None`, `check_actor` always early-returns, and
+    // the per-stmt walk emits no diagnostics for any program. Skip
+    // it entirely instead of doing N closure dispatches for nothing.
+    //
+    // Same shape as RES-1202 (`region_inference::infer`'s
+    // discarded-walk no-op) and RES-1206 (the five
+    // analysis-result-discarded passes). When the `Node::Actor`
+    // variant lands and `actor_name_of` starts returning `Some`,
+    // restore the walk:
+    //
+    //     let Node::Program(stmts) = program else { return Ok(()); };
+    //     for stmt in stmts {
+    //         check_actor(&stmt.node);
+    //     }
     Ok(())
 }
 

@@ -91,6 +91,10 @@
     "resilient/src/crash_only_cert.rs": {
       "branch": "res-1236-crash-only-cert-fast-reject",
       "claimed_at": "2026-05-12T02:42:33Z"
+    },
+    "resilient/src/actor_drain.rs": {
+      "branch": "res-1232-actor-drain-noop",
+      "claimed_at": "2026-05-12T02:37:38Z"
     }
   }
 }
