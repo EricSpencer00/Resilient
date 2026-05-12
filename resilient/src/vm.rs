@@ -742,7 +742,7 @@ fn run_inner(
                 let Value::Int(idx) = idx_val else {
                     return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
                 };
-                let Value::Array(items) = arr_val else {
+                let Value::Array(mut items) = arr_val else {
                     return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
                 };
                 if idx < 0 || (idx as usize) >= items.len() {
@@ -751,7 +751,16 @@ fn run_inner(
                         len: items.len(),
                     });
                 }
-                stack.push(items[idx as usize].clone());
+                // RES-1437: `items` is owned (destructured from
+                // `Value::Array`). The popped array is the clone
+                // emitted by `LoadLocal` — the original local still
+                // holds the array, so consuming this stack copy is
+                // correct. Use `swap_remove` to move the element out
+                // (O(1)); the remaining `items` drops at end of scope
+                // as before. Saves one `Value::clone` per array index
+                // dispatch — significant for arrays of Strings or
+                // nested Arrays. Mirrors RES-1436 (tree-walker).
+                stack.push(items.swap_remove(idx as usize));
             }
             // RES-407: emitted only when `bounds_check::check_array_bounds`
             // discharged the bounds obligation for this site. Skips the
@@ -762,12 +771,14 @@ fn run_inner(
                 let Value::Int(idx) = idx_val else {
                     return Err(VmError::TypeMismatch("LoadIndexUnchecked (non-int index)"));
                 };
-                let Value::Array(items) = arr_val else {
+                let Value::Array(mut items) = arr_val else {
                     return Err(VmError::TypeMismatch(
                         "LoadIndexUnchecked (non-array target)",
                     ));
                 };
-                stack.push(items[idx as usize].clone());
+                // RES-1437: swap_remove instead of clone — see the
+                // bounds-checked LoadIndex arm above for justification.
+                stack.push(items.swap_remove(idx as usize));
             }
             Op::StoreIndex => {
                 // Stack layout on entry (top → bottom):
@@ -1511,7 +1522,7 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("LoadIndex (non-int index)"));
     };
-    let Value::Array(items) = arr_val else {
+    let Value::Array(mut items) = arr_val else {
         return Err(VmError::TypeMismatch("LoadIndex (non-array target)"));
     };
     if idx < 0 || (idx as usize) >= items.len() {
@@ -1520,7 +1531,9 @@ fn h_load_index(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
             len: items.len(),
         });
     }
-    state.stack.push(items[idx as usize].clone());
+    // RES-1437: swap_remove instead of clone — see the match-dispatch
+    // LoadIndex arm in run_inner for the full justification.
+    state.stack.push(items.swap_remove(idx as usize));
     Ok(Step::Continue)
 }
 
@@ -1534,12 +1547,14 @@ fn h_load_index_unchecked(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmEr
     let Value::Int(idx) = idx_val else {
         return Err(VmError::TypeMismatch("LoadIndexUnchecked (non-int index)"));
     };
-    let Value::Array(items) = arr_val else {
+    let Value::Array(mut items) = arr_val else {
         return Err(VmError::TypeMismatch(
             "LoadIndexUnchecked (non-array target)",
         ));
     };
-    state.stack.push(items[idx as usize].clone());
+    // RES-1437: swap_remove instead of clone — see the LoadIndex
+    // sibling above.
+    state.stack.push(items.swap_remove(idx as usize));
     Ok(Step::Continue)
 }
 
