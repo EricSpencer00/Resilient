@@ -212,3 +212,21 @@ debug = "line-tables-only"
 
 [profile.test.package."*"]
 opt-level = 1
+
+# RES-1189: build-override is the *only* knob that touches build scripts,
+# proc-macros, and their transitive deps — `package."*"` deliberately
+# skips them. With proc-macros (serde_derive, thiserror, criterion's
+# benchmark codegen, etc.) compiled at the stock `opt-level = 0`, every
+# `cargo build`/`test`/`clippy` re-runs the slow unoptimized macro
+# expanders against `lib.rs` (~55k lines, derives sprinkled throughout).
+# Bumping the override to `opt-level = 1` pays a one-time compile cost
+# per macro crate (cached by `Swatinem/rust-cache@v2` in CI and by
+# Cargo's incremental cache locally) in exchange for an optimized
+# expander that runs measurably faster on every subsequent rebuild.
+# Disjoint from the `package."*"` tunings above — the two combine
+# cleanly.
+[profile.dev.build-override]
+opt-level = 1
+
+[profile.test.build-override]
+opt-level = 1

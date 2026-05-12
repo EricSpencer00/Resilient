@@ -9,12 +9,8 @@
       "claimed_at": "2026-05-11T19:50:00Z"
     },
     "resilient/Cargo.toml": {
-      "branch": "res-1184-cargo-profile-speedups",
-      "claimed_at": "2026-05-12T00:43:22Z"
-    },
-    "resilient/tests/examples_golden.rs": {
-      "branch": "res-1186-cross-platform-goldens",
-      "claimed_at": "2026-05-12T00:52:47Z"
+      "branch": "res-1189-cargo-build-override",
+      "claimed_at": "2026-05-12T01:03:52Z"
     }
   }
 }
