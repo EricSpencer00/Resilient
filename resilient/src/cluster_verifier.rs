@@ -126,6 +126,21 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
         return Vec::new();
     };
 
+    // RES-1285: fast-reject. The cluster invariant verifier only
+    // produces output when there's at least one `ClusterDecl` to
+    // verify. For programs that declare zero clusters — the
+    // overwhelming majority of `cargo test` inputs and the entire
+    // `examples/` tree — the second loop is a no-op, but the
+    // `ActorTable` build below would still clone every actor's
+    // state-fields list and handler set into a HashMap that's
+    // immediately dropped. Skip both loops when no cluster exists.
+    let has_cluster = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::ClusterDecl { .. }));
+    if !has_cluster {
+        return Vec::new();
+    }
+
     // Build an `actor name → &ActorDecl-fields` lookup so the
     // cluster verifier can resolve member types.
     let mut actors: ActorTable = HashMap::new();
