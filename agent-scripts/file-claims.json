@@ -135,6 +135,10 @@
     "resilient/src/lock_ordering.rs": {
       "branch": "res-1275-lock-ordering-fast-reject",
       "claimed_at": "2026-05-12T04:11:27Z"
+    },
+    "resilient/src/unsafe_check.rs": {
+      "branch": "res-1281-unsafe-check-fast-reject",
+      "claimed_at": "2026-05-12T04:21:23Z"
     }
   }
 }
