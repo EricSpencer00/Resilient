@@ -90,7 +90,12 @@ pub fn expand_uses(
                     // brought in.
                     continue;
                 }
-                loaded.insert(canon.clone());
+                // RES-1523: move `canon` into the `loaded` set instead of
+                // cloning. `canon` isn't referenced again on this branch
+                // — only `target` is used to load and parse the file
+                // below — so the historic `canon.clone()` was a
+                // per-import wasted `PathBuf` allocation.
+                loaded.insert(canon);
             }
 
             let imported_program = load_and_parse(&target)?;
