@@ -228,9 +228,15 @@ fn compatible(a: &Type, b: &Type) -> bool {
 /// RES-160: collect the binding names a pattern introduces, in
 /// source order. Used to verify that all branches of an or-pattern
 /// bind the same names.
-fn pattern_bindings(p: &Pattern) -> Vec<String> {
+// RES-1431: return `Vec<&str>` instead of `Vec<String>` to skip the
+// per-binding-name clones. Callers (the or-pattern consistency check
+// in `Node::Match`) only compare the lists with `!=`, which works
+// identically on `Vec<&str>` and never needs owned `String`s. The
+// returned references borrow from the Pattern AST; the caller's
+// Pattern lives at least as long as the comparison.
+fn pattern_bindings(p: &Pattern) -> Vec<&str> {
     match p {
-        Pattern::Identifier(n) => vec![n.clone()],
+        Pattern::Identifier(n) => vec![n.as_str()],
         // RES-915: range patterns bind no names (today; `1..=5 @ x`
         // binding is queued as a follow-up).
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => Vec::new(),
@@ -243,7 +249,7 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
         }
         // RES-161a: outer name + whatever the inner pattern binds.
         Pattern::Bind(outer, inner) => {
-            let mut bs = vec![outer.clone()];
+            let mut bs = vec![outer.as_str()];
             bs.extend(pattern_bindings(inner));
             bs
         }
