@@ -388,19 +388,24 @@ pub(crate) fn build_top_level_defs(program: &Node) -> Vec<TopLevelDef> {
         _ => return Vec::new(),
     };
     let mut out: Vec<TopLevelDef> = Vec::new();
-    let mut seen = std::collections::HashSet::<String>::new();
+    // RES-1508: borrow the AST's decl names into the dedup set
+    // instead of cloning them. The owned String allocation only
+    // happens once at the `out.push(...)` site — previously each
+    // decl name allocated twice (once to bind `name`, once to feed
+    // `seen.insert`).
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for spanned in stmts {
         let name = match &spanned.node {
-            Node::Function { name, .. } => name.clone(),
-            Node::StructDecl { name, .. } => name.clone(),
-            Node::TypeAlias { name, .. } => name.clone(),
+            Node::Function { name, .. } => name.as_str(),
+            Node::StructDecl { name, .. } => name.as_str(),
+            Node::TypeAlias { name, .. } => name.as_str(),
             _ => continue,
         };
-        if !seen.insert(name.clone()) {
+        if !seen.insert(name) {
             continue;
         }
         out.push(TopLevelDef {
-            name,
+            name: name.to_string(),
             range: span_to_range(spanned.span),
         });
     }
@@ -1248,7 +1253,13 @@ pub(crate) fn collect_param_hints(program: &Node) -> Vec<InlayHint> {
 /// Map fn name → parameter names. Populated from top-level
 /// `Node::Function` decls so parameter hints can look up a callee
 /// in O(1).
-fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
+///
+/// RES-1508: borrow fn names and parameter names as `&str` from
+/// the program AST. The previous shape cloned every fn name plus
+/// every parameter name into owned `String`s purely so the map
+/// keys / values could satisfy `HashMap`'s ownership; the consumer
+/// (`walk_call_hints`) only reads them.
+fn collect_top_level_fns(program: &Node) -> HashMap<&str, Vec<&str>> {
     let mut out = HashMap::new();
     if let Node::Program(stmts) = program {
         for spanned in stmts {
@@ -1257,8 +1268,8 @@ fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
             } = &spanned.node
             {
                 // parameters are (type, name) — only names needed.
-                let names: Vec<String> = parameters.iter().map(|(_, n)| n.clone()).collect();
-                out.insert(name.clone(), names);
+                let names: Vec<&str> = parameters.iter().map(|(_, n)| n.as_str()).collect();
+                out.insert(name.as_str(), names);
             }
         }
     }
@@ -1269,7 +1280,7 @@ fn collect_top_level_fns(program: &Node) -> HashMap<String, Vec<String>> {
 /// `node`. For each one, if the callee is a bare identifier
 /// that's in `fns` AND the arg count matches, emit one hint per
 /// positional argument.
-fn walk_call_hints(node: &Node, fns: &HashMap<String, Vec<String>>, out: &mut Vec<InlayHint>) {
+fn walk_call_hints(node: &Node, fns: &HashMap<&str, Vec<&str>>, out: &mut Vec<InlayHint>) {
     match node {
         Node::Program(stmts) => {
             for s in stmts {
@@ -1312,7 +1323,7 @@ fn walk_call_hints(node: &Node, fns: &HashMap<String, Vec<String>>, out: &mut Ve
             // must be an Identifier naming a known top-level fn,
             // and arg count must match.
             if let Node::Identifier { name, .. } = function.as_ref()
-                && let Some(param_names) = fns.get(name)
+                && let Some(param_names) = fns.get(name.as_str())
                 && param_names.len() == arguments.len()
             {
                 for (arg, pname) in arguments.iter().zip(param_names.iter()) {
