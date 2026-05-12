@@ -70,14 +70,24 @@ pub fn stats() -> (u64, u64) {
         .unwrap_or((0, 0))
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
-    // Pre-populate the cache with the current contract digests.
-    let fps = crate::behavioral_fingerprint::fingerprint_program(program);
-    for (name, fp) in fps {
-        if lookup(&name, fp.digest).is_none() {
-            store(&name, fp.digest, ProofResult::Discharged);
-        }
-    }
+pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1210: the historical body called `fingerprint_program` and
+    // pre-populated the cache with `ProofResult::Discharged` for every
+    // function on every type-check. Two problems with that:
+    //
+    //   1. No consumer in the crate calls `lookup` (a
+    //      `grep -rn 'incremental_verify::' resilient/src/` shows
+    //      only this pass — the Z3 verifier doesn't consult the
+    //      cache yet), so the work was unobservable.
+    //   2. If a future PR wires the Z3 verifier to call `lookup`,
+    //      the pre-population would already cache every function as
+    //      `Discharged`, *skipping the actual proof*. The cache
+    //      should only record verdicts the verifier has produced.
+    //
+    // The `lookup` / `store` / `stats` / `reset` API stays as-is so
+    // the cache infrastructure is ready for the consumer side when
+    // someone lands it. The `EXTENSION_PASSES` slot in
+    // `typechecker.rs` stays present for the same reason.
     Ok(())
 }
 
