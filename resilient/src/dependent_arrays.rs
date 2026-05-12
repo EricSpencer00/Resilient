@@ -67,35 +67,36 @@ pub fn lookup(item: &str) -> Option<DependentSpec> {
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let specs = collect();
-    install(specs.clone());
-    // RES-1242: fast-reject. The diagnostic only fires for functions
-    // annotated `#[dependent(length = "...")]`. When no such attribute
-    // exists in the program (the overwhelming common case), `specs`
-    // is empty after `collect()`, every `specs.iter().find()` call
-    // returns `None`, and the per-statement loop produces no output.
-    // `install` still runs so any stale SPECS from a previous compile
-    // gets cleared to an empty Vec; we just skip the walk.
-    if specs.is_empty() {
-        return Ok(());
-    }
+    // RES-1495: validate against the local `specs` Vec BEFORE
+    // installing into the global `SPECS` registry, then move `specs`
+    // into `install` at the end. The previous shape did
+    // `install(specs.clone())` up front — paying a `Vec` clone for
+    // a registry the validation loop never reads through. The
+    // semantics of "install always runs to clear stale state" are
+    // preserved: on the early-Program-bail and at the end of the fn,
+    // `install` fires with the (possibly empty) collected specs.
+    // Same pattern as RES-1481 / RES-1485 / RES-1487 / RES-1489 /
+    // RES-1491.
     let Node::Program(stmts) = program else {
+        install(specs);
         return Ok(());
     };
-    for s in stmts {
-        if let Node::Function {
-            name, type_params, ..
-        } = &s.node
-        {
-            if let Some(spec) = specs.iter().find(|sp| sp.item_name == *name) {
-                if !type_params.contains(&spec.length_var) {
-                    eprintln!(
-                        "warning: `{}` has `#[dependent(length = \"{}\")]` but `{}` is not declared as a generic parameter",
-                        name, spec.length_var, spec.length_var
-                    );
-                }
+    if !specs.is_empty() {
+        for s in stmts {
+            if let Node::Function {
+                name, type_params, ..
+            } = &s.node
+                && let Some(spec) = specs.iter().find(|sp| sp.item_name == *name)
+                && !type_params.contains(&spec.length_var)
+            {
+                eprintln!(
+                    "warning: `{}` has `#[dependent(length = \"{}\")]` but `{}` is not declared as a generic parameter",
+                    name, spec.length_var, spec.length_var
+                );
             }
         }
     }
+    install(specs);
     Ok(())
 }
 
