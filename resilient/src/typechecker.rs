@@ -6436,13 +6436,19 @@ fn check_program_purity(
     // Optimistic assumption: every `@pure` fn is pure until proven
     // otherwise. Populate the set so mutual-recursion checks
     // succeed.
-    let mut pure_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
+    //
+    // RES-1525: borrow each `@pure` fn name as `&str` from the AST
+    // into the lookup set. `check_body_purity`'s only consumer is
+    // `pure_fns.contains(callee)` — `HashSet::contains` accepts
+    // `&str` via `Borrow<str>`, so the cloned `String` keys were
+    // pure overhead. Same pattern as RES-1500 / RES-1523 etc.
+    let mut pure_fns: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for stmt in statements {
         if let Node::Function {
             name, pure: true, ..
         } = &stmt.node
         {
-            pure_fns.insert(name.clone());
+            pure_fns.insert(name.as_str());
         }
     }
 
@@ -6495,7 +6501,7 @@ fn check_program_purity(
 fn check_body_purity(
     node: &Node,
     fn_name: &str,
-    pure_fns: &std::collections::HashSet<String>,
+    pure_fns: &std::collections::HashSet<&str>,
 ) -> Result<(), String> {
     match node {
         Node::Block { stmts, .. } => {
@@ -6573,7 +6579,7 @@ fn check_body_purity(
                     return Err(format!("calls impure builtin `{}`", callee));
                 }
                 // Pure-to-pure is fine.
-                if pure_fns.contains(callee) {
+                if pure_fns.contains(callee.as_str()) {
                     return Ok(());
                 }
                 // Known pure builtins are implicitly fine. The
