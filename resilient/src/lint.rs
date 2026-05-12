@@ -202,19 +202,30 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     // Treat the L0001 allow as implying the L0011 allow for the
     // same line, so dual emission stays user-suppressible with
     // a single comment.
+    //
+    // RES-1515: skip the per-lint clone+contains pair entirely when
+    // no `// resilient: allow ...` comments exist in the source.
+    // The common case for every fixture in `examples/` and every
+    // CI input is an empty `allows` set; the retain closure was
+    // cloning `l.code` per lint just to ask a HashSet that was
+    // guaranteed empty. The `safety_critical && l.code == "L0006"`
+    // gate is also a no-op when nothing would otherwise drop the
+    // lint — early-out keeps every lint in that case too.
     let allows = collect_allow_comments(source);
-    out.retain(|l| {
-        if safety_critical && l.code == "L0006" {
-            return true;
-        }
-        if allows.contains(&(l.line, l.code.clone())) {
-            return false;
-        }
-        if l.code == "L0011" && allows.contains(&(l.line, "L0001".to_string())) {
-            return false;
-        }
-        true
-    });
+    if !allows.is_empty() {
+        out.retain(|l| {
+            if safety_critical && l.code == "L0006" {
+                return true;
+            }
+            if allows.contains(&(l.line, l.code.clone())) {
+                return false;
+            }
+            if l.code == "L0011" && allows.contains(&(l.line, "L0001".to_string())) {
+                return false;
+            }
+            true
+        });
+    }
     out.sort_by(|a, b| a.line.cmp(&b.line).then(a.column.cmp(&b.column)));
     out
 }
