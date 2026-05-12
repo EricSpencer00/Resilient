@@ -1073,9 +1073,9 @@ fn compile_expr(
             if fields.len() > u16::MAX as usize {
                 return Err(CompileError::TooManyFields(name.clone()));
             }
-            let name_const = chunk.add_constant(Value::String(name.clone()))?;
+            let name_const = chunk.add_string_constant(name)?;
             for (field_name, field_expr) in fields {
-                let fname_idx = chunk.add_constant(Value::String(field_name.clone()))?;
+                let fname_idx = chunk.add_string_constant(field_name)?;
                 chunk.emit(Op::Const(fname_idx), line);
                 compile_expr(field_expr, chunk, locals, fn_index, ffi_index, line)?;
             }
@@ -1094,7 +1094,7 @@ fn compile_expr(
         // `FieldAccess` nodes.
         Node::FieldAccess { target, field, .. } => {
             compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
-            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::GetField {
                     name_const: fname_idx,
