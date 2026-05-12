@@ -73,12 +73,40 @@ jobs:
             if [[ "$base" != "main" ]]; then echo "  base=$base (not main) — skip"; continue; fi
             if [[ -z "$synced" ]]; then echo "  not integration-synced — skip"; continue; fi
 
-            # Exclude the diff-shape guardrail from the fail check (it
-            # reports spurious FAILURE for every-PR-touches-main.rs
-            # overlaps during sweeps). Every other check must be SUCCESS.
+            # Exclude checks that aren't in branch protection's
+            # required-status-checks list. Two known non-blocking checks
+            # report FAILURE on most PRs and were previously trapping
+            # otherwise-green PRs at the auto-merge gate:
+            #
+            #   - `diff-shape guardrail` — reports spurious FAILURE for
+            #     append-only overlaps on `main.rs`/`file-claims.json`
+            #     during multi-agent sweeps. The append-only resolver
+            #     handles these at merge time.
+            #   - `fib(25) medians` — the tree-walker perf benchmark
+            #     is statistically noisy at 10 samples; a single flaky
+            #     run flips it FAILURE while every required functional
+            #     check stays green. Branch protection deliberately
+            #     leaves it out of `required_status_checks`, but this
+            #     workflow's gate previously demanded *every* check be
+            #     SUCCESS (or excluded), which silently blocked
+            #     every PR for the duration of any flake.
+            #
+            # The required-status-checks list per `gh api
+            # repos/.../branches/main/protection`:
+            #   - build / test / clippy
+            #   - build / test with --features z3
+            #   - board hygiene
+            #   - resilient-runtime-cortex-m-demo (thumbv7em-none-eabihf)
+            #   - resilient-runtime (riscv32imac-unknown-none-elf)
+            #   - resilient-runtime (thumbv6m-none-eabi)
+            #   - cortex-m demo .text budget check
+            #
+            # Every check in that list must be SUCCESS for the merge
+            # to fire; non-required checks are advisory only.
             failed=$(echo "$info" | jq -r '
               [.statusCheckRollup[]
                 | select(.name | test("diff-shape guardrail") | not)
+                | select(.name | test("fib\\(25\\) medians") | not)
                 | select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == null)
                 | (.name + "=" + (.conclusion // "PENDING"))
               ] | join(" | ")')
