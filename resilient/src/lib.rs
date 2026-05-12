@@ -23955,10 +23955,38 @@ impl Interpreter {
                 // shared mutation.
                 let extended_env = Environment::new_enclosed(env);
 
-                for (i, (_, param_name)) in parameters.iter().enumerate() {
-                    if i < args.len() {
-                        extended_env.set(param_name.clone(), args[i].clone());
-                    }
+                // RES-1471: when the callee is generic the
+                // `infer_subst` path below needs the runtime types of
+                // each argument; eagerly capture them via borrowing
+                // iter BEFORE we consume `args` in the parameter loop.
+                // For monomorphic callees (the overwhelming majority)
+                // we skip this entirely and just consume args.
+                let actual_types: Option<Vec<crate::typechecker::Type>> = if !type_params.is_empty()
+                {
+                    Some(args.iter().map(value_to_tc_type).collect())
+                } else {
+                    None
+                };
+
+                // RES-1471: consume `args` via `into_iter` and zip
+                // with parameters. The previous shape iterated
+                // `parameters.iter().enumerate()` and indexed
+                // `args[i].clone()` — every call site paid one
+                // `Value::clone` per argument even though `args` was
+                // moved into `apply_function` and dropped at function
+                // exit. Zip stops at the shorter side, matching the
+                // existing `if i < args.len()` guard's behavior:
+                // - parameters longer than args: trailing param
+                //   slots stay unset (same as before).
+                // - args longer than parameters: trailing args are
+                //   dropped during the iterator's drop (same as
+                //   `args` going out of scope at the end of
+                //   `apply_function`).
+                // For programs with heap-allocated argument values
+                // (strings, arrays, structs), each call site saves
+                // one `Value::clone` per argument.
+                for ((_, param_name), arg_value) in parameters.iter().zip(args) {
+                    extended_env.set(param_name.clone(), arg_value);
                 }
 
                 let mut interpreter = Interpreter {
@@ -23975,13 +24003,11 @@ impl Interpreter {
                 // RES-405 PR 2: if this is a generic call, infer the substitution
                 // from actual argument values and store it on the child interpreter
                 // so error messages can include context like "T = Int".
-                if !type_params.is_empty() {
+                if let Some(actual_types) = actual_types {
                     let declared_types: Vec<crate::typechecker::Type> = parameters
                         .iter()
                         .map(|(ty_str, _)| type_str_to_tc_type(ty_str))
                         .collect();
-                    let actual_types: Vec<crate::typechecker::Type> =
-                        args.iter().map(value_to_tc_type).collect();
                     if let Ok(subst) =
                         crate::generics::infer_subst(&type_params, &declared_types, &actual_types)
                     {
