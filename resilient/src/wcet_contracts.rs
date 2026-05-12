@@ -84,15 +84,18 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    let bodies: HashMap<String, &Node> = stmts
+    // RES-1495: borrow each function name as `&str` instead of
+    // cloning into the HashMap key — same pattern applied across
+    // `power_contracts` / `stack_contracts` in this PR.
+    let bodies: HashMap<&str, &Node> = stmts
         .iter()
         .filter_map(|s| match &s.node {
-            Node::Function { name, body, .. } => Some((name.clone(), body.as_ref())),
+            Node::Function { name, body, .. } => Some((name.as_str(), body.as_ref())),
             _ => None,
         })
         .collect();
     for spec in &specs {
-        if let Some(body) = bodies.get(&spec.fn_name) {
+        if let Some(body) = bodies.get(spec.fn_name.as_str()) {
             let est = estimate_wcet(body);
             if est > spec.budget_cycles {
                 return Err(format!(

@@ -92,15 +92,20 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
-    let bodies: HashMap<String, &Node> = stmts
+    // RES-1495: borrow each function name as `&str` instead of
+    // cloning into the HashMap key. The map's only consumer is
+    // `bodies.get(spec.fn_name.as_str())` below — `&str` works for
+    // both insert and lookup, so the per-function `name.clone()` is
+    // pure overhead.
+    let bodies: HashMap<&str, &Node> = stmts
         .iter()
         .filter_map(|s| match &s.node {
-            Node::Function { name, body, .. } => Some((name.clone(), body.as_ref())),
+            Node::Function { name, body, .. } => Some((name.as_str(), body.as_ref())),
             _ => None,
         })
         .collect();
     for spec in &specs {
-        if let Some(body) = bodies.get(&spec.fn_name) {
+        if let Some(body) = bodies.get(spec.fn_name.as_str()) {
             let est = estimate_uj(body);
             if est > spec.budget_uj {
                 return Err(format!(
