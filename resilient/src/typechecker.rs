@@ -5359,7 +5359,13 @@ impl TypeChecker {
                 // miss, so the saved chain stays observable for free.
                 let mut actor_env = TypeEnvironment::new_enclosed(self.env.clone());
                 std::mem::swap(&mut self.env, &mut actor_env);
-                let mut resolved_fields: Vec<(String, Type)> = Vec::new();
+                // RES-1399: pre-size to state_fields.len() so the push
+                // loop below doesn't reallocate as the Vec grows.
+                // Actors with N>4 state fields previously paid 2-3 Vec
+                // reallocations (4-elt default + doubling); the count
+                // is statically known here, so use it.
+                let mut resolved_fields: Vec<(String, Type)> =
+                    Vec::with_capacity(state_fields.len());
                 for (ty, field, init) in state_fields {
                     // RES-777: reject reference types in actor state
                     if is_reference_type(ty) {
