@@ -1073,9 +1073,16 @@ fn compile_expr(
             if fields.len() > u16::MAX as usize {
                 return Err(CompileError::TooManyFields(name.clone()));
             }
-            let name_const = chunk.add_constant(Value::String(name.clone()))?;
+            // RES-1425: use the RES-1419 lazy-clone interner. Every
+            // StructLiteral compile emits the type name once + each
+            // field name once into the constant pool. Repeated struct
+            // literals (e.g. `Point { x: ..., y: ... }` used N times
+            // in a function body) interned the same `"Point"` /
+            // `"x"` / `"y"` strings N× via the eager-clone shape.
+            // `add_string_constant` skips the clone on cache hit.
+            let name_const = chunk.add_string_constant(name)?;
             for (field_name, field_expr) in fields {
-                let fname_idx = chunk.add_constant(Value::String(field_name.clone()))?;
+                let fname_idx = chunk.add_string_constant(field_name)?;
                 chunk.emit(Op::Const(fname_idx), line);
                 compile_expr(field_expr, chunk, locals, fn_index, ffi_index, line)?;
             }
@@ -1094,7 +1101,11 @@ fn compile_expr(
         // `FieldAccess` nodes.
         Node::FieldAccess { target, field, .. } => {
             compile_expr(target, chunk, locals, fn_index, ffi_index, line)?;
-            let fname_idx = chunk.add_constant(Value::String(field.clone()))?;
+            // RES-1425: lazy-clone via `add_string_constant`. Field
+            // access on the same field name (e.g. `p.x` referenced 10
+            // times) interns the same `"x"` string only once instead
+            // of allocating + dropping 9 duplicate clones.
+            let fname_idx = chunk.add_string_constant(field)?;
             chunk.emit(
                 Op::GetField {
                     name_const: fname_idx,

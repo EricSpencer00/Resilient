@@ -219,6 +219,10 @@
     "resilient/src/dce.rs": {
       "branch": "res-1415-dce-skip-fixup",
       "claimed_at": "2026-05-12T10:22:07Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-1425-struct-field-string-intern",
+      "claimed_at": "2026-05-12T10:38:06Z"
     }
   }
 }
