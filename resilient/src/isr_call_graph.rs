@@ -73,15 +73,20 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             }
         }
     }
-    for root in isr_roots {
-        let mut seen = HashSet::new();
-        let mut q = VecDeque::new();
-        q.push_back(root.clone());
+    // RES-1474: borrow into `callees` / `isr_roots` for the BFS
+    // instead of cloning each name into `seen` and `q`. The HashMap
+    // and Vec both live for the duration of this block, so `&str`
+    // borrows from them remain valid across the BFS. Mirror of
+    // RES-1471's `bounded_blocking::transitive_blocking` refactor.
+    for root in &isr_roots {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut q: VecDeque<&str> = VecDeque::new();
+        q.push_back(root.as_str());
         while let Some(fname) = q.pop_front() {
-            if !seen.insert(fname.clone()) {
+            if !seen.insert(fname) {
                 continue;
             }
-            if let Some(cs) = callees.get(&fname) {
+            if let Some(cs) = callees.get(fname) {
                 for c in cs {
                     if is_isr_unsafe_call(c) {
                         eprintln!(
@@ -89,7 +94,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
                              via '{fname}' — interrupt context must not block or allocate"
                         );
                     }
-                    q.push_back(c.clone());
+                    q.push_back(c.as_str());
                 }
             }
         }
