@@ -326,6 +326,20 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         _ => return Ok(()),
     };
 
+    // RES-1230 NOTE: an earlier draft of this PR added a
+    // `if !any TraitDecl return Ok(())` fast-reject here. It broke
+    // `unknown_trait_in_bound_errors` / `unknown_trait_in_impl_errors`
+    // because `traits::check` also validates trait *references* in
+    // impl blocks (`impl Drawable for Foo`) and generic bounds
+    // (`fn pick<T: Comparable>(...)`), both of which can appear in
+    // programs that never declare a trait themselves. A correct
+    // fast-reject would need to also scan ImplBlock and the
+    // type-params lists — at which point we're doing roughly the
+    // same walk as `traits::check` itself. Left without a fast-
+    // reject; `type_aliases::check` (in the same PR) keeps its
+    // simpler pre-scan because nothing references a type alias
+    // without it being declared.
+
     // Pass 1: collect trait declarations.
     let mut traits: HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)> =
         HashMap::new();

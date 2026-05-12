@@ -66,6 +66,19 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         return Ok(());
     };
 
+    // RES-1230: fast-reject. The cycle detector only has work to do
+    // when the program declares at least one `type X = Y`. For every
+    // other program — basically every test — the three allocations
+    // below (`aliases` HashMap, `decl_order` Vec, the `color`
+    // HashMap built from `aliases.keys()`) and the DFS loop run for
+    // nothing. Same shape as RES-1211 .. RES-1228.
+    if !statements
+        .iter()
+        .any(|s| matches!(&s.node, Node::TypeAlias { .. }))
+    {
+        return Ok(());
+    }
+
     // Build alias -> (target, span) map. Last write wins on duplicate
     // declarations — matches the typechecker's HashMap insertion
     // semantics so the two layers can't disagree.
