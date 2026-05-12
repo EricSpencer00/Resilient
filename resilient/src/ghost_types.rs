@@ -49,7 +49,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if ghosts.is_empty() {
         return Ok(());
     }
-    install(ghosts.clone());
+    // RES-1487: validate before `install` so `ghosts` can be moved
+    // into install instead of cloned. The previous shape did
+    // `install(ghosts.clone())` up front; the validation loop
+    // borrowed `&ghosts` and ran after. Reorder so install takes
+    // ownership at the end of the success path. Same shape as
+    // RES-1481 (derives) / RES-1485 (recursive_types).
     let Node::Program(stmts) = program else {
         return Ok(());
     };
@@ -71,6 +76,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             }
         }
     }
+    install(ghosts);
     Ok(())
 }
 
