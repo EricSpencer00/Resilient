@@ -191,6 +191,10 @@
     "resilient/src/const_fold.rs": {
       "branch": "res-1341-cache-opt-env-vars",
       "claimed_at": "2026-05-12T06:52:39Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1350-typechecker-builtin-env-cache",
+      "claimed_at": "2026-05-12T07:18:36Z"
     }
   }
 }
