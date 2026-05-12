@@ -22519,7 +22519,7 @@ impl Interpreter {
                 let target_val = self.eval(target)?;
                 let index_val = self.eval(index)?;
                 match (target_val, index_val) {
-                    (Value::Array(items), Value::Int(i)) => {
+                    (Value::Array(mut items), Value::Int(i)) => {
                         // RES-921: negative indices wrap from the end —
                         // `-1` is the last element, `-len` is the first.
                         // `i < -len` and `i >= len` are both out of
@@ -22533,7 +22533,22 @@ impl Interpreter {
                                 items.len()
                             ))
                         } else {
-                            Ok(items[resolved as usize].clone())
+                            // RES-1436: `items` is owned (moved out of
+                            // `Value::Array(items)` by the destructure).
+                            // The previous `items[i].clone()` shape
+                            // cloned the element and then dropped the
+                            // entire `items` Vec — for arrays of
+                            // heap-allocated values (strings, nested
+                            // arrays, structs), the clone was the
+                            // expensive part. `swap_remove(i)` returns
+                            // the element by move (O(1) — swaps the
+                            // last element into position `i`); the rest
+                            // of `items` drops at end of scope as
+                            // before. Net effect: one fewer Value clone
+                            // per array index in the tree-walker.
+                            // Element order in `items` is irrelevant
+                            // since `items` is about to be dropped.
+                            Ok(items.swap_remove(resolved as usize))
                         }
                     }
                     (Value::Array(_), other) => {
