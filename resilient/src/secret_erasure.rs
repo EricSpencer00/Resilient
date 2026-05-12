@@ -31,6 +31,29 @@ const SECRET_TYPE_PREFIXES: &[&str] = &["Secret", "&Secret", "&mut Secret"];
 const WIPE_FNS: &[&str] = &["zeroize", "zero_out", "wipe", "scrub"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1256: fast-reject. `collect_local_secrets` walks each
+    // function body looking for `LetStatement` / `StaticLet` whose
+    // name or type annotation matches the secret prefix list. For
+    // programs with no such binding (the overwhelming majority of
+    // `cargo test` inputs and the entire `examples/` tree), every
+    // per-function visit walks the body in full and finds nothing —
+    // and the per-function `leaks` Vec is then empty so the rest of
+    // the closure is a no-op. Pre-scan the program once via
+    // `any_node` (RES-1238 made this early-terminating) and skip the
+    // pass entirely when no secret-prefixed binding exists.
+    let has_secret = any_node(program, |n| match n {
+        Node::LetStatement {
+            name, type_annot, ..
+        } => {
+            SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p))
+                || type_annot.as_deref().map(is_secret_type).unwrap_or(false)
+        }
+        Node::StaticLet { name, .. } => SECRET_NAME_PREFIXES.iter().any(|p| name.starts_with(*p)),
+        _ => false,
+    });
+    if !has_secret {
+        return Ok(());
+    }
     for_each_function(program, |fname, _params, body| {
         let mut leaks = Vec::new();
         collect_local_secrets(body, &mut leaks);
