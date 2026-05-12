@@ -966,7 +966,10 @@ pub struct TypeChecker {
     env: TypeEnvironment,
     /// RES-061: top-level function name → its parameters + contract clauses.
     /// Populated by check_program's first pass; consulted by CallExpression.
-    contract_table: HashMap<String, ContractInfo>,
+    /// RES-1363: stored behind `Rc` so the per-CallExpression lookup
+    /// at typechecker.rs:5877 ticks a single refcount instead of
+    /// deep-cloning four `Vec`s on every call to a user-defined fn.
+    contract_table: HashMap<String, std::rc::Rc<ContractInfo>>,
     /// RES-340: top-level function name → span of its `fn` keyword.
     /// Populated by the same pre-pass that fills `contract_table`. Read
     /// by the rich-diagnostic path in `CallExpression` to attach a
@@ -3708,14 +3711,18 @@ impl TypeChecker {
                             span,
                             ..
                         } => {
+                            // RES-1363: wrap in `Rc` so the call-site
+                            // reader at typechecker.rs:5877 clones a
+                            // single refcount instead of deep-cloning
+                            // four `Vec`s.
                             self.contract_table.insert(
                                 name.clone(),
-                                ContractInfo {
+                                std::rc::Rc::new(ContractInfo {
                                     parameters: parameters.clone(),
                                     requires: requires.clone(),
                                     ensures: ensures.clone(),
                                     fails: fails.clone(),
-                                },
+                                }),
                             );
                             // RES-340: remember the fn keyword's span so
                             // the rich type-mismatch path can point at

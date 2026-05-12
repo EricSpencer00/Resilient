@@ -189,8 +189,8 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1361-rich-diag-env-cache",
-      "claimed_at": "2026-05-12T07:54:53Z"
+      "branch": "res-1363-contract-table-rc",
+      "claimed_at": "2026-05-12T08:04:15Z"
     }
   }
 }
