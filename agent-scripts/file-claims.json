@@ -79,6 +79,10 @@
     "resilient/src/rate_limit_static.rs": {
       "branch": "res-1228-rate-limit-fast-reject",
       "claimed_at": "2026-05-12T02:24:23Z"
+    },
+    "resilient/src/feature_attrs.rs": {
+      "branch": "res-1224-feature-attrs-no-snapshot",
+      "claimed_at": "2026-05-12T02:18:56Z"
     }
   }
 }
