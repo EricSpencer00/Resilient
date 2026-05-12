@@ -516,15 +516,33 @@ fn rewrite_inlined_op(
     callee_chunk: &Chunk,
     caller_chunk: &mut Chunk,
 ) -> Result<InlinedOp, InlineError> {
+    // RES-1443: route `Value::String` callee constants through the
+    // RES-1419 lazy-clone interner. `add_constant(v.clone())` cloned
+    // the source `String` unconditionally and then `add_constant`'s
+    // linear-scan dedup would either return an existing index
+    // (dropping the clone) or push the cloned `String`. For repeated
+    // string constants (e.g. a builtin name like `"len"` referenced
+    // by every length-check in an inlined body, or the same field
+    // name in `GetField` ops), the clone was pure waste on every
+    // cache hit. `add_string_constant(&str)` looks up by `&str`
+    // first and only allocates the owned `String` on cache miss.
+    //
+    // Other `Value` variants (Int / Float / Bool / Void) clone
+    // trivially (Copy-shaped payloads inside the variant); keep them
+    // on the eager-clone path.
     let remap_const = |k: u16, caller: &mut Chunk| -> Result<u16, InlineError> {
         let v = callee_chunk
             .constants
             .get(k as usize)
-            .ok_or(InlineError::InternalError("callee const idx OOB"))?
-            .clone();
-        caller
-            .add_constant(v)
-            .map_err(|_| InlineError::InternalError("caller const pool overflow"))
+            .ok_or(InlineError::InternalError("callee const idx OOB"))?;
+        match v {
+            crate::Value::String(s) => caller
+                .add_string_constant(s.as_str())
+                .map_err(|_| InlineError::InternalError("caller const pool overflow")),
+            other => caller
+                .add_constant(other.clone())
+                .map_err(|_| InlineError::InternalError("caller const pool overflow")),
+        }
     };
     Ok(match op {
         Op::LoadLocal(i) => InlinedOp::Verbatim(Op::LoadLocal(base + i)),
