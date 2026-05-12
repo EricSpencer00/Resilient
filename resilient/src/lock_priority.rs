@@ -42,12 +42,17 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
             if let Some(spec) = priorities.get(name) {
-                let mut violations = Vec::new();
-                walk_priorities(body, spec.priority, &priorities, &mut violations);
-                if let Some(v) = violations.into_iter().next() {
+                // RES-1569: short-circuit on first inversion. The previous
+                // shape pushed every violation into a `Vec<(String, u32)>`
+                // and then took `into_iter().next()` — every violation
+                // past the first was wasted plus the Vec allocation
+                // itself. Returning `Option` from the walk avoids both.
+                if let Some((callee, callee_pri)) =
+                    walk_priorities(body, spec.priority, &priorities)
+                {
                     return Err(format!(
                         "{}:0:0: error: priority inversion in `{}`: holds priority {} but calls `{}` at priority {}",
-                        source_path, name, spec.priority, v.0, v.1
+                        source_path, name, spec.priority, callee, callee_pri
                     ));
                 }
             }
@@ -60,8 +65,7 @@ fn walk_priorities(
     node: &Node,
     holding: u32,
     table: &HashMap<String, PrioritySpec>,
-    out: &mut Vec<(String, u32)>,
-) {
+) -> Option<(String, u32)> {
     match node {
         Node::CallExpression {
             function,
@@ -71,23 +75,29 @@ fn walk_priorities(
             if let Node::Identifier { name, .. } = function.as_ref() {
                 if let Some(p) = table.get(name) {
                     if p.priority < holding {
-                        out.push((name.clone(), p.priority));
+                        return Some((name.clone(), p.priority));
                     }
                 }
             }
             for a in arguments {
-                walk_priorities(a, holding, table, out);
+                if let Some(v) = walk_priorities(a, holding, table) {
+                    return Some(v);
+                }
             }
+            None
         }
         Node::Block { stmts, .. } => {
             for s in stmts {
-                walk_priorities(s, holding, table, out);
+                if let Some(v) = walk_priorities(s, holding, table) {
+                    return Some(v);
+                }
             }
+            None
         }
-        Node::ReturnStatement { value: Some(e), .. } => walk_priorities(e, holding, table, out),
-        Node::LetStatement { value, .. } => walk_priorities(value, holding, table, out),
-        Node::ExpressionStatement { expr, .. } => walk_priorities(expr, holding, table, out),
-        _ => {}
+        Node::ReturnStatement { value: Some(e), .. } => walk_priorities(e, holding, table),
+        Node::LetStatement { value, .. } => walk_priorities(value, holding, table),
+        Node::ExpressionStatement { expr, .. } => walk_priorities(expr, holding, table),
+        _ => None,
     }
 }
 
