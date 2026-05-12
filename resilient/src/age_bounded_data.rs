@@ -19,9 +19,23 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{for_each_function, visit};
+use crate::uniqueness_walk::{any_node, for_each_function, visit};
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1271: fast-reject. The whole point of this pass is to find
+    // `target.field` reads that aren't gated by a `target.*_at`
+    // comparison. If the program has no `*_at` field anywhere, the
+    // pattern doesn't apply — every read would warn indiscriminately
+    // and the warnings are meaningless for programs that don't use
+    // the age-bounded convention. Pre-scan for any `FieldAccess`
+    // whose field name ends in `_at`; if none, skip the entire pass.
+    let has_age_field = any_node(program, |n| match n {
+        Node::FieldAccess { field, .. } => field.ends_with("_at"),
+        _ => false,
+    });
+    if !has_age_field {
+        return Ok(());
+    }
     for_each_function(program, |fname, _params, body| {
         let mut reads_value: Vec<(String, String)> = Vec::new(); // (target, field)
         let mut compares_age: std::collections::HashSet<(String, String)> =
