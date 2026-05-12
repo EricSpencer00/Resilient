@@ -15,6 +15,10 @@
     ".github/workflows/embedded.yml": {
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"
+    },
+    "resilient/Cargo.toml": {
+      "branch": "res-1195-criterion-features",
+      "claimed_at": "2026-05-12T01:14:37Z"
     }
   }
 }
