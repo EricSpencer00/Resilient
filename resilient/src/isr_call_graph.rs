@@ -63,13 +63,19 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     if !has_isr {
         return Ok(());
     }
-    let mut callees: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut isr_roots: Vec<String> = Vec::new();
+    // RES-1509: borrow each top-level fn name as `&str` from the
+    // AST instead of cloning into the `callees` HashMap key and
+    // `isr_roots` Vec. `collect_callees` inside the visit closure
+    // still produces owned Strings (HRTB closure can't bind the
+    // outer `'a`), but the *outer* map keys and root list don't
+    // need ownership — same pattern as RES-1495 / RES-1500 etc.
+    let mut callees: HashMap<&str, HashSet<String>> = HashMap::new();
+    let mut isr_roots: Vec<&str> = Vec::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
-            callees.insert(name.clone(), collect_callees(body));
+            callees.insert(name.as_str(), collect_callees(body));
             if is_isr_name(name) {
-                isr_roots.push(name.clone());
+                isr_roots.push(name.as_str());
             }
         }
     }
@@ -78,10 +84,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // and Vec both live for the duration of this block, so `&str`
     // borrows from them remain valid across the BFS. Mirror of
     // RES-1471's `bounded_blocking::transitive_blocking` refactor.
-    for root in &isr_roots {
+    for &root in &isr_roots {
         let mut seen: HashSet<&str> = HashSet::new();
         let mut q: VecDeque<&str> = VecDeque::new();
-        q.push_back(root.as_str());
+        q.push_back(root);
         while let Some(fname) = q.pop_front() {
             if !seen.insert(fname) {
                 continue;
