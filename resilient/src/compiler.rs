@@ -1466,7 +1466,16 @@ impl StructRegistry {
                 ));
             }
         };
-        let mut entries: HashMap<String, StructRegistryEntry> = HashMap::new();
+        // RES-1579: pre-size `entries` to the StructDecl count. Same
+        // shape as RES-1461 (fn_index), RES-1575 (locals), RES-1577
+        // (ffi_index) — counting once is cheap, avoids the default
+        // rehash chain as the registry grows.
+        let struct_count = stmts
+            .iter()
+            .filter(|s| matches!(&s.node, Node::StructDecl { .. }))
+            .count();
+        let mut entries: HashMap<String, StructRegistryEntry> =
+            HashMap::with_capacity(struct_count);
         let mut next_type_id: u32 = 0;
         for spanned in stmts {
             let Node::StructDecl { name, fields, .. } = &spanned.node else {
