@@ -856,16 +856,33 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if gated.is_empty() {
         return Ok(());
     }
-    let threats = analyze_program(program);
-    for t in &threats {
-        if gated.contains(&t.function) {
-            return Err(format!(
-                "{}:0:0: error: `{}` is `#[ai_review_required]` but contains AI threat [{}]: {}",
-                source_path,
-                t.function,
-                t.kind.label(),
-                t.description
-            ));
+    // RES-1561: only analyze fns that are actually gated by
+    // `#[ai_review_required]`. The previous shape called
+    // `analyze_program` (walks every top-level fn through ten
+    // detectors) and then filtered the threats — every non-gated
+    // fn's analysis was wasted work. Iterate top-level statements
+    // once and run `analyze_function` only when the fn is gated.
+    // The pub `analyze_program` API (used by the `--ai-threats` CLI
+    // flag) stays unchanged.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    for s in stmts {
+        if let Node::Function { name, body, .. } = &s.node {
+            if !gated.contains(name) {
+                continue;
+            }
+            let mut threats = Vec::new();
+            analyze_function(name, body, &mut threats);
+            if let Some(t) = threats.first() {
+                return Err(format!(
+                    "{}:0:0: error: `{}` is `#[ai_review_required]` but contains AI threat [{}]: {}",
+                    source_path,
+                    t.function,
+                    t.kind.label(),
+                    t.description
+                ));
+            }
         }
     }
     Ok(())
