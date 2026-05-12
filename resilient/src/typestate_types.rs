@@ -84,8 +84,15 @@ pub fn validate_call(
     current_state: &str,
     method: &str,
 ) -> Result<String, String> {
-    let specs = SPECS.read().ok().map(|g| g.clone()).unwrap_or_default();
-    let spec = specs
+    // RES-1549: hold the read guard for the lookup so the
+    // `Vec<TypestateSpec>` (each entry owns Vec<String> + HashMap)
+    // doesn't get cloned just to find one spec by name. The
+    // transition value's String is still cloned (cheap, small)
+    // since it's the function's return value.
+    let g = SPECS
+        .read()
+        .map_err(|_| format!("no typestate for {struct_name}"))?;
+    let spec = g
         .iter()
         .find(|s| s.struct_name == struct_name)
         .ok_or_else(|| format!("no typestate for {struct_name}"))?;
