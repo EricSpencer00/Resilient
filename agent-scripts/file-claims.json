@@ -140,10 +140,6 @@
       "branch": "res-1290-liveness-fast-reject",
       "claimed_at": "2026-05-12T04:46:14Z"
     },
-    "resilient/src/verifier_loop_invariants.rs": {
-      "branch": "res-1297-verifier-loop-inv-fast-reject",
-      "claimed_at": "2026-05-12T04:57:49Z"
-    },
     "resilient/src/feature_attrs.rs": {
       "branch": "res-1303-feature-attrs-kind-index",
       "claimed_at": "2026-05-12T05:08:27Z"
@@ -193,8 +189,16 @@
       "claimed_at": "2026-05-12T06:52:39Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1354-fold-const-bool-short-circuit",
-      "claimed_at": "2026-05-12T07:30:00Z"
+      "branch": "res-1358-emit-certificates-opt-in",
+      "claimed_at": "2026-05-12T07:42:21Z"
+    },
+    "resilient/src/verifier_loop_invariants.rs": {
+      "branch": "res-1358-emit-certificates-opt-in",
+      "claimed_at": "2026-05-12T07:42:21Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1358-emit-certificates-opt-in",
+      "claimed_at": "2026-05-12T07:42:21Z"
     }
   }
 }
