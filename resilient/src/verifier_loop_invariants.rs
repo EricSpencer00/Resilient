@@ -213,9 +213,21 @@ fn try_prove_invariant(
     // -------- Base case --------
     // Bindings include every pre-loop constant. If the invariant
     // is provable from these alone, the entry obligation is met.
-    let (base_verdict, base_cert, _cx, _timed) =
-        crate::verifier_z3::prove_with_axioms_and_timeout(invariant, bindings, &[], timeout_ms);
-    if !matches!(base_verdict, Some(true)) {
+    //
+    // RES-1194: only the `Some(true)` verdict matters here — the
+    // immediate `return` discards everything else identically. Use
+    // the tautology-only fast path so Z3 doesn't run the
+    // contradiction-phase `solver.check()` whose result we'd
+    // throw away. Certificate is still produced for the proven case
+    // so the SMT-LIB2 emission below keeps working.
+    let (base_proven, base_cert, _timed) =
+        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
+            invariant,
+            bindings,
+            &[],
+            timeout_ms,
+        );
+    if !base_proven {
         return;
     }
 
@@ -242,9 +254,18 @@ fn try_prove_invariant(
     // implication so the SMT-LIB2 cert has a clean shape. (Embedding
     // works equivalently; the ax form mirrors how `recovers_to`
     // discharges its requires-precondition.)
-    let (step_verdict, step_cert, _cx, _timed) =
-        crate::verifier_z3::prove_with_axioms_and_timeout(&goal, &step_bindings, &[], timeout_ms);
-    if !matches!(step_verdict, Some(true)) {
+    //
+    // RES-1194: same tautology-only path as the base case — the
+    // `return` below discards every non-`Some(true)` verdict
+    // identically.
+    let (step_proven, step_cert, _timed) =
+        crate::verifier_z3::prove_tautology_with_axioms_and_timeout(
+            &goal,
+            &step_bindings,
+            &[],
+            timeout_ms,
+        );
+    if !step_proven {
         return;
     }
 

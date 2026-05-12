@@ -375,6 +375,129 @@ fn prove_with_axioms_and_timeout_in(
     (None, None, counterexample, timed_out)
 }
 
+/// RES-1194: tautology-only fast path.
+///
+/// Many callers (`bounds_check`, `verifier_loop_invariants`,
+/// `prove_alias_disjoint`) only branch on `Some(true)` — they treat
+/// `Some(false)` (provable contradiction) and `None` (uncertain) the
+/// same: keep the runtime check. For those callers the
+/// `prove_with_axioms_and_timeout` contradiction phase is dead work:
+/// one full Z3 `solver.check()` per query whose verdict is
+/// discarded.
+///
+/// This entry point runs **only** the tautology check, then returns
+/// `(proven, cert_if_proven, timed_out)`. The certificate is still
+/// emitted on tautology so callers that persist it (loop invariants)
+/// keep working; the `Option<String>` counterexample slot is dropped
+/// because by construction it's only meaningful when the caller
+/// would have acted on `Some(false)` / `None`, which they don't.
+///
+/// Equivalent to dropping `Some(false)` and the counterexample from
+/// `prove_with_axioms_and_timeout`'s return shape — modulo the
+/// optimisation of not running the contradiction `check()` at all.
+#[allow(dead_code)]
+pub fn prove_tautology_with_axioms_and_timeout(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (bool, Option<ProofCertificate>, bool) {
+    Z3_CTX.with(|ctx| {
+        prove_tautology_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms)
+    })
+}
+
+fn prove_tautology_with_axioms_and_timeout_in(
+    ctx: &z3::Context,
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> (bool, Option<ProofCertificate>, bool) {
+    let formula = match translate_bool(ctx, expr, bindings) {
+        Some(f) => f,
+        None => return (false, None, false),
+    };
+
+    let apply_timeout = |solver: &z3::Solver<'_>| {
+        if timeout_ms > 0 {
+            let mut params = z3::Params::new(ctx);
+            params.set_u32("timeout", timeout_ms);
+            solver.set_params(&params);
+        }
+    };
+
+    // Identical len-axiom and user-axiom setup as the full prover;
+    // only the second `check()` (contradiction) is omitted.
+    let mut len_args: BTreeSet<String> = BTreeSet::new();
+    collect_len_args(expr, &mut len_args);
+    let len_axioms: Vec<(String, Bool<'_>)> = len_args
+        .iter()
+        .map(|arg| {
+            let c = Int::new_const(ctx, format!("len_{}", arg));
+            let zero = Int::from_i64(ctx, 0);
+            let axiom = c.ge(&zero);
+            (arg.clone(), axiom)
+        })
+        .collect();
+
+    let user_axioms: Vec<Bool<'_>> = axioms
+        .iter()
+        .filter_map(|ax| translate_bool(ctx, ax, bindings))
+        .collect();
+
+    let solver = z3::Solver::new(ctx);
+    apply_timeout(&solver);
+    for (_, axiom) in &len_axioms {
+        solver.assert(axiom);
+    }
+    for axiom in &user_axioms {
+        solver.assert(axiom);
+    }
+    let negated = formula.not();
+    solver.assert(&negated);
+    let check = solver.check();
+    let tautology = matches!(check, z3::SatResult::Unsat);
+    let timed_out = matches!(check, z3::SatResult::Unknown);
+
+    if !tautology {
+        return (false, None, timed_out);
+    }
+
+    // Tautology proven — emit the same SMT-LIB2 certificate shape
+    // `prove_with_axioms_and_timeout` would have.
+    let mut idents: BTreeSet<String> = BTreeSet::new();
+    collect_int_identifiers(expr, &mut idents);
+    let mut arr_args: BTreeSet<String> = BTreeSet::new();
+    collect_array_args(expr, &mut arr_args);
+
+    let mut smt2 = String::new();
+    smt2.push_str("; RES-071 verification certificate\n");
+    smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
+    smt2.push_str("(set-logic AUFLIA)\n");
+    for name in &idents {
+        smt2.push_str(&format!("(declare-const {} Int)\n", name));
+    }
+    for arg in &len_args {
+        smt2.push_str(&format!("(declare-const len_{} Int)\n", arg));
+    }
+    for arg in &arr_args {
+        smt2.push_str(&format!("(declare-const arr_{} (Array Int Int))\n", arg));
+    }
+    for arg in &len_args {
+        smt2.push_str(&format!("(assert (>= len_{} 0))\n", arg));
+    }
+    for name in &idents {
+        if let Some(v) = bindings.get(name) {
+            smt2.push_str(&format!("(assert (= {} {}))\n", name, v));
+        }
+    }
+    smt2.push_str(&format!("(assert {})\n", negated));
+    smt2.push_str("(check-sat)\n");
+
+    (true, Some(ProofCertificate { smt2 }), false)
+}
+
 // ============================================================
 // RES-354: BV32 theory prover
 // ============================================================
@@ -503,8 +626,13 @@ pub fn prove_alias_disjoint(param_a: &str, param_b: &str, requires: &[Node]) -> 
         }),
         span: crate::span::Span::default(),
     };
-    let (verdict, _, _, _) = prove_with_axioms_and_timeout(&neq, &HashMap::new(), requires, 500);
-    verdict
+    // RES-1194: only `Some(true)` is meaningful here — the caller in
+    // `lib.rs` checks `== Some(true)` and treats every other verdict
+    // as "couldn't prove disjoint". Use the tautology-only fast path
+    // to skip the contradiction-phase `solver.check()`.
+    let (proven, _, _) =
+        prove_tautology_with_axioms_and_timeout(&neq, &HashMap::new(), requires, 500);
+    if proven { Some(true) } else { None }
 }
 
 /// Collect every identifier name seen in `node` (for BV counterexample
@@ -1315,6 +1443,66 @@ mod tests {
         assert_eq!(first, Some(true));
         assert_eq!(second, Some(true));
         assert_eq!(third, Some(true));
+    }
+
+    /// RES-1194: the tautology-only entry point agrees with the
+    /// full prover on tautological inputs and reports the same
+    /// `proven=true` verdict alongside an SMT-LIB2 certificate.
+    #[test]
+    fn tautology_only_path_agrees_with_full_prover_on_tautology() {
+        let no_b = HashMap::new();
+        let expr = Node::InfixExpression {
+            left: Box::new(Node::IntegerLiteral {
+                value: 5,
+                span: crate::span::Span::default(),
+            }),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 3,
+                span: crate::span::Span::default(),
+            }),
+            span: crate::span::Span::default(),
+        };
+        let (full_verdict, full_cert, _, _) = prove_with_axioms_and_timeout(&expr, &no_b, &[], 0);
+        let (taut_proven, taut_cert, taut_timed_out) =
+            prove_tautology_with_axioms_and_timeout(&expr, &no_b, &[], 0);
+        assert_eq!(full_verdict, Some(true));
+        assert!(taut_proven);
+        assert!(!taut_timed_out);
+        // Both paths emit a certificate on tautology success — they
+        // build it from the same shape (sorted idents, len-arg
+        // axioms, negated goal), so the bytes must match.
+        assert_eq!(
+            full_cert.as_ref().map(|c| &c.smt2),
+            taut_cert.as_ref().map(|c| &c.smt2)
+        );
+    }
+
+    /// RES-1194: when the goal is a contradiction (provably always
+    /// false), the full prover returns `Some(false)` but the
+    /// tautology-only path returns `proven=false` (with no cert).
+    /// Callers that route through the new fast path treat this
+    /// identically to "uncertain" — keep the runtime check.
+    #[test]
+    fn tautology_only_path_returns_false_on_contradiction() {
+        let no_b = HashMap::new();
+        let expr = Node::InfixExpression {
+            left: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
+            operator: "!=".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: crate::span::Span::default(),
+            }),
+            span: crate::span::Span::default(),
+        };
+        let (proven, cert, timed_out) =
+            prove_tautology_with_axioms_and_timeout(&expr, &no_b, &[], 0);
+        assert!(!proven);
+        assert!(cert.is_none());
+        assert!(!timed_out);
     }
 
     /// RES-1188: a tautology call followed by a contradiction call on
