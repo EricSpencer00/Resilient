@@ -38,15 +38,20 @@ pub fn check_program(program: &Node) -> Vec<String> {
     if labels.is_empty() {
         return errors;
     }
-    let secret_fns: HashSet<&String> = labels
+    // RES-1439: store `&str` borrows into the `labels` map rather
+    // than `&String` references. Then `walk_calls` can collect
+    // `&str` borrows of identifier names (skipping the per-callee
+    // `String::clone` it used to do), and the set membership check
+    // `secret_fns.contains(callee)` works directly on `&str`.
+    let secret_fns: HashSet<&str> = labels
         .iter()
         .filter(|(_, l)| **l == Label::Secret)
-        .map(|(k, _)| k)
+        .map(|(k, _)| k.as_str())
         .collect();
-    let public_fns: HashSet<&String> = labels
+    let public_fns: HashSet<&str> = labels
         .iter()
         .filter(|(_, l)| **l == Label::Public)
-        .map(|(k, _)| k)
+        .map(|(k, _)| k.as_str())
         .collect();
 
     let Node::Program(stmts) = program else {
@@ -54,12 +59,12 @@ pub fn check_program(program: &Node) -> Vec<String> {
     };
     for s in stmts {
         if let Node::Function { name, body, .. } = &s.node {
-            if public_fns.contains(name) {
+            if public_fns.contains(name.as_str()) {
                 // walk body: any call to a secret-tagged fn is a leak.
-                let mut leaks = Vec::new();
+                let mut leaks: Vec<&str> = Vec::new();
                 walk_calls(body, &mut leaks);
                 for callee in leaks {
-                    if secret_fns.contains(&callee) {
+                    if secret_fns.contains(callee) {
                         errors.push(format!(
                             "info-flow: `{}` is `#[public]` but transitively calls `#[secret]` fn `{}`",
                             name, callee
@@ -72,7 +77,7 @@ pub fn check_program(program: &Node) -> Vec<String> {
     errors
 }
 
-fn walk_calls(node: &Node, out: &mut Vec<String>) {
+fn walk_calls<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
     match node {
         Node::CallExpression {
             function,
@@ -80,7 +85,7 @@ fn walk_calls(node: &Node, out: &mut Vec<String>) {
             ..
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
-                out.push(name.clone());
+                out.push(name.as_str());
             }
             for a in arguments {
                 walk_calls(a, out);
