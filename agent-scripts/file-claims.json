@@ -259,6 +259,10 @@
     "resilient/src/blame_attribution.rs": {
       "branch": "res-1544-blame-attribution-callers-borrow",
       "claimed_at": "2026-05-12T14:23:18Z"
+    },
+    "resilient/src/type_aliases.rs": {
+      "branch": "res-1537-type-aliases-borrow",
+      "claimed_at": "2026-05-12T15:11:20Z"
     }
   }
 }
