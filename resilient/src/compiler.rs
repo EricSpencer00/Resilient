@@ -75,8 +75,22 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     #[cfg(not(feature = "ffi"))]
     let ffi_index: HashMap<String, u16> = HashMap::new();
 
+    // RES-1461: pre-size `fn_index` and `functions` to the actual
+    // top-level Function count. The previous shape used
+    // `HashMap::new()` / `Vec::new()` and grew them entry-by-entry,
+    // triggering reallocations as they crossed the default-bucket
+    // boundaries. Most programs have at least a handful of functions;
+    // a one-shot count is essentially free (linear over top-level
+    // statements, same shape as the loop below). Mirrors RES-1365's
+    // struct-fields pre-size pattern and RES-1399's actor
+    // resolved_fields pre-size.
+    let fn_count = stmts
+        .iter()
+        .filter(|s| matches!(&s.node, Node::Function { .. }))
+        .count();
+
     // Pre-pass: function name → index in the `functions` table.
-    let mut fn_index: HashMap<String, u16> = HashMap::new();
+    let mut fn_index: HashMap<String, u16> = HashMap::with_capacity(fn_count);
     let mut next_fn_idx: u16 = 0;
     for spanned in stmts {
         if let Node::Function {
@@ -95,7 +109,7 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     }
 
     // Pass 2: compile each function body in declaration order.
-    let mut functions: Vec<Function> = Vec::new();
+    let mut functions: Vec<Function> = Vec::with_capacity(fn_count);
     for spanned in stmts {
         if let Node::Function {
             name,
