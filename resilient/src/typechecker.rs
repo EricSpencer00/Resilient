@@ -1021,6 +1021,15 @@ pub struct TypeChecker {
     /// successfully discharged invariant. Defaults to `false` so the
     /// regular build is silent; the driver flips it on for `--verbose`.
     verbose_loop_invariants: bool,
+    /// RES-1322: gate the post-typecheck `infer_fn_effects` fixpoint
+    /// on opt-in. The result populates `self.stats.fn_effects`, which
+    /// is only read by the `--audit` and `--explain-effects` CLI
+    /// drivers — for every other invocation (the default
+    /// `rz prog.rz` path, the LSP/REPL, every `cargo test` typecheck
+    /// call) the fixpoint is wasted work because the map is never
+    /// consulted. Default `false`; the audit/explain-effects drivers
+    /// set it via `with_audit_stats(true)`.
+    audit_stats: bool,
 }
 
 impl TypeChecker {
@@ -3467,6 +3476,11 @@ impl TypeChecker {
             // RES-318: per-loop-invariant verbose stderr line is OFF
             // by default. The driver flips it on via `--verbose`.
             verbose_loop_invariants: false,
+            // RES-1322: opt-in. Audit + explain-effects drivers set
+            // this; default-mode runs (every non-audit CLI invocation,
+            // the LSP/REPL, every `cargo test` typecheck) skip the
+            // `infer_fn_effects` fixpoint.
+            audit_stats: false,
         }
     }
 
@@ -3505,6 +3519,19 @@ impl TypeChecker {
     /// verifier. The driver flips this on via the `--verbose` flag.
     pub fn with_verbose_loop_invariants(mut self, on: bool) -> Self {
         self.verbose_loop_invariants = on;
+        self
+    }
+
+    /// RES-1322: opt into the post-typecheck `infer_fn_effects`
+    /// fixpoint that populates `self.stats.fn_effects`. The only
+    /// consumers of `fn_effects` are the `--audit` /
+    /// `--explain-effects` CLI drivers; for every other invocation
+    /// (the default `rz prog.rz` path, the LSP/REPL paths, every
+    /// `cargo test` typecheck call) the fixpoint is wasted work
+    /// because the result is never read. Default `false`; the driver
+    /// flips this on for the audit/explain-effects paths.
+    pub fn with_audit_stats(mut self, on: bool) -> Self {
+        self.audit_stats = on;
         self
     }
 
@@ -3886,7 +3913,17 @@ impl TypeChecker {
                 // already-IO user fn, or an unresolvable callee.
                 // Non-error — just populates the `fn_effects`
                 // stats field for the --audit column.
-                self.stats.fn_effects = infer_fn_effects(statements);
+                //
+                // RES-1322: gated on the opt-in `audit_stats` flag.
+                // `fn_effects` is consumed only by the `--audit` and
+                // `--explain-effects` drivers; every other caller
+                // (default-mode runs, LSP/REPL, every `cargo test`
+                // typecheck) never reads the map, so the fixpoint
+                // is wasted work. The audit / explain-effects
+                // drivers flip the flag via `with_audit_stats(true)`.
+                if self.audit_stats {
+                    self.stats.fn_effects = infer_fn_effects(statements);
+                }
 
                 Ok(result_type)
             }
@@ -8024,9 +8061,13 @@ mod purity_tests {
 
     #[test]
     fn stats_field_populated_by_full_check() {
-        // End-to-end: running the typechecker populates
-        // `stats.fn_effects`. Confirms the call-site inside
-        // `check_program_with_source` is wired.
+        // End-to-end: running the typechecker with `audit_stats`
+        // opt-in populates `stats.fn_effects`. Confirms the gated
+        // call-site inside `check_program_with_source` is wired.
+        //
+        // RES-1322: `with_audit_stats(true)` is required — the
+        // fixpoint is off by default so non-audit callers don't pay
+        // for a result they never read.
         let src = "\
             fn noisy() { println(\"h\"); return 0; }\n\
             fn quiet() { return 0; }\n\
@@ -8034,12 +8075,31 @@ mod purity_tests {
             main(0);\n";
         let (program, errs) = crate::parse(src);
         assert!(errs.is_empty(), "parse errors: {errs:?}");
-        let mut tc = TypeChecker::new();
+        let mut tc = TypeChecker::new().with_audit_stats(true);
         tc.check_program_with_source(&program, "<t>")
             .expect("typecheck should succeed");
         assert_eq!(tc.stats.fn_effects.get("noisy"), Some(&true));
         assert_eq!(tc.stats.fn_effects.get("quiet"), Some(&false));
         assert_eq!(tc.stats.fn_effects.get("main"), Some(&true));
+    }
+
+    #[test]
+    fn stats_field_empty_by_default() {
+        // RES-1322: without `with_audit_stats(true)` the fixpoint
+        // is skipped and `stats.fn_effects` stays empty. Locks in
+        // the opt-in default so a future regression that always-
+        // populates the map fails this test.
+        let src = "fn noisy() { println(\"h\"); return 0; }\n";
+        let (program, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {errs:?}");
+        let mut tc = TypeChecker::new();
+        tc.check_program_with_source(&program, "<t>")
+            .expect("typecheck should succeed");
+        assert!(
+            tc.stats.fn_effects.is_empty(),
+            "fn_effects should be empty when audit_stats is off, got {:?}",
+            tc.stats.fn_effects
+        );
     }
 }
 

@@ -25888,7 +25888,12 @@ fn execute_file(
             .with_warn_unverified(warn_unverified)
             // RES-318: `--verbose` opts into per-loop-invariant
             // proof messages on stderr.
-            .with_verbose_loop_invariants(verbose_invariants);
+            .with_verbose_loop_invariants(verbose_invariants)
+            // RES-1322: opt into the post-typecheck IO-effect
+            // fixpoint only when its result is consumed. `--audit`
+            // and `--explain-effects` both read `stats.fn_effects`;
+            // every other invocation skips the fixpoint.
+            .with_audit_stats(audit || explain_effects);
         // RES-354: apply the --z3-theory flag when z3 feature is on.
         #[cfg(feature = "z3")]
         let mut tc = tc_base.with_z3_theory(z3_theory);
