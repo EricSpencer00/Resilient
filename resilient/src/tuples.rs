@@ -262,7 +262,7 @@ mod tests {
     /// programs that print via `println`. Tests assert against
     /// captured side effects via the runtime's known semantics.
     fn run(src: &str) -> Value {
-        let lexer = Lexer::new(src.to_string());
+        let lexer = Lexer::new(src);
         let mut parser = Parser::new(lexer);
         let program = parser.parse_program();
         assert!(
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn element_access_out_of_range_errors() {
-        let lexer = Lexer::new("(1, 2).5".to_string());
+        let lexer = Lexer::new("(1, 2).5");
         let mut parser = Parser::new(lexer);
         let program = parser.parse_program();
         assert!(parser.errors.is_empty());
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn destructure_arity_mismatch_errors() {
-        let lexer = Lexer::new("let (a, b, c) = (1, 2);".to_string());
+        let lexer = Lexer::new("let (a, b, c) = (1, 2);");
         let mut parser = Parser::new(lexer);
         let program = parser.parse_program();
         assert!(parser.errors.is_empty());
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn destructure_non_tuple_errors() {
-        let lexer = Lexer::new("let (a, b) = 42;".to_string());
+        let lexer = Lexer::new("let (a, b) = 42;");
         let mut parser = Parser::new(lexer);
         let program = parser.parse_program();
         assert!(parser.errors.is_empty());
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn tuple_index_on_non_tuple_errors() {
-        let lexer = Lexer::new("let x = 42; x.0".to_string());
+        let lexer = Lexer::new("let x = 42; x.0");
         let mut parser = Parser::new(lexer);
         let program = parser.parse_program();
         assert!(parser.errors.is_empty());

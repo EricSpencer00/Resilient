@@ -221,7 +221,7 @@ mod tests {
     use crate::{Interpreter, Lexer, Parser};
 
     fn parse(src: &str) -> Node {
-        let lexer = Lexer::new(src.to_string());
+        let lexer = Lexer::new(src);
         let mut parser = Parser::new(lexer);
         parser.parse_program()
     }

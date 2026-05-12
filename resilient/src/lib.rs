@@ -978,7 +978,15 @@ struct Lexer {
 }
 
 impl Lexer {
-    fn new(input: String) -> Self {
+    // RES-1337: take `&str` rather than `String`. The lexer's internal
+    // storage is a `Vec<char>` produced by `chars().collect()`, so
+    // owning the original `String` was never necessary. Every call
+    // site previously had to materialise a `String` (often via
+    // `.to_string()` or `.clone()`) just to satisfy the signature;
+    // the main compile path's `Lexer::new(contents.clone())` cloned
+    // the entire source file (~hundreds of KB for large inputs) on
+    // every compile. Borrowing eliminates that clone.
+    fn new(input: &str) -> Self {
         #[cfg(feature = "logos-lexer")]
         {
             // RES-108: under the `logos-lexer` feature, pre-tokenize
@@ -987,7 +995,7 @@ impl Lexer {
             // the legacy scan state (`input`, `position`, etc.) stays
             // initialized so diagnostics that reach into fields like
             // `last_token_line` still work.
-            let tokens = lexer_logos::tokenize(&input);
+            let tokens = lexer_logos::tokenize(input);
             Lexer {
                 input: input.chars().collect(),
                 position: 0,
@@ -24465,7 +24473,7 @@ fn start_repl() -> RustylineResult<()> {
                 }
 
                 // Parse the input
-                let lexer = Lexer::new(input.to_string());
+                let lexer = Lexer::new(input);
                 let mut parser = Parser::new(lexer);
                 let mut program = parser.parse_program();
 
@@ -24672,7 +24680,7 @@ fn dump_tokens_to_stdout(src: &str) {
     // char-offset `Span::{start.offset, end.offset}` regardless of
     // UTF-8 boundaries.
     let chars: Vec<char> = src.chars().collect();
-    let mut lex = Lexer::new(src.to_string());
+    let mut lex = Lexer::new(src);
     loop {
         let (tok, span) = lex.next_token_with_span();
         let is_eof = matches!(tok, Token::Eof);
@@ -24841,7 +24849,7 @@ fn dump_ast_json_to_stdout(src: &str) -> Result<(), Vec<String>> {
 /// parser error strings collected along the way. Used by both the
 /// driver and `imports::expand_uses`.
 fn parse(src: &str) -> (Node, Vec<String>) {
-    let lexer = Lexer::new(src.to_string());
+    let lexer = Lexer::new(src);
     let mut parser = Parser::new(lexer);
     let mut program = parser.parse_program();
     let mut errs: Vec<String> = parser.errors.into_iter().map(|e| e.to_string()).collect();
@@ -25152,7 +25160,7 @@ pub(crate) fn collect_semantic_tokens(src: &str) -> Vec<AbsSemToken> {
     let mut out: Vec<AbsSemToken> = Vec::new();
     // Lexer-driven pass for keywords / literals / operators /
     // identifiers.
-    let mut lex = Lexer::new(src.to_string());
+    let mut lex = Lexer::new(src);
     let mut prev_kw: Option<Token> = None;
     loop {
         let (tok, span) = lex.next_token_with_span();
@@ -25758,7 +25766,7 @@ fn execute_file(
         (source_hash, cache_dir, hit)
     };
 
-    let lexer = Lexer::new(contents.clone());
+    let lexer = Lexer::new(&contents);
     let mut parser = Parser::new(lexer);
     let mut program = parser.parse_program();
 
@@ -28380,7 +28388,7 @@ mod tests {
 
     /// Lex the entire input into a Vec<Token>, stopping at (and including) Eof.
     fn tokenize(input: &str) -> Vec<Token> {
-        let mut lexer = Lexer::new(input.to_string());
+        let mut lexer = Lexer::new(input);
         let mut out = Vec::new();
         loop {
             let tok = lexer.next_token();
@@ -28775,7 +28783,7 @@ mod tests {
     // ---------- Parser ----------
 
     fn parse(input: &str) -> (Node, Vec<String>) {
-        let lexer = Lexer::new(input.to_string());
+        let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
         let mut program = parser.parse_program();
         let mut errs = parser.errors;
@@ -39686,7 +39694,7 @@ mod tests {
 
     #[test]
     fn lexer_tracks_line_across_newlines() {
-        let mut lex = Lexer::new("let x = 1;\nlet y = 2;".to_string());
+        let mut lex = Lexer::new("let x = 1;\nlet y = 2;");
         let _ = lex.next_token(); // let (line 1)
         let _ = lex.next_token(); // x
         let _ = lex.next_token(); // =
@@ -51847,7 +51855,7 @@ mod tests {
         // A leading shebang line is silently consumed; the first
         // real token (`println`) lands on line 2, col 1.
         let src = "#!/usr/bin/env resilient\nprintln(\"ok\");";
-        let mut lex = Lexer::new(src.to_string());
+        let mut lex = Lexer::new(src);
         let (tok, span) = lex.next_token_with_span();
         match tok {
             Token::Identifier(ref n) => assert_eq!(n, "println"),
@@ -51862,7 +51870,7 @@ mod tests {
         // `#!` anywhere other than byte 0 must lex as an Unknown
         // `#` token — no free comment syntax from this change.
         let src = "println(\"hi\");\n#!/bin/sh";
-        let mut lex = Lexer::new(src.to_string());
+        let mut lex = Lexer::new(src);
         // Drain the legitimate prefix.
         let mut saw_unknown_hash = false;
         loop {
@@ -51885,7 +51893,7 @@ mod tests {
         // `#!\n` (no path) followed by code: still consumed. Real
         // token lands on line 2.
         let src = "#!\nprintln(\"ok\");";
-        let mut lex = Lexer::new(src.to_string());
+        let mut lex = Lexer::new(src);
         let (tok, span) = lex.next_token_with_span();
         match tok {
             Token::Identifier(ref n) => assert_eq!(n, "println"),
@@ -51900,7 +51908,7 @@ mod tests {
         // File is just `#!/usr/bin/env resilient` (no trailing
         // newline, no code). Shebang consumed, next token is Eof.
         let src = "#!/usr/bin/env resilient";
-        let mut lex = Lexer::new(src.to_string());
+        let mut lex = Lexer::new(src);
         let tok = lex.next_token();
         assert!(matches!(tok, Token::Eof), "got {:?}", tok);
     }
@@ -51913,7 +51921,7 @@ mod tests {
         // in most fonts — the ASCII-only policy is the defense
         // against that class of homoglyph attack.
         let src = "let кафа = 1;";
-        let mut lex = Lexer::new(src.to_string());
+        let mut lex = Lexer::new(src);
         let mut saw_non_ascii = false;
         loop {
             let tok = lex.next_token();
