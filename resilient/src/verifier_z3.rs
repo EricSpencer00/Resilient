@@ -320,13 +320,17 @@ fn prove_with_axioms_and_timeout_in(
     // `len(xs) > 0 → len(xs) >= 1`.
     let mut len_args: BTreeSet<String> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
-    let len_axioms: Vec<(String, Bool<'_>)> = len_args
+    // RES-1427: build `len_axioms` as `Vec<Bool<'_>>` (not
+    // `Vec<(String, Bool<'_>)>`) — every consumer destructures with
+    // `for (_, axiom) in &len_axioms { ... }`, throwing away the
+    // string. Dropping the unused tuple element eliminates one
+    // `String::clone` per arg per Z3 prove call.
+    let len_axioms: Vec<Bool<'_>> = len_args
         .iter()
         .map(|arg| {
             let c = Int::new_const(ctx, format!("len_{}", arg));
             let zero = Int::from_i64(ctx, 0);
-            let axiom = c.ge(&zero);
-            (arg.clone(), axiom)
+            c.ge(&zero)
         })
         .collect();
 
@@ -344,7 +348,7 @@ fn prove_with_axioms_and_timeout_in(
     // is always true regardless of any free variables.
     let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
-    for (_, axiom) in &len_axioms {
+    for axiom in &len_axioms {
         solver.assert(axiom);
     }
     for axiom in &user_axioms {
@@ -436,7 +440,7 @@ fn prove_with_axioms_and_timeout_in(
     // contract can never hold.
     let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
-    for (_, axiom) in &len_axioms {
+    for axiom in &len_axioms {
         solver.assert(axiom);
     }
     for axiom in &user_axioms {
@@ -531,13 +535,17 @@ fn prove_tautology_with_axioms_and_timeout_in(
     // only the second `check()` (contradiction) is omitted.
     let mut len_args: BTreeSet<String> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
-    let len_axioms: Vec<(String, Bool<'_>)> = len_args
+    // RES-1427: build `len_axioms` as `Vec<Bool<'_>>` (not
+    // `Vec<(String, Bool<'_>)>`) — every consumer destructures with
+    // `for (_, axiom) in &len_axioms { ... }`, throwing away the
+    // string. Dropping the unused tuple element eliminates one
+    // `String::clone` per arg per Z3 prove call.
+    let len_axioms: Vec<Bool<'_>> = len_args
         .iter()
         .map(|arg| {
             let c = Int::new_const(ctx, format!("len_{}", arg));
             let zero = Int::from_i64(ctx, 0);
-            let axiom = c.ge(&zero);
-            (arg.clone(), axiom)
+            c.ge(&zero)
         })
         .collect();
 
@@ -548,7 +556,7 @@ fn prove_tautology_with_axioms_and_timeout_in(
 
     let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
-    for (_, axiom) in &len_axioms {
+    for axiom in &len_axioms {
         solver.assert(axiom);
     }
     for axiom in &user_axioms {
