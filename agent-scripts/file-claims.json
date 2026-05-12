@@ -133,8 +133,8 @@
       "claimed_at": "2026-05-12T04:31:08Z"
     },
     "resilient/src/generics.rs": {
-      "branch": "res-1288-generics-fast-reject",
-      "claimed_at": "2026-05-12T04:38:37Z"
+      "branch": "res-1523-generics-locals-borrow",
+      "claimed_at": "2026-05-12T13:40:00Z"
     },
     "resilient/src/verifier_liveness.rs": {
       "branch": "res-1290-liveness-fast-reject",
