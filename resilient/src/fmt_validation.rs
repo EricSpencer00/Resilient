@@ -98,6 +98,24 @@ fn walk(node: &Node, fn_name: &str, errs: &mut Vec<String>) {
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1284: fast-reject. `analyze` walks every function body
+    // looking for `CallExpression` to the `format` builtin with a
+    // `StringLiteral` first arg. Without any `format` call anywhere
+    // in the program — the overwhelming majority of `cargo test`
+    // inputs and every fixture in `examples/` that doesn't use
+    // `format(...)` — the analyser returns an empty Vec. Pre-scan
+    // once with the early-terminating `any_node` (RES-1238) and skip
+    // the analysis entirely when no `format` call exists.
+    let has_format_call = crate::uniqueness_walk::any_node(program, |n| match n {
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => name == "format",
+            _ => false,
+        },
+        _ => false,
+    });
+    if !has_format_call {
+        return Ok(());
+    }
     let errs = analyze(program);
     if !errs.is_empty() {
         return Err(format!("{}:0:0: error: {}", source_path, errs[0]));

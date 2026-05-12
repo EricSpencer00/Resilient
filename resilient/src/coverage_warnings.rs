@@ -90,6 +90,24 @@ fn is_err_call(node: &Node) -> bool {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1284: fast-reject. `analyze` walks every function body
+    // looking for `if`/`else` branches whose terminator is
+    // `return Err(...)`. Without any `CallExpression` whose callee is
+    // the `Err` constructor anywhere in the program — every fixture
+    // in `examples/` that doesn't use the `Result` happy path —
+    // `analyze` returns an empty Vec and no warnings fire. Pre-scan
+    // once with the early-terminating `any_node` (RES-1238) and skip
+    // the analysis entirely when no `Err` call exists.
+    let has_err_call = crate::uniqueness_walk::any_node(program, |n| match n {
+        Node::CallExpression { function, .. } => match function.as_ref() {
+            Node::Identifier { name, .. } => name == "Err",
+            _ => false,
+        },
+        _ => false,
+    });
+    if !has_err_call {
+        return Ok(());
+    }
     let warnings = analyze(program);
     for w in &warnings {
         eprintln!("warning: coverage in `{}`: {}", w.function, w.message);
