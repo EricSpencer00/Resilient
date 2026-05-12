@@ -62,11 +62,14 @@ pub fn store(fn_name: &str, contract_digest: u64, result: ProofResult) {
 }
 
 pub fn stats() -> (u64, u64) {
+    // RES-1566: borrow through the read guard and read the two `Copy`
+    // u64s in place. The previous `g.clone()` shape cloned the entire
+    // `ProofCache` (which carries a `HashMap<(String, u64), ProofResult>`)
+    // per call just to return two integers.
     CACHE
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .map(|c| (c.hits, c.misses))
+        .and_then(|g| g.as_ref().map(|c| (c.hits, c.misses)))
         .unwrap_or((0, 0))
 }
 
