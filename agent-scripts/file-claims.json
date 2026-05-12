@@ -37,8 +37,8 @@
       "claimed_at": "2026-05-12T01:45:28Z"
     },
     "resilient/src/isr_call_graph.rs": {
-      "branch": "res-1211-isr-fast-reject",
-      "claimed_at": "2026-05-12T01:57:48Z"
+      "branch": "res-1509-isr-graph-name-borrow",
+      "claimed_at": "2026-05-12T13:05:00Z"
     },
     "resilient/src/incremental_verify.rs": {
       "branch": "res-1210-incremental-verify-dead-work",
@@ -223,6 +223,10 @@
     "resilient/src/lsp_server.rs": {
       "branch": "res-1508-lsp-name-borrow",
       "claimed_at": "2026-05-12T12:59:48Z"
+    },
+    "resilient/src/recovery_checker.rs": {
+      "branch": "res-1511-recovery-checker-borrow",
+      "claimed_at": "2026-05-12T13:04:03Z"
     }
   }
 }
