@@ -61,7 +61,12 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
         return VibeDebtReport::default();
     };
 
-    let mut refs: HashMap<String, u32> = HashMap::new();
+    // RES-1507: borrow each call-site name into the ref-count map
+    // instead of cloning. `collect_refs` previously paid a `String`
+    // allocation for *every* call expression in the program — the
+    // counters only need lookup-by-name, never owned storage. Same
+    // pattern as RES-1495 / RES-1500 / RES-1503.
+    let mut refs: HashMap<&str, u32> = HashMap::new();
     for s in stmts {
         collect_refs(&s.node, &mut refs);
     }
@@ -79,12 +84,12 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
         } = &s.node
         {
             let self_calls = {
-                let mut tmp = HashMap::new();
+                let mut tmp: HashMap<&str, u32> = HashMap::new();
                 collect_refs(body, &mut tmp);
-                tmp.get(name).copied().unwrap_or(0)
+                tmp.get(name.as_str()).copied().unwrap_or(0)
             };
             let external = refs
-                .get(name)
+                .get(name.as_str())
                 .copied()
                 .unwrap_or(0)
                 .saturating_sub(self_calls);
@@ -115,7 +120,7 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
     }
 }
 
-fn collect_refs(node: &Node, out: &mut HashMap<String, u32>) {
+fn collect_refs<'a>(node: &'a Node, out: &mut HashMap<&'a str, u32>) {
     match node {
         Node::CallExpression {
             function,
@@ -123,7 +128,7 @@ fn collect_refs(node: &Node, out: &mut HashMap<String, u32>) {
             ..
         } => {
             if let Node::Identifier { name, .. } = function.as_ref() {
-                *out.entry(name.clone()).or_insert(0) += 1;
+                *out.entry(name.as_str()).or_insert(0) += 1;
             }
             for a in arguments {
                 collect_refs(a, out);
