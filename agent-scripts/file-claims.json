@@ -191,6 +191,10 @@
     "resilient/src/default_params.rs": {
       "branch": "res-1312-default-params-fast-reject",
       "claimed_at": "2026-05-12T05:26:51Z"
+    },
+    "resilient/src/named_args.rs": {
+      "branch": "res-1317-named-args-fast-reject",
+      "claimed_at": "2026-05-12T05:37:55Z"
     }
   }
 }
