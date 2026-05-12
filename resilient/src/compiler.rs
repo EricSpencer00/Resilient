@@ -306,8 +306,17 @@ fn compile_stmt(
             value,
             ..
         } => {
-            let local_name = match target.as_ref() {
-                Node::Identifier { name, .. } => name.clone(),
+            // RES-1430: borrow the target Identifier name as `&str`
+            // for the HashMap lookup. The previous shape eagerly
+            // cloned the name to an owned `String` (`name.clone()`),
+            // then cloned it AGAIN on the error path
+            // (`local_name.clone()` inside `ok_or_else`). With
+            // `locals.get(&str)` taking advantage of `Borrow<str>`,
+            // we hold the borrow through the lookup and only allocate
+            // the owned `String` on the rare UnknownIdentifier error
+            // path. Same pattern as RES-1419 (compile_expr CallExpression).
+            let local_name: &str = match target.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
                 _ => {
                     return Err(CompileError::Unsupported(
                         "nested index assignment (RES-171c)",
@@ -315,8 +324,8 @@ fn compile_stmt(
                 }
             };
             let slot = *locals
-                .get(&local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+                .get(local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
             compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
@@ -337,8 +346,10 @@ fn compile_stmt(
             value,
             ..
         } => {
-            let local_name = match target.as_ref() {
-                Node::Identifier { name, .. } => name.clone(),
+            // RES-1430: borrow target name as &str — see comment on
+            // the IndexAssignment arm above.
+            let local_name: &str = match target.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
                 _ => {
                     return Err(CompileError::Unsupported(
                         "nested field assignment (non-identifier target)",
@@ -346,8 +357,8 @@ fn compile_stmt(
                 }
             };
             let slot = *locals
-                .get(&local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+                .get(local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             let fname_idx = chunk.add_string_constant(field)?;
@@ -526,8 +537,10 @@ fn compile_stmt_in_fn(
             value,
             ..
         } => {
-            let local_name = match target.as_ref() {
-                Node::Identifier { name, .. } => name.clone(),
+            // RES-1430: borrow target name as &str — see comment on
+            // the compile_stmt IndexAssignment arm.
+            let local_name: &str = match target.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
                 _ => {
                     return Err(CompileError::Unsupported(
                         "nested index assignment (RES-171c)",
@@ -535,8 +548,8 @@ fn compile_stmt_in_fn(
                 }
             };
             let slot = *locals
-                .get(&local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+                .get(local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
             compile_expr(index, chunk, locals, fn_index, ffi_index, line)?;
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
@@ -553,8 +566,10 @@ fn compile_stmt_in_fn(
             value,
             ..
         } => {
-            let local_name = match target.as_ref() {
-                Node::Identifier { name, .. } => name.clone(),
+            // RES-1430: borrow target name as &str — see comment on
+            // the compile_stmt IndexAssignment arm.
+            let local_name: &str = match target.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
                 _ => {
                     return Err(CompileError::Unsupported(
                         "nested field assignment (non-identifier target)",
@@ -562,8 +577,8 @@ fn compile_stmt_in_fn(
                 }
             };
             let slot = *locals
-                .get(&local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.clone()))?;
+                .get(local_name)
+                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
             chunk.emit(Op::LoadLocal(slot), line);
             compile_expr(value, chunk, locals, fn_index, ffi_index, line)?;
             let fname_idx = chunk.add_string_constant(field)?;
