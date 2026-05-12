@@ -5,8 +5,26 @@
 // predicates and warns at the next statement boundary.
 
 use crate::Node;
+use crate::uniqueness_walk::any_node;
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1270: fast-reject. The walker only emits the
+    // "dead-code following assume(false)" warning when it sees a
+    // `Node::Assume { condition: BooleanLiteral { value: false } }`.
+    // The overwhelming majority of programs contain zero `Assume`
+    // nodes (it's a verifier-only construct, ignored by the runtime
+    // and absent from every fixture in `examples/`), so the per-stmt
+    // descent produces nothing. Pre-scan once with the early-
+    // terminating `any_node` (RES-1238) for *any* `Assume`, and skip
+    // the walk entirely when none exist. (We don't pre-filter on
+    // `condition` being `BooleanLiteral { false }` because matching
+    // the exact shape costs a hash-table dispatch per node — the
+    // single bit "has Assume" predicate is enough to short-circuit
+    // the common case, and the inner walk re-checks the shape.)
+    let has_assume = any_node(program, |n| matches!(n, Node::Assume { .. }));
+    if !has_assume {
+        return Ok(());
+    }
     let mut checker = AssumeChecker::new(source_path);
     checker.walk(program);
     Ok(())
