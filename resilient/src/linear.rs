@@ -70,6 +70,28 @@ pub fn check_linear_usage(program: &Node, source_path: &str) -> Result<(), Strin
     let Node::Program(statements) = program else {
         return Ok(());
     };
+    // RES-1294: fast-reject. The single-use walker inserts a
+    // `LinearBinding` only when it sees a `Function` parameter whose
+    // type starts with `LINEAR_PREFIX` or a `LetStatement` whose
+    // `type_annot` does. Without either anywhere in the program — the
+    // overwhelming majority of `cargo test` inputs and every fixture
+    // in `examples/` outside the linear-types feature tests — the
+    // per-function `bindings` HashMap is always empty, no diagnostic
+    // can fire, and the `Assignment` arm (which only errors when
+    // `bindings.get(name)` returns `Some`) is unreachable. Pre-scan
+    // once with the early-terminating `any_node` (RES-1238) and skip
+    // the per-fn walk when no linear-typed binding exists.
+    let has_linear = crate::uniqueness_walk::any_node(program, |n| match n {
+        Node::Function { parameters, .. } => parameters.iter().any(|(ty, _)| is_linear(ty)),
+        Node::LetStatement {
+            type_annot: Some(ty),
+            ..
+        } => is_linear(ty),
+        _ => false,
+    });
+    if !has_linear {
+        return Ok(());
+    }
     for stmt in statements {
         match &stmt.node {
             Node::Function {
