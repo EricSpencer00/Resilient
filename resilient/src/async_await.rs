@@ -45,11 +45,18 @@ pub fn is_async(name: &str) -> bool {
 }
 
 pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    // RES-1306: gate `install` on the non-empty case. The previous
+    // wiring did the RwLock write before the `is_empty` early-out,
+    // burning a write-lock acquisition + replace on every program
+    // that declares no `#[async_fn]` attribute (the overwhelming
+    // majority). It also created the same wipe-on-empty test race
+    // documented in RES-1302 against any test that installs into
+    // `ASYNC_FNS` directly. Bail when the collected set is empty.
     let async_fns = collect();
-    install(async_fns.clone());
     if async_fns.is_empty() {
         return Ok(());
     }
+    install(async_fns.clone());
     let Node::Program(stmts) = program else {
         return Ok(());
     };

@@ -104,7 +104,14 @@ pub fn validate_step(channel: &str, step: usize, op: &SessionOp) -> Result<(), S
 }
 
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    install(collect());
+    // RES-1306: gate `install` on the non-empty case — avoids a
+    // wasted RwLock write per compilation and removes the
+    // wipe-on-empty test race shape documented in RES-1302.
+    let specs = collect();
+    if specs.is_empty() {
+        return Ok(());
+    }
+    install(specs);
     Ok(())
 }
 

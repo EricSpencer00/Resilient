@@ -54,13 +54,23 @@ pub fn has_default(trait_name: &str, method: &str) -> bool {
 }
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1306: gate `install` on the non-empty case. `find_kind`
+    // returning empty (no `#[default_impl]` attribute anywhere) is
+    // the common case; skipping the `install` write avoids the
+    // wasted RwLock acquisition and the wipe-on-empty test race
+    // shape documented in RES-1302.
+    let _ = program;
+    let attrs = crate::feature_attrs::find_kind("default_impl");
+    if attrs.is_empty() {
+        return Ok(());
+    }
     // The Node::TraitDecl variant in lib.rs holds method signatures
     // without bodies in the current ABI. As a first slice we discover
     // default bodies via the `#[derive]`-style attribute companion:
     // any trait method named in `#[default_impl(trait="T", method="m")]`
     // is registered here.
     let mut items = Vec::new();
-    for (item, rec) in crate::feature_attrs::find_kind("default_impl") {
+    for (item, rec) in attrs {
         let mut trait_name = String::new();
         let mut method_name = item;
         for chunk in rec.args.split(',') {
@@ -82,8 +92,10 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             });
         }
     }
+    if items.is_empty() {
+        return Ok(());
+    }
     install(items);
-    let _ = program;
     Ok(())
 }
 
