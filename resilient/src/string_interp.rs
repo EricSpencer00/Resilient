@@ -84,7 +84,7 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
                 }
 
                 // Parse the sub-expression using the main parser.
-                let lexer = Lexer::new(expr_src.clone());
+                let lexer = Lexer::new(&expr_src);
                 let mut sub_parser = Parser::new(lexer);
                 let expr_node = match sub_parser.parse_expression(0) {
                     Some(n) if sub_parser.errors.is_empty() => n,
@@ -176,7 +176,7 @@ mod tests {
     use super::*;
 
     fn interp_eval(src: &str) -> String {
-        let lexer = crate::Lexer::new(src.to_string());
+        let lexer = crate::Lexer::new(src);
         let mut parser = crate::Parser::new(lexer);
         let program = parser.parse_program();
         assert!(

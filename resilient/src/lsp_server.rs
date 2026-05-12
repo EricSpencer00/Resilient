@@ -284,7 +284,7 @@ fn span_to_range(span: crate::span::Span) -> Range {
 /// than the HashMap operation that reads it.
 pub(crate) fn hover_literal_at(src: &str, pos: Position) -> Option<(&'static str, Range)> {
     use crate::{Lexer, Token};
-    let mut lex = Lexer::new(src.to_string());
+    let mut lex = Lexer::new(src);
     loop {
         let (tok, span) = lex.next_token_with_span();
         if matches!(tok, Token::Eof) {
@@ -344,7 +344,7 @@ fn lex_span_contains_lsp_position(span: crate::span::Span, pos: Position) -> boo
 /// the definition in a `TopLevelDefMap`.
 pub(crate) fn identifier_at(src: &str, pos: Position) -> Option<(String, Range)> {
     use crate::{Lexer, Token};
-    let mut lex = Lexer::new(src.to_string());
+    let mut lex = Lexer::new(src);
     loop {
         let (tok, span) = lex.next_token_with_span();
         if matches!(tok, Token::Eof) {
@@ -526,7 +526,7 @@ fn infer_literal_type(value: &Node) -> &'static str {
 /// (which stores the whole-statement span, not the name span).
 pub(crate) fn find_decl_name_range(src: &str, target: &str) -> Option<Range> {
     use crate::{Lexer, Token};
-    let mut lex = Lexer::new(src.to_string());
+    let mut lex = Lexer::new(src);
     let mut prev_was_fn = false;
     loop {
         let (tok, span) = lex.next_token_with_span();

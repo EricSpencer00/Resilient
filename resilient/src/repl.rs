@@ -370,7 +370,7 @@ impl EnhancedREPL {
         }
 
         // Regular code evaluation
-        let lexer = Lexer::new(input.to_string());
+        let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
         // Parse the program

@@ -200,7 +200,7 @@ mod tests {
     use super::*;
 
     fn parse_program(src: &str) -> Node {
-        let lexer = crate::Lexer::new(src.to_string());
+        let lexer = crate::Lexer::new(src);
         let mut p = crate::Parser::new(lexer);
         p.parse_program()
     }

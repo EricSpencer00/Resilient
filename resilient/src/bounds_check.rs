@@ -473,7 +473,7 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn parse(src: &str) -> Node {
-        let lexer = crate::Lexer::new(src.to_string());
+        let lexer = crate::Lexer::new(src);
         let mut parser = crate::Parser::new(lexer);
         parser.parse_program()
     }
