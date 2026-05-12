@@ -216,9 +216,9 @@
       "branch": "res-1407-peephole-skip-fixup",
       "claimed_at": "2026-05-12T10:12:24Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-1419-compile-expr-no-clone",
-      "claimed_at": "2026-05-12T10:26:41Z"
+    "resilient/src/dce.rs": {
+      "branch": "res-1415-dce-skip-fixup",
+      "claimed_at": "2026-05-12T10:22:07Z"
     }
   }
 }
