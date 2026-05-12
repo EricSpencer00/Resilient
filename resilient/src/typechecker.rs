@@ -5993,7 +5993,13 @@ impl TypeChecker {
                     // is gated.
                     if !info.requires.is_empty() {
                         self.stats.contracted_call_sites += 1;
-                        let mut bindings: HashMap<String, i64> = HashMap::new();
+                        // RES-1413: pre-size bindings to the parameter
+                        // count. The fold loop below inserts at most
+                        // one entry per parameter (`zip` truncates to
+                        // the shorter of params/args), so the capacity
+                        // is known up front.
+                        let mut bindings: HashMap<String, i64> =
+                            HashMap::with_capacity(info.parameters.len());
                         for ((_ty, pname), arg) in info.parameters.iter().zip(arguments.iter()) {
                             if let Some(v) = fold_const_i64(arg, &self.const_bindings) {
                                 bindings.insert(pname.clone(), v);
