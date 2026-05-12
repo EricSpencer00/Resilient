@@ -227,6 +227,10 @@
     "resilient/src/recovery_checker.rs": {
       "branch": "res-1511-recovery-checker-borrow",
       "claimed_at": "2026-05-12T13:04:03Z"
+    },
+    "resilient/src/mutual_recursion_scc.rs": {
+      "branch": "res-1514-scc-dfs-borrow",
+      "claimed_at": "2026-05-12T13:13:18Z"
     }
   }
 }
