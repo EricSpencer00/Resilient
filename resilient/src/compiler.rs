@@ -956,12 +956,29 @@ fn compile_expr(
             arguments,
             ..
         } => {
-            let callee_name = match function.as_ref() {
-                Node::Identifier { name: n, .. } => n.clone(),
+            // RES-1419: hold the callee name as `&str` through the
+            // three index lookups + `lookup_builtin` instead of
+            // eagerly cloning to an owned `String`. The previous
+            // shape cloned once at the top of the arm and a second
+            // time at the `Value::String(callee_name.clone())` call
+            // when emitting `Op::CallBuiltin` — so every builtin
+            // call paid two `String` allocations. Now we only own
+            // the name on the two paths that genuinely need an
+            // owned value: the `Value::String` constant for the
+            // CallBuiltin name and the `CompileError::UnknownFunction`
+            // payload. User-fn and FFI calls (the common case) get
+            // through with zero `String` clones from the callee
+            // identifier. The `&str` borrows from `function.as_ref()`
+            // which is alive for the whole match arm; the recursive
+            // `compile_expr(arg, ...)` calls borrow disjoint
+            // sub-nodes of `arguments`, so the borrow checker is
+            // happy.
+            let callee_name: &str = match function.as_ref() {
+                Node::Identifier { name, .. } => name.as_str(),
                 _ => return Err(CompileError::Unsupported("indirect call")),
             };
             // FFI v2: foreign call takes priority over user-defined functions.
-            if let Some(&idx) = ffi_index.get(&callee_name) {
+            if let Some(&idx) = ffi_index.get(callee_name) {
                 for arg in arguments {
                     compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
                 }
@@ -969,7 +986,7 @@ fn compile_expr(
                 return Ok(());
             }
             // User-defined function next.
-            if let Some(&callee_idx) = fn_index.get(&callee_name) {
+            if let Some(&callee_idx) = fn_index.get(callee_name) {
                 // Push args left-to-right so the VM can pop them in reverse
                 // and assign to locals 0..arity in source order.
                 for arg in arguments {
@@ -984,11 +1001,11 @@ fn compile_expr(
             // emitting `Op::CallBuiltin { name_const, arity }`. Limit
             // arity to u8 so the opcode stays Copy + 4 bytes; calls
             // with >255 args are rejected before any code is emitted.
-            if crate::lookup_builtin(&callee_name).is_some() {
+            if crate::lookup_builtin(callee_name).is_some() {
                 if arguments.len() > u8::MAX as usize {
                     return Err(CompileError::Unsupported("builtin call with > 255 args"));
                 }
-                let name_const = chunk.add_constant(Value::String(callee_name.clone()))?;
+                let name_const = chunk.add_constant(Value::String(callee_name.to_string()))?;
                 for arg in arguments {
                     compile_expr(arg, chunk, locals, fn_index, ffi_index, line)?;
                 }
@@ -1001,7 +1018,7 @@ fn compile_expr(
                 );
                 return Ok(());
             }
-            Err(CompileError::UnknownFunction(callee_name))
+            Err(CompileError::UnknownFunction(callee_name.to_string()))
         }
         // RES-171a: `[a, b, c]` literal → emit each item's expression
         // left-to-right, then `Op::MakeArray { len }` which pops them
