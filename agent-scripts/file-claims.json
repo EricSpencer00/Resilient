@@ -67,6 +67,14 @@
     "resilient/src/transaction_commit.rs": {
       "branch": "res-1218-param-type-fast-reject",
       "claimed_at": "2026-05-12T02:11:38Z"
+    },
+    "resilient/src/backpressure_safe.rs": {
+      "branch": "res-1217-handler-suffix-fast-reject",
+      "claimed_at": "2026-05-12T02:07:46Z"
+    },
+    "resilient/src/idempotent_handler.rs": {
+      "branch": "res-1217-handler-suffix-fast-reject",
+      "claimed_at": "2026-05-12T02:07:46Z"
     }
   }
 }

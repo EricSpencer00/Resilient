@@ -34,6 +34,21 @@ const FULLNESS_FNS: &[&str] = &["mailbox_full", "is_full", "queue_full", "at_cap
 const QUEUE_TYPES: &[&str] = &["Mailbox", "BoundedQueue", "&Mailbox", "&mut Mailbox"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1217: fast-reject. The pass only emits diagnostics for
+    // functions whose name ends in `_handler`. For every program
+    // that declares no such function — overwhelmingly the case in
+    // `examples/` and the test suite — `for_each_function`'s
+    // closure dispatch + per-fn suffix check is wasted work. Scan
+    // the top-level names once up front and bail.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let has_handler = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { name, .. } if name.ends_with("_handler")));
+    if !has_handler {
+        return Ok(());
+    }
     for_each_function(program, |fname, params, body| {
         if !fname.ends_with("_handler") {
             return;

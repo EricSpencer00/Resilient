@@ -25,6 +25,19 @@ use crate::uniqueness_walk::{any_node, for_each_function};
 const DEDUPE_FNS: &[&str] = &["is_duplicate", "was_seen", "dedupe", "is_processed"];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1217: fast-reject — same shape as `backpressure_safe`.
+    // The pass only emits diagnostics for functions whose name
+    // ends in `_idempotent`; for every other program the entire
+    // walk is wasted work.
+    let Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let has_idempotent = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { name, .. } if name.ends_with("_idempotent")));
+    if !has_idempotent {
+        return Ok(());
+    }
     for_each_function(program, |fname, _params, body| {
         if !fname.ends_with("_idempotent") {
             return;
