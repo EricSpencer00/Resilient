@@ -13,8 +13,8 @@
       "claimed_at": "2026-05-12T01:09:57Z"
     },
     "resilient/src/vibe_debt.rs": {
-      "branch": "res-1206-kill-dead-work-checks",
-      "claimed_at": "2026-05-12T01:43:21Z"
+      "branch": "res-1507-vibe-refs-borrow",
+      "claimed_at": "2026-05-12T12:55:00Z"
     },
     "resilient/src/behavioral_fingerprint.rs": {
       "branch": "res-1206-kill-dead-work-checks",
@@ -25,8 +25,8 @@
       "claimed_at": "2026-05-12T01:43:21Z"
     },
     "resilient/src/resilience_score.rs": {
-      "branch": "res-1206-kill-dead-work-checks",
-      "claimed_at": "2026-05-12T01:43:21Z"
+      "branch": "res-1507-vibe-refs-borrow",
+      "claimed_at": "2026-05-12T12:55:00Z"
     },
     "resilient/src/property_tests.rs": {
       "branch": "res-1206-kill-dead-work-checks",
