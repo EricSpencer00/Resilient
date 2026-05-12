@@ -384,7 +384,7 @@ fn prove_with_axioms_and_timeout_in(
         // value, then assert the NEGATED goal so a fresh Z3 returns
         // `unsat` (which is the proof that the original was always
         // true).
-        let mut idents: BTreeSet<String> = BTreeSet::new();
+        let mut idents: BTreeSet<&str> = BTreeSet::new();
         collect_int_identifiers(expr, &mut idents);
 
         // RES-408: collect arrays referenced via `a[i]` so the cert
@@ -427,7 +427,7 @@ fn prove_with_axioms_and_timeout_in(
         // equality assertion. Free identifiers are left unconstrained
         // so the proof is universal over them.
         for name in &idents {
-            if let Some(v) = bindings.get(name) {
+            if let Some(v) = bindings.get(*name) {
                 writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
             }
         }
@@ -580,7 +580,7 @@ fn prove_tautology_with_axioms_and_timeout_in(
 
     // Tautology proven — emit the same SMT-LIB2 certificate shape
     // `prove_with_axioms_and_timeout` would have.
-    let mut idents: BTreeSet<String> = BTreeSet::new();
+    let mut idents: BTreeSet<&str> = BTreeSet::new();
     collect_int_identifiers(expr, &mut idents);
     let mut arr_args: BTreeSet<&str> = BTreeSet::new();
     collect_array_args(expr, &mut arr_args);
@@ -605,7 +605,7 @@ fn prove_tautology_with_axioms_and_timeout_in(
         writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
     }
     for name in &idents {
-        if let Some(v) = bindings.get(name) {
+        if let Some(v) = bindings.get(*name) {
             writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
         }
     }
@@ -770,10 +770,16 @@ pub fn prove_alias_disjoint(param_a: &str, param_b: &str, requires: &[Node]) -> 
 
 /// Collect every identifier name seen in `node` (for BV counterexample
 /// extraction — mirrors `collect_int_identifiers` but used for BV vars).
-fn collect_bv_identifiers(node: &Node, out: &mut BTreeSet<String>) {
+///
+/// RES-1532: borrows from the formula AST instead of cloning into the
+/// set — the consumer (`extract_counterexample_bv`) only reads names
+/// via `format!` / `bindings.contains_key` / `BV::new_const`, all of
+/// which accept `&str`. Same shape as RES-1528 applied to `len_args`
+/// / `arr_args`.
+fn collect_bv_identifiers<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::Identifier { name, .. } => {
-            out.insert(name.clone());
+            out.insert(name.as_str());
         }
         Node::PrefixExpression { right, .. } => collect_bv_identifiers(right, out),
         Node::InfixExpression { left, right, .. } => {
@@ -794,15 +800,15 @@ fn extract_counterexample_bv(
     bindings: &HashMap<String, i64>,
 ) -> Option<String> {
     let model = solver.get_model()?;
-    let mut idents: BTreeSet<String> = BTreeSet::new();
+    let mut idents: BTreeSet<&str> = BTreeSet::new();
     collect_bv_identifiers(expr, &mut idents);
 
     let mut parts: Vec<String> = Vec::new();
     for name in &idents {
-        if bindings.contains_key(name) {
+        if bindings.contains_key(*name) {
             continue;
         }
-        let var = BV::new_const(ctx, name.as_str(), 32);
+        let var = BV::new_const(ctx, *name, 32);
         if let Some(v) = model.eval(&var, false) {
             // BV::as_i64() gives the unsigned bit pattern; sign-extend
             // for display by treating values > i32::MAX as negative.
@@ -926,15 +932,15 @@ fn extract_counterexample(
     bindings: &HashMap<String, i64>,
 ) -> Option<String> {
     let model = solver.get_model()?;
-    let mut idents: BTreeSet<String> = BTreeSet::new();
+    let mut idents: BTreeSet<&str> = BTreeSet::new();
     collect_int_identifiers(expr, &mut idents);
 
     let mut parts: Vec<String> = Vec::new();
     for name in &idents {
-        if bindings.contains_key(name) {
+        if bindings.contains_key(*name) {
             continue;
         }
-        let var = Int::new_const(ctx, name.as_str());
+        let var = Int::new_const(ctx, *name);
         if let Some(v) = model.eval(&var, false)
             && let Some(n) = v.as_i64()
         {
@@ -953,10 +959,10 @@ fn extract_counterexample(
 /// Conservative — over-collecting is fine (extra unused declarations
 /// don't change satisfiability); under-collecting would make the
 /// certificate reference an undefined symbol and stock Z3 would error.
-fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
+fn collect_int_identifiers<'a>(node: &'a Node, out: &mut BTreeSet<&'a str>) {
     match node {
         Node::Identifier { name, .. } => {
-            out.insert(name.clone());
+            out.insert(name.as_str());
         }
         Node::PrefixExpression { right, .. } => collect_int_identifiers(right, out),
         Node::InfixExpression { left, right, .. } => {
@@ -977,7 +983,7 @@ fn collect_int_identifiers(node: &Node, out: &mut BTreeSet<String>) {
                 collect_int_identifiers(hi, out);
             }
             collect_int_identifiers(body, out);
-            out.remove(var);
+            out.remove(var.as_str());
         }
         // RES-408: walk into the index of `a[i]` (the array name lives
         // separately in the `arr_<name>` collector — see
@@ -2559,7 +2565,7 @@ mod tests {
         // dedicated collectors.
         let body = infix(infix(ident("i"), "+", ident("x")), ">=", int(0));
         let q = forall_range("i", int(0), len_call("a"), body);
-        let mut idents = BTreeSet::new();
+        let mut idents: BTreeSet<&str> = BTreeSet::new();
         collect_int_identifiers(&q, &mut idents);
         assert!(!idents.contains("i"), "bound var leaked into idents");
         assert!(idents.contains("x"), "free var x missing from idents");
