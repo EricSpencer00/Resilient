@@ -101,13 +101,18 @@ impl CallGraph {
 fn build_graph_for_node(node: &Node, graph: &mut HashMap<String, HashSet<String>>) {
     match node {
         Node::Function { name, body, .. } => {
-            let fn_name = name.clone();
-            if !graph.contains_key(&fn_name) {
-                graph.insert(fn_name.clone(), HashSet::new());
-            }
+            // RES-1465: use `entry().or_default()` instead of
+            // `contains_key + insert`. The previous shape did two
+            // hashed lookups + cloned `fn_name` twice (once for
+            // contains_key's borrow check, once for insert's owned
+            // key). `entry(key)` consumes the owned key once and
+            // returns the slot whether present or absent.
+            graph.entry(name.clone()).or_default();
 
-            // Recursively walk the function body to find calls
-            collect_called_functions(body, &fn_name, graph);
+            // Recursively walk the function body to find calls.
+            // Pass `name` as `&str` so `collect_called_functions`'s
+            // hash lookup doesn't need a fresh allocation.
+            collect_called_functions(body, name, graph);
         }
         Node::Program(stmts) => {
             for stmt in stmts {
@@ -133,10 +138,22 @@ fn collect_called_functions(
         } => {
             // Extract function name from identifier or field access
             if let Node::Identifier { name, .. } = function.as_ref() {
-                graph
-                    .entry(current_fn.to_string())
-                    .or_default()
-                    .insert(name.clone());
+                // RES-1465: `current_fn` was already inserted into
+                // `graph` by `build_graph_for_node`, so `get_mut`
+                // always succeeds. The previous shape called
+                // `entry(current_fn.to_string())` per call expression
+                // — allocating a fresh `String` to look up a key that
+                // was already in the map. `get_mut(&str)` does a
+                // single hashed lookup with zero allocations.
+                //
+                // The `if let Some(...)` guard is defensive in case
+                // `collect_called_functions` is ever entered with a
+                // `current_fn` that wasn't pre-inserted; today the
+                // only caller is `build_graph_for_node` which always
+                // inserts first.
+                if let Some(set) = graph.get_mut(current_fn) {
+                    set.insert(name.clone());
+                }
             }
 
             // Recurse into arguments
