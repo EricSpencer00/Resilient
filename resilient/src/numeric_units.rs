@@ -18,7 +18,7 @@
 )]
 
 use crate::Node;
-use crate::uniqueness_walk::{for_each_function, visit};
+use crate::uniqueness_walk::{any_node, for_each_function, visit};
 
 const UNIT_SUFFIXES: &[&str] = &[
     "_ms", "_s", "_us", "_ns", // time
@@ -31,6 +31,28 @@ const UNIT_SUFFIXES: &[&str] = &[
 ];
 
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    // RES-1267: fast-reject. The per-function body walk only does
+    // anything when it finds a `LetStatement` whose name matches a
+    // unit suffix (`_ms` / `_s` / `_m` / `_kg` / …). Function params
+    // can also seed the units map. For programs without any
+    // unit-suffixed binding (the overwhelming majority of `cargo
+    // test` inputs and the entire `examples/` tree), every
+    // per-function visit produces nothing.
+    //
+    // Pre-scan the program once via `any_node` (RES-1238 made this
+    // early-terminating) for any `LetStatement` or `Function` param
+    // whose name matches a unit suffix. If none, return `Ok(())`
+    // immediately. The pre-scan also examines `Node::Function`
+    // params because the original closure seeds the units map from
+    // both sources.
+    let has_unit_binding = any_node(program, |n| match n {
+        Node::LetStatement { name, .. } => unit_of(name).is_some(),
+        Node::Function { parameters, .. } => parameters.iter().any(|(_ty, p)| unit_of(p).is_some()),
+        _ => false,
+    });
+    if !has_unit_binding {
+        return Ok(());
+    }
     for_each_function(program, |fname, params, body| {
         let mut units: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for (_ty, name) in params {
