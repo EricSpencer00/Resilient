@@ -29,6 +29,21 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let Node::Program(stmts) = program else {
         return Ok(());
     };
+    // RES-1214: fast-reject. The warning loop only fires for
+    // functions in `roots` — i.e. those whose names match
+    // `is_nonreentrant` (NR-flavoured prefix/suffix). Programs that
+    // declare no such function get an empty roots Vec and the BFS
+    // never runs, but the callee-map population still walks every
+    // function body. Skip the whole pass when there's no possible
+    // root; `is_nonreentrant` itself is just a pair of
+    // `&[&str]::iter().any(...)` string-prefix/suffix checks, far
+    // cheaper than the per-body `visit` recursion it replaces here.
+    let has_nonreentrant = stmts
+        .iter()
+        .any(|s| matches!(&s.node, Node::Function { name, .. } if is_nonreentrant(name)));
+    if !has_nonreentrant {
+        return Ok(());
+    }
     let mut callees: HashMap<String, HashSet<String>> = HashMap::new();
     let mut roots: Vec<String> = Vec::new();
     for stmt in stmts {
