@@ -188,6 +188,10 @@
       "branch": "res-1341-cache-opt-env-vars",
       "claimed_at": "2026-05-12T06:52:39Z"
     },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1372-typeenv-outer-rc",
+      "claimed_at": "2026-05-12T08:45:01Z"
+    },
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
       "claimed_at": "2026-05-12T08:58:44Z"
@@ -196,13 +200,13 @@
       "branch": "res-1381-apply-hop-counter",
       "claimed_at": "2026-05-12T09:05:25Z"
     },
-    "resilient/src/inline.rs": {
-      "branch": "res-1389-inline-skip-clones",
-      "claimed_at": "2026-05-12T09:25:18Z"
+    "resilient/src/verifier_loop_invariants.rs": {
+      "branch": "res-1386-vli-if-snap-clone",
+      "claimed_at": "2026-05-12T09:18:45Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1390-let-fold-single-call",
-      "claimed_at": "2026-05-12T09:30:23Z"
+    "resilient/src/traits.rs": {
+      "branch": "res-1391-traits-fast-reject",
+      "claimed_at": "2026-05-12T09:32:26Z"
     }
   }
 }

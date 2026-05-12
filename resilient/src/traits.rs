@@ -326,19 +326,38 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         _ => return Ok(()),
     };
 
-    // RES-1230 NOTE: an earlier draft of this PR added a
-    // `if !any TraitDecl return Ok(())` fast-reject here. It broke
-    // `unknown_trait_in_bound_errors` / `unknown_trait_in_impl_errors`
-    // because `traits::check` also validates trait *references* in
-    // impl blocks (`impl Drawable for Foo`) and generic bounds
-    // (`fn pick<T: Comparable>(...)`), both of which can appear in
-    // programs that never declare a trait themselves. A correct
-    // fast-reject would need to also scan ImplBlock and the
-    // type-params lists — at which point we're doing roughly the
-    // same walk as `traits::check` itself. Left without a fast-
-    // reject; `type_aliases::check` (in the same PR) keeps its
-    // simpler pre-scan because nothing references a type alias
-    // without it being declared.
+    // RES-1391: complete fast-reject. The earlier RES-1230 draft
+    // checked only `TraitDecl` and broke the unknown-trait
+    // diagnostics, because the pass also validates trait *references*
+    // in `impl Trait for Type` blocks and `<T: Trait>` bounds — both
+    // of which can appear in programs without any TraitDecl.
+    //
+    // A correct fast-reject needs all three signals: any TraitDecl,
+    // any ImplBlock carrying a `trait_name`, or any Function with
+    // type-params / non-empty type-param bounds. Programs without
+    // any of these have no trait-validation work to do — Pass 1's
+    // collection is empty, Pass 2's impl scan finds nothing to
+    // validate, Pass 3 has no bounds to check, and
+    // `walk_call_sites` would early-return at
+    // `if type_params.is_empty()` for every callee. Same
+    // fast-reject pattern as RES-1281 / RES-1290 / RES-1294 /
+    // RES-1297 / RES-1311 / RES-1316 / RES-1320 / RES-1376.
+    let has_trait_work = stmts.iter().any(|s| match &s.node {
+        Node::TraitDecl { .. } => true,
+        Node::ImplBlock {
+            trait_name: Some(_),
+            ..
+        } => true,
+        Node::Function {
+            type_params,
+            type_param_bounds,
+            ..
+        } => !type_params.is_empty() || type_param_bounds.iter().any(|bs| !bs.is_empty()),
+        _ => false,
+    });
+    if !has_trait_work {
+        return Ok(());
+    }
 
     // Pass 1: collect trait declarations.
     let mut traits: HashMap<String, (Vec<TraitMethodSig>, Vec<AssociatedTypeDecl>, Span)> =
