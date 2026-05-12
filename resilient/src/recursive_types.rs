@@ -41,6 +41,16 @@ pub fn is_recursive(type_name: &str) -> bool {
 pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     let set = collect();
     install(set.clone());
+    // RES-1244: fast-reject. The "does it reference itself?"
+    // diagnostic only fires for struct names in `set`, i.e. those
+    // annotated `#[recursive]`. When no such attribute exists in the
+    // program (the overwhelming common case), `set` is empty, every
+    // `set.contains(name)` returns false, and the per-statement loop
+    // produces no output. `install` still runs first so any stale
+    // global state from a prior compile gets cleared to empty.
+    if set.is_empty() {
+        return Ok(());
+    }
     // Validation: a recursive type must syntactically reference itself.
     let Node::Program(stmts) = program else {
         return Ok(());
