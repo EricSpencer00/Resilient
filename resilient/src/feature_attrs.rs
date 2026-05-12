@@ -205,27 +205,26 @@ pub fn is_known_attribute(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// RES-1132: `record_and_lookup` and `reset_clears_state` both
-    /// drive the global `ATTR_REGISTRY`. cargo runs tests in parallel
-    /// by default, so without serialization the two races: A's
-    /// `record` can be wiped by B's `reset` between A's `record` and
-    /// `find_kind` calls, intermittently failing `record_and_lookup`
-    /// with `len = 0`. A per-module mutex held for the entire test
-    /// makes the global-state writes serial without affecting any
-    /// other test in the binary.
-    fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        // Poison-tolerant: if a prior test panicked while holding the
-        // lock, the registry isn't corrupted (reset() rebuilds it),
-        // so we recover the guard and proceed.
-        LOCK.lock().unwrap_or_else(|p| p.into_inner())
-    }
+    // RES-1280: serialise registry-touching tests against the
+    // *binary-wide* `TEST_LOCK` (via `lock_for_test()`), not a
+    // module-local mutex.
+    //
+    // RES-1132 added a private `serial_lock()` here that used its own
+    // fresh `Mutex`. That serialised the two in-module tests against
+    // each other, but not against the dozens of tests in other
+    // modules (`refinement_types`, `session_types`, `lock_priority`,
+    // `info_flow`, `wcet_contracts`, etc.) that drive the same
+    // `ATTR_REGISTRY` through `lock_for_test()`. Result: another
+    // module's `reset()` could still wipe this test's `record` between
+    // the `record` and the `find_kind`, intermittently failing the
+    // `assert_eq!(found.len(), 1)` below with `0`. Reusing the public
+    // `TEST_LOCK` makes every registry-touching test in the binary
+    // serial.
 
     #[test]
     fn record_and_lookup() {
-        let _g = serial_lock();
+        let _g = lock_for_test();
         reset();
         record(
             "my_fn",
@@ -250,7 +249,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let _g = serial_lock();
+        let _g = lock_for_test();
         reset();
         record(
             "f",
