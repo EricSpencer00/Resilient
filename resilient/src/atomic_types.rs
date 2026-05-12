@@ -32,16 +32,14 @@ pub fn collect_names() -> Vec<String> {
         .collect()
 }
 
-fn ensure() {
-    if let Ok(mut g) = REGISTRY.write() {
-        if g.is_none() {
-            *g = Some(AtomicRegistry::default());
-        }
-    }
-}
+// RES-1406: removed `fn ensure()` — its sole caller was `declare`,
+// and `declare`'s own `g.get_or_insert_with(AtomicRegistry::default)`
+// already creates the registry on first use. `ensure()` was acquiring
+// the `RwLock` write guard purely to check / initialise the Option,
+// then `declare` immediately re-acquired the same write guard to do
+// the actual insert. One acquire is enough.
 
 pub fn declare(name: &str, initial: i64) {
-    ensure();
     if let Ok(mut g) = REGISTRY.write() {
         let r = g.get_or_insert_with(AtomicRegistry::default);
         r.cells.insert(name.to_string(), AtomicI64::new(initial));
