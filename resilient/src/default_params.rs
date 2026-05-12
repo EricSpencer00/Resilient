@@ -40,9 +40,24 @@ struct FnDefaults {
 ///
 /// Runs after `named_args::lower_program` so the argument list is
 /// already in positional order when we get here.
+///
+/// RES-1311: fast-reject. The `rewrite_calls` walk only does work
+/// when a CallExpression's callee is a known fn AND one of its
+/// trailing parameters has a declared default. For every program
+/// where no function declares any default — the overwhelming
+/// majority of `examples/` and the test suite — the rewrite walk
+/// is pure overhead. Pre-scan the collected sigs: if no
+/// `FnDefaults` entry has a `Some(_)` slot, skip the walk entirely.
+/// `crate::newtypes::lower_program` follows the same shape.
 pub fn lower_program(program: &mut Node) {
     let mut sigs: HashMap<String, FnDefaults> = HashMap::new();
     collect_defaults(program, &mut sigs);
+    let any_default = sigs
+        .values()
+        .any(|s| s.defaults.iter().any(|d| d.is_some()));
+    if !any_default {
+        return;
+    }
     rewrite_calls(program, &sigs);
 }
 

@@ -187,6 +187,10 @@
     "resilient/src/ghost_types.rs": {
       "branch": "res-1308-skip-empty-install-8-passes",
       "claimed_at": "2026-05-12T05:18:02Z"
+    },
+    "resilient/src/default_params.rs": {
+      "branch": "res-1312-default-params-fast-reject",
+      "claimed_at": "2026-05-12T05:26:51Z"
     }
   }
 }
