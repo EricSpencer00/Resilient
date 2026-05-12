@@ -44,11 +44,16 @@ pub fn record(entry: TraceEntry) {
 }
 
 pub fn snapshot() -> Vec<TraceEntry> {
+    // RES-1547: hold the read guard so we can borrow through the
+    // `Option<VecDeque<TraceEntry>>` and collect via `iter().cloned()`
+    // in one pass. The previous shape did `g.clone()` (clones the
+    // entire `VecDeque<TraceEntry>` inside the Option) and then
+    // `.into_iter().collect()` — paid an extra container allocation
+    // and discard for nothing.
     GLOBAL_TRACE
         .read()
         .ok()
-        .and_then(|g| g.clone())
-        .map(|d| d.into_iter().collect())
+        .and_then(|g| g.as_ref().map(|d| d.iter().cloned().collect()))
         .unwrap_or_default()
 }
 
