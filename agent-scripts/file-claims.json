@@ -208,9 +208,13 @@
       "branch": "res-1391-traits-fast-reject",
       "claimed_at": "2026-05-12T09:32:26Z"
     },
-    "resilient/src/inline.rs": {
-      "branch": "res-1396-inline-chunk-fast-reject",
-      "claimed_at": "2026-05-12T09:48:19Z"
+    "resilient/src/derives.rs": {
+      "branch": "res-1402-derives-empty-install",
+      "claimed_at": "2026-05-12T10:01:28Z"
+    },
+    "resilient/src/peephole.rs": {
+      "branch": "res-1407-peephole-skip-fixup",
+      "claimed_at": "2026-05-12T10:12:24Z"
     }
   }
 }
