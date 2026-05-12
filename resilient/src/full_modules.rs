@@ -62,23 +62,31 @@ pub fn build(program: &Node) -> ModuleGraph {
 }
 
 pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<String>> {
-    fn dfs(
-        node: &String,
-        graph: &ModuleGraph,
-        on_stack: &mut Vec<String>,
-        visited: &mut HashSet<String>,
-    ) -> Option<Vec<String>> {
-        if let Some(idx) = on_stack.iter().position(|x| x == node) {
+    // RES-1517: borrow node names through the DFS instead of
+    // allocating a fresh `String` per visit. The DFS visited the
+    // same node up to twice (`visited.insert(node.clone())` +
+    // `on_stack.push(node.clone())`) for every reachable module —
+    // pure overhead since the source strings already live in
+    // `graph.deps`. The owned `Vec<String>` result is built once
+    // at the public boundary. Same pattern as RES-1471 / RES-1474 /
+    // RES-1477 / RES-1514.
+    fn dfs<'a>(
+        node: &'a str,
+        graph: &'a ModuleGraph,
+        on_stack: &mut Vec<&'a str>,
+        visited: &mut HashSet<&'a str>,
+    ) -> Option<Vec<&'a str>> {
+        if let Some(idx) = on_stack.iter().position(|x| *x == node) {
             return Some(on_stack[idx..].to_vec());
         }
         if visited.contains(node) {
             return None;
         }
-        visited.insert(node.clone());
-        on_stack.push(node.clone());
+        visited.insert(node);
+        on_stack.push(node);
         if let Some(adj) = graph.deps.get(node) {
             for n in adj {
-                if let Some(cycle) = dfs(n, graph, on_stack, visited) {
+                if let Some(cycle) = dfs(n.as_str(), graph, on_stack, visited) {
                     return Some(cycle);
                 }
             }
@@ -86,11 +94,11 @@ pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<String>> {
         on_stack.pop();
         None
     }
-    let mut visited = HashSet::new();
+    let mut visited: HashSet<&str> = HashSet::new();
     for start in graph.deps.keys() {
-        let mut stack = Vec::new();
-        if let Some(cycle) = dfs(start, graph, &mut stack, &mut visited) {
-            return Some(cycle);
+        let mut stack: Vec<&str> = Vec::new();
+        if let Some(cycle) = dfs(start.as_str(), graph, &mut stack, &mut visited) {
+            return Some(cycle.into_iter().map(str::to_string).collect());
         }
     }
     None
