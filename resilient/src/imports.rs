@@ -55,6 +55,20 @@ pub fn expand_uses(
         _ => return Ok(()),
     };
 
+    // RES-1327: fast-reject. Every full-compile entry point in
+    // `lib.rs` invokes `expand_uses` unconditionally before the
+    // typechecker runs. The loop below drains every top-level
+    // statement and rebuilds the `expanded` Vec — for programs that
+    // contain no `Node::Use`, the rebuild is a pure copy: every
+    // statement is moved out and moved back. The overwhelming
+    // majority of `cargo test` inputs and every fixture in
+    // `examples/` outside the import feature tests fall into that
+    // case. A single `iter().any` pre-scan returns `Ok(())` before
+    // we touch the Vec.
+    if !stmts.iter().any(|s| matches!(&s.node, Node::Use { .. })) {
+        return Ok(());
+    }
+
     let mut expanded: Vec<Spanned<Node>> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
         if let Node::Use { path, alias, .. } = &stmt.node {
