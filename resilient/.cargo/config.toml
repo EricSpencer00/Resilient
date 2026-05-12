@@ -14,3 +14,23 @@ LIBRARY_PATH = "/opt/homebrew/lib:/usr/local/lib:/usr/lib"
 # headroom on Linux test runners. macOS already defaults to 8 MiB; this lines
 # Linux up. The runtime itself ships unchanged.
 RUST_MIN_STACK = "8388608"
+
+# RES-1192: Linux-only debuginfo splitting.
+#
+# On macOS, Rust already emits split debuginfo by default (.dSYM
+# bundles next to the binary). On Linux the stock behaviour is
+# `split-debuginfo = "off"`, which forces the linker to relocate
+# every DWARF block into the final executable — work proportional
+# to debuginfo size.
+#
+# Combined with RES-1184's `debug = "line-tables-only"` the win is
+# modest (less debuginfo to split), but it's still strictly fewer
+# bytes for the linker to touch on every `cargo build` and every
+# integration-test binary. The .dwo files land in `target/` alongside
+# the existing `.o`s and are cached the same way.
+#
+# Scoped to `x86_64-unknown-linux-gnu` (the only Linux runner used by
+# CI) so other targets — embedded cross-compiles, WASM, macOS — are
+# left untouched.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-Csplit-debuginfo=unpacked"]
