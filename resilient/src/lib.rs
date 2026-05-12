@@ -22485,14 +22485,25 @@ impl Interpreter {
                             }
                             // Re-order fields into declared order so
                             // Display is stable.
+                            //
+                            // RES-1455: pull each value out of `out`
+                            // via `swap_remove` instead of cloning.
+                            // `out` is dropped at end of this arm —
+                            // we move every entry's value into
+                            // `ordered`, so the swap-induced reorder
+                            // in `out` has no observable effect.
+                            // Saves one `Value::clone` per named
+                            // enum-variant field — same shape as
+                            // RES-1436 (Array IndexExpression
+                            // `swap_remove`).
                             let mut ordered: Vec<(String, Value)> =
                                 Vec::with_capacity(declared_fields.len());
                             for f in declared_fields {
-                                let v = out
+                                let pos = out
                                     .iter()
-                                    .find(|(n, _)| n == &f.name)
-                                    .map(|(_, v)| v.clone())
+                                    .position(|(n, _)| n == &f.name)
                                     .expect("validated above");
+                                let (_n, v) = out.swap_remove(pos);
                                 ordered.push((f.name.clone(), v));
                             }
                             Ok(Value::EnumVariant {
