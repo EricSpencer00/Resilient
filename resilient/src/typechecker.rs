@@ -7345,7 +7345,16 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "map_get_or",
         "hashmap_get_or",
     ];
-    PURE_BUILTINS.contains(&name)
+    // RES-1530: lookup against a `HashSet<&'static str>` built once
+    // per process from `PURE_BUILTINS`. The previous shape called
+    // `PURE_BUILTINS.contains(&name)` which is O(N=442) per call —
+    // and every `CallExpression { function: Identifier { name, .. } }`
+    // in every fn body purity check hits this path. Converting to a
+    // `LazyLock<HashSet<&str>>` drops the lookup to O(1) without
+    // changing observable behaviour.
+    static PURE_BUILTINS_SET: std::sync::LazyLock<std::collections::HashSet<&'static str>> =
+        std::sync::LazyLock::new(|| PURE_BUILTINS.iter().copied().collect());
+    PURE_BUILTINS_SET.contains(name)
 }
 
 // ============================================================
