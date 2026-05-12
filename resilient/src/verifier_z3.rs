@@ -565,28 +565,31 @@ fn prove_tautology_with_axioms_and_timeout_in(
     let mut arr_args: BTreeSet<String> = BTreeSet::new();
     collect_array_args(expr, &mut arr_args);
 
+    // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
+    // cert builder above — eliminates the intermediate `format!`
+    // String allocations per declaration / axiom / assertion.
     let mut smt2 = String::new();
     smt2.push_str("; RES-071 verification certificate\n");
     smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
     smt2.push_str("(set-logic AUFLIA)\n");
     for name in &idents {
-        smt2.push_str(&format!("(declare-const {} Int)\n", name));
+        writeln!(&mut smt2, "(declare-const {} Int)", name).unwrap();
     }
     for arg in &len_args {
-        smt2.push_str(&format!("(declare-const len_{} Int)\n", arg));
+        writeln!(&mut smt2, "(declare-const len_{} Int)", arg).unwrap();
     }
     for arg in &arr_args {
-        smt2.push_str(&format!("(declare-const arr_{} (Array Int Int))\n", arg));
+        writeln!(&mut smt2, "(declare-const arr_{} (Array Int Int))", arg).unwrap();
     }
     for arg in &len_args {
-        smt2.push_str(&format!("(assert (>= len_{} 0))\n", arg));
+        writeln!(&mut smt2, "(assert (>= len_{} 0))", arg).unwrap();
     }
     for name in &idents {
         if let Some(v) = bindings.get(name) {
-            smt2.push_str(&format!("(assert (= {} {}))\n", name, v));
+            writeln!(&mut smt2, "(assert (= {} {}))", name, v).unwrap();
         }
     }
-    smt2.push_str(&format!("(assert {})\n", negated));
+    writeln!(&mut smt2, "(assert {})", negated).unwrap();
     smt2.push_str("(check-sat)\n");
 
     (true, Some(ProofCertificate { smt2 }), false)
