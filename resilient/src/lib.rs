@@ -25797,18 +25797,32 @@ fn execute_file(
     }
 
     // RES-073: resolve `use` imports before typecheck / interpret.
-    let base_dir = Path::new(filename)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut loaded: HashSet<PathBuf> = HashSet::new();
-    // Seed with the canonicalized current file so circular `use`s are
-    // detected if a re-import points back at us.
-    if let Ok(canon) = fs::canonicalize(filename) {
-        loaded.insert(canon);
-    }
-    if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
-        return Err(format!("Import error: {}", e));
+    //
+    // RES-1335: gate `base_dir` + `loaded` build (plus the
+    // `fs::canonicalize` syscall, typically 10–200 µs hot, can
+    // spike) on the program containing at least one `Node::Use`.
+    // `imports::expand_uses` already fast-rejects on no-use
+    // (RES-1327), so for programs without any `use "..."` (the
+    // overwhelming majority of `examples/` and the test suite)
+    // both the syscall and the HashSet allocation are dead work.
+    let has_use = matches!(
+        &program,
+        Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
+    );
+    if has_use {
+        let base_dir = Path::new(filename)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut loaded: HashSet<PathBuf> = HashSet::new();
+        // Seed with the canonicalized current file so circular `use`s are
+        // detected if a re-import points back at us.
+        if let Ok(canon) = fs::canonicalize(filename) {
+            loaded.insert(canon);
+        }
+        if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+            return Err(format!("Import error: {}", e));
+        }
     }
 
     // RES-325: lower named call arguments to positional ones for
@@ -27215,19 +27229,30 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     }
 
     // Resolve imports.
-    let base_dir = path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut loaded: HashSet<PathBuf> = HashSet::new();
-    if let Ok(canon) = fs::canonicalize(&path) {
-        loaded.insert(canon);
-    }
-    if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
-        if !quiet {
-            eprintln!("{}:1:1: error: {}", path.display(), e);
+    //
+    // RES-1335: same gate as the main run path — skip the
+    // canonicalize syscall + HashSet alloc when the program
+    // declares no `use`. `expand_uses` already fast-rejects, but
+    // the syscall above is dead work in that case.
+    let has_use = matches!(
+        &program,
+        Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
+    );
+    if has_use {
+        let base_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut loaded: HashSet<PathBuf> = HashSet::new();
+        if let Ok(canon) = fs::canonicalize(&path) {
+            loaded.insert(canon);
         }
-        return Some(1);
+        if let Err(e) = imports::expand_uses(&mut program, &base_dir, &mut loaded) {
+            if !quiet {
+                eprintln!("{}:1:1: error: {}", path.display(), e);
+            }
+            return Some(1);
+        }
     }
 
     // Type-check (Z3 verifier runs automatically when built with --features z3).
@@ -28114,15 +28139,26 @@ pub fn run_cli() {
             }
             // RES-073: resolve `use "..."` before the compiler sees
             // the AST, matching the --vm driver path.
+            //
+            // RES-1335: skip the base_dir + HashSet alloc when the
+            // program declares no `use` — expand_uses already
+            // fast-rejects (RES-1327) but the build above is dead
+            // work without a `Node::Use` to find.
             let mut resolved = program;
-            let base_dir = std::path::Path::new(filename)
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .to_path_buf();
-            let mut loaded = std::collections::HashSet::new();
-            if let Err(e) = imports::expand_uses(&mut resolved, &base_dir, &mut loaded) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
+            let has_use = matches!(
+                &resolved,
+                Node::Program(stmts) if stmts.iter().any(|s| matches!(s.node, Node::Use { .. }))
+            );
+            if has_use {
+                let base_dir = std::path::Path::new(filename)
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf();
+                let mut loaded = std::collections::HashSet::new();
+                if let Err(e) = imports::expand_uses(&mut resolved, &base_dir, &mut loaded) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
             // RES-405 PR 3: monomorphize generic functions before disassembly.
             let resolved = monomorph::lower(&resolved);
