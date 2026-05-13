@@ -162,7 +162,12 @@ pub(crate) fn verify_actor_liveness(
             continue;
         };
 
-        let mut other_posts: Vec<(String, Node, Vec<Node>)> = Vec::new();
+        // RES-1770: pre-size to receive_handlers.len() — the loop
+        // pushes at most one entry per handler (skipping only the
+        // target). Saves the 0→4 doubling chain on actors with many
+        // receive handlers.
+        let mut other_posts: Vec<(String, Node, Vec<Node>)> =
+            Vec::with_capacity(receive_handlers.len());
         let mut bailed = false;
         for h in receive_handlers {
             if &h.name == target {

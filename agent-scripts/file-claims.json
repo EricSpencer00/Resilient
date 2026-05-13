@@ -280,21 +280,21 @@
       "branch": "res-1764-attr-collect-presize",
       "claimed_at": "2026-05-13T11:45:18Z"
     },
-    "resilient/src/loop_invariants.rs": {
-      "branch": "res-1762-more-collect-presize",
-      "claimed_at": "2026-05-13T11:51:36Z"
-    },
-    "resilient/src/property_tests.rs": {
-      "branch": "res-1762-more-collect-presize",
-      "claimed_at": "2026-05-13T11:51:36Z"
-    },
-    "resilient/src/cluster_verifier.rs": {
-      "branch": "res-1762-more-collect-presize",
-      "claimed_at": "2026-05-13T11:51:36Z"
-    },
     "resilient/src/typechecker.rs": {
       "branch": "res-1766-typechecker-hot-presize",
       "claimed_at": "2026-05-13T11:55:37Z"
+    },
+    "resilient/src/supervisor.rs": {
+      "branch": "res-1770-verifier-presize",
+      "claimed_at": "2026-05-13T11:59:58Z"
+    },
+    "resilient/src/cluster_verifier.rs": {
+      "branch": "res-1770-verifier-presize",
+      "claimed_at": "2026-05-13T11:59:58Z"
+    },
+    "resilient/src/verifier_liveness.rs": {
+      "branch": "res-1770-verifier-presize",
+      "claimed_at": "2026-05-13T11:59:58Z"
     }
   }
 }
