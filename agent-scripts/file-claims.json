@@ -327,6 +327,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-1806-misc-parser-presize",
       "claimed_at": "2026-05-13T13:11:05Z"
+    },
+    "resilient/src/verifier_actors.rs": {
+      "branch": "res-1808-flatten-body-presize",
+      "claimed_at": "2026-05-13T13:17:34Z"
     }
   }
 }
