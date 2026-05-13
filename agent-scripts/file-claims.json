@@ -260,9 +260,9 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-1643-audit-cache-stats",
-      "claimed_at": "2026-05-13T06:48:32Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1645-pattern-hasher",
+      "claimed_at": "2026-05-13T06:50:17Z"
     }
   }
 }
