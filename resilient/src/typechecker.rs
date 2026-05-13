@@ -6945,7 +6945,11 @@ fn check_program_purity(
     // `pure_fns.contains(callee)` — `HashSet::contains` accepts
     // `&str` via `Borrow<str>`, so the cloned `String` keys were
     // pure overhead. Same pattern as RES-1500 / RES-1523 etc.
-    let mut pure_fns: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // RES-1796: pre-size to statements.len() — at most one insert per
+    // top-level statement (`@pure` Function), upper bound. Same shape
+    // as the call-graph / fn_info pre-size series.
+    let mut pure_fns: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(statements.len());
     for stmt in statements {
         if let Node::Function {
             name, pure: true, ..
