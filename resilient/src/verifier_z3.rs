@@ -1209,8 +1209,12 @@ fn prove_with_axioms_and_timeout_in(
         .filter_map(|ax| translate_bool(ctx, ax, bindings))
         .collect();
 
-    // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
-    // is always true regardless of any free variables.
+    // RES-1696: share one Solver across the tautology + contradiction
+    // checks via push/pop scopes. The axioms (`len_axioms` and
+    // `user_axioms`) are common to both phases and only need to be
+    // asserted once; previously they were re-asserted on a second
+    // freshly-allocated Solver, paying both the duplicate Solver setup
+    // and the duplicate axiom-assert work.
     let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
     for axiom in &len_axioms {
@@ -1219,7 +1223,13 @@ fn prove_with_axioms_and_timeout_in(
     for axiom in &user_axioms {
         solver.assert(axiom);
     }
+
+    // Tautology check: is `NOT formula` unsatisfiable? If yes, formula
+    // is always true regardless of any free variables. Pushed onto a
+    // scope so we can drop the negated assertion before re-using the
+    // solver for the contradiction check.
     let negated = formula.not();
+    solver.push();
     solver.assert(&negated);
     let check = solver.check();
     let tautology = matches!(check, z3::SatResult::Unsat);
@@ -1231,13 +1241,15 @@ fn prove_with_axioms_and_timeout_in(
     // is satisfiable — the model is an assignment that falsifies the
     // clause, which is what a user needs to see to debug a failing
     // contract. We harvest it eagerly so the later contradiction
-    // check (which reuses a fresh solver) doesn't need to re-derive
-    // it.
+    // check (after `solver.pop`) doesn't need to re-derive it. Done
+    // BEFORE the `pop` because the model goes away when the scope
+    // is dropped.
     let counterexample = if matches!(check, z3::SatResult::Sat) {
         extract_counterexample(ctx, &solver, expr, bindings)
     } else {
         None
     };
+    solver.pop(1);
 
     if tautology {
         // Build a self-contained re-verifiable SMT-LIB2 file.
@@ -1306,17 +1318,13 @@ fn prove_with_axioms_and_timeout_in(
     }
 
     // Contradiction check: is `formula` unsatisfiable? If yes, the
-    // contract can never hold.
-    let solver = z3::Solver::new(ctx);
-    apply_timeout(&solver);
-    for axiom in &len_axioms {
-        solver.assert(axiom);
-    }
-    for axiom in &user_axioms {
-        solver.assert(axiom);
-    }
+    // contract can never hold. Re-uses the same `solver` instance —
+    // axioms are still asserted from the pre-push setup above; we
+    // only need to push the positive formula into a fresh scope.
+    solver.push();
     solver.assert(&formula);
     let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
+    solver.pop(1);
 
     if contradiction {
         return (Some(false), None, counterexample, false);
