@@ -625,7 +625,14 @@ pub fn tokenize(src: &str) -> Vec<(Token, Span)> {
         Pos::new(line, column, offset)
     };
 
-    let mut out: Vec<(Token, Span)> = Vec::new();
+    // RES-1714: pre-size the token Vec. Resilient source averages
+    // ~4-6 bytes per token (whitespace, idents, literals, single-byte
+    // punctuation), so `src.len() / 4` is a reasonable upper bound
+    // that fits typical inputs in one allocation. For a 100 KB
+    // source that's ~25k tokens; without pre-sizing the Vec would
+    // double-grow ~12 times during the tokenize loop, each rehoming
+    // every prior entry.
+    let mut out: Vec<(Token, Span)> = Vec::with_capacity(src.len() / 4);
     // Feed only the post-shebang slice to logos, and offset every
     // reported byte range by `shebang_bytes` when converting to a
     // `Pos` against the full-source table.
