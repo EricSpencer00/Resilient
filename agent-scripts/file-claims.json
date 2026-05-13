@@ -252,9 +252,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1732-actor-commute-presize",
-      "claimed_at": "2026-05-13T10:42:32Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1734-fn-effects-presize",
+      "claimed_at": "2026-05-13T10:46:20Z"
     }
   }
 }

@@ -8096,7 +8096,10 @@ use crate::EffectSet;
 fn collect_fn_effects(
     statements: &[crate::span::Spanned<Node>],
 ) -> std::collections::HashMap<String, EffectSet> {
-    let mut out = std::collections::HashMap::new();
+    // RES-1734: pre-size to `statements.len()` — upper bound, since
+    // every Function statement contributes one entry. Same shape as
+    // RES-1716 / RES-1718 / RES-1724 etc.
+    let mut out = std::collections::HashMap::with_capacity(statements.len());
     for stmt in statements {
         if let Node::Function { name, effects, .. } = &stmt.node {
             out.insert(name.clone(), *effects);
