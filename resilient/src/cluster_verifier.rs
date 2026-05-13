@@ -632,7 +632,10 @@ fn collect_self_assignments(body: &Node) -> Result<Vec<(String, Node)>, String> 
             node_kind(body)
         ));
     };
-    let mut out: Vec<(String, Node)> = Vec::new();
+    // RES-1770: pre-size to stmts.len() — every handler body
+    // statement must be a `FieldAssignment` (else we error out),
+    // and each one contributes exactly one push.
+    let mut out: Vec<(String, Node)> = Vec::with_capacity(stmts.len());
     for stmt in stmts {
         let Node::FieldAssignment {
             target,
