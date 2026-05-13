@@ -1,0 +1,17 @@
+# RES-1584: workspace-wide target directory pin.
+#
+# The repo's CI workflows (release.yml, fuzz.yml, perf_gate.yml,
+# ci.yml) and the benchmark harness (benchmarks/run.sh, etc.)
+# all reference artifacts at `resilient/target/release/rz`.
+# Without this pin, adding `[workspace]` at the root would move
+# the shared target dir to `<repo>/target/` and break every one
+# of those references.
+#
+# `target-dir` here is resolved relative to this config file's
+# location, so the absolute path is `<repo-root>/resilient/target/`,
+# matching the pre-workspace layout. The workspace dedupe still
+# works — every member crate's build now writes into the same
+# directory.
+
+[build]
+target-dir = "resilient/target"
