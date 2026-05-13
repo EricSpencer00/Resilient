@@ -124,8 +124,11 @@ pub(crate) fn parse(parser: &mut Parser) -> Node {
         parser.next_token(); // skip '{'
     }
 
-    let mut methods: Vec<TraitMethodSig> = Vec::new();
-    let mut associated_types: Vec<AssociatedTypeDecl> = Vec::new();
+    // RES-1802: pre-size to 4 — typical trait declares 1-4 methods
+    // and 0-2 associated types. Same fixed-capacity shape as
+    // RES-1768 / RES-1776 parser pre-sizes.
+    let mut methods: Vec<TraitMethodSig> = Vec::with_capacity(4);
+    let mut associated_types: Vec<AssociatedTypeDecl> = Vec::with_capacity(2);
 
     while parser.current_token != Token::RightBrace && parser.current_token != Token::Eof {
         match &parser.current_token {
@@ -421,9 +424,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // every `impl T { ... }` block plus every `impl Trait for T { ... }`
     // block. Used both to validate trait-impl coverage and to validate
     // call-site bounds.
-    let mut type_methods: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    // RES-1802: pre-size to stmts.len() — at most one entry per
+    // top-level ImplBlock for each map.
+    let mut type_methods: HashMap<String, HashMap<String, usize>> =
+        HashMap::with_capacity(stmts.len());
     // Set of explicit `impl Trait for Type` declarations.
-    let mut explicit_impls: HashSet<(String, String)> = HashSet::new();
+    let mut explicit_impls: HashSet<(String, String)> = HashSet::with_capacity(stmts.len());
 
     for stmt in stmts {
         if let Node::ImplBlock {
@@ -474,7 +480,8 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             };
 
             // Build the set of methods this impl block actually provides.
-            let mut provided: HashMap<String, usize> = HashMap::new();
+            // RES-1802: pre-size to methods.len() — one insert per method.
+            let mut provided: HashMap<String, usize> = HashMap::with_capacity(methods.len());
             for m in methods {
                 if let Node::Function {
                     name, parameters, ..
@@ -515,7 +522,10 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
             }
 
             // Build the set of associated types this impl block defines.
-            let mut provided_types: HashSet<String> = HashSet::new();
+            // RES-1802: pre-size to associated_type_impls.len() — one
+            // insert per associated_type impl on the happy path.
+            let mut provided_types: HashSet<String> =
+                HashSet::with_capacity(associated_type_impls.len());
             for (type_name, _type_expr) in associated_type_impls {
                 provided_types.insert(type_name.clone());
             }
