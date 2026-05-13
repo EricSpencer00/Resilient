@@ -462,7 +462,13 @@ pub fn prove_with_axioms_and_timeout(
         // RES-1637: structural span-free hash for the obligation.
         hash_node_spanless(expr, &mut h);
         b'|'.hash(&mut h);
-        let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+        // RES-1710: Vec + sort beats BTreeMap allocation for the
+        // typical small-N binding sizes (0-5 entries). Vec collected
+        // from a HashMap iter pre-allocates via size_hint;
+        // sort_unstable_by_key is O(N log N) with no per-entry heap
+        // allocs (vs BTreeMap's per-insert tree-node).
+        let mut bindings_sorted: Vec<(&String, &i64)> = bindings.iter().collect();
+        bindings_sorted.sort_unstable_by_key(|(k, _)| k.as_str());
         for (k, v) in &bindings_sorted {
             k.hash(&mut h);
             v.hash(&mut h);
@@ -1434,7 +1440,13 @@ pub fn prove_tautology_with_axioms_and_timeout(
         let mut h = DefaultHasher::new();
         hash_node_spanless(expr, &mut h);
         b'|'.hash(&mut h);
-        let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+        // RES-1710: Vec + sort beats BTreeMap allocation for the
+        // typical small-N binding sizes (0-5 entries). Vec collected
+        // from a HashMap iter pre-allocates via size_hint;
+        // sort_unstable_by_key is O(N log N) with no per-entry heap
+        // allocs (vs BTreeMap's per-insert tree-node).
+        let mut bindings_sorted: Vec<(&String, &i64)> = bindings.iter().collect();
+        bindings_sorted.sort_unstable_by_key(|(k, _)| k.as_str());
         for (k, v) in &bindings_sorted {
             k.hash(&mut h);
             v.hash(&mut h);
@@ -1635,7 +1647,13 @@ pub fn prove_bv(
         let mut h = DefaultHasher::new();
         hash_node_spanless(expr, &mut h);
         b'|'.hash(&mut h);
-        let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+        // RES-1710: Vec + sort beats BTreeMap allocation for the
+        // typical small-N binding sizes (0-5 entries). Vec collected
+        // from a HashMap iter pre-allocates via size_hint;
+        // sort_unstable_by_key is O(N log N) with no per-entry heap
+        // allocs (vs BTreeMap's per-insert tree-node).
+        let mut bindings_sorted: Vec<(&String, &i64)> = bindings.iter().collect();
+        bindings_sorted.sort_unstable_by_key(|(k, _)| k.as_str());
         for (k, v) in &bindings_sorted {
             k.hash(&mut h);
             v.hash(&mut h);
