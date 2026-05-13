@@ -61,7 +61,12 @@ pub fn lower(program: &Node) -> Node {
     }
 
     // Phase 3: assemble the lowered program.
-    let mut new_stmts: Vec<span::Spanned<Node>> = Vec::new();
+    // RES-1718: pre-size to `stmts.len()` (every input statement is
+    // rewritten and pushed once via the loop below) plus a small
+    // margin for the appended specialised clones — saves ~3-4
+    // reallocations on programs with generic call sites.
+    let mut new_stmts: Vec<span::Spanned<Node>> =
+        Vec::with_capacity(stmts.len() + instantiations.len() * 2);
 
     // Copy every non-generic statement with call sites rewritten.
     // Keep generic functions too (erasure fallback for non-literal call sites).
