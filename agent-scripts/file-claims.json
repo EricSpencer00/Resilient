@@ -265,12 +265,12 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/pass_gate.rs": {
-      "branch": "res-1669-linear-marker",
-      "claimed_at": "2026-05-13T07:45:32Z"
+      "branch": "res-1671-pure-fn-marker",
+      "claimed_at": "2026-05-13T07:50:57Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1669-linear-marker",
-      "claimed_at": "2026-05-13T07:45:32Z"
+      "branch": "res-1671-pure-fn-marker",
+      "claimed_at": "2026-05-13T07:50:57Z"
     }
   }
 }
