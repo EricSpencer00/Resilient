@@ -4181,7 +4181,21 @@ impl TypeChecker {
                 crate::macros::check(program, source_path)?;
                 crate::full_modules::check(program, source_path)?;
                 crate::package_manager::check(program, source_path)?;
-                crate::iterator_protocol::check(program, source_path)?;
+                // RES-1599 gate: pass scans for `Node::ImplBlock` with
+                // `trait_name == Some("Iterator")`. Markers already
+                // collects every `impl_trait_names` from the RES-1593
+                // whole-AST walk, so the gate is an O(1) HashSet
+                // lookup. The pass unconditionally calls
+                // `install_iterator_impls(...)` so a prior program's
+                // registration doesn't leak; preserve that semantics
+                // by calling the wipe directly in the else branch.
+                if markers.has_impl_for_trait("Iterator") {
+                    crate::iterator_protocol::check(program, source_path)?;
+                } else {
+                    crate::iterator_protocol::install_iterator_impls(
+                        std::collections::HashSet::new(),
+                    );
+                }
                 crate::mutation_testing::check(program, source_path)?;
                 crate::causal_trace::check(program, source_path)?;
                 crate::snapshot_regression::check(program, source_path)?;

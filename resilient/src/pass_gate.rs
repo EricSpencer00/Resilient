@@ -65,6 +65,9 @@ pub(crate) struct Markers {
     /// `Node::CallExpression`. Used by the `epoch_ordering` and
     /// `toctou_guard` gates.
     pub call_idents: HashSet<String>,
+    /// Trait names from `Node::ImplBlock { trait_name: Some(...), .. }`.
+    /// Used by the `iterator_protocol` gate (matches `"Iterator"`).
+    pub impl_trait_names: HashSet<String>,
 }
 
 impl Markers {
@@ -98,6 +101,12 @@ impl Markers {
                 if let Node::Identifier { name, .. } = function.as_ref() {
                     m.call_idents.insert(name.clone());
                 }
+            }
+            Node::ImplBlock {
+                trait_name: Some(t),
+                ..
+            } => {
+                m.impl_trait_names.insert(t.clone());
             }
             _ => {}
         });
@@ -199,6 +208,13 @@ impl Markers {
         self.call_idents
             .iter()
             .any(|n| substrs.iter().any(|s| n.contains(s)))
+    }
+
+    /// True if the program has at least one `Node::ImplBlock` with
+    /// `trait_name == Some(trait_name)`. Backs the `iterator_protocol`
+    /// gate (matches `"Iterator"`).
+    pub(crate) fn has_impl_for_trait(&self, trait_name: &str) -> bool {
+        self.impl_trait_names.contains(trait_name)
     }
 }
 
@@ -542,5 +558,40 @@ mod tests {
         let m = Markers::scan(&program);
         assert!(m.any_call_ident_containing(&["_epoch"]));
         assert!(!m.any_call_ident_containing(&["_zzz"]));
+    }
+
+    fn impl_block(trait_name: Option<&str>, struct_name: &str) -> span::Spanned<Node> {
+        span::Spanned {
+            node: Node::ImplBlock {
+                trait_name: trait_name.map(String::from),
+                struct_name: struct_name.to_string(),
+                methods: Vec::new(),
+                associated_type_impls: Vec::new(),
+                span: span::Span::default(),
+            },
+            span: span::Span::default(),
+        }
+    }
+
+    #[test]
+    fn scan_collects_impl_trait_names() {
+        let program = Node::Program(vec![
+            impl_block(Some("Iterator"), "MyVec"),
+            impl_block(Some("Drawable"), "Circle"),
+            impl_block(None, "Plain"),
+        ]);
+        let m = Markers::scan(&program);
+        assert!(m.impl_trait_names.contains("Iterator"));
+        assert!(m.impl_trait_names.contains("Drawable"));
+        // Inherent impls (no trait) aren't included.
+        assert_eq!(m.impl_trait_names.len(), 2);
+    }
+
+    #[test]
+    fn has_impl_for_trait_matches() {
+        let program = Node::Program(vec![impl_block(Some("Iterator"), "Buf")]);
+        let m = Markers::scan(&program);
+        assert!(m.has_impl_for_trait("Iterator"));
+        assert!(!m.has_impl_for_trait("Drawable"));
     }
 }
