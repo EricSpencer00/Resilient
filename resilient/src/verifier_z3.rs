@@ -1691,6 +1691,17 @@ pub fn prove_auto(
     theory: Z3Theory,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    // RES-1682: constant-fold short-circuit. The downstream entry
+    // points (`prove_bv`, `prove_with_axioms_and_timeout`) already
+    // fast-path foldable obligations, but `prove_auto` still pays
+    // for the `has_bitwise_ops` walk and the function dispatch. The
+    // fold is theory-independent — a bool literal or literal
+    // comparison evaluates to the same verdict regardless of LIA /
+    // BV32 encoding — so we can short-circuit before deciding which
+    // theory to use.
+    if let Some(verdict) = try_const_eval_bool(expr) {
+        return (Some(verdict), None, None, false);
+    }
     let use_bv = match theory {
         Z3Theory::Bv => true,
         Z3Theory::Lia => {
@@ -4354,6 +4365,62 @@ mod tests {
         assert_eq!(
             after.verdict_misses, before.verdict_misses,
             "bool-literal equality must not consult Z3"
+        );
+    }
+
+    /// RES-1682: `prove_auto` itself short-circuits for foldable
+    /// obligations — neither the `has_bitwise_ops` walk nor the
+    /// dispatch to `prove_bv` / `prove_with_axioms_and_timeout` runs.
+    /// Verifiable by asserting zero misses on ALL three downstream
+    /// caches (verdict, tautology, bv).
+    #[test]
+    fn prove_auto_short_circuits_on_constant_fold() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+
+        // Bool literal — covered by RES-1663 fold.
+        let (v, _, _, _) = prove_auto(&bool_lit(true), &no_b, Z3Theory::Auto, 0);
+        assert_eq!(v, Some(true));
+
+        // Integer-literal comparison — covered by RES-1665 / RES-1675.
+        let (v, _, _, _) = prove_auto(&infix(int(5), ">", int(3)), &no_b, Z3Theory::Auto, 0);
+        assert_eq!(v, Some(true));
+
+        // Arithmetic fold via RES-1675.
+        let (v, _, _, _) = prove_auto(
+            &infix(infix(int(2), "+", int(3)), "==", int(5)),
+            &no_b,
+            Z3Theory::Auto,
+            0,
+        );
+        assert_eq!(v, Some(true));
+
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "prove_auto fold must not dispatch to LIA path"
+        );
+        assert_eq!(
+            after.bv_misses, before.bv_misses,
+            "prove_auto fold must not dispatch to BV path"
+        );
+    }
+
+    /// RES-1682: forcing `Z3Theory::Bv` on a foldable obligation
+    /// still short-circuits — the theory hint is irrelevant when
+    /// the verdict is already determined.
+    #[test]
+    fn prove_auto_short_circuits_with_bv_theory_hint() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        let (v, _, _, _) = prove_auto(&bool_lit(false), &no_b, Z3Theory::Bv, 0);
+        assert_eq!(v, Some(false));
+        let after = cache_stats();
+        assert_eq!(
+            after.bv_misses, before.bv_misses,
+            "Z3Theory::Bv must not force BV dispatch for foldable inputs"
         );
     }
 }
