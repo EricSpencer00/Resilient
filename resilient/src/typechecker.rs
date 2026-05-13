@@ -626,9 +626,26 @@ pub struct TypeEnvironment {
 }
 
 impl TypeEnvironment {
+    /// RES-1698: kept `pub` so the supervisor test module
+    /// (`supervisor.rs:362`) can still build a default-capacity env;
+    /// every non-test caller uses `with_capacity` below.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         TypeEnvironment {
             store: HashMap::new(),
+            outer: None,
+        }
+    }
+
+    /// RES-1698: pre-sized variant. The `BUILTIN_ENV` LazyLock seeds
+    /// ~490 built-in fn names into a `TypeEnvironment`, growing the
+    /// inner HashMap from 0 → 4 → ... → 512 (~9 rehashes). Calling
+    /// `with_capacity(512)` once per process avoids every one of
+    /// those — the cloned per-`TypeChecker` envs inherit the
+    /// preserved capacity.
+    pub fn with_capacity(cap: usize) -> Self {
+        TypeEnvironment {
+            store: HashMap::with_capacity(cap),
             outer: None,
         }
     }
@@ -1236,7 +1253,10 @@ impl TypeChecker {
         // populated `HashMap` is one bulk allocation plus per-entry
         // clones (~970 heap allocs) — ~30-50% faster.
         static BUILTIN_ENV: std::sync::LazyLock<TypeEnvironment> = std::sync::LazyLock::new(|| {
-            let mut env = TypeEnvironment::new();
+            // RES-1698: pre-size to fit the ~490 builtin entries.
+            // Saves 9 rehash rounds on the one-time LazyLock init;
+            // every cloned `TypeChecker` env inherits the capacity.
+            let mut env = TypeEnvironment::with_capacity(512);
 
             // Built-in function signatures. Any-typed parameters keep the
             // type checker permissive for heterogeneous inputs until real
