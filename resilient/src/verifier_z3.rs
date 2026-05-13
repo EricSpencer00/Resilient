@@ -543,8 +543,13 @@ pub fn prove_with_axioms_and_timeout(
 // initializer, which is not `const` on stable Rust — `cargo test
 // --features z3` has been red on `main` ever since. Wrap in
 // `LazyLock` so the HashSet is built on first access. RES-1661.
-static PERSISTENT_PROVEN: std::sync::LazyLock<std::sync::RwLock<std::collections::HashSet<u64>>> =
-    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashSet::new()));
+// RES: identity hasher (see `IdentityU64Hasher` / `U64HashSet` below)
+// is reused here. Keys are already 64-bit hashes from
+// `hash_node_spanless` — re-hashing with SipHash on every contains /
+// insert wastes ~5-10 cycles per touch with no collision-resistance
+// benefit. Same rationale as the `U64CacheMap` migration in RES-1207.
+static PERSISTENT_PROVEN: std::sync::LazyLock<std::sync::RwLock<U64HashSet>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(U64HashSet::default()));
 
 // RES-1700: AtomicBool fast-reject. Same pattern as RES-1374 for
 // `feature_attrs::find_kind`. Default-mode typechecks (no
@@ -719,6 +724,10 @@ impl std::hash::Hasher for IdentityU64Hasher {
 
 pub(crate) type U64CacheMap<V> =
     std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<IdentityU64Hasher>>;
+
+/// Set companion to [`U64CacheMap`] — same identity-hasher rationale,
+/// just for the verdict-only persistent proven-key store.
+type U64HashSet = std::collections::HashSet<u64, std::hash::BuildHasherDefault<IdentityU64Hasher>>;
 
 thread_local! {
     /// RES-1206: see `prove_with_axioms_and_timeout`. Stays the lifetime
