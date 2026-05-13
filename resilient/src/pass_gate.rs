@@ -65,6 +65,11 @@ pub(crate) struct Markers<'a> {
     /// `Node::CallExpression`. Used by the `epoch_ordering` and
     /// `toctou_guard` gates.
     pub call_idents: HashSet<&'a str>,
+    /// RES-1669: True if any `Node::Function` parameter type OR any
+    /// `Node::LetStatement` type_annot starts with the `"linear "`
+    /// prefix. Used to gate the `linear::check_linear_usage` whole-AST
+    /// walk that previously ran unconditionally before EXTENSION_PASSES.
+    pub has_linear_binding: bool,
     /// Trait names from `Node::ImplBlock { trait_name: Some(...), .. }`.
     /// Used by the `iterator_protocol` gate (matches `"Iterator"`).
     pub impl_trait_names: HashSet<&'a str>,
@@ -152,13 +157,25 @@ impl<'a> Markers<'a> {
                 for (ty, pname) in parameters {
                     m.param_types.insert(ty.as_str());
                     m.param_names.insert(pname.as_str());
+                    // RES-1669: linear-typed parameter marker.
+                    if crate::linear::is_linear(ty) {
+                        m.has_linear_binding = true;
+                    }
                 }
                 if !type_params.is_empty() {
                     m.has_generic_fn = true;
                 }
             }
-            Node::LetStatement { name, .. } => {
+            Node::LetStatement {
+                name, type_annot, ..
+            } => {
                 m.let_names.insert(name.as_str());
+                // RES-1669: linear-typed let-binding marker.
+                if let Some(ty) = type_annot
+                    && crate::linear::is_linear(ty)
+                {
+                    m.has_linear_binding = true;
+                }
             }
             Node::FieldAssignment { field, .. } => {
                 m.field_names_assigned.insert(field.as_str());
@@ -718,5 +735,68 @@ mod tests {
         let m = Markers::scan(&program);
         assert!(m.has_impl_for_trait("Iterator"));
         assert!(!m.has_impl_for_trait("Drawable"));
+    }
+
+    fn let_stmt_typed(name: &str, type_annot: &str) -> Node {
+        Node::LetStatement {
+            name: name.to_string(),
+            value: Box::new(Node::IntegerLiteral {
+                value: 0,
+                span: span::Span::default(),
+            }),
+            type_annot: Some(type_annot.to_string()),
+            span: span::Span::default(),
+        }
+    }
+
+    /// RES-1669: programs without any `linear `-prefixed Function
+    /// parameter or LetStatement type_annot have `has_linear_binding`
+    /// false — gate keeps the `linear::check_linear_usage` walk
+    /// from running.
+    #[test]
+    fn has_linear_binding_false_when_absent() {
+        let program = Node::Program(vec![
+            function_stmt("a", vec![("int", "x"), ("string", "s")]),
+            function_stmt("b", vec![("Vec<int>", "ys")]),
+        ]);
+        let m = Markers::scan(&program);
+        assert!(!m.has_linear_binding);
+    }
+
+    /// RES-1669: a Function parameter typed `linear Token` sets the
+    /// marker.
+    #[test]
+    fn has_linear_binding_true_from_fn_parameter() {
+        let program = Node::Program(vec![function_stmt("transfer", vec![("linear Token", "t")])]);
+        let m = Markers::scan(&program);
+        assert!(m.has_linear_binding);
+    }
+
+    /// RES-1669: a `let` with `linear `-prefixed type_annot sets the
+    /// marker — and the marker comes from a *body* binding, not just
+    /// a top-level parameter, so the deep walk is required to spot it.
+    #[test]
+    fn has_linear_binding_true_from_let_in_body() {
+        let program = Node::Program(vec![fn_with_body(
+            "make",
+            vec![],
+            vec![let_stmt_typed("t", "linear Token")],
+        )]);
+        let m = Markers::scan(&program);
+        assert!(m.has_linear_binding);
+    }
+
+    /// RES-1669: a let_annot whose prefix is `linear-` (hyphen, not
+    /// space) is NOT a linear type — the prefix is `"linear "` with a
+    /// trailing space.
+    #[test]
+    fn has_linear_binding_false_on_non_linear_prefix() {
+        let program = Node::Program(vec![fn_with_body(
+            "make",
+            vec![],
+            vec![let_stmt_typed("t", "linearish Token")],
+        )]);
+        let m = Markers::scan(&program);
+        assert!(!m.has_linear_binding);
     }
 }

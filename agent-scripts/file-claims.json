@@ -264,9 +264,13 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1667-unified-const-fold",
-      "claimed_at": "2026-05-13T07:39:56Z"
+    "resilient/src/pass_gate.rs": {
+      "branch": "res-1669-linear-marker",
+      "claimed_at": "2026-05-13T07:45:32Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1669-linear-marker",
+      "claimed_at": "2026-05-13T07:45:32Z"
     }
   }
 }
