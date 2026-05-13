@@ -76,6 +76,10 @@
       "branch": "res-1281-unsafe-check-fast-reject",
       "claimed_at": "2026-05-12T04:21:23Z"
     },
+    "resilient/src/generics.rs": {
+      "branch": "res-1523-generics-locals-borrow",
+      "claimed_at": "2026-05-12T13:40:00Z"
+    },
     "resilient/src/feature_attrs.rs": {
       "branch": "res-1303-feature-attrs-kind-index",
       "claimed_at": "2026-05-12T05:08:27Z"
@@ -115,6 +119,10 @@
     "resilient/src/imports.rs": {
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
+    },
+    "resilient/src/full_modules.rs": {
+      "branch": "res-1517-full-modules-dfs-borrow",
+      "claimed_at": "2026-05-12T13:25:00Z"
     },
     "resilient/src/crash_only.rs": {
       "branch": "res-1520-crash-only-name-borrow",
@@ -304,13 +312,17 @@
       "branch": "res-1782-more-collect-presize",
       "claimed_at": "2026-05-13T12:23:31Z"
     },
-    "resilient/src/full_modules.rs": {
-      "branch": "res-1786-modules-generics-presize",
-      "claimed_at": "2026-05-13T12:29:42Z"
+    "resilient/src/hw_state_machine.rs": {
+      "branch": "res-1784-attr-collects-3",
+      "claimed_at": "2026-05-13T12:28:38Z"
     },
-    "resilient/src/generics.rs": {
-      "branch": "res-1786-modules-generics-presize",
-      "claimed_at": "2026-05-13T12:29:42Z"
+    "resilient/src/stack_contracts.rs": {
+      "branch": "res-1784-attr-collects-3",
+      "claimed_at": "2026-05-13T12:28:38Z"
+    },
+    "resilient/src/default_trait_methods.rs": {
+      "branch": "res-1784-attr-collects-3",
+      "claimed_at": "2026-05-13T12:28:38Z"
     }
   }
 }
