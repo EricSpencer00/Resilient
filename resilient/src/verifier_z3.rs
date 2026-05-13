@@ -136,6 +136,24 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
                     _ => None,
                 };
             }
+            // RES-1673: reflexive Identifier comparison. `x == x` is
+            // tautologically true in LIA/BV theory (no NaN concerns);
+            // `x != x` is tautologically false. Same for `<= >= < >`.
+            // Pattern emerges from inlined helpers and contract
+            // specialisation where both sides collapse to the same
+            // parameter name. Restricted to Identifier-vs-Identifier
+            // to avoid the hash-collision soundness risk of
+            // generalised structural equality.
+            if let (Node::Identifier { name: a, .. }, Node::Identifier { name: b, .. }) =
+                (left.as_ref(), right.as_ref())
+                && a == b
+            {
+                return match operator.as_str() {
+                    "==" | "<=" | ">=" => Some(true),
+                    "!=" | "<" | ">" => Some(false),
+                    _ => None,
+                };
+            }
             // Boolean combinators — recurse to fold known sides,
             // short-circuiting before the other side has to fold.
             match operator.as_str() {
@@ -3901,6 +3919,108 @@ mod tests {
         assert_eq!(
             after.verdict_misses, before.verdict_misses,
             "compound constant-folded obligations must not consult Z3"
+        );
+    }
+
+    /// RES-1673: `x == x` folds to true via the reflexive Identifier
+    /// fast path — no Z3 round trip.
+    #[test]
+    fn const_eval_reflexive_identifier_equality_folds() {
+        // `x == x` → true
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "==", ident("x"))),
+            Some(true)
+        );
+        // `x != x` → false
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "!=", ident("x"))),
+            Some(false)
+        );
+        // `x <= x` → true (reflexive)
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "<=", ident("x"))),
+            Some(true)
+        );
+        // `x >= x` → true (reflexive)
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), ">=", ident("x"))),
+            Some(true)
+        );
+        // `x < x` → false (irreflexive strict order)
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "<", ident("x"))),
+            Some(false)
+        );
+        // `x > x` → false
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), ">", ident("x"))),
+            Some(false)
+        );
+    }
+
+    /// RES-1673: `x == y` (different names) does NOT fold — the
+    /// caller falls through to Z3.
+    #[test]
+    fn const_eval_reflexive_falls_through_on_different_names() {
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "==", ident("y"))),
+            None
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "<", ident("y"))),
+            None
+        );
+    }
+
+    /// RES-1673: reflexive folding only applies to comparison
+    /// operators. Arithmetic operators like `+`, `-` aren't
+    /// boolean-typed and never fold here.
+    #[test]
+    fn const_eval_reflexive_only_for_comparisons() {
+        // `x + x` is not a boolean expression — return None.
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "+", ident("x"))),
+            None
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "-", ident("x"))),
+            None
+        );
+    }
+
+    /// RES-1673: reflexive folding deliberately does NOT match
+    /// arbitrary structurally-equal expressions (a more general
+    /// helper would need spanless structural equality, not hash-based
+    /// equality which has collision risk). `(a + 1) == (a + 1)` is
+    /// allowed to fall through to Z3.
+    #[test]
+    fn const_eval_reflexive_skips_compound_expressions() {
+        // Both sides are structurally equal compound expressions,
+        // but the conservative helper only matches bare Identifiers.
+        let e1 = infix(ident("a"), "+", int(1));
+        let e2 = infix(ident("a"), "+", int(1));
+        assert_eq!(try_const_eval_bool(&infix(e1, "==", e2)), None);
+    }
+
+    /// RES-1673: reflexive Identifier comparison short-circuits the
+    /// LIA prove entry point — no Z3 round trip needed.
+    #[test]
+    fn const_eval_reflexive_short_circuits_z3() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        assert_eq!(
+            prove(&infix(ident("x"), "==", ident("x")), &no_b),
+            Some(true)
+        );
+        assert_eq!(
+            prove(&infix(ident("x"), "<", ident("x")), &no_b),
+            Some(false)
+        );
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "reflexive Identifier comparison must not consult Z3"
         );
     }
 }

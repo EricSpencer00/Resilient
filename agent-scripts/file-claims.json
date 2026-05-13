@@ -264,13 +264,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/pass_gate.rs": {
-      "branch": "res-1671-pure-fn-marker",
-      "claimed_at": "2026-05-13T07:50:57Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1671-pure-fn-marker",
-      "claimed_at": "2026-05-13T07:50:57Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1673-reflexive-compare",
+      "claimed_at": "2026-05-13T08:02:08Z"
     }
   }
 }
