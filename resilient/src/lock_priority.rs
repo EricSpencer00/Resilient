@@ -21,7 +21,9 @@ pub struct PrioritySpec {
 
 pub fn collect() -> HashMap<String, PrioritySpec> {
     let attrs = crate::feature_attrs::find_kind("lock_priority");
-    let mut out = HashMap::new();
+    // RES-1754: pre-size to attrs.len() — at most one insert per
+    // attribute record (conditional on parse success).
+    let mut out = HashMap::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let raw = rec.args.trim();
         if let Ok(n) = raw.parse() {

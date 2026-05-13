@@ -26,7 +26,9 @@ static SPECS: LazyLock<RwLock<HashMap<String, PhantomSpec>>> =
 
 pub fn collect() -> Vec<PhantomSpec> {
     let attrs = crate::feature_attrs::find_kind("phantom");
-    let mut out = Vec::new();
+    // RES-1754: pre-size to attrs.len() — conditional push (only when
+    // the `units` chunk parsed non-empty), so this is an upper bound.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut unit = String::new();
         for chunk in rec.args.split(',') {

@@ -23,7 +23,9 @@ pub struct Snapshot {
 
 pub fn build_snapshots(program: &Node) -> HashMap<String, Snapshot> {
     let fps = crate::behavioral_fingerprint::fingerprint_program(program);
-    let mut out = HashMap::new();
+    // RES-1754: pre-size to fps.len() — exactly one insert per
+    // fingerprint entry, so this is an exact bound.
+    let mut out = HashMap::with_capacity(fps.len());
     for (name, fp) in fps {
         out.insert(
             name.clone(),

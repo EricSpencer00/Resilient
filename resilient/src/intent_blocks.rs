@@ -29,7 +29,9 @@ pub struct IntentSpec {
 
 pub fn collect() -> Vec<IntentSpec> {
     let attrs = crate::feature_attrs::find_kind("intent");
-    let mut out = Vec::new();
+    // RES-1754: pre-size to attrs.len() — exactly one push per
+    // attribute record, so this is an exact bound.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = IntentSpec {
             item_name: item,

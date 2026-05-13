@@ -104,37 +104,9 @@
       "branch": "res-1303-feature-attrs-kind-index",
       "claimed_at": "2026-05-12T05:08:27Z"
     },
-    "resilient/src/associated_constants.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
-    },
-    "resilient/src/macros.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
-    },
-    "resilient/src/phantom_types.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
-    },
-    "resilient/src/recursive_types.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
-    },
-    "resilient/src/probabilistic_contracts.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
-    },
-    "resilient/src/row_polymorphism.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
-    },
     "resilient/src/distributed_invariants.rs": {
       "branch": "res-1526-distributed-actors-borrow",
       "claimed_at": "2026-05-12T13:55:00Z"
-    },
-    "resilient/src/ghost_types.rs": {
-      "branch": "res-1308-skip-empty-install-8-passes",
-      "claimed_at": "2026-05-12T05:18:02Z"
     },
     "resilient/src/named_args.rs": {
       "branch": "res-1317-named-args-fast-reject",
@@ -216,10 +188,6 @@
       "branch": "res-1538-termination-fn-info-borrow",
       "claimed_at": "2026-05-12T15:15:14Z"
     },
-    "resilient/src/lock_priority.rs": {
-      "branch": "res-1539-lock-priority-borrow",
-      "claimed_at": "2026-05-12T15:25:00Z"
-    },
     "resilient/src/lib.rs": {
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
@@ -227,6 +195,38 @@
     "resilient/src/lock_ordering.rs": {
       "branch": "res-1752-lock-ordering-presize",
       "claimed_at": "2026-05-13T11:18:18Z"
+    },
+    "resilient/src/refinement_types.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/power_contracts.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/intent_blocks.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/row_polymorphism.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/phantom_types.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/lock_priority.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/snapshot_regression.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/semantic_regression.rs": {
+      "branch": "res-1754-collect-presize",
+      "claimed_at": "2026-05-13T11:24:43Z"
     }
   }
 }
