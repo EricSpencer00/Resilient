@@ -8,6 +8,16 @@
 //! cloned defaults for any trailing arguments that were omitted.
 //!
 //! This keeps the hot interpreter path completely free of
+
+// RES-1615: `check` is no longer called from `EXTENSION_PASSES`
+// (the body is `Ok(())`; the real default-arg rewrite happens via
+// `collect_defaults` + `rewrite_calls` from a different path).
+// The module-level `dead_code` allow matches the pattern used in
+// `causal_trace.rs`, `package_manager.rs`, `mutation_testing.rs`,
+// etc. when those passes were dropped from the extension-passes
+// fan-out.
+#![allow(dead_code)]
+
 //! default-parameter awareness — the call site, after lowering, looks
 //! identical to a fully-explicit positional call.
 //!
