@@ -80,6 +80,11 @@ pub(crate) struct Markers<'a> {
     /// True if any `Node::InvariantStatement` appears anywhere. Used
     /// by the `loop_invariants` gate (RES-1612).
     pub has_invariant_statement: bool,
+    /// True if any `Node::WhileStatement` has a non-empty
+    /// `invariants` vector. Used together with
+    /// `has_invariant_statement` by the `verifier_loop_invariants`
+    /// gate (RES-1620).
+    pub has_while_with_invariants: bool,
     /// True if any `Node::Range` appears anywhere. Used by the
     /// `ranges` gate (RES-1612).
     pub has_range: bool,
@@ -199,6 +204,9 @@ impl<'a> Markers<'a> {
                 eventually_clauses, ..
             } if !eventually_clauses.is_empty() => {
                 m.has_actor_with_eventually = true;
+            }
+            Node::WhileStatement { invariants, .. } if !invariants.is_empty() => {
+                m.has_while_with_invariants = true;
             }
             _ => {}
         });

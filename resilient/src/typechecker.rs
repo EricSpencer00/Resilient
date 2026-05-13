@@ -3970,7 +3970,17 @@ impl TypeChecker {
                 if markers.has_invariant_statement {
                     crate::loop_invariants::check(program, source_path)?;
                 }
-                crate::verifier_loop_invariants::verify_and_capture(self, program);
+                // RES-1620 gate: the Z3 verifier walks for
+                // `WhileStatement` with non-empty `invariants` OR
+                // any `InvariantStatement` — same shape as the
+                // pass's own RES-1297 fast-reject. Markers tracks
+                // both signals from the shared whole-AST walk, so
+                // the gate is two O(1) bool reads. The non-z3
+                // build's `verify_and_capture` is already a no-op
+                // stub, so skipping the call there is also free.
+                if markers.has_invariant_statement || markers.has_while_with_invariants {
+                    crate::verifier_loop_invariants::verify_and_capture(self, program);
+                }
                 // RES-1616 gate: pass scans for `Node::TypeAlias`.
                 if markers.has_type_alias {
                     crate::type_aliases::check(program, source_path)?;
