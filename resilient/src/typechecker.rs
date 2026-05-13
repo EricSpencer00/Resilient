@@ -4192,7 +4192,14 @@ impl TypeChecker {
                 // replay only runs at runtime, not during type-check.
                 // RES-1597: `snapshot_regression::check` is a no-op stub;
                 // snapshot diffing only fires from the test harness.
-                crate::coverage_warnings::check(program, source_path)?;
+                // RES-1598 gate: pass scans for `CallExpression` whose
+                // function is the `Err` identifier (the `Result` failure
+                // constructor). `markers.call_idents` already records
+                // every such ident from the RES-1593 shared AST walk,
+                // so the gate is an O(1) HashSet lookup.
+                if markers.call_idents.contains("Err") {
+                    crate::coverage_warnings::check(program, source_path)?;
+                }
                 crate::param_destructuring::check(program, source_path)?;
                 crate::format_builtin::check(program, source_path)?;
                 // RES-1597: `struct_exhaustiveness::check` is a no-op

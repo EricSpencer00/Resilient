@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1597-drop-dead-passes",
-      "claimed_at": "2026-05-13T05:14:59Z"
+      "branch": "res-1598-gate-coverage-warnings",
+      "claimed_at": "2026-05-13T05:16:06Z"
     }
   }
 }
