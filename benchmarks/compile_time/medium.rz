@@ -1,0 +1,169 @@
+// RES-1586: medium program. Many small contracted fns, no exotic
+// syntax — only the shape the parser accepts cleanly in the
+// existing benchmark suite (see benchmarks/fib/fib.rz).
+//
+// Used as the "typical real program" data point: enough functions
+// to make the per-fn cost of the typechecker pass fan-out visible,
+// without dragging in struct / array / trait surface that varies
+// in parser support.
+
+fn abs(int x) -> int ensures result >= 0 {
+    if x < 0 { return -x; }
+    return x;
+}
+
+fn max(int a, int b) -> int ensures result >= a && result >= b {
+    if a > b { return a; }
+    return b;
+}
+
+fn min(int a, int b) -> int ensures result <= a && result <= b {
+    if a < b { return a; }
+    return b;
+}
+
+fn clamp(int x, int lo, int hi) -> int requires lo <= hi ensures result >= lo && result <= hi {
+    return min(max(x, lo), hi);
+}
+
+fn add(int a, int b) -> int requires a >= 0 && b >= 0 ensures result >= a {
+    return a + b;
+}
+
+fn sub(int a, int b) -> int requires a >= b ensures result >= 0 {
+    return a - b;
+}
+
+fn mul(int a, int b) -> int requires a >= 0 && b >= 0 ensures result >= 0 {
+    return a * b;
+}
+
+fn safe_div(int a, int b) -> int requires b != 0 {
+    return a / b;
+}
+
+fn square(int x) -> int ensures result >= 0 {
+    return x * x;
+}
+
+fn cube(int x) -> int {
+    return x * x * x;
+}
+
+fn double(int x) -> int {
+    return x + x;
+}
+
+fn triple(int x) -> int {
+    return x + x + x;
+}
+
+fn quad(int x) -> int {
+    return double(double(x));
+}
+
+fn is_positive(int x) -> bool {
+    return x > 0;
+}
+
+fn is_negative(int x) -> bool {
+    return x < 0;
+}
+
+fn is_zero(int x) -> bool {
+    return x == 0;
+}
+
+fn sign(int x) -> int ensures result >= -1 && result <= 1 {
+    if x < 0 { return -1; }
+    if x > 0 { return 1; }
+    return 0;
+}
+
+fn classify(int x) -> string {
+    if x < 0 { return "neg"; }
+    if x == 0 { return "zero"; }
+    if x < 10 { return "small"; }
+    if x < 100 { return "medium"; }
+    return "large";
+}
+
+fn sum_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let total = 0;
+    let i = 1;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    }
+    return total;
+}
+
+fn product_to(int n) -> int requires n >= 1 && n < 13 ensures result >= 1 {
+    let total = 1;
+    let i = 1;
+    while i <= n {
+        total = total * i;
+        i = i + 1;
+    }
+    return total;
+}
+
+fn count_down(int n) -> int requires n >= 0 {
+    let i = n;
+    let steps = 0;
+    while i > 0 {
+        i = i - 1;
+        steps = steps + 1;
+    }
+    return steps;
+}
+
+fn fib(int n) -> int requires n >= 0 && n < 30 ensures result >= 0 {
+    if n < 2 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn factorial(int n) -> int requires n >= 0 && n < 13 ensures result >= 1 {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+
+fn pow_int(int base, int exp) -> int requires exp >= 0 && exp < 31 {
+    let result = 1;
+    let i = 0;
+    while i < exp {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn gcd(int a, int b) -> int requires a >= 0 && b >= 0 {
+    if b == 0 { return a; }
+    return gcd(b, a - (a / b) * b);
+}
+
+fn main() {
+    println(abs(-7));
+    println(max(3, 9));
+    println(min(3, 9));
+    println(clamp(42, 0, 100));
+    println(add(5, 8));
+    println(sub(10, 3));
+    println(mul(4, 5));
+    println(safe_div(20, 4));
+    println(square(6));
+    println(cube(3));
+    println(quad(2));
+    println(sign(-5));
+    println(classify(73));
+    println(sum_to(10));
+    println(product_to(5));
+    println(count_down(7));
+    println(fib(12));
+    println(factorial(8));
+    println(pow_int(2, 10));
+    println(gcd(48, 36));
+}
+
+main();

@@ -153,14 +153,36 @@ cd /path/to/Resilient
 Output goes to `benchmarks/RESULTS.md`. The `run.sh` script also
 ensures the release binary and native Rust baselines are built.
 
+## Compile-time benchmark (RES-1586)
+
+A separate harness times the compiler tree itself — how long it takes to
+parse + run the 130 typechecker passes on Resilient programs of varying
+size, and how long `cargo check` / `cargo build` of the compiler crate
+take from cold and warm. Useful as a before/after measurement when a PR
+claims to speed up the typechecker, the Z3 verifier, or the
+`cargo build` pipeline.
+
+```bash
+./benchmarks/compile_time/run.sh                  # full run (~5 min cold)
+./benchmarks/compile_time/run.sh --skip-cold      # skip the cold cargo build
+./benchmarks/compile_time/run.sh --skip-z3        # skip --audit rows
+```
+
+Output: `benchmarks/compile_time/RESULTS.md`. Contributor infra; not a
+CI gate.
+
 ## Files
 
 ```
 benchmarks/
-├── README.md       — this file
-├── RESULTS.md      — most recent hyperfine output
-├── run.sh          — driver
-├── fib/            — recursive Fibonacci, 6 languages
-├── sum/            — array sum, 6 languages
-└── contracts/      — Resilient-only with/without requires
+├── README.md           — this file
+├── RESULTS.md          — most recent runtime hyperfine output
+├── run.sh              — runtime driver
+├── fib/                — recursive Fibonacci, 6 languages
+├── sum/                — array sum, 6 languages
+├── contracts/          — Resilient-only with/without requires
+├── jit/                — Cranelift JIT shapes (RES-168 TCO, etc.)
+├── vm/                 — bytecode VM shapes (RES-172 peephole, etc.)
+├── lex/                — logos vs hand-rolled lexer (RES-109)
+└── compile_time/       — compiler-tree build + typecheck timings (RES-1586)
 ```
