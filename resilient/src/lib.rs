@@ -4980,8 +4980,11 @@ impl Parser {
     /// and carry it on the AST so the verifier can treat it as a
     /// weaker postcondition over the function's final state.
     fn parse_function_contracts(&mut self) -> (Vec<Node>, Vec<Node>, Option<Box<Node>>) {
-        let mut requires = Vec::new();
-        let mut ensures = Vec::new();
+        // RES-1768: pre-size both to 2 — typical fns have 0-2
+        // requires + 0-2 ensures. Verified fns (the highest-volume
+        // case in `examples/` and tests) average ~1 each.
+        let mut requires = Vec::with_capacity(2);
+        let mut ensures = Vec::with_capacity(2);
         let mut recovers_to: Option<Box<Node>> = None;
         loop {
             match self.current_token {
@@ -5203,8 +5206,12 @@ impl Parser {
 
     #[allow(clippy::type_complexity)]
     fn parse_function_parameters(&mut self) -> (Vec<(String, String)>, Vec<Option<Box<Node>>>) {
-        let mut parameters = Vec::new();
-        let mut defaults: Vec<Option<Box<Node>>> = Vec::new();
+        // RES-1768: pre-size to 4 — covers the typical fn-signature
+        // case (most fns have 0-4 parameters) without doubling
+        // through 1/2/4 on growth. Same shape as the held/acts
+        // pre-size in lock_ordering (RES-1752).
+        let mut parameters = Vec::with_capacity(4);
+        let mut defaults: Vec<Option<Box<Node>>> = Vec::with_capacity(4);
 
         if self.current_token == Token::RightParen {
             self.next_token(); // Skip ')'
