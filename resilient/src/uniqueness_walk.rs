@@ -22,13 +22,22 @@
 use crate::Node;
 
 /// Pre-order traversal calling `f` on every node in the subtree, root first.
-pub(crate) fn visit(node: &Node, f: &mut impl FnMut(&Node)) {
+///
+/// RES-1603: the `<'a>` lifetime parameter ties the closure's `&Node`
+/// argument to the same lifetime as the input subtree. This lets
+/// callers borrow sub-data (`&String` → `&'a str`, slices, etc.)
+/// directly into structures that outlive the closure body — the
+/// `pass_gate::Markers::scan` shared pre-scan is the first
+/// consumer. Existing callers that pass closures whose body is
+/// lifetime-agnostic (`|n| match n { ... }`) are unaffected because
+/// the closure trait was inferred to accept any lifetime regardless.
+pub(crate) fn visit<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     f(node);
     walk_children(node, f);
 }
 
 /// Apply `f` to each direct child of `node`, recursively descending.
-pub(crate) fn walk_children(node: &Node, f: &mut impl FnMut(&Node)) {
+pub(crate) fn walk_children<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     match node {
         Node::Program(items) => {
             for s in items {

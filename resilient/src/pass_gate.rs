@@ -40,73 +40,80 @@ use std::collections::HashSet;
 /// `call_idents`) back the RES-1593 gates on deep-scan passes that
 /// previously each ran their own early-terminating `any_node` walk.
 #[derive(Debug, Default)]
-pub(crate) struct Markers {
+pub(crate) struct Markers<'a> {
     /// Names of every `Node::Function` in the program (top-level and
     /// nested via the standard `uniqueness_walk::visit` descent).
-    pub fn_names: HashSet<String>,
+    pub fn_names: HashSet<&'a str>,
     /// Distinct parameter types across every `Node::Function`'s
     /// parameter list.
-    pub param_types: HashSet<String>,
+    pub param_types: HashSet<&'a str>,
     /// Distinct parameter *names* across every `Node::Function`'s
     /// parameter list. Used by the `numeric_units` gate, which seeds
     /// its units map from both let bindings and fn parameters.
-    pub param_names: HashSet<String>,
+    pub param_names: HashSet<&'a str>,
     /// Names of every `Node::LetStatement` binding anywhere in the
     /// program. Used by the `saturation_required` and `numeric_units`
     /// gates.
-    pub let_names: HashSet<String>,
+    pub let_names: HashSet<&'a str>,
     /// Field names appearing on the left of `Node::FieldAssignment`
     /// (`x.f = …`). Used by the `audit_log_required` gate.
-    pub field_names_assigned: HashSet<String>,
+    pub field_names_assigned: HashSet<&'a str>,
     /// Field names appearing on `Node::FieldAccess` (`x.f`). Used by
     /// the `age_bounded_data` gate.
-    pub field_names_accessed: HashSet<String>,
+    pub field_names_accessed: HashSet<&'a str>,
     /// Identifier names that appear as the *function* of a
     /// `Node::CallExpression`. Used by the `epoch_ordering` and
     /// `toctou_guard` gates.
-    pub call_idents: HashSet<String>,
+    pub call_idents: HashSet<&'a str>,
     /// Trait names from `Node::ImplBlock { trait_name: Some(...), .. }`.
     /// Used by the `iterator_protocol` gate (matches `"Iterator"`).
-    pub impl_trait_names: HashSet<String>,
+    pub impl_trait_names: HashSet<&'a str>,
 }
 
-impl Markers {
+impl<'a> Markers<'a> {
     /// One whole-AST walk via `uniqueness_walk::visit`. Collects
     /// every marker source the gates below consult. Cost: O(N) for
     /// an N-node AST, paid once per type-check; saves up to six
     /// early-terminating `any_node` walks in the deep-scan passes
     /// below (RES-1593) plus the top-level walks (RES-1585 / 1590).
-    pub(crate) fn scan(program: &Node) -> Self {
+    ///
+    /// RES-1603: the `HashSet<&'a str>` shape borrows directly from
+    /// the AST, so the per-marker insertions are pointer-and-length
+    /// pairs instead of `String` allocations. For a typical program
+    /// with ~500 markers across the seven sets, that's ~500
+    /// `String::clone()` + matching free operations saved per
+    /// type-check.
+    pub(crate) fn scan(program: &'a Node) -> Self {
         let mut m = Markers::default();
         crate::uniqueness_walk::visit(program, &mut |n| match n {
             Node::Function {
                 name, parameters, ..
             } => {
-                m.fn_names.insert(name.clone());
+                m.fn_names.insert(name.as_str());
                 for (ty, pname) in parameters {
-                    m.param_types.insert(ty.clone());
-                    m.param_names.insert(pname.clone());
+                    m.param_types.insert(ty.as_str());
+                    m.param_names.insert(pname.as_str());
                 }
             }
             Node::LetStatement { name, .. } => {
-                m.let_names.insert(name.clone());
+                m.let_names.insert(name.as_str());
             }
             Node::FieldAssignment { field, .. } => {
-                m.field_names_assigned.insert(field.clone());
+                m.field_names_assigned.insert(field.as_str());
             }
             Node::FieldAccess { field, .. } => {
-                m.field_names_accessed.insert(field.clone());
+                m.field_names_accessed.insert(field.as_str());
             }
             Node::CallExpression { function, .. } => {
                 if let Node::Identifier { name, .. } = function.as_ref() {
-                    m.call_idents.insert(name.clone());
+                    m.call_idents.insert(name.as_str());
                 }
             }
             Node::ImplBlock {
                 trait_name: Some(t),
                 ..
             } => {
-                m.impl_trait_names.insert(t.clone());
+                m.impl_trait_names.insert(t.as_str());
             }
             _ => {}
         });
@@ -323,17 +330,19 @@ mod tests {
 
     #[test]
     fn scan_on_non_program_node_is_empty() {
-        let m = Markers::scan(&Node::Block {
+        let node = Node::Block {
             stmts: Vec::new(),
             span: span::Span::default(),
-        });
+        };
+        let m = Markers::scan(&node);
         assert!(m.fn_names.is_empty());
         assert!(m.param_types.is_empty());
     }
 
     #[test]
     fn scan_on_empty_program_is_empty() {
-        let m = Markers::scan(&Node::Program(Vec::new()));
+        let program = Node::Program(Vec::new());
+        let m = Markers::scan(&program);
         assert!(m.fn_names.is_empty());
         assert!(m.param_types.is_empty());
     }
