@@ -883,7 +883,9 @@ fn struct_literal_match_arm_key(pat: &Pattern) -> Option<String> {
     if *has_rest || fields.is_empty() {
         return None;
     }
-    let mut parts = Vec::new();
+    // RES-1774: pre-size to fields.len() — one push per field on the
+    // happy path (loop returns None early on any non-literal).
+    let mut parts = Vec::with_capacity(fields.len());
     for (fname, sub) in fields {
         match sub.as_ref() {
             Pattern::Literal(Node::IntegerLiteral { value, .. }) => {
