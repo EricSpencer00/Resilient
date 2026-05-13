@@ -34,6 +34,21 @@ pub enum FormatSegment {
 /// error. Previously the parser silently emitted an empty
 /// `Placeholder("")`, masking malformed templates.
 pub fn parse_template(s: &str) -> Result<Vec<FormatSegment>, String> {
+    // RES-1816: fast-reject for templates with no placeholders and no
+    // `}}` escape. The char-by-char loop below would walk every byte
+    // only to deposit them all into a single trailing Literal. Format
+    // strings without any `{` are extremely common (logging,
+    // diagnostics, hard-coded messages); `fmt_validation` calls this
+    // on every `format(...)` at typecheck time. The contains-`{` check
+    // is one O(N) byte scan, far cheaper than the full chars-peekable
+    // walk that follows on the slow path.
+    if !s.contains('{') && !s.contains("}}") {
+        return Ok(if s.is_empty() {
+            Vec::new()
+        } else {
+            vec![FormatSegment::Literal(s.to_string())]
+        });
+    }
     // RES-1778: pre-size to (placeholder-count * 2 + 1) — at most one
     // Literal per `{...}` placeholder plus a trailing Literal, so this
     // matches the typical 1-3-placeholder shape. fmt_validation calls
