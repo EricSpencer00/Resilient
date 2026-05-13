@@ -1132,10 +1132,14 @@ fn run_direct(
     last_pc: &mut (usize, usize),
     overflow_mode: OverflowMode,
 ) -> Result<Value, VmError> {
+    // RES-1830: pre-size `locals` to 32 — mirrors RES-1814 for the
+    // tree-walker `run_inner` path. `run_direct` is the second VM
+    // entry point and pays the same 0→4→… doubling chain without
+    // pre-sizing.
     let mut state = VmState {
         program,
         stack: Vec::with_capacity(64),
-        locals: Vec::new(),
+        locals: Vec::with_capacity(32),
         frames: Vec::with_capacity(16),
         overflow_mode,
     };
