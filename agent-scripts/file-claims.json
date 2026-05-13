@@ -331,6 +331,10 @@
     "resilient/src/format_builtin.rs": {
       "branch": "res-1816-format-template-fast-reject",
       "claimed_at": "2026-05-13T13:34:15Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-1818-lexer-string-fast-reject",
+      "claimed_at": "2026-05-13T13:40:39Z"
     }
   }
 }
