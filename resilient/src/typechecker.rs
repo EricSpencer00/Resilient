@@ -4042,7 +4042,16 @@ impl TypeChecker {
                 check_program_effects(statements, source_path)?;
 
                 // RES-385: single-use enforcement for linear types.
-                crate::linear::check_linear_usage(program, source_path)?;
+                // RES-1669 gate: the pass walks the whole program looking
+                // for `linear `-prefixed Function param types or
+                // LetStatement type_annots; Markers computes that signal
+                // during the shared whole-AST scan, so skip the dedicated
+                // walk when no linear binding exists. The pass's own
+                // RES-1294 fast-reject stays in place for callers that
+                // bypass Markers (LSP per-document path).
+                if markers.has_linear_binding {
+                    crate::linear::check_linear_usage(program, source_path)?;
+                }
 
                 // RES-1585 / RES-1627: `markers` was computed above
                 // (before the actor-invariant pre-check) so the same
