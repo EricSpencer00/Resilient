@@ -4079,10 +4079,14 @@ impl Parser {
             self.next_token(); // skip `{`
         }
 
-        let mut state_fields: Vec<(String, String, Node)> = Vec::new();
-        let mut always_clauses: Vec<Node> = Vec::new();
-        let mut eventually_clauses: Vec<EventuallyClause> = Vec::new();
-        let mut receive_handlers: Vec<ReceiveHandler> = Vec::new();
+        // RES-1772: pre-size each to 4 — typical actor has 1-3
+        // state fields, 1-2 always clauses, 0-1 eventually clauses,
+        // 1-4 receive handlers. Saves the 0→4 doubling chain on
+        // every ActorDecl parse.
+        let mut state_fields: Vec<(String, String, Node)> = Vec::with_capacity(4);
+        let mut always_clauses: Vec<Node> = Vec::with_capacity(4);
+        let mut eventually_clauses: Vec<EventuallyClause> = Vec::with_capacity(4);
+        let mut receive_handlers: Vec<ReceiveHandler> = Vec::with_capacity(4);
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             match &self.current_token {
@@ -5128,8 +5132,10 @@ impl Parser {
     /// to `names[i]`. For `<T, U: Comparable>`, the result is
     /// `(["T", "U"], [vec![], vec!["Comparable"]])`.
     fn parse_optional_type_params(&mut self) -> (Vec<String>, Vec<Vec<String>>) {
-        let mut names = Vec::new();
-        let mut bounds: Vec<Vec<String>> = Vec::new();
+        // RES-1772: pre-size to 2 — most generic fns have 1-2 type
+        // params (`<T>` or `<K, V>`). Saves the 0→4 chain.
+        let mut names = Vec::with_capacity(2);
+        let mut bounds: Vec<Vec<String>> = Vec::with_capacity(2);
         if self.current_token != Token::Less {
             return (names, bounds);
         }
@@ -5301,7 +5307,11 @@ impl Parser {
     fn parse_block_statement(&mut self) -> Node {
         // RES-087: capture the `{` token's span before advancing.
         let brace_span = self.span_at_current();
-        let mut statements = Vec::new();
+        // RES-1772: pre-size to 4 — typical block has 2-5 statements.
+        // Called recursively for every brace-scope in the program,
+        // so the 0→4 doubling chain was paid per block. Same fixed-
+        // capacity shape as RES-1768.
+        let mut statements = Vec::with_capacity(4);
 
         self.next_token(); // Skip '{'
 

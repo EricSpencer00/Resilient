@@ -156,10 +156,6 @@
       "branch": "res-1538-termination-fn-info-borrow",
       "claimed_at": "2026-05-12T15:15:14Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-1659-cli-persistent-cache",
-      "claimed_at": "2026-05-13T07:09:45Z"
-    },
     "resilient/src/lock_ordering.rs": {
       "branch": "res-1752-lock-ordering-presize",
       "claimed_at": "2026-05-13T11:18:18Z"
@@ -295,6 +291,10 @@
     "resilient/src/typechecker.rs": {
       "branch": "res-1766-typechecker-hot-presize",
       "claimed_at": "2026-05-13T11:55:37Z"
+    },
+    "resilient/src/lib.rs": {
+      "branch": "res-1772-parser-block-presize",
+      "claimed_at": "2026-05-13T12:02:47Z"
     }
   }
 }
