@@ -579,6 +579,67 @@ fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
             b';'.hash(h);
             hash_node_spanless(expr, h);
         }
+        // RES-1649: four more high-value variants.
+        Node::Quantifier {
+            kind,
+            var,
+            range,
+            body,
+            ..
+        } => {
+            b'Q'.hash(h);
+            // QuantifierKind doesn't derive Hash; match it.
+            match kind {
+                crate::quantifiers::QuantifierKind::Forall => b'A'.hash(h),
+                crate::quantifiers::QuantifierKind::Exists => b'E'.hash(h),
+            }
+            var.hash(h);
+            // QuantRange recurses into Node sub-trees.
+            match range {
+                crate::quantifiers::QuantRange::Range { lo, hi } => {
+                    b'R'.hash(h);
+                    hash_node_spanless(lo, h);
+                    hash_node_spanless(hi, h);
+                }
+                crate::quantifiers::QuantRange::Iterable(it) => {
+                    b'I'.hash(h);
+                    hash_node_spanless(it, h);
+                }
+            }
+            hash_node_spanless(body, h);
+        }
+        Node::InvariantStatement { expr, .. } => {
+            b'v'.hash(h);
+            hash_node_spanless(expr, h);
+        }
+        Node::ImplBlock {
+            trait_name,
+            struct_name,
+            methods,
+            ..
+        } => {
+            b'b'.hash(h);
+            match trait_name {
+                Some(t) => {
+                    b'T'.hash(h);
+                    t.hash(h);
+                }
+                None => b'N'.hash(h),
+            }
+            struct_name.hash(h);
+            (methods.len() as u32).hash(h);
+            for m in methods {
+                hash_node_spanless(m, h);
+            }
+        }
+        Node::ModuleDecl { name, body, .. } => {
+            b'm'.hash(h);
+            name.hash(h);
+            (body.len() as u32).hash(h);
+            for n in body {
+                hash_node_spanless(n, h);
+            }
+        }
         // RES-1645: Match — sub-hashes Pattern arms via
         // `hash_pattern_spanless` so pattern-shaped obligations
         // dedupe across sites just like the rest.

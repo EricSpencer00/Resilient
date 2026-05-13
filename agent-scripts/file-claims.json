@@ -261,8 +261,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1647-five-more-variants",
-      "claimed_at": "2026-05-13T06:53:00Z"
+      "branch": "res-1649-four-more-variants",
+      "claimed_at": "2026-05-13T06:56:16Z"
     }
   }
 }
