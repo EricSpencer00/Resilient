@@ -26413,6 +26413,34 @@ fn print_verification_audit(stats: &typechecker::VerificationStats) {
         }
     }
 
+    // RES-1643: Z3 proof-cache hit rate. Sourced from
+    // `verifier_z3::cache_stats()`. Visible only with `--features z3`
+    // (the cache itself is z3-gated); skip the section when every
+    // counter is zero so the audit stays tidy.
+    #[cfg(feature = "z3")]
+    {
+        let cs = crate::verifier_z3::cache_stats();
+        let v_total = cs.verdict_hits + cs.verdict_misses;
+        let t_total = cs.tautology_hits + cs.tautology_misses;
+        let b_total = cs.bv_hits + cs.bv_misses;
+        if v_total > 0 || t_total > 0 || b_total > 0 {
+            println!();
+            println!("  Z3 proof cache (hit / total):");
+            let print_row = |label: &str, hits: u64, total: u64| {
+                if total > 0 {
+                    let pct = (hits as f64 / total as f64) * 100.0;
+                    println!(
+                        "    {:<24} \x1B[32m{} / {}\x1B[0m  ({:.0}%)",
+                        label, hits, total, pct
+                    );
+                }
+            };
+            print_row("verdict path:", cs.verdict_hits, v_total);
+            print_row("tautology path:", cs.tautology_hits, t_total);
+            print_row("BV path:", cs.bv_hits, b_total);
+        }
+    }
+
     // RES-192: per-fn inferred effect set. Sorted so the output
     // is stable across runs; color green for pure, yellow for
     // IO. Skips the table entirely when no user fn was seen
