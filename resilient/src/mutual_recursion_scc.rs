@@ -21,11 +21,17 @@ pub struct CallGraph {
 impl CallGraph {
     /// Build a call graph by walking all function definitions in the program.
     pub fn build(program: &Node) -> Self {
-        let mut graph = HashMap::new();
         let Node::Program(stmts) = program else {
-            return CallGraph { graph };
+            return CallGraph {
+                graph: HashMap::new(),
+            };
         };
 
+        // RES-1760: pre-size to stmts.len() — `build_graph_for_node`
+        // walks top-level statements and inserts one entry per
+        // function definition. Upper bound is stmts.len(). Same
+        // pattern as the call-graph pre-size series.
+        let mut graph = HashMap::with_capacity(stmts.len());
         for stmt in stmts {
             build_graph_for_node(&stmt.node, &mut graph);
         }

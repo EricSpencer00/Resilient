@@ -128,10 +128,6 @@
       "branch": "res-1534-recovery-checker-borrow",
       "claimed_at": "2026-05-12T14:50:00Z"
     },
-    "resilient/src/mutual_recursion_scc.rs": {
-      "branch": "res-1514-scc-dfs-borrow",
-      "claimed_at": "2026-05-12T13:13:18Z"
-    },
     "resilient/src/imports.rs": {
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
@@ -231,6 +227,18 @@
     "resilient/src/lean_spec.rs": {
       "branch": "res-1756-program-collect-presize",
       "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/region_inference.rs": {
+      "branch": "res-1760-callgraph-presize",
+      "claimed_at": "2026-05-13T11:38:36Z"
+    },
+    "resilient/src/mutual_recursion_scc.rs": {
+      "branch": "res-1760-callgraph-presize",
+      "claimed_at": "2026-05-13T11:38:36Z"
+    },
+    "resilient/src/set_result_option.rs": {
+      "branch": "res-1760-callgraph-presize",
+      "claimed_at": "2026-05-13T11:38:36Z"
     }
   }
 }

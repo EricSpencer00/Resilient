@@ -29,7 +29,11 @@ pub(crate) fn builtin_set_is_empty(args: &[Value]) -> RResult<Value> {
 pub(crate) fn builtin_set_from_array(args: &[Value]) -> RResult<Value> {
     match args {
         [Value::Array(items)] => {
-            let mut s = HashSet::new();
+            // RES-1760: pre-size to items.len() — upper bound (duplicates
+            // collapse, so the final size may be smaller, but eliminating
+            // the 0→4→8→… doubling for arrays > 4 elements is a real
+            // win for hot runtime use.
+            let mut s = HashSet::with_capacity(items.len());
             for v in items {
                 let k = MapKey::from_value(v)?;
                 s.insert(k);
