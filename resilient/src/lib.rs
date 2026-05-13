@@ -4762,7 +4762,9 @@ impl Parser {
                 // sites.
                 if self.current_token == Token::Less {
                     self.next_token(); // consume `<`
-                    let mut params: Vec<String> = Vec::new();
+                    // RES-1780: pre-size to 2 — most generic types have
+                    // 1-2 params (`Vec<T>`, `Result<T, E>`).
+                    let mut params: Vec<String> = Vec::with_capacity(2);
                     while self.current_token != Token::Greater && self.current_token != Token::Eof {
                         let p = self.parse_type_annotation(ctx)?;
                         params.push(p);
@@ -4886,7 +4888,9 @@ impl Parser {
                     return None;
                 }
                 self.next_token(); // skip `(`
-                let mut params: Vec<String> = Vec::new();
+                // RES-1780: pre-size to 2 — `fn(T, U)` type annotations
+                // typically have 0-3 params.
+                let mut params: Vec<String> = Vec::with_capacity(2);
                 while self.current_token != Token::RightParen && self.current_token != Token::Eof {
                     let p = self.parse_type_annotation(ctx)?;
                     params.push(p);
@@ -7751,7 +7755,9 @@ impl Parser {
                     let access = if self.peek_token == Token::LeftParen {
                         self.next_token(); // move to `(`
                         self.next_token(); // move past `(` into args
-                        let mut args: Vec<Node> = Vec::new();
+                        // RES-1780: pre-size to 4 — method-call args
+                        // typically 0-4. Hot at parse time.
+                        let mut args: Vec<Node> = Vec::with_capacity(4);
                         if self.current_token != Token::RightParen {
                             if let Some(first) = self.parse_expression(0) {
                                 args.push(first);
@@ -7858,7 +7864,9 @@ impl Parser {
     }
 
     fn parse_call_arguments(&mut self) -> Vec<Node> {
-        let mut args = Vec::new();
+        // RES-1780: pre-size to 4 — most call sites pass 0-4 args.
+        // Call expressions are extremely hot at parse time.
+        let mut args = Vec::with_capacity(4);
 
         if self.peek_token == Token::RightParen {
             self.next_token();
@@ -8009,7 +8017,8 @@ impl Parser {
         }
         self.next_token(); // skip '{'
 
-        let mut fields = Vec::new();
+        // RES-1780: pre-size to 4 — typical struct has 2-8 fields.
+        let mut fields = Vec::with_capacity(4);
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             // RES-157a: struct fields may now carry `[T; N]`
             // annotations too. Helper consumes the whole type.
@@ -8058,7 +8067,9 @@ impl Parser {
     fn parse_tuple_struct_decl_tail(&mut self, name: String, repr_c: bool) -> Node {
         debug_assert!(matches!(self.current_token, Token::LeftParen));
         self.next_token(); // skip `(`
-        let mut fields: Vec<(String, String)> = Vec::new();
+        // RES-1780: pre-size to 4 — tuple structs typically have
+        // 1-4 positional fields.
+        let mut fields: Vec<(String, String)> = Vec::with_capacity(4);
         let mut idx: usize = 0;
         while self.current_token != Token::RightParen && self.current_token != Token::Eof {
             let ty = match self.parse_type_annotation("for tuple-struct field") {
