@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1700-presize-persistent-fastpath",
-      "claimed_at": "2026-05-13T09:29:14Z"
+      "branch": "res-1702-prove-bv-pushpop",
+      "claimed_at": "2026-05-13T09:33:27Z"
     }
   }
 }

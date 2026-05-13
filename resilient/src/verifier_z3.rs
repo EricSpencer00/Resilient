@@ -1678,30 +1678,41 @@ fn prove_bv_in(
         }
     };
 
-    // Tautology check.
+    // RES-1702: share one Solver across the tautology + contradiction
+    // checks via push/pop scopes. Same shape as RES-1696 for the LIA
+    // path. Saves one `Solver::new()` allocation + one `apply_timeout`
+    // setup per BV prove call; Z3's incremental solver can also reuse
+    // learned facts across the push/pop boundary.
     let solver = z3::Solver::new(ctx);
     apply_timeout(&solver);
+
+    // Tautology check.
     let negated = formula.not();
+    solver.push();
     solver.assert(&negated);
     let check = solver.check();
     let tautology = matches!(check, z3::SatResult::Unsat);
     let timed_out = matches!(check, z3::SatResult::Unknown);
 
     if tautology {
+        // Don't bother popping — function returns and the solver is
+        // dropped anyway.
         return (Some(true), None, None, false);
     }
 
     let counterexample = if matches!(check, z3::SatResult::Sat) {
+        // Extract counterexample BEFORE pop — model is scope-bound.
         extract_counterexample_bv(ctx, &solver, expr, bindings)
     } else {
         None
     };
+    solver.pop(1);
 
     // Contradiction check.
-    let solver2 = z3::Solver::new(ctx);
-    apply_timeout(&solver2);
-    solver2.assert(&formula);
-    let contradiction = matches!(solver2.check(), z3::SatResult::Unsat);
+    solver.push();
+    solver.assert(&formula);
+    let contradiction = matches!(solver.check(), z3::SatResult::Unsat);
+    solver.pop(1);
 
     if contradiction {
         return (Some(false), None, counterexample, false);
