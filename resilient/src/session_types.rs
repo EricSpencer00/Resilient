@@ -38,7 +38,10 @@ static SPECS: LazyLock<RwLock<HashMap<String, SessionSpec>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn parse_protocol(s: &str) -> Vec<SessionOp> {
-    let mut out = Vec::new();
+    // RES-1764: pre-size to (dot-count + 1) — that's the exact number
+    // of segments `split('.')` yields. At most one push per segment;
+    // sometimes fewer when a segment fails to match any prefix.
+    let mut out = Vec::with_capacity(s.matches('.').count() + 1);
     for raw in s.split('.') {
         let op = raw.trim();
         if op == "close" {
@@ -58,7 +61,9 @@ pub fn parse_protocol(s: &str) -> Vec<SessionOp> {
 
 pub fn collect() -> Vec<SessionSpec> {
     let attrs = crate::feature_attrs::find_kind("session");
-    let mut out = Vec::new();
+    // RES-1764: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut proto_str = String::new();
         for chunk in rec.args.split(',') {

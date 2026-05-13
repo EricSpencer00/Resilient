@@ -27,7 +27,9 @@ static MACROS: LazyLock<RwLock<HashMap<String, MacroDef>>> =
 
 pub fn collect() -> Vec<MacroDef> {
     let attrs = crate::feature_attrs::find_kind("macro");
-    let mut out = Vec::new();
+    // RES-1764: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut pattern = String::new();
         let mut expansion = String::new();
