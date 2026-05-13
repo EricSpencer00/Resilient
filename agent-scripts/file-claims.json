@@ -264,9 +264,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1712-counterexample-presize",
-      "claimed_at": "2026-05-13T09:59:03Z"
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-1714-presize-token-vec",
+      "claimed_at": "2026-05-13T10:04:23Z"
     }
   }
 }
