@@ -264,9 +264,13 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1623-drop-4-more-dead",
-      "claimed_at": "2026-05-13T05:59:01Z"
+    "benchmarks/compile_time/run.sh": {
+      "branch": "res-1625-bench-typecheck-delta",
+      "claimed_at": "2026-05-13T06:03:38Z"
+    },
+    "benchmarks/compile_time/RESULTS.md": {
+      "branch": "res-1625-bench-typecheck-delta",
+      "claimed_at": "2026-05-13T06:03:38Z"
     }
   }
 }

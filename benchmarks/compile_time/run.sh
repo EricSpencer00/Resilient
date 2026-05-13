@@ -85,6 +85,12 @@ OUT=benchmarks/compile_time/RESULTS.md
     echo
     echo "Hyperfine settings: 2 warmup runs, 5 measured runs per row."
     echo
+    echo "**Typecheck delta** = section 1 mean minus section 1b mean."
+    echo "That's the wall-time cost of the 130-pass typechecker"
+    echo "fan-out for each input. The RES-1585 / 1590 / 1593 / 1597"
+    echo "/ 1599 / 1605 / 1607 / 1611 / 1612 / 1615 / 1616 / 1619 /"
+    echo "1620 / 1623 PR series is what shows up here per-PR."
+    echo
 } > "$OUT"
 
 bench() {
@@ -105,6 +111,20 @@ bench "typecheck + interpret (default features)" \
     --command-name "small.rz"  "$RZ $SMALL" \
     --command-name "medium.rz" "$RZ $MEDIUM" \
     --command-name "large.rz"  "$RZ $LARGE"
+
+# Section 1b: --no-typecheck baseline. Same parse + interpret path,
+# minus the EXTENSION_PASSES fan-out. The delta versus Section 1
+# isolates the typechecker's contribution — which is what the
+# RES-1585 / 1590 / 1593 / 1597 / 1599 / 1605 / 1607 / 1611 / 1612
+# / 1615 / 1616 / 1619 / 1620 / 1623 PR series has been optimising.
+# For programs heavy on interpretation (large.rz runs ackermann,
+# fib, etc.) the typecheck fraction can be a single-digit ms slice
+# of total wall time, which is why the typecheck-only delta is the
+# right number to track per PR.
+bench "interpret-only (--no-typecheck) baseline" \
+    --command-name "small.rz  --no-typecheck"  "$RZ --no-typecheck $SMALL" \
+    --command-name "medium.rz --no-typecheck"  "$RZ --no-typecheck $MEDIUM" \
+    --command-name "large.rz  --no-typecheck"  "$RZ --no-typecheck $LARGE"
 
 # Section 2: with --audit. Adds Z3 discharge attempts on every
 # contracted call site. The small.rz delta vs Section 1 isolates
