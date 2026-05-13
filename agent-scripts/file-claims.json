@@ -228,17 +228,29 @@
       "branch": "res-1756-program-collect-presize",
       "claimed_at": "2026-05-13T11:30:51Z"
     },
+    "resilient/src/autopilot.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
+    },
+    "resilient/src/iterator_protocol.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
+    },
+    "resilient/src/semver_behavior.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
+    },
     "resilient/src/region_inference.rs": {
       "branch": "res-1760-callgraph-presize",
-      "claimed_at": "2026-05-13T11:38:36Z"
+      "claimed_at": "2026-05-13T11:42:08Z"
     },
     "resilient/src/mutual_recursion_scc.rs": {
       "branch": "res-1760-callgraph-presize",
-      "claimed_at": "2026-05-13T11:38:36Z"
+      "claimed_at": "2026-05-13T11:42:08Z"
     },
     "resilient/src/set_result_option.rs": {
       "branch": "res-1760-callgraph-presize",
-      "claimed_at": "2026-05-13T11:38:36Z"
+      "claimed_at": "2026-05-13T11:42:08Z"
     }
   }
 }
