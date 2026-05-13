@@ -5155,7 +5155,9 @@ impl Parser {
                     self.next_token();
                     // RES-290: optional `: Trait1 + Trait2` bound list.
                     // RES-775: Also supports `: effect` for effect polymorphism.
-                    let mut this_bounds: Vec<String> = Vec::new();
+                    // RES-1806: pre-size to 2 — bound lists typically
+                    // have 1-2 traits per type param.
+                    let mut this_bounds: Vec<String> = Vec::with_capacity(2);
                     if self.current_token == Token::Colon {
                         self.next_token(); // skip `:`
                         loop {
@@ -7887,7 +7889,9 @@ impl Parser {
         // and the names used so far so we can reject named-then-positional
         // and duplicate-name cases at parse time with a clean diagnostic.
         let mut seen_named = false;
-        let mut used_names: Vec<String> = Vec::new();
+        // RES-1806: pre-size to 4 — used_names mirrors call args (most
+        // calls 0-4 args).
+        let mut used_names: Vec<String> = Vec::with_capacity(4);
         if let Some(node) = self.parse_one_call_argument(&mut seen_named, &mut used_names) {
             args.push(node);
         } else {
@@ -8279,7 +8283,9 @@ impl Parser {
 
                     // Optional `ensures <expr>;` clauses between the
                     // signature and the body. Zero or more.
-                    let mut ensures: Vec<Node> = Vec::new();
+                    // RES-1806: pre-size to 2 — handler ensures typically
+                    // 0-2 clauses, mirroring fn-contract pre-size.
+                    let mut ensures: Vec<Node> = Vec::with_capacity(2);
                     while self.current_token == Token::Ensures {
                         self.next_token(); // skip 'ensures'
                         let clause = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
@@ -8789,7 +8795,9 @@ impl Parser {
         let span = self.span_at_current();
         debug_assert!(matches!(self.current_token, Token::LeftParen));
         self.next_token(); // skip `(`
-        let mut fields: Vec<(String, Node)> = Vec::new();
+        // RES-1806: pre-size to 4 — tuple-struct constructors typically
+        // pass 1-4 positional values.
+        let mut fields: Vec<(String, Node)> = Vec::with_capacity(4);
         let mut idx: usize = 0;
         if self.current_token == Token::RightParen {
             // empty body — `new Unit()` style.
@@ -9039,7 +9047,9 @@ impl Parser {
     /// closing `)`.
     fn parse_tuple_struct_pattern(&mut self, name: String) -> Pattern {
         self.next_token(); // current = `(`
-        let mut fields: Vec<Pattern> = Vec::new();
+        // RES-1806: pre-size to 4 — tuple-struct patterns destructure
+        // 1-4 positional sub-patterns.
+        let mut fields: Vec<Pattern> = Vec::with_capacity(4);
         if self.peek_token == Token::RightParen {
             self.next_token(); // current = `)`
             return Pattern::TupleStruct { name, fields };
