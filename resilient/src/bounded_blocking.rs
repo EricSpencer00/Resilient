@@ -65,9 +65,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // that can't bind the AST lifetime (same limitation as
     // RES-1509 for `isr_call_graph::collect_callees`). Mirror of
     // RES-1495 / RES-1500 / RES-1503 / RES-1507 / RES-1509.
-    let mut callees: HashMap<&str, Vec<String>> = HashMap::new();
-    let mut blocking_calls: HashMap<&str, usize> = HashMap::new();
-    let mut decls: Vec<&str> = Vec::new();
+    // RES-1746: pre-size the three call-graph collections to stmts.len()
+    // (upper bound). Same shape as RES-1742 / RES-1744 for the
+    // sibling call-graph passes.
+    let mut callees: HashMap<&str, Vec<String>> = HashMap::with_capacity(stmts.len());
+    let mut blocking_calls: HashMap<&str, usize> = HashMap::with_capacity(stmts.len());
+    let mut decls: Vec<&str> = Vec::with_capacity(stmts.len());
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
             decls.push(name.as_str());
