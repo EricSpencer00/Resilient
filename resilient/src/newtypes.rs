@@ -33,7 +33,9 @@ fn collect_newtypes_from_program(program: &Node) -> HashMap<String, String> {
     let Node::Program(statements) = program else {
         return HashMap::new();
     };
-    let mut map = HashMap::new();
+    // RES-1764: pre-size to statements.len() — at most one insert per
+    // top-level NewtypeDecl, upper-bounded by the statement count.
+    let mut map = HashMap::with_capacity(statements.len());
     for spanned in statements {
         if let Node::NewtypeDecl {
             name, base_type, ..

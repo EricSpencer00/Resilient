@@ -106,7 +106,9 @@ pub fn lower(program: &Node) -> Node {
 // pure overhead, paid even when no call site actually instantiated
 // the fn. The borrow keeps every reference inside the `stmts` slice.
 fn collect_generic_fns(stmts: &[span::Spanned<Node>]) -> HashMap<&str, &Node> {
-    let mut map = HashMap::new();
+    // RES-1764: pre-size to stmts.len() — at most one insert per
+    // top-level statement (when it's a generic Function). Upper bound.
+    let mut map = HashMap::with_capacity(stmts.len());
     for spanned in stmts {
         if let Node::Function {
             name, type_params, ..
