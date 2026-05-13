@@ -533,6 +533,52 @@ fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
                 hash_node_spanless(fval, h);
             }
         }
+        // RES-1647: five more statement variants — same
+        // discriminator + non-span-fields shape as RES-1639's batch.
+        Node::Const { name, value, .. } => {
+            b'c'.hash(h);
+            name.hash(h);
+            hash_node_spanless(value, h);
+        }
+        Node::StaticLet { name, value, .. } => {
+            b'$'.hash(h);
+            name.hash(h);
+            hash_node_spanless(value, h);
+        }
+        Node::WhileStatement {
+            condition,
+            body,
+            invariants,
+            ..
+        } => {
+            b'w'.hash(h);
+            hash_node_spanless(condition, h);
+            hash_node_spanless(body, h);
+            (invariants.len() as u32).hash(h);
+            for inv in invariants {
+                hash_node_spanless(inv, h);
+            }
+        }
+        Node::ForInStatement {
+            name,
+            iterable,
+            body,
+            invariants,
+            ..
+        } => {
+            b'f'.hash(h);
+            name.hash(h);
+            hash_node_spanless(iterable, h);
+            hash_node_spanless(body, h);
+            (invariants.len() as u32).hash(h);
+            for inv in invariants {
+                hash_node_spanless(inv, h);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            b';'.hash(h);
+            hash_node_spanless(expr, h);
+        }
         // RES-1645: Match — sub-hashes Pattern arms via
         // `hash_pattern_spanless` so pattern-shaped obligations
         // dedupe across sites just like the rest.
