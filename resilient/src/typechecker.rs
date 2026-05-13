@@ -4185,7 +4185,14 @@ impl TypeChecker {
                 crate::mutation_testing::check(program, source_path)?;
                 crate::causal_trace::check(program, source_path)?;
                 crate::snapshot_regression::check(program, source_path)?;
-                crate::coverage_warnings::check(program, source_path)?;
+                // RES-1598 gate: pass scans for `CallExpression` whose
+                // function is the `Err` identifier (the `Result` failure
+                // constructor). `markers.call_idents` already records
+                // every such ident from the RES-1593 shared AST walk,
+                // so the gate is an O(1) HashSet lookup.
+                if markers.call_idents.contains("Err") {
+                    crate::coverage_warnings::check(program, source_path)?;
+                }
                 crate::param_destructuring::check(program, source_path)?;
                 crate::format_builtin::check(program, source_path)?;
                 crate::struct_exhaustiveness::check(program, source_path)?;
