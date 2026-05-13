@@ -840,11 +840,15 @@ fn prove_with_axioms_and_timeout_in(
     // for the tuple element.
     let mut len_args: BTreeSet<&str> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
+    // RES-1651: lift the zero constant out of the per-arg map closure.
+    // Z3 `Int::from_i64(ctx, 0)` allocates a new AST node each call —
+    // sharing one across all `len_X >= 0` axioms saves N-1 constructions
+    // per Z3 prove on the cache-miss path.
+    let zero = Int::from_i64(ctx, 0);
     let len_axioms: Vec<Bool<'_>> = len_args
         .iter()
         .map(|arg| {
             let c = Int::new_const(ctx, format!("len_{}", arg));
-            let zero = Int::from_i64(ctx, 0);
             c.ge(&zero)
         })
         .collect();
@@ -1088,11 +1092,13 @@ fn prove_tautology_with_axioms_and_timeout_in(
     // for the tuple element.
     let mut len_args: BTreeSet<&str> = BTreeSet::new();
     collect_len_args(expr, &mut len_args);
+    // RES-1651: lift the zero constant out of the per-arg map closure
+    // (same shape as the verdict path above).
+    let zero = Int::from_i64(ctx, 0);
     let len_axioms: Vec<Bool<'_>> = len_args
         .iter()
         .map(|arg| {
             let c = Int::new_const(ctx, format!("len_{}", arg));
-            let zero = Int::from_i64(ctx, 0);
             c.ge(&zero)
         })
         .collect();
