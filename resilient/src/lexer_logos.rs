@@ -487,7 +487,12 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
     if !inner.contains('\\') {
         return inner.to_string();
     }
-    let mut out = String::new();
+    // RES-1824: pre-size to inner.len() — each unescaped char becomes
+    // one char in output; escapes (`\n`, `\xNN`, `\u{HHHH}`) consume
+    // multiple source chars but emit one (or zero). This is an upper
+    // bound that slightly over-allocates for escape-heavy strings,
+    // but avoids the 0→8→16 doubling chain on the slow path.
+    let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\\' {
@@ -525,7 +530,9 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
                     // \u{HHHH} — 1–6 hex digits, any valid Unicode scalar value.
                     if chars.peek() == Some(&'{') {
                         chars.next(); // consume '{'
-                        let mut hex = String::new();
+                        // RES-1824: pre-size to 6 — Unicode escapes are
+                        // 1-6 hex digits.
+                        let mut hex = String::with_capacity(6);
                         while let Some(&d) = chars.peek() {
                             if d == '}' {
                                 chars.next();
