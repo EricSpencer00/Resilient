@@ -28,10 +28,6 @@
       "branch": "res-1206-kill-dead-work-checks",
       "claimed_at": "2026-05-12T01:43:21Z"
     },
-    "resilient/src/isr_call_graph.rs": {
-      "branch": "res-1509-isr-graph-name-borrow",
-      "claimed_at": "2026-05-12T13:05:00Z"
-    },
     "resilient/src/incremental_verify.rs": {
       "branch": "res-1210-incremental-verify-dead-work",
       "claimed_at": "2026-05-12T01:53:15Z"
@@ -244,9 +240,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/reentrancy_guard.rs": {
-      "branch": "res-1742-reentrancy-presize",
-      "claimed_at": "2026-05-13T11:00:42Z"
+    "resilient/src/isr_call_graph.rs": {
+      "branch": "res-1744-isr-presize",
+      "claimed_at": "2026-05-13T11:03:59Z"
     }
   }
 }
