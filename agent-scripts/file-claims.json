@@ -32,10 +32,6 @@
       "branch": "res-1210-incremental-verify-dead-work",
       "claimed_at": "2026-05-12T01:53:15Z"
     },
-    "resilient/src/bounded_blocking.rs": {
-      "branch": "res-1511-bounded-blocking-name-borrow",
-      "claimed_at": "2026-05-12T13:10:00Z"
-    },
     "resilient/src/watchdog_feed.rs": {
       "branch": "res-1218-param-type-fast-reject",
       "claimed_at": "2026-05-12T02:11:38Z"
@@ -240,9 +236,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/isr_call_graph.rs": {
-      "branch": "res-1744-isr-presize",
-      "claimed_at": "2026-05-13T11:03:59Z"
+    "resilient/src/bounded_blocking.rs": {
+      "branch": "res-1746-bounded-blocking-presize",
+      "claimed_at": "2026-05-13T11:08:15Z"
     }
   }
 }
