@@ -92,10 +92,6 @@
       "branch": "res-1262-monotonic-fast-reject",
       "claimed_at": "2026-05-12T03:53:13Z"
     },
-    "resilient/src/numeric_units.rs": {
-      "branch": "res-1267-numeric-units-fast-reject",
-      "claimed_at": "2026-05-12T03:58:58Z"
-    },
     "resilient/src/age_bounded_data.rs": {
       "branch": "res-1271-age-bounded-fast-reject",
       "claimed_at": "2026-05-12T04:06:34Z"
@@ -236,9 +232,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/bounded_blocking.rs": {
-      "branch": "res-1746-bounded-blocking-presize",
-      "claimed_at": "2026-05-13T11:08:15Z"
+    "resilient/src/numeric_units.rs": {
+      "branch": "res-1748-numeric-units-presize",
+      "claimed_at": "2026-05-13T11:11:34Z"
     }
   }
 }

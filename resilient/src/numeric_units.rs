@@ -54,7 +54,12 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     for_each_function(program, |fname, params, body| {
-        let mut units: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        // RES-1748: pre-size to `params.len() + 8` — covers the
+        // parameter seeds plus a small allowance for body-let
+        // bindings with unit suffixes. Same shape as the pre-size
+        // series across the per-fn passes.
+        let mut units: std::collections::HashMap<String, String> =
+            std::collections::HashMap::with_capacity(params.len() + 8);
         for (_ty, name) in params {
             if let Some(u) = unit_of(name) {
                 units.insert(name.clone(), u);
