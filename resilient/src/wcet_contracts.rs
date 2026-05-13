@@ -27,7 +27,9 @@ pub struct WcetSpec {
 
 pub fn collect() -> Vec<WcetSpec> {
     let attrs = crate::feature_attrs::find_kind("wcet");
-    let mut out = Vec::new();
+    // RES-1764: pre-size to attrs.len() — conditional push (only when
+    // the `cycles` chunk parses), upper bound.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();

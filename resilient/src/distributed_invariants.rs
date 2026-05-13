@@ -25,7 +25,9 @@ static INVARIANTS: RwLock<Vec<DistributedInvariant>> = RwLock::new(Vec::new());
 
 pub fn collect() -> Vec<DistributedInvariant> {
     let attrs = crate::feature_attrs::find_kind("distributed_invariant");
-    let mut out = Vec::new();
+    // RES-1764: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut inv = DistributedInvariant {
             name: item,

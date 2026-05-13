@@ -35,7 +35,9 @@ fn parse_addr(s: &str) -> Option<u64> {
 
 pub fn collect() -> Vec<MmioRegmap> {
     let attrs = crate::feature_attrs::find_kind("mmio");
-    let mut out = Vec::new();
+    // RES-1764: pre-size to attrs.len() — conditional push (only when
+    // both base and size parse non-zero), upper bound.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut base = 0;
         let mut size = 0;
