@@ -416,12 +416,77 @@ fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
             hash_node_spanless(lo, h);
             hash_node_spanless(hi, h);
         }
+        // RES-1639: additional variants that appear in non-typechecker
+        // Z3 callers (`cluster_verifier`, `bounds_check`,
+        // `verifier_actors`, `verifier_loop_invariants`). The same
+        // shape — one-byte discriminant + non-span fields + recursion.
+        Node::Block { stmts, .. } => {
+            b'{'.hash(h);
+            (stmts.len() as u32).hash(h);
+            for s in stmts {
+                hash_node_spanless(s, h);
+            }
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            b'?'.hash(h);
+            b'I'.hash(h); // distinct from the fallback's b'?'
+            hash_node_spanless(condition, h);
+            hash_node_spanless(consequence, h);
+            match alternative {
+                Some(alt) => {
+                    b'E'.hash(h);
+                    hash_node_spanless(alt, h);
+                }
+                None => b'N'.hash(h),
+            }
+        }
+        Node::TryExpression { expr, .. } => {
+            b'T'.hash(h);
+            hash_node_spanless(expr, h);
+        }
+        Node::LetStatement { name, value, .. } => {
+            b'L'.hash(h);
+            name.hash(h);
+            hash_node_spanless(value, h);
+        }
+        Node::Assignment { name, value, .. } => {
+            b'='.hash(h);
+            name.hash(h);
+            hash_node_spanless(value, h);
+        }
+        Node::ReturnStatement { value, .. } => {
+            b'r'.hash(h);
+            match value {
+                Some(v) => {
+                    b'V'.hash(h);
+                    hash_node_spanless(v, h);
+                }
+                None => b'N'.hash(h),
+            }
+        }
+        Node::StructLiteral { name, fields, .. } => {
+            b's'.hash(h);
+            name.hash(h);
+            (fields.len() as u32).hash(h);
+            // Field iteration order matters; struct literals don't
+            // normalize field order (the parser preserves source
+            // order). Same source → same iteration → same hash.
+            for (fname, fval) in fields {
+                fname.hash(h);
+                hash_node_spanless(fval, h);
+            }
+        }
         // Fallback: variant not in the covered subset. Use the
         // existing span-inclusive Debug — strictly no-worse than
         // pre-RES-1637, and the same key still uniquely identifies
         // the obligation (just doesn't dedupe across sites).
         other => {
-            b'?'.hash(h);
+            b'@'.hash(h);
             format!("{:?}", other).hash(h);
         }
     }
