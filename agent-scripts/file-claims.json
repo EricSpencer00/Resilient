@@ -128,10 +128,6 @@
       "branch": "res-1534-recovery-checker-borrow",
       "claimed_at": "2026-05-12T14:50:00Z"
     },
-    "resilient/src/mutual_recursion_scc.rs": {
-      "branch": "res-1514-scc-dfs-borrow",
-      "claimed_at": "2026-05-12T13:13:18Z"
-    },
     "resilient/src/imports.rs": {
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
@@ -244,17 +240,29 @@
       "branch": "res-1758-more-collect-presize",
       "claimed_at": "2026-05-13T11:38:11Z"
     },
+    "resilient/src/region_inference.rs": {
+      "branch": "res-1760-callgraph-presize",
+      "claimed_at": "2026-05-13T11:42:08Z"
+    },
+    "resilient/src/mutual_recursion_scc.rs": {
+      "branch": "res-1760-callgraph-presize",
+      "claimed_at": "2026-05-13T11:42:08Z"
+    },
+    "resilient/src/set_result_option.rs": {
+      "branch": "res-1760-callgraph-presize",
+      "claimed_at": "2026-05-13T11:42:08Z"
+    },
     "resilient/src/loop_invariants.rs": {
       "branch": "res-1762-more-collect-presize",
-      "claimed_at": "2026-05-13T11:42:44Z"
+      "claimed_at": "2026-05-13T11:48:08Z"
     },
     "resilient/src/property_tests.rs": {
       "branch": "res-1762-more-collect-presize",
-      "claimed_at": "2026-05-13T11:42:44Z"
+      "claimed_at": "2026-05-13T11:48:08Z"
     },
     "resilient/src/cluster_verifier.rs": {
       "branch": "res-1762-more-collect-presize",
-      "claimed_at": "2026-05-13T11:42:44Z"
+      "claimed_at": "2026-05-13T11:48:08Z"
     }
   }
 }
