@@ -3976,7 +3976,10 @@ impl TypeChecker {
                 // `string_interp::parse`, not here.
                 // RES-1605: `modules::check` is a no-op stub; see
                 // `full_modules` for the actual module-graph build.
-                crate::default_params::check(program, source_path)?;
+                // RES-1615: `default_params::check` is a no-op stub
+                // (`Ok(())`); the real default-arg rewrite happens via
+                // `collect_defaults` + `rewrite_calls` from a different
+                // path.
                 crate::generics::check(program, source_path)?;
                 // RES-1612 gate: pass loops top-level statements for
                 // `Node::NewtypeDecl`.
