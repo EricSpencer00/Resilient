@@ -265,12 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1708-identity-hasher-prove-cache",
-      "claimed_at": "2026-05-13T09:48:16Z"
-    },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1708-identity-hasher-prove-cache",
-      "claimed_at": "2026-05-13T09:48:16Z"
+      "branch": "res-1710-bindings-vec-sort",
+      "claimed_at": "2026-05-13T09:53:51Z"
     }
   }
 }
