@@ -48,7 +48,11 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
         return Ok(None);
     }
 
-    let mut parts: Vec<StringPart> = Vec::new();
+    // RES-1792: pre-size to (placeholder-count * 2 + 1) — one Literal
+    // per `{...}` placeholder plus a trailing Literal. Matches the
+    // typical 1-3-placeholder shape and is computed in O(N) via
+    // `matches`. Called for every interpolated string literal in source.
+    let mut parts: Vec<StringPart> = Vec::with_capacity(raw.matches('{').count() * 2 + 1);
     let mut literal_buf = String::new();
     let mut chars = raw.chars().peekable();
 

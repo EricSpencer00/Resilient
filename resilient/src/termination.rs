@@ -135,7 +135,10 @@ pub fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // lookup map. The map is only queried for span info — the owned
     // String keys were pure overhead. Same pattern as RES-1495 /
     // RES-1500 etc.
-    let mut fn_info: HashMap<&str, (usize, usize)> = HashMap::new();
+    // RES-1792: pre-size to stmts.len() — at most one insert per
+    // top-level Function. Same shape as the call-graph / cluster
+    // pre-size series.
+    let mut fn_info: HashMap<&str, (usize, usize)> = HashMap::with_capacity(stmts.len());
     for spanned in stmts {
         if let Node::Function { name, span, .. } = &spanned.node
             && !name.is_empty()
