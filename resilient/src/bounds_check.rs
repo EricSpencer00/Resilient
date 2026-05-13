@@ -71,7 +71,15 @@ thread_local! {
     /// elided/runtime breakdown. Per-thread so the parallel test
     /// runner stays correct (the `TEST_LOCK` mutex serialises the few
     /// tests that read this).
-    static PROVEN_SITES: std::cell::RefCell<HashSet<Span>> = std::cell::RefCell::new(HashSet::new());
+    // RES-1694: pre-size with capacity 32 — same pattern as RES-1686 /
+    // RES-1688 / RES-1690 / RES-1692. PROVEN_SITES accumulates one
+    // entry per proven `IndexExpression` site within a typecheck; for
+    // programs with many array accesses, doubling growth from 0 paid
+    // for 2-3 rehash rounds. `reset_stats` clears but retains
+    // capacity, so this only benefits the first typecheck per process
+    // (CI / `cargo test` runs).
+    static PROVEN_SITES: std::cell::RefCell<HashSet<Span>> =
+        std::cell::RefCell::new(HashSet::with_capacity(32));
 }
 
 /// Read the last-run counters. Tests use this to confirm the pass
