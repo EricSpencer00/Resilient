@@ -233,6 +233,22 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
                     _ => None,
                 };
             }
+            // RES-1680: BooleanLiteral-vs-BooleanLiteral equality
+            // / disequality. Appears after constant propagation on
+            // boolean values (e.g. `flag == true` where `flag` was
+            // inlined to `true`). Other operators (`&&`, `||`,
+            // `<`/`<=`/...) fall through to the bool-combinator
+            // arm below — `BooleanLiteral(true) && BooleanLiteral(true)`
+            // must still fold via the `&&` combinator path.
+            if let (Node::BooleanLiteral { value: a, .. }, Node::BooleanLiteral { value: b, .. }) =
+                (left.as_ref(), right.as_ref())
+            {
+                match operator.as_str() {
+                    "==" => return Some(a == b),
+                    "!=" => return Some(a != b),
+                    _ => {} // fall through to bool combinator arm
+                }
+            }
             // Boolean combinators — recurse to fold known sides,
             // short-circuiting before the other side has to fold.
             match operator.as_str() {
@@ -4264,6 +4280,80 @@ mod tests {
         assert_eq!(
             after.verdict_misses, before.verdict_misses,
             "bitwise-folded comparisons must not consult Z3"
+        );
+    }
+
+    /// RES-1680: BooleanLiteral-vs-BooleanLiteral equality folds for
+    /// every combination of `true` / `false`.
+    #[test]
+    fn const_eval_bool_literal_equality_folds() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "==", bool_lit(true))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(false), "==", bool_lit(false))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "==", bool_lit(false))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(false), "==", bool_lit(true))),
+            Some(false)
+        );
+    }
+
+    /// RES-1680: BooleanLiteral-vs-BooleanLiteral disequality is the
+    /// dual of equality.
+    #[test]
+    fn const_eval_bool_literal_inequality_folds() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "!=", bool_lit(true))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "!=", bool_lit(false))),
+            Some(true)
+        );
+    }
+
+    /// RES-1680: non-`==`/`!=` comparisons on bool literals fall
+    /// through — they don't typically appear in obligations and the
+    /// semantics (does `false < true` make sense?) are intentionally
+    /// not pinned here.
+    #[test]
+    fn const_eval_bool_literal_inequality_operators_fall_through() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(false), "<", bool_lit(true))),
+            None
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), ">=", bool_lit(false))),
+            None
+        );
+    }
+
+    /// RES-1680: bool-literal equality short-circuits the LIA prove
+    /// entry point — no Z3 round trip.
+    #[test]
+    fn const_eval_bool_literal_equality_short_circuits_z3() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        assert_eq!(
+            prove(&infix(bool_lit(true), "==", bool_lit(true)), &no_b),
+            Some(true)
+        );
+        assert_eq!(
+            prove(&infix(bool_lit(true), "!=", bool_lit(false)), &no_b),
+            Some(true)
+        );
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "bool-literal equality must not consult Z3"
         );
     }
 }
