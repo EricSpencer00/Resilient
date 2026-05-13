@@ -261,8 +261,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1635-verifier-z3-u64-keys",
-      "claimed_at": "2026-05-13T06:32:27Z"
+      "branch": "res-1637-span-free-hash",
+      "claimed_at": "2026-05-13T06:37:38Z"
     }
   }
 }
