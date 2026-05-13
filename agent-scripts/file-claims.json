@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1673-reflexive-compare",
-      "claimed_at": "2026-05-13T08:02:08Z"
+      "branch": "res-1675-arith-const-fold",
+      "claimed_at": "2026-05-13T08:07:26Z"
     }
   }
 }

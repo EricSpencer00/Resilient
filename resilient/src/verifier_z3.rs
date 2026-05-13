@@ -86,21 +86,74 @@ pub enum Z3Theory {
     Lia,
 }
 
-/// RES-1663 / RES-1665 / RES-1667: pre-Z3 constant folding over the
-/// obligation AST. Returns `Some(verdict)` when the expression's value
-/// is fully determined by literals alone — bindings, axioms, theory,
-/// and timeout cannot change the result.
+/// RES-1675: fold an expression to a constant `i64` when every leaf
+/// is a literal and every operator is a checked integer arithmetic
+/// operation. Returns `None` on:
+///
+/// - Free identifiers, function calls, indexing, etc.
+/// - Overflow (don't unsoundly wrap; let Z3 see the original tree).
+/// - Division or modulo by zero.
+///
+/// Used by `try_const_eval_bool` to fold the operands of a comparison
+/// before checking the literal-vs-literal arm — so `5 + 3 == 8` and
+/// `MIN + OFFSET >= 0` (after upstream constant propagation lands
+/// integer literals on both sides) both decide without Z3.
+fn try_const_int(expr: &Node) -> Option<i64> {
+    match expr {
+        Node::IntegerLiteral { value, .. } => Some(*value),
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => try_const_int(right).and_then(i64::checked_neg),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            let l = try_const_int(left)?;
+            let r = try_const_int(right)?;
+            match operator.as_str() {
+                "+" => l.checked_add(r),
+                "-" => l.checked_sub(r),
+                "*" => l.checked_mul(r),
+                "/" => {
+                    if r == 0 {
+                        None
+                    } else {
+                        l.checked_div(r)
+                    }
+                }
+                "%" => {
+                    if r == 0 {
+                        None
+                    } else {
+                        l.checked_rem(r)
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// RES-1663 / RES-1665 / RES-1667 / RES-1673 / RES-1675: pre-Z3
+/// constant folding over the obligation AST. Returns `Some(verdict)`
+/// when the expression's value is fully determined by literals alone
+/// — bindings, axioms, theory, and timeout cannot change the result.
 ///
 /// Covered shapes:
 ///
 /// 1. `BooleanLiteral(v)` → `Some(v)` (RES-1663).
-/// 2. `IntegerLiteral OP IntegerLiteral` for `==`, `!=`, `<`, `<=`,
-///    `>`, `>=` (RES-1665).
+/// 2. Comparisons over expressions that fold to an `i64` via
+///    `try_const_int` — covers raw literals (RES-1665) and arithmetic
+///    over literals like `5 + 3 == 8` (RES-1675).
 /// 3. `!expr` (RES-1667) — recurse and negate.
 /// 4. `lhs && rhs` (RES-1667) — short-circuit on a constant-False
 ///    side; fold to `true` only when both sides are constant-True.
 /// 5. `lhs || rhs` (RES-1667) — short-circuit on a constant-True
 ///    side; fold to `false` only when both sides are constant-False.
+/// 6. Reflexive `Identifier OP Identifier` comparisons (RES-1673).
 ///
 /// Recursion is bounded by AST depth; typical obligations are < 10
 /// deep. The fast path runs in constant time relative to the cache
@@ -122,10 +175,12 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
             right,
             ..
         } => {
-            // Integer-literal-vs-integer-literal comparisons.
-            if let (Node::IntegerLiteral { value: a, .. }, Node::IntegerLiteral { value: b, .. }) =
-                (left.as_ref(), right.as_ref())
-            {
+            // RES-1675: integer-arithmetic constant fold. Try to
+            // reduce both sides to a constant `i64`; if either side
+            // doesn't fold (free var, overflow, div-by-zero), fall
+            // through. Subsumes the original RES-1665 raw-literal
+            // arm — a bare `IntegerLiteral` is a one-step fold.
+            if let (Some(a), Some(b)) = (try_const_int(left), try_const_int(right)) {
                 return match operator.as_str() {
                     "==" => Some(a == b),
                     "!=" => Some(a != b),
@@ -4021,6 +4076,112 @@ mod tests {
         assert_eq!(
             after.verdict_misses, before.verdict_misses,
             "reflexive Identifier comparison must not consult Z3"
+        );
+    }
+
+    /// RES-1675: `try_const_int` folds raw integer literals.
+    #[test]
+    fn const_int_folds_literal() {
+        assert_eq!(try_const_int(&int(42)), Some(42));
+        assert_eq!(try_const_int(&int(-7)), Some(-7));
+    }
+
+    /// RES-1675: `try_const_int` folds unary minus.
+    #[test]
+    fn const_int_folds_unary_minus() {
+        let neg5 = Node::PrefixExpression {
+            operator: "-".to_string(),
+            right: Box::new(int(5)),
+            span: crate::span::Span::default(),
+        };
+        assert_eq!(try_const_int(&neg5), Some(-5));
+    }
+
+    /// RES-1675: `try_const_int` folds basic arithmetic.
+    #[test]
+    fn const_int_folds_arithmetic() {
+        assert_eq!(try_const_int(&infix(int(5), "+", int(3))), Some(8));
+        assert_eq!(try_const_int(&infix(int(5), "-", int(3))), Some(2));
+        assert_eq!(try_const_int(&infix(int(5), "*", int(3))), Some(15));
+        assert_eq!(try_const_int(&infix(int(7), "/", int(2))), Some(3));
+        assert_eq!(try_const_int(&infix(int(7), "%", int(3))), Some(1));
+    }
+
+    /// RES-1675: `try_const_int` returns None on overflow rather than
+    /// wrapping silently. Z3 sees the original expression and decides.
+    #[test]
+    fn const_int_returns_none_on_overflow() {
+        // i64::MAX + 1 overflows.
+        assert_eq!(try_const_int(&infix(int(i64::MAX), "+", int(1))), None);
+        // i64::MIN * -1 overflows (one more positive value than negative).
+        assert_eq!(try_const_int(&infix(int(i64::MIN), "*", int(-1))), None);
+        // i64::MIN / -1 overflows.
+        assert_eq!(try_const_int(&infix(int(i64::MIN), "/", int(-1))), None);
+    }
+
+    /// RES-1675: division and modulo by zero return None.
+    #[test]
+    fn const_int_returns_none_on_div_by_zero() {
+        assert_eq!(try_const_int(&infix(int(5), "/", int(0))), None);
+        assert_eq!(try_const_int(&infix(int(5), "%", int(0))), None);
+    }
+
+    /// RES-1675: `try_const_int` falls through on free variables and
+    /// non-arithmetic operators.
+    #[test]
+    fn const_int_falls_through_on_non_arith() {
+        assert_eq!(try_const_int(&ident("x")), None);
+        assert_eq!(try_const_int(&infix(int(5), "+", ident("x"))), None);
+        assert_eq!(try_const_int(&infix(int(5), "<<", int(2))), None);
+    }
+
+    /// RES-1675: nested arithmetic folds end-to-end.
+    #[test]
+    fn const_int_folds_nested_expressions() {
+        // (2 + 3) * 4 → 20
+        let inner = infix(int(2), "+", int(3));
+        let outer = infix(inner, "*", int(4));
+        assert_eq!(try_const_int(&outer), Some(20));
+    }
+
+    /// RES-1675: `try_const_eval_bool` folds comparisons whose
+    /// operands fold via `try_const_int`. `5 + 3 == 8` decides
+    /// without dispatching Z3.
+    #[test]
+    fn const_eval_arith_comparison_folds() {
+        let lhs = infix(int(5), "+", int(3));
+        assert_eq!(try_const_eval_bool(&infix(lhs, "==", int(8))), Some(true));
+        let lhs2 = infix(int(7), "*", int(2));
+        assert_eq!(try_const_eval_bool(&infix(lhs2, ">", int(13))), Some(true));
+        // (2 + 3) >= 5 → true.
+        let folded = infix(int(2), "+", int(3));
+        assert_eq!(
+            try_const_eval_bool(&infix(folded, ">=", int(5))),
+            Some(true)
+        );
+    }
+
+    /// RES-1675: comparisons where one side has a free var fall
+    /// through to Z3 (as before).
+    #[test]
+    fn const_eval_arith_with_free_var_falls_through() {
+        let lhs = infix(int(5), "+", ident("x"));
+        assert_eq!(try_const_eval_bool(&infix(lhs, "==", int(8))), None);
+    }
+
+    /// RES-1675: the arithmetic fold short-circuits the LIA prove
+    /// entry point — no verdict miss is recorded.
+    #[test]
+    fn const_eval_arith_short_circuits_z3() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        let lhs = infix(int(10), "+", int(15));
+        assert_eq!(prove(&infix(lhs, "==", int(25)), &no_b), Some(true));
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "arithmetic-folded comparisons must not consult Z3"
         );
     }
 }
