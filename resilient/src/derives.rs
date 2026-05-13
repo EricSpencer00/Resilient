@@ -32,7 +32,9 @@ const SUPPORTED: &[&str] = &["Debug", "Eq", "Hash", "Default", "Clone", "Ord"];
 
 pub fn collect() -> Vec<DeriveSet> {
     let attrs = crate::feature_attrs::find_kind("derive");
-    let mut out = Vec::new();
+    // RES-1782: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let traits: Vec<String> = rec
             .args

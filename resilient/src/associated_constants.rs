@@ -33,7 +33,9 @@ static ASSOC: LazyLock<RwLock<HashMap<(String, String), AssocConstant>>> =
 
 pub fn collect() -> Vec<AssocConstant> {
     let attrs = crate::feature_attrs::find_kind("assoc_const");
-    let mut out = Vec::new();
+    // RES-1782: pre-size to attrs.len() — at most one push per
+    // attribute record (skipped when tr/name/val don't parse).
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut tr = String::new();
         let mut name = String::new();
