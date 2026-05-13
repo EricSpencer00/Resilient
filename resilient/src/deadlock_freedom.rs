@@ -47,7 +47,13 @@ pub fn build(program: &Node) -> ActorGraph {
             ..
         } = &s.node
         {
-            let mut sends = HashSet::new();
+            // An actor can only `send` to a known target actor (see
+            // walk_sends's `actors.contains` guard), so the unique
+            // recipients per actor are bounded by the total actor
+            // count. Pre-size to that upper bound to skip the default
+            // bucket-grow cascade for clusters with more than a handful
+            // of actors.
+            let mut sends = HashSet::with_capacity(actor_names.len());
             for h in receive_handlers {
                 walk_sends(&h.body, &actor_names, &mut sends);
             }
@@ -110,7 +116,9 @@ fn walk_sends(node: &Node, actors: &HashSet<&str>, out: &mut HashSet<String>) {
 // borrow chain is sound.
 pub fn detect_cycles<'a>(graph: &'a ActorGraph) -> Vec<Vec<&'a str>> {
     let mut cycles = Vec::new();
-    let mut visited: HashSet<&'a str> = HashSet::new();
+    // `visited` grows to at most one entry per node in the graph; pre-size
+    // to that exact upper bound. Same shape as the `sends` pre-size above.
+    let mut visited: HashSet<&'a str> = HashSet::with_capacity(graph.edges.len());
     for start in graph.edges.keys() {
         let start = start.as_str();
         if visited.contains(start) {
