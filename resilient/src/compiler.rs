@@ -134,7 +134,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
         } = &spanned.node
         {
             let arity = parameters.len() as u8;
-            let mut chunk = Chunk::new();
+            // RES-1720: pre-size the Chunk's opcode buffers. 128 fits
+            // the median Resilient fn body (~50-200 opcodes) without
+            // needing a Vec realloc; tiny functions overshoot by < 1
+            // KB. Same shape as RES-1716 / RES-1714 / RES-1718.
+            let mut chunk = Chunk::with_capacity(128);
             // Parameters occupy locals 0..arity. Map each param name
             // to its slot; additional `let` bindings in the body bump
             // `next_local` from there.
@@ -213,7 +217,9 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
     }
 
     // Pass 3: compile the remaining top-level statements into `main`.
-    let mut main = Chunk::new();
+    // RES-1720: pre-size — top-level body usually emits a handful of
+    // setup ops + per-stmt calls. 64 fits the common case.
+    let mut main = Chunk::with_capacity(64);
     // RES-1716: pre-size `main_locals` — same shape as RES-1461 for
     // `fn_index`. Top-level `let` / `const` / `static` bindings flow
     // into this map; typical programs have 5-20 entries. Pre-sizing

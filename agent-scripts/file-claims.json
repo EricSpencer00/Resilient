@@ -260,9 +260,13 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/monomorph.rs": {
-      "branch": "res-1718-monomorph-presize",
-      "claimed_at": "2026-05-13T10:14:49Z"
+    "resilient/src/bytecode.rs": {
+      "branch": "res-1720-chunk-with-capacity",
+      "claimed_at": "2026-05-13T10:19:17Z"
+    },
+    "resilient/src/compiler.rs": {
+      "branch": "res-1720-chunk-with-capacity",
+      "claimed_at": "2026-05-13T10:19:17Z"
     }
   }
 }

@@ -240,6 +240,24 @@ impl Chunk {
         Self::default()
     }
 
+    /// RES-1720: pre-sized constructor for the bytecode emitter. A
+    /// typical function body is 50-300 opcodes; the default
+    /// `Vec::new()` doubling growth (0 → 4 → 8 → ... → 256) paid
+    /// for ~6 reallocations during a single function's emit. With
+    /// hundreds of fns per typecheck on `large.rz`-shaped inputs,
+    /// that's a real chunk of work hidden in `Op::push`.
+    ///
+    /// `cap` is a hint — the caller estimates from AST body size
+    /// (one opcode per inner-expression Node is a rough lower bound).
+    /// Constants and `line_info` share the same opcode count.
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            code: Vec::with_capacity(cap),
+            constants: Vec::with_capacity(cap / 4),
+            line_info: Vec::with_capacity(cap),
+        }
+    }
+
     /// Append an instruction and its originating line. Returns the
     /// instruction's index for back-patching by jump emitters (used in
     /// RES-083).
