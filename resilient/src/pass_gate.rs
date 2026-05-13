@@ -68,6 +68,12 @@ pub(crate) struct Markers<'a> {
     /// Trait names from `Node::ImplBlock { trait_name: Some(...), .. }`.
     /// Used by the `iterator_protocol` gate (matches `"Iterator"`).
     pub impl_trait_names: HashSet<&'a str>,
+    /// True if any `Node::ModuleDecl` appears anywhere in the AST.
+    /// Used by the `full_modules` gate.
+    pub has_module_decl: bool,
+    /// True if any `Node::Use` appears anywhere in the AST. Used
+    /// together with `has_module_decl` by the `full_modules` gate.
+    pub has_use: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -114,6 +120,12 @@ impl<'a> Markers<'a> {
                 ..
             } => {
                 m.impl_trait_names.insert(t.as_str());
+            }
+            Node::ModuleDecl { .. } => {
+                m.has_module_decl = true;
+            }
+            Node::Use { .. } => {
+                m.has_use = true;
             }
             _ => {}
         });
