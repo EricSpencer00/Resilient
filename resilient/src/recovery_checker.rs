@@ -49,6 +49,18 @@ impl Context {
         let Node::Program(statements) = program else {
             return;
         };
+        // RES-1774: pre-size to the exact extern-decl count. Each
+        // Extern statement contributes `decls.len()` inserts, so
+        // summing them up front avoids the 0→4→8→… doubling chain
+        // as we walk a program with many extern declarations.
+        let extern_decl_count: usize = statements
+            .iter()
+            .filter_map(|s| match &s.node {
+                Node::Extern { decls, .. } => Some(decls.len()),
+                _ => None,
+            })
+            .sum();
+        self.extern_fns.reserve(extern_decl_count);
         for stmt in statements {
             if let Node::Extern { decls, .. } = &stmt.node {
                 for decl in decls {
