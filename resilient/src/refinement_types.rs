@@ -33,7 +33,11 @@ static REFINEMENTS: RwLock<Vec<RefinementSpec>> = RwLock::new(Vec::new());
 
 pub fn collect_specs() -> Vec<RefinementSpec> {
     let attrs = crate::feature_attrs::find_kind("refinement");
-    let mut out = Vec::new();
+    // RES-1754: pre-size to attrs.len() — exactly one push per
+    // attribute record (no conditional skip), so this is an exact
+    // bound, not an over-estimate. Same shape as the pre-size series
+    // (RES-1742…RES-1752).
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = RefinementSpec {
             name: item,

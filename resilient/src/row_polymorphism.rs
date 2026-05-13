@@ -28,7 +28,9 @@ static SPECS: LazyLock<RwLock<HashMap<String, RowSpec>>> =
 
 pub fn collect() -> Vec<RowSpec> {
     let attrs = crate::feature_attrs::find_kind("row_poly");
-    let mut out = Vec::new();
+    // RES-1754: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = RowSpec {
             fn_name: item,

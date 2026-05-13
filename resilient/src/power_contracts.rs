@@ -24,7 +24,12 @@ pub struct PowerSpec {
 
 pub fn collect() -> Vec<PowerSpec> {
     let attrs = crate::feature_attrs::find_kind("power");
-    let mut out = Vec::new();
+    // RES-1754: pre-size to attrs.len() — the inner loop conditionally
+    // pushes one entry per attribute (when the `uj` chunk parses), so
+    // attrs.len() is an upper bound (sometimes over-allocates by a
+    // handful when chunks fail to parse, but power-budget attrs are
+    // rare and the alternative is a growing 0→4 doubling chain).
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();

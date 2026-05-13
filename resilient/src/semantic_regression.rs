@@ -53,10 +53,13 @@ pub struct FunctionContract {
 }
 
 pub fn extract_contracts(program: &Node) -> HashMap<String, FunctionContract> {
-    let mut out = HashMap::new();
     let Node::Program(stmts) = program else {
-        return out;
+        return HashMap::new();
     };
+    // RES-1754: pre-size to stmts.len() — every top-level statement
+    // could be a function and produce one insert. Upper bound; same
+    // pattern as the call-graph pre-size series.
+    let mut out = HashMap::with_capacity(stmts.len());
     for s in stmts {
         if let Node::Function {
             name,
