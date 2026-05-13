@@ -688,8 +688,12 @@ pub fn reset_cache_stats() {
 /// `DefaultHasher`; re-hashing it inside the cache HashMap is
 /// wasted work (~5-10 cycles per lookup with SipHash on u64).
 /// Skipping that on ~300 cache touches per typecheck saves ~1.5-3µs.
+///
+/// RES-1708: exported as `pub(crate)` so the typechecker's
+/// `PROVE_CACHE` (also keyed on `u64` from the same hash chain) can
+/// reuse it.
 #[derive(Default)]
-struct IdentityU64Hasher(u64);
+pub(crate) struct IdentityU64Hasher(u64);
 
 impl std::hash::Hasher for IdentityU64Hasher {
     fn write(&mut self, _bytes: &[u8]) {
@@ -707,7 +711,7 @@ impl std::hash::Hasher for IdentityU64Hasher {
     }
 }
 
-type U64CacheMap<V> =
+pub(crate) type U64CacheMap<V> =
     std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<IdentityU64Hasher>>;
 
 thread_local! {
