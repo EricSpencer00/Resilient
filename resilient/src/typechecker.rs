@@ -3617,14 +3617,22 @@ impl TypeChecker {
             env
         });
 
+        // RES-1692: pre-size the per-typecheck HashMaps that grow
+        // once per top-level fn / struct during the hoist pass.
+        // Same shape as RES-1686 / RES-1688 / RES-1690 — perf-only,
+        // saves 2-3 rehash rounds per typecheck on medium / large
+        // programs. `contract_table` and `fn_decl_spans` see one
+        // entry per top-level fn (50+ on `large.rz`); the rest grow
+        // slower but cost a fixed small allocation each anyway.
+        const PRESIZE: usize = 32;
         TypeChecker {
             env: BUILTIN_ENV.clone(),
-            contract_table: HashMap::new(),
-            fn_decl_spans: HashMap::new(),
-            const_bindings: HashMap::new(),
+            contract_table: HashMap::with_capacity(PRESIZE),
+            fn_decl_spans: HashMap::with_capacity(PRESIZE),
+            const_bindings: HashMap::with_capacity(PRESIZE),
             stats: VerificationStats::default(),
             certificates: Vec::new(),
-            struct_fields: HashMap::new(),
+            struct_fields: HashMap::with_capacity(PRESIZE),
             // RES-1398: clone the cached builtin enum_decls (Option /
             // Result) HashMap instead of rebuilding it from scratch.
             // Pattern mirrors RES-1349's BUILTIN_ENV cache — the data
@@ -3675,7 +3683,7 @@ impl TypeChecker {
                 });
                 BUILTIN_ENUM_DECLS.clone()
             },
-            type_aliases: HashMap::new(),
+            type_aliases: HashMap::with_capacity(PRESIZE),
             // RES-137: ticket's default is 5 seconds per query.
             verifier_timeout_ms: 5000,
             // RES-217: partial-proof warnings on by default.

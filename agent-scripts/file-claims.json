@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1690-presize-prove-cache",
-      "claimed_at": "2026-05-13T08:57:00Z"
+      "branch": "res-1692-presize-typechecker-fields",
+      "claimed_at": "2026-05-13T09:00:38Z"
     }
   }
 }
