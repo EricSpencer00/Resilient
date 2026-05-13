@@ -327,6 +327,10 @@
     "resilient/src/traits.rs": {
       "branch": "res-1802-traits-presize",
       "claimed_at": "2026-05-13T13:02:04Z"
+    },
+    "resilient/src/verifier_actors.rs": {
+      "branch": "res-1808-flatten-body-presize",
+      "claimed_at": "2026-05-13T13:15:06Z"
     }
   }
 }
