@@ -295,6 +295,14 @@
     "resilient/src/lint.rs": {
       "branch": "res-1774-recovery-lint-presize",
       "claimed_at": "2026-05-13T12:06:03Z"
+    },
+    "resilient/src/lexer_logos.rs": {
+      "branch": "res-1778-lexer-format-presize",
+      "claimed_at": "2026-05-13T12:14:23Z"
+    },
+    "resilient/src/format_builtin.rs": {
+      "branch": "res-1778-lexer-format-presize",
+      "claimed_at": "2026-05-13T12:14:23Z"
     }
   }
 }
