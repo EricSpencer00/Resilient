@@ -449,7 +449,12 @@ pub fn check_call_site_region_aliasing(program: &crate::Node, source_path: &str)
                 .map(|(ty, name)| (name.clone(), ty.clone()))
                 .collect();
 
-            let mut calls: Vec<(String, Vec<crate::Node>)> = Vec::new();
+            // RES-1722: pre-size with a small fixed capacity. Each
+            // function body typically contains 5-20 call sites; the
+            // default `Vec::new()` doubling growth from 0 paid 2-3
+            // reallocations per visited fn. Same shape as the
+            // RES-1716/1718/1720 pre-size series.
+            let mut calls: Vec<(String, Vec<crate::Node>)> = Vec::with_capacity(8);
             collect_calls(body, &mut calls);
 
             for (callee_name, args) in &calls {
