@@ -6753,7 +6753,12 @@ impl TypeChecker {
         // plain type-equality level, `linear T` and `T` are the same
         // type, so strip the prefix here before resolving.
         let base = crate::linear::strip_linear(name);
-        self.parse_type_name_inner(base, &mut Vec::new())
+        // RES-1810: pre-size the alias-cycle-detection Vec to 2 —
+        // typical alias chains are 0-2 deep (`type Meters = Float;`
+        // is single-step). Saves the 0→4 doubling chain on every
+        // type-name resolution, which is called per parameter type,
+        // return type, let annot, struct field, etc.
+        self.parse_type_name_inner(base, &mut Vec::with_capacity(2))
     }
 
     /// RES-128: alias-aware parse with cycle detection. `seen`
