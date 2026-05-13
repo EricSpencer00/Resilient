@@ -88,9 +88,11 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // final `chain.join(" -> ")` all work on `&str`. Mirror of
     // RES-1514 (SCC DFS) and RES-1517 (full_modules DFS) applied to
     // type-alias cycles.
+    // RES-1790: pre-size both to statements.len() — at most one
+    // TypeAlias per top-level statement, so this is an upper bound.
     let mut aliases: std::collections::HashMap<&str, (&str, crate::span::Span)> =
-        std::collections::HashMap::new();
-    let mut decl_order: Vec<&str> = Vec::new();
+        std::collections::HashMap::with_capacity(statements.len());
+    let mut decl_order: Vec<&str> = Vec::with_capacity(statements.len());
 
     for spanned in statements {
         if let Node::TypeAlias { name, target, span } = &spanned.node {
@@ -113,7 +115,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
         if color[start] != Color::Unvisited {
             continue;
         }
-        let mut path: Vec<&str> = Vec::new();
+        // RES-1790: pre-size to aliases.len() — DFS chain peaks at
+        // total alias count.
+        let mut path: Vec<&str> = Vec::with_capacity(aliases.len());
         if let Some(chain) = dfs(start, &aliases, &mut color, &mut path) {
             // Anchor the diagnostic to the first alias in the cycle —
             // its span points users at a real declaration in source.
