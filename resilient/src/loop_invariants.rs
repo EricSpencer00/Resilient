@@ -152,12 +152,18 @@ pub(crate) fn typecheck_invariant_statement(
 /// participate in the iteration-top check. Loop-top invariants must
 /// hold over the loop's full state, not a branch-conditional state.
 pub(crate) fn collect_body_invariants(body: &Node) -> Vec<&Node> {
-    let mut out = Vec::new();
-    if let Node::Block { stmts, .. } = body {
-        for s in stmts {
-            if let Node::InvariantStatement { expr, .. } = s {
-                out.push(expr.as_ref());
-            }
+    let Node::Block { stmts, .. } = body else {
+        return Vec::new();
+    };
+    // RES-1762: pre-size to stmts.len() — at most one invariant push
+    // per body statement, so this is an upper bound. The interpreter
+    // calls this on every loop iteration via
+    // `check_invariants_at_iteration`, so the 0→4 doubling chain
+    // was paid on a hot path.
+    let mut out = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        if let Node::InvariantStatement { expr, .. } = s {
+            out.push(expr.as_ref());
         }
     }
     out
