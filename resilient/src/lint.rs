@@ -337,7 +337,12 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<&str> {
         // Wildcard and Literal introduce no bindings.
         Pattern::Wildcard | Pattern::Literal(_) => vec![],
         Pattern::Struct { fields, .. } => {
-            let mut names = Vec::new();
+            // Pre-size to fields.len(): each field's sub-pattern most
+            // commonly binds 0–1 names (Identifier / Wildcard), so the
+            // field count is a tight upper bound for the typical case.
+            // Sub-patterns that bind more (nested destructure) trigger
+            // extend's amortised growth from there.
+            let mut names = Vec::with_capacity(fields.len());
             for (_, sub) in fields {
                 names.extend(collect_pattern_bindings(sub.as_ref()));
             }
@@ -354,14 +359,14 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<&str> {
         Pattern::EnumVariant { payload, .. } => match payload {
             crate::EnumPatternPayload::None => vec![],
             crate::EnumPatternPayload::Named(fields) => {
-                let mut names = Vec::new();
+                let mut names = Vec::with_capacity(fields.len());
                 for (_, sub) in fields {
                     names.extend(collect_pattern_bindings(sub.as_ref()));
                 }
                 names
             }
             crate::EnumPatternPayload::Tuple(subs) => {
-                let mut names = Vec::new();
+                let mut names = Vec::with_capacity(subs.len());
                 for sub in subs {
                     names.extend(collect_pattern_bindings(sub));
                 }
@@ -370,7 +375,7 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<&str> {
         },
         // RES-931: tuple-struct destructure — recurse into each field pattern.
         Pattern::TupleStruct { fields, .. } => {
-            let mut names = Vec::new();
+            let mut names = Vec::with_capacity(fields.len());
             for sub in fields {
                 names.extend(collect_pattern_bindings(sub));
             }
@@ -378,7 +383,7 @@ fn collect_pattern_bindings(pattern: &Pattern) -> Vec<&str> {
         }
         // RES-932: anonymous tuple destructure — recurse positionally.
         Pattern::Tuple(items) => {
-            let mut names = Vec::new();
+            let mut names = Vec::with_capacity(items.len());
             for sub in items {
                 names.extend(collect_pattern_bindings(sub));
             }
