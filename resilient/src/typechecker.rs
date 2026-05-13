@@ -4214,14 +4214,21 @@ impl TypeChecker {
                 // does. Order is mostly independent (analysis-only
                 // passes), but blame_attribution must run before
                 // anti_regression so the latter has the call graph.
-                crate::resilience_score::check(program, source_path)?;
+                // RES-1619: `resilience_score::check` is a no-op stub
+                // (RES-1206); real `score_program` runs from the
+                // `--score` CLI flag and external integrators.
                 crate::vibe_debt::check(program, source_path)?;
-                crate::behavioral_fingerprint::check(program, source_path)?;
-                crate::contract_inference::check(program, source_path)?;
+                // RES-1619: `behavioral_fingerprint::check` is a no-op
+                // stub (RES-1206); real `fingerprint_program` runs
+                // from `--check-fingerprints` and external integrators.
+                // RES-1619: `contract_inference::check` is a no-op stub
+                // (RES-1206); real `infer_program` runs from
+                // `--suggest-contracts` and external integrators.
                 crate::semantic_regression::check(program, source_path)?;
                 crate::semver_behavior::check(program, source_path)?;
                 crate::blame_attribution::check(program, source_path)?;
-                crate::autopilot::check(program, source_path)?;
+                // RES-1619: `autopilot::check` is a no-op stub; the
+                // `--autopilot` CLI flag drives the actual `run()`.
                 crate::crash_only_cert::check(program, source_path)?;
                 crate::intent_blocks::check(program, source_path)?;
                 crate::anti_regression::check(program, source_path)?;
