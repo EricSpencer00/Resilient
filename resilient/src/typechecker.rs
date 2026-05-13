@@ -4214,7 +4214,6 @@ impl TypeChecker {
                 if markers.call_idents.contains("Err") {
                     crate::coverage_warnings::check(program, source_path)?;
                 }
->>>>>>> origin/main
                 crate::param_destructuring::check(program, source_path)?;
                 crate::format_builtin::check(program, source_path)?;
                 // RES-1597: `struct_exhaustiveness::check` is a no-op
