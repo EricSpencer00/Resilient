@@ -533,6 +533,27 @@ fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
                 hash_node_spanless(fval, h);
             }
         }
+        // RES-1645: Match — sub-hashes Pattern arms via
+        // `hash_pattern_spanless` so pattern-shaped obligations
+        // dedupe across sites just like the rest.
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
+            b'M'.hash(h);
+            hash_node_spanless(scrutinee, h);
+            (arms.len() as u32).hash(h);
+            for (pat, guard, body) in arms {
+                hash_pattern_spanless(pat, h);
+                match guard {
+                    Some(g) => {
+                        b'G'.hash(h);
+                        hash_node_spanless(g, h);
+                    }
+                    None => b'N'.hash(h),
+                }
+                hash_node_spanless(body, h);
+            }
+        }
         // Fallback: variant not in the covered subset. Use the
         // existing span-inclusive Debug — strictly no-worse than
         // pre-RES-1637, and the same key still uniquely identifies
@@ -540,6 +561,132 @@ fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
         other => {
             b'@'.hash(h);
             format!("{:?}", other).hash(h);
+        }
+    }
+}
+
+/// RES-1645: span-free recursive hash for `Pattern`. Covers all 14
+/// variants. The `Pattern::Literal(Node)` arm recurses back into
+/// `hash_node_spanless` so a `Literal(Node::IntegerLiteral { value:
+/// 42, span: ... })` hashes the same way regardless of the literal's
+/// source span.
+fn hash_pattern_spanless<H: std::hash::Hasher>(p: &crate::Pattern, h: &mut H) {
+    use std::hash::Hash;
+    match p {
+        crate::Pattern::Literal(n) => {
+            b'l'.hash(h);
+            hash_node_spanless(n, h);
+        }
+        crate::Pattern::Identifier(name) => {
+            b'd'.hash(h);
+            name.hash(h);
+        }
+        crate::Pattern::Wildcard => {
+            b'_'.hash(h);
+        }
+        crate::Pattern::Or(branches) => {
+            b'|'.hash(h);
+            (branches.len() as u32).hash(h);
+            for b in branches {
+                hash_pattern_spanless(b, h);
+            }
+        }
+        crate::Pattern::Range { lo, hi, inclusive } => {
+            b'r'.hash(h);
+            lo.hash(h);
+            hi.hash(h);
+            inclusive.hash(h);
+        }
+        crate::Pattern::Bind(name, inner) => {
+            b'@'.hash(h);
+            name.hash(h);
+            hash_pattern_spanless(inner, h);
+        }
+        crate::Pattern::Struct {
+            struct_name,
+            fields,
+            has_rest,
+        } => {
+            b's'.hash(h);
+            struct_name.hash(h);
+            has_rest.hash(h);
+            (fields.len() as u32).hash(h);
+            for (fname, fpat) in fields {
+                fname.hash(h);
+                hash_pattern_spanless(fpat, h);
+            }
+        }
+        crate::Pattern::Some(inner) => {
+            b'S'.hash(h);
+            hash_pattern_spanless(inner, h);
+        }
+        crate::Pattern::None => {
+            b'O'.hash(h);
+        }
+        crate::Pattern::Ok(inner) => {
+            b'k'.hash(h);
+            hash_pattern_spanless(inner, h);
+        }
+        crate::Pattern::Err(inner) => {
+            b'e'.hash(h);
+            hash_pattern_spanless(inner, h);
+        }
+        crate::Pattern::EnumVariant {
+            type_name,
+            variant_name,
+            payload,
+        } => {
+            b'v'.hash(h);
+            match type_name {
+                Some(t) => {
+                    b'T'.hash(h);
+                    t.hash(h);
+                }
+                None => b'U'.hash(h),
+            }
+            variant_name.hash(h);
+            hash_enum_payload_spanless(payload, h);
+        }
+        crate::Pattern::TupleStruct { name, fields } => {
+            b't'.hash(h);
+            name.hash(h);
+            (fields.len() as u32).hash(h);
+            for f in fields {
+                hash_pattern_spanless(f, h);
+            }
+        }
+        crate::Pattern::Tuple(parts) => {
+            b'p'.hash(h);
+            (parts.len() as u32).hash(h);
+            for q in parts {
+                hash_pattern_spanless(q, h);
+            }
+        }
+    }
+}
+
+/// RES-1645: span-free recursive hash for `EnumPatternPayload`.
+/// Three variants — none, named-fields, tuple-positional.
+fn hash_enum_payload_spanless<H: std::hash::Hasher>(p: &crate::EnumPatternPayload, h: &mut H) {
+    use std::hash::Hash;
+    match p {
+        crate::EnumPatternPayload::None => {
+            b'0'.hash(h);
+        }
+        crate::EnumPatternPayload::Named(fields) => {
+            b'1'.hash(h);
+            (fields.len() as u32).hash(h);
+            for (fname, fpat) in fields {
+                fname.hash(h);
+                hash_pattern_spanless(fpat, h);
+            }
+        }
+        crate::EnumPatternPayload::Tuple(parts) => {
+            b'2'.hash(h);
+            (parts.len() as u32).hash(h);
+            for q in parts {
+                hash_pattern_spanless(q, h);
+            }
         }
     }
 }
