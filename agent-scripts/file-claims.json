@@ -284,18 +284,6 @@
       "branch": "res-1778-lexer-format-presize",
       "claimed_at": "2026-05-13T12:14:23Z"
     },
-    "resilient/src/derives.rs": {
-      "branch": "res-1782-more-collect-presize",
-      "claimed_at": "2026-05-13T12:23:31Z"
-    },
-    "resilient/src/associated_constants.rs": {
-      "branch": "res-1782-more-collect-presize",
-      "claimed_at": "2026-05-13T12:23:31Z"
-    },
-    "resilient/src/traits.rs": {
-      "branch": "res-1782-more-collect-presize",
-      "claimed_at": "2026-05-13T12:23:31Z"
-    },
     "resilient/src/hw_state_machine.rs": {
       "branch": "res-1784-attr-collects-3",
       "claimed_at": "2026-05-13T12:28:38Z"
@@ -335,6 +323,10 @@
     "resilient/src/verifier_loop_invariants.rs": {
       "branch": "res-1798-vli-bindings-presize",
       "claimed_at": "2026-05-13T12:53:30Z"
+    },
+    "resilient/src/traits.rs": {
+      "branch": "res-1802-traits-presize",
+      "claimed_at": "2026-05-13T13:02:04Z"
     }
   }
 }
