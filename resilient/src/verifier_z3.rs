@@ -680,7 +680,7 @@ thread_local! {
             u64,
             (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
         >,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
 
     /// RES-1309 / RES-1635: thread-local cache for the tautology-only
     /// fast path. Disjoint key namespace from `Z3_VERDICT_CACHE` (the
@@ -688,7 +688,7 @@ thread_local! {
     #[allow(clippy::type_complexity)]
     static Z3_TAUTOLOGY_CACHE: std::cell::RefCell<
         std::collections::HashMap<u64, (bool, Option<ProofCertificate>, bool)>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
 
     /// RES-1316 / RES-1635: thread-local cache for the BV32 entry
     /// point. Disjoint key namespace (`|BV` suffix).
@@ -698,7 +698,7 @@ thread_local! {
             u64,
             (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
         >,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
 }
 
 /// RES-1635: a `fmt::Write` adapter that streams formatted bytes
