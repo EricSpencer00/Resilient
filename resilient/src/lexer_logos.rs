@@ -341,22 +341,39 @@ enum Tok {
     Ident(String),
 }
 
+/// RES-1820: fast-reject for radix literals without `_` separators.
+/// `&str::replace` always allocates a fresh `String`; the typical
+/// `0xff` / `0b1010` / `0o755` literal has no underscore so the
+/// allocation is pure overhead. Same shape as `int_lit` / `float_lit`
+/// which already gate on `contains('_')`.
 fn hex_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
-    let body = lex.slice()[2..].replace('_', "");
+    let body = &lex.slice()[2..];
     // Matches the hand-rolled lexer's best-effort fallback: on overflow
     // or an empty body (which the regex's `+` already forbids, but we
     // keep the guard to mirror semantics), emit 0.
-    Some(i64::from_str_radix(&body, 16).unwrap_or(0))
+    if body.contains('_') {
+        Some(i64::from_str_radix(&body.replace('_', ""), 16).unwrap_or(0))
+    } else {
+        Some(i64::from_str_radix(body, 16).unwrap_or(0))
+    }
 }
 
 fn bin_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
-    let body = lex.slice()[2..].replace('_', "");
-    Some(i64::from_str_radix(&body, 2).unwrap_or(0))
+    let body = &lex.slice()[2..];
+    if body.contains('_') {
+        Some(i64::from_str_radix(&body.replace('_', ""), 2).unwrap_or(0))
+    } else {
+        Some(i64::from_str_radix(body, 2).unwrap_or(0))
+    }
 }
 
 fn oct_int(lex: &mut logos::Lexer<Tok>) -> Option<i64> {
-    let body = lex.slice()[2..].replace('_', "");
-    Some(i64::from_str_radix(&body, 8).unwrap_or(0))
+    let body = &lex.slice()[2..];
+    if body.contains('_') {
+        Some(i64::from_str_radix(&body.replace('_', ""), 8).unwrap_or(0))
+    } else {
+        Some(i64::from_str_radix(body, 8).unwrap_or(0))
+    }
 }
 
 /// RES-909: decimal int literal with optional `_` separators.
