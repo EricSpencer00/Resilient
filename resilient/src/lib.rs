@@ -27881,6 +27881,12 @@ pub fn run_cli() {
     // for this run. Both cache reads and writes are skipped so the
     // run is fully isolated from the on-disk cache state.
     let mut no_cache = false;
+    // RES-1659: `--persistent-proof-cache <path>` enables the
+    // cross-build Z3 proof cache (RES-1657). Loaded at startup;
+    // saved at exit. Persists `u64` keys for obligations proven
+    // `Some(true)` so `cargo test` reruns and watch-mode polling
+    // short-circuit Z3 instead of re-deriving the proofs.
+    let mut persistent_proof_cache_path: Option<PathBuf> = None;
     // RES-343: conditional-compilation state. `--feature NAME` is
     // repeatable; `--target TRIPLE` sets the active target. The
     // collected values are installed into `cfg_attr::set_active_config`
@@ -28034,6 +28040,17 @@ pub fn run_cli() {
                     eprintln!("Error: --verifier-timeout-ms expects a u32, got {:?}", val);
                     std::process::exit(2);
                 });
+            } else if arg == "--persistent-proof-cache" {
+                // RES-1659: enable cross-build Z3 proof cache (RES-1657).
+                // Loaded at startup; saved at exit. JSON format.
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --persistent-proof-cache requires a path argument");
+                    std::process::exit(2);
+                }
+                persistent_proof_cache_path = Some(PathBuf::from(&args[i]));
+            } else if let Some(val) = arg.strip_prefix("--persistent-proof-cache=") {
+                persistent_proof_cache_path = Some(PathBuf::from(val));
             } else if arg == "--warn-unverified" {
                 // RES-217: explicit opt-in (also the default). Keeps
                 // the flag discoverable in `--help` and in scripts
@@ -28185,6 +28202,39 @@ pub fn run_cli() {
             features: cfg_features,
             target: cfg_target,
         });
+
+        // RES-1659: load the cross-build Z3 proof cache (RES-1657)
+        // before any typecheck runs. Missing file is not an error
+        // (first run on a fresh checkout); other errors are reported
+        // but don't abort — a corrupt cache shouldn't block the
+        // build, just disable the cache for this run.
+        #[cfg(feature = "z3")]
+        if let Some(ref path) = persistent_proof_cache_path {
+            match verifier_z3::load_persistent_proven(path) {
+                Ok(n) if n > 0 => {
+                    eprintln!("loaded {} proven obligations from {}", n, path.display());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!(
+                        "warning: --persistent-proof-cache load failed for {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+        // RES-1659: when built without --features z3, the flag has no
+        // effect — emit a one-line warning so users don't silently
+        // waste a flag setting.
+        #[cfg(not(feature = "z3"))]
+        if let Some(ref path) = persistent_proof_cache_path {
+            eprintln!(
+                "warning: --persistent-proof-cache {} ignored \
+                 (rebuild with --features z3 to enable)",
+                path.display()
+            );
+        }
 
         // RES-112: --dump-tokens is mutually exclusive with --lsp
         // (both are terminal modes that don't want a file arg the
@@ -28472,6 +28522,21 @@ pub fn run_cli() {
             #[cfg(not(feature = "jit"))]
             if jit_cache_stats {
                 eprintln!("jit-cache: unavailable (built without `--features jit`)");
+            }
+            // RES-1659: save the cross-build Z3 proof cache back to
+            // disk. Runs after `execute_file` returns whether or not
+            // the run succeeded — any obligation proven during this
+            // run is worth persisting even if the program later
+            // panicked or asserted.
+            #[cfg(feature = "z3")]
+            if let Some(ref path) = persistent_proof_cache_path {
+                if let Err(e) = verifier_z3::save_persistent_proven(path) {
+                    eprintln!(
+                        "warning: --persistent-proof-cache save failed for {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
             }
             match run_result {
                 Ok(_) => {

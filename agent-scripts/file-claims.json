@@ -260,9 +260,9 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1657-persistent-proven",
-      "claimed_at": "2026-05-13T07:06:19Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-1659-cli-persistent-cache",
+      "claimed_at": "2026-05-13T07:09:45Z"
     }
   }
 }
