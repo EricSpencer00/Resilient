@@ -237,7 +237,9 @@ impl Inferer {
     pub fn instantiate(&mut self, scheme: &Scheme) -> Type {
         // Build a one-shot map from the quantified vars to
         // fresh vars.
-        let mut mapping: HashMap<u32, Type> = HashMap::new();
+        // RES-1794: pre-size to scheme.vars.len() — exactly one insert
+        // per quantified var, exact bound.
+        let mut mapping: HashMap<u32, Type> = HashMap::with_capacity(scheme.vars.len());
         for &v in &scheme.vars {
             let fresh = self.fresh();
             mapping.insert(v, fresh);
