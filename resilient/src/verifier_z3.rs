@@ -262,6 +262,20 @@ pub fn prove_with_axioms_and_timeout(
         timeout_ms.hash(&mut h);
         h.finish()
     };
+    // RES-1657: persistent proven-set short-circuit. If this key
+    // was proven `Some(true)` in any prior invocation that called
+    // `load_persistent_proven`, return immediately. Cert/cx are
+    // dropped on the persistent path (rebuildable on demand by a
+    // future caller via the live cache, which will repopulate on
+    // first reuse).
+    if persistent_proven_contains(key) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.verdict_hits += 1;
+            s.set(v);
+        });
+        return (Some(true), None, None, false);
+    }
     if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         Z3_CACHE_STATS.with(|s| {
             let mut v = s.get();
@@ -277,10 +291,83 @@ pub fn prove_with_axioms_and_timeout(
     });
     let result = Z3_CTX
         .with(|ctx| prove_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms));
+    // RES-1657: persist the key when we proved Some(true). Skip
+    // Some(false)/None — those are cheap to re-derive and shouldn't
+    // pollute the persistent set.
+    if matches!(result.0, Some(true)) {
+        persistent_proven_insert(key);
+    }
     Z3_VERDICT_CACHE.with(|c| {
         c.borrow_mut().insert(key, result.clone());
     });
     result
+}
+
+/// RES-1657: process-wide persistent proven set.
+///
+/// Stores `u64` keys (computed by the same `hash_node_spanless`
+/// pipeline as the thread-local caches) for obligations that have
+/// proven `Some(true)` at some point in this process. Sits in front
+/// of the thread-local caches so cross-thread reuse short-circuits
+/// without re-running Z3.
+///
+/// Cert + counterexample are not persisted — on a hit we return
+/// `(Some(true), None, None, false)` and any caller that needs a
+/// fresh cert re-derives it. The vast majority of callers only
+/// branch on the verdict.
+///
+/// `[load|save]_persistent_proven` provide JSON I/O for survival
+/// across processes; the caller decides when to load/save (future
+/// CLI flag).
+static PERSISTENT_PROVEN: std::sync::RwLock<std::collections::HashSet<u64>> =
+    std::sync::RwLock::new(std::collections::HashSet::new());
+
+fn persistent_proven_contains(key: u64) -> bool {
+    PERSISTENT_PROVEN
+        .read()
+        .map(|s| s.contains(&key))
+        .unwrap_or(false)
+}
+
+fn persistent_proven_insert(key: u64) {
+    if let Ok(mut s) = PERSISTENT_PROVEN.write() {
+        s.insert(key);
+    }
+}
+
+/// RES-1657: load a persistent proven-set from disk. JSON format
+/// is a flat array of `u64` keys. Missing file is not an error
+/// (treat as "no cache yet"). Returns the number of keys loaded.
+pub fn load_persistent_proven(path: &std::path::Path) -> std::io::Result<usize> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let keys: Vec<u64> = serde_json::from_str(&text)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let n = keys.len();
+    if let Ok(mut s) = PERSISTENT_PROVEN.write() {
+        for k in keys {
+            s.insert(k);
+        }
+    }
+    Ok(n)
+}
+
+/// RES-1657: save the current persistent proven-set to disk as
+/// JSON. The parent directory is created if missing.
+pub fn save_persistent_proven(path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let keys: Vec<u64> = PERSISTENT_PROVEN
+        .read()
+        .map(|s| s.iter().copied().collect())
+        .unwrap_or_default();
+    let text = serde_json::to_string(&keys)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(path, text)
 }
 
 /// RES-1641: cache-hit telemetry. Snapshot of the three thread-local
@@ -1051,6 +1138,17 @@ pub fn prove_tautology_with_axioms_and_timeout(
         b"TAUT".hash(&mut h);
         h.finish()
     };
+    // RES-1657: persistent proven-set short-circuit (tautology path).
+    // The tautology entry point returns `(bool, ...)`, so a persistent
+    // hit produces `(true, None, false)` directly.
+    if persistent_proven_contains(key) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.tautology_hits += 1;
+            s.set(v);
+        });
+        return (true, None, false);
+    }
     if let Some(cached) = Z3_TAUTOLOGY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         Z3_CACHE_STATS.with(|s| {
             let mut v = s.get();
@@ -1067,6 +1165,10 @@ pub fn prove_tautology_with_axioms_and_timeout(
     let result = Z3_CTX.with(|ctx| {
         prove_tautology_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms)
     });
+    // RES-1657: persist when the tautology was proven.
+    if result.0 {
+        persistent_proven_insert(key);
+    }
     Z3_TAUTOLOGY_CACHE.with(|c| {
         c.borrow_mut().insert(key, result.clone());
     });
@@ -1225,6 +1327,15 @@ pub fn prove_bv(
         b"BV".hash(&mut h);
         h.finish()
     };
+    // RES-1657: persistent proven-set short-circuit (BV path).
+    if persistent_proven_contains(key) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.bv_hits += 1;
+            s.set(v);
+        });
+        return (Some(true), None, None, false);
+    }
     if let Some(cached) = Z3_BV_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         Z3_CACHE_STATS.with(|s| {
             let mut v = s.get();
@@ -1239,6 +1350,10 @@ pub fn prove_bv(
         s.set(v);
     });
     let result = Z3_CTX.with(|ctx| prove_bv_in(ctx, expr, bindings, timeout_ms));
+    // RES-1657: persist when the BV verdict was Some(true).
+    if matches!(result.0, Some(true)) {
+        persistent_proven_insert(key);
+    }
     Z3_BV_CACHE.with(|c| {
         c.borrow_mut().insert(key, result.clone());
     });
