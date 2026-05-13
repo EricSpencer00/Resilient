@@ -69,7 +69,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // still produces owned Strings (HRTB closure can't bind the
     // outer `'a`), but the *outer* map keys and root list don't
     // need ownership — same pattern as RES-1495 / RES-1500 etc.
-    let mut callees: HashMap<&str, HashSet<String>> = HashMap::new();
+    // RES-1744: pre-size the call-graph map to stmts.len() (upper
+    // bound). Same shape as RES-1742 for reentrancy_guard.
+    let mut callees: HashMap<&str, HashSet<String>> = HashMap::with_capacity(stmts.len());
     let mut isr_roots: Vec<&str> = Vec::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
