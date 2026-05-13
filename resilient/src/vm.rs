@@ -374,7 +374,12 @@ fn run_inner(
     overflow_mode: OverflowMode,
 ) -> Result<Value, VmError> {
     let mut stack: Vec<Value> = Vec::with_capacity(64);
-    let mut locals: Vec<Value> = Vec::new();
+    // RES-1814: pre-size to 32 — typical VM runs have 5-30 locals
+    // across main + frames. Same fixed-capacity shape as `stack` and
+    // `frames`. The locals slot is grown via Op::AllocLocal as
+    // frames push, so this is a starting capacity that absorbs the
+    // common case without rehash churn.
+    let mut locals: Vec<Value> = Vec::with_capacity(32);
     let mut frames: Vec<CallFrame> = Vec::with_capacity(16);
     frames.push(CallFrame {
         chunk_idx: usize::MAX, // main
