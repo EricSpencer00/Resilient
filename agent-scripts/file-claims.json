@@ -32,10 +32,6 @@
       "branch": "res-1206-kill-dead-work-checks",
       "claimed_at": "2026-05-12T01:43:21Z"
     },
-    "resilient/src/verifier_z3.rs": {
-      "branch": "res-1532-z3-idents-borrow",
-      "claimed_at": "2026-05-12T14:30:00Z"
-    },
     "resilient/src/isr_call_graph.rs": {
       "branch": "res-1509-isr-graph-name-borrow",
       "claimed_at": "2026-05-12T13:05:00Z"
@@ -264,9 +260,9 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1633-z3-axioms-cache",
-      "claimed_at": "2026-05-13T06:27:31Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1635-verifier-z3-u64-keys",
+      "claimed_at": "2026-05-13T06:32:27Z"
     }
   }
 }

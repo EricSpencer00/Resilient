@@ -242,7 +242,19 @@ pub fn prove_with_axioms_and_timeout(
     // `HashMap`'s nondeterministic iteration order — otherwise the
     // cache would miss on semantically equal queries.
     let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
-    let key = format!("{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}");
+    let key = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::fmt::Write;
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        let mut w = HasherWriter(&mut h);
+        // Ignored — `HasherWriter::write_str` is infallible.
+        let _ = write!(
+            &mut w,
+            "{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}"
+        );
+        h.finish()
+    };
     if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return cached;
     }
@@ -257,37 +269,58 @@ pub fn prove_with_axioms_and_timeout(
 thread_local! {
     /// RES-1206: see `prove_with_axioms_and_timeout`. Stays the lifetime
     /// of the thread; reset between top-level compiles isn't needed
-    /// because the key includes the full input, so stale entries can
-    /// only be re-hit by an identical query (which would be correct
-    /// either way).
+    /// because the key fully identifies the input, so stale entries
+    /// can only be re-hit by an identical query (which would be
+    /// correct either way).
+    ///
+    /// RES-1635: key is a `u64` hash streamed from the same Debug
+    /// format the original String-keyed cache used. Same uniqueness
+    /// guarantees, but each lookup skips the per-call `String`
+    /// allocation that the format-then-store-then-hash sequence
+    /// paid before.
     #[allow(clippy::type_complexity)]
     static Z3_VERDICT_CACHE: std::cell::RefCell<
         std::collections::HashMap<
-            String,
+            u64,
             (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
         >,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 
-    /// RES-1309: thread-local cache for the tautology-only fast path.
-    /// Disjoint key namespace from `Z3_VERDICT_CACHE` (the keys carry
-    /// a `|TAUT` suffix). Same persistence rules: lifetime of the
-    /// thread, no inter-compilation reset needed because the key
-    /// includes the full input.
+    /// RES-1309 / RES-1635: thread-local cache for the tautology-only
+    /// fast path. Disjoint key namespace from `Z3_VERDICT_CACHE` (the
+    /// hash input ends with a `|TAUT` discriminator).
     #[allow(clippy::type_complexity)]
     static Z3_TAUTOLOGY_CACHE: std::cell::RefCell<
-        std::collections::HashMap<String, (bool, Option<ProofCertificate>, bool)>,
+        std::collections::HashMap<u64, (bool, Option<ProofCertificate>, bool)>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 
-    /// RES-1316: thread-local cache for the BV32 entry point.
-    /// Disjoint key namespace (`|BV` suffix) from the LIA verdict
-    /// cache and the tautology cache. Same persistence rules.
+    /// RES-1316 / RES-1635: thread-local cache for the BV32 entry
+    /// point. Disjoint key namespace (`|BV` suffix).
     #[allow(clippy::type_complexity)]
     static Z3_BV_CACHE: std::cell::RefCell<
         std::collections::HashMap<
-            String,
+            u64,
             (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
         >,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// RES-1635: a `fmt::Write` adapter that streams formatted bytes
+/// directly into a `Hasher` instead of an intermediate `String`.
+/// Used by the cache-key construction sites in `prove_with_axioms_
+/// and_timeout`, `prove_tautology_with_axioms_and_timeout`, and
+/// `prove_bv` to avoid the per-call `format!` allocation. Same
+/// bytes hashed as the old `format!("...").into_bytes() → hash`
+/// pipeline, so identical inputs still produce identical u64 keys
+/// even after rebuilds.
+struct HasherWriter<'h>(&'h mut std::collections::hash_map::DefaultHasher);
+
+impl<'h> std::fmt::Write for HasherWriter<'h> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        use std::hash::Hasher;
+        self.0.write(s.as_bytes());
+        Ok(())
+    }
 }
 
 fn prove_with_axioms_and_timeout_in(
@@ -501,7 +534,18 @@ pub fn prove_tautology_with_axioms_and_timeout(
     // deterministic ordering, and a `|TAUT` suffix so the cache key
     // namespace stays disjoint from the verdict cache.
     let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
-    let key = format!("{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}|TAUT");
+    let key = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::fmt::Write;
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        let mut w = HasherWriter(&mut h);
+        let _ = write!(
+            &mut w,
+            "{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}|TAUT"
+        );
+        h.finish()
+    };
     if let Some(cached) = Z3_TAUTOLOGY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return cached;
     }
@@ -641,7 +685,15 @@ pub fn prove_bv(
     // the other caches; suffix `|BV` keeps the namespace disjoint
     // from `|TAUT` and the unsuffixed LIA cache.
     let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
-    let key = format!("{expr:?}|{bindings_sorted:?}|{timeout_ms}|BV");
+    let key = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::fmt::Write;
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        let mut w = HasherWriter(&mut h);
+        let _ = write!(&mut w, "{expr:?}|{bindings_sorted:?}|{timeout_ms}|BV");
+        h.finish()
+    };
     if let Some(cached) = Z3_BV_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return cached;
     }
