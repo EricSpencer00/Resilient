@@ -3984,7 +3984,10 @@ impl TypeChecker {
                     crate::newtypes::check(program, source_path)?;
                 }
                 crate::traits::check(program, source_path)?;
-                crate::region_inference::infer(program, source_path)?;
+                // RES-1611: `region_inference::infer` is a no-op stub
+                // (`Ok(())`); the real region-aliasing logic lives in
+                // `check_call_site_region_aliasing` which runs from a
+                // different path. Drop the per-typecheck dispatch.
                 // Ralph-Loop-Uniqueness #1: watchdog-feed enforcement.
                 // RES-1585 gate: pass scans param types ∈ WATCHDOG_TYPES.
                 if markers.any_param_type_in(&["Watchdog", "&Watchdog", "&mut Watchdog"]) {
