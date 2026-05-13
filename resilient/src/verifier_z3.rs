@@ -130,6 +130,30 @@ fn try_const_int(expr: &Node) -> Option<i64> {
                         l.checked_rem(r)
                     }
                 }
+                // RES-1678: bitwise ops over integer literals. `&`,
+                // `|`, `^` are identical in LIA i64 and BV32 (no
+                // overflow). Shifts use checked_shl / checked_shr so
+                // out-of-range shift amounts (negative, or >= 64)
+                // return None and let Z3 see the original expression
+                // — preserves soundness even though BV32 wraps and
+                // i64 doesn't.
+                "&" => Some(l & r),
+                "|" => Some(l | r),
+                "^" => Some(l ^ r),
+                "<<" => {
+                    if !(0..64).contains(&r) {
+                        None
+                    } else {
+                        l.checked_shl(r as u32)
+                    }
+                }
+                ">>" => {
+                    if !(0..64).contains(&r) {
+                        None
+                    } else {
+                        l.checked_shr(r as u32)
+                    }
+                }
                 _ => None,
             }
         }
@@ -4127,12 +4151,15 @@ mod tests {
     }
 
     /// RES-1675: `try_const_int` falls through on free variables and
-    /// non-arithmetic operators.
+    /// non-arithmetic operators. (RES-1678 added bitwise ops; this
+    /// test uses comparison operators which don't fold to i64.)
     #[test]
     fn const_int_falls_through_on_non_arith() {
         assert_eq!(try_const_int(&ident("x")), None);
         assert_eq!(try_const_int(&infix(int(5), "+", ident("x"))), None);
-        assert_eq!(try_const_int(&infix(int(5), "<<", int(2))), None);
+        // Comparison operators don't fold to i64.
+        assert_eq!(try_const_int(&infix(int(5), "==", int(2))), None);
+        assert_eq!(try_const_int(&infix(int(5), "<", int(2))), None);
     }
 
     /// RES-1675: nested arithmetic folds end-to-end.
@@ -4182,6 +4209,61 @@ mod tests {
         assert_eq!(
             after.verdict_misses, before.verdict_misses,
             "arithmetic-folded comparisons must not consult Z3"
+        );
+    }
+
+    /// RES-1678: `try_const_int` folds bitwise AND, OR, XOR.
+    #[test]
+    fn const_int_folds_bitwise_and_or_xor() {
+        // 0xF0 & 0x0F = 0
+        assert_eq!(try_const_int(&infix(int(0xF0), "&", int(0x0F))), Some(0));
+        // 0xF0 | 0x0F = 0xFF
+        assert_eq!(try_const_int(&infix(int(0xF0), "|", int(0x0F))), Some(0xFF));
+        // 0xFF ^ 0x0F = 0xF0
+        assert_eq!(try_const_int(&infix(int(0xFF), "^", int(0x0F))), Some(0xF0));
+    }
+
+    /// RES-1678: `try_const_int` folds left and right shifts.
+    #[test]
+    fn const_int_folds_shifts() {
+        // 1 << 4 = 16
+        assert_eq!(try_const_int(&infix(int(1), "<<", int(4))), Some(16));
+        // 16 >> 2 = 4
+        assert_eq!(try_const_int(&infix(int(16), ">>", int(2))), Some(4));
+        // 7 << 0 = 7 (identity)
+        assert_eq!(try_const_int(&infix(int(7), "<<", int(0))), Some(7));
+    }
+
+    /// RES-1678: out-of-range shifts return None — the result would
+    /// differ between LIA i64 (panic / poison) and BV32 (defined as
+    /// implementation-specific or shift mod 32). Letting Z3 see the
+    /// expression preserves soundness.
+    #[test]
+    fn const_int_returns_none_on_out_of_range_shift() {
+        assert_eq!(try_const_int(&infix(int(1), "<<", int(64))), None);
+        assert_eq!(try_const_int(&infix(int(1), "<<", int(100))), None);
+        assert_eq!(try_const_int(&infix(int(1), "<<", int(-1))), None);
+        assert_eq!(try_const_int(&infix(int(1), ">>", int(64))), None);
+        assert_eq!(try_const_int(&infix(int(1), ">>", int(-1))), None);
+    }
+
+    /// RES-1678: a bitwise-folded comparison short-circuits the LIA
+    /// prove path — no Z3 round trip needed.
+    #[test]
+    fn const_eval_bitwise_comparison_short_circuits_z3() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        // (1 << 4) == 16 → true
+        let shift = infix(int(1), "<<", int(4));
+        assert_eq!(prove(&infix(shift, "==", int(16)), &no_b), Some(true));
+        // (0xF0 & 0x0F) == 0 → true
+        let masked = infix(int(0xF0), "&", int(0x0F));
+        assert_eq!(prove(&infix(masked, "==", int(0)), &no_b), Some(true));
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "bitwise-folded comparisons must not consult Z3"
         );
     }
 }
