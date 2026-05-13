@@ -62,7 +62,10 @@ pub fn score_program(program: &Node) -> Vec<ResilienceScore> {
         collect_call_names(&s.node, &mut call_refs);
     }
 
-    let mut out = Vec::new();
+    // RES-1756: pre-size to stmts.len() — one push per top-level
+    // function, upper-bounded by stmts.len(). Same pattern as the
+    // semantic_regression / vibe_debt pre-sizes.
+    let mut out = Vec::with_capacity(stmts.len());
     for s in stmts {
         if let Node::Function {
             name,
