@@ -100,10 +100,6 @@
       "branch": "res-1396-inline-chunk-fast-reject",
       "claimed_at": "2026-05-12T09:48:19Z"
     },
-    "resilient/src/default_params.rs": {
-      "branch": "res-1475-default-params-skip-no-defaults",
-      "claimed_at": "2026-05-12T11:56:23Z"
-    },
     "resilient/src/lsp_server.rs": {
       "branch": "res-1531-lsp-completion-lazy-clone",
       "claimed_at": "2026-05-12T14:20:00Z"
@@ -335,6 +331,10 @@
     "resilient/src/named_args.rs": {
       "branch": "res-1794-infer-named-args-presize",
       "claimed_at": "2026-05-13T12:47:28Z"
+    },
+    "resilient/src/default_params.rs": {
+      "branch": "res-1800-default-params-sigs-presize",
+      "claimed_at": "2026-05-13T12:56:39Z"
     }
   }
 }
