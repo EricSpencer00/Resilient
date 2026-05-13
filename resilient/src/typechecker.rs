@@ -4226,7 +4226,15 @@ impl TypeChecker {
                 // stub for a future feature.
                 // RES-1597: `labeled_break::check` is a no-op stub; the
                 // parser already enforces label well-formedness.
-                crate::fmt_validation::check(program, source_path)?;
+                // RES-1606 gate: pass scans for `CallExpression` whose
+                // function is the `format` identifier — same shape as
+                // RES-1598's `coverage_warnings` gate on `"Err"`.
+                // `markers.call_idents` already records every such ident
+                // from the shared whole-AST walk (RES-1593), so the gate
+                // is an O(1) HashSet lookup.
+                if markers.call_idents.contains("format") {
+                    crate::fmt_validation::check(program, source_path)?;
+                }
                 crate::no_panic_cert::check(program, source_path)?;
                 crate::ai_threat_model::check(program, source_path)?;
                 // RES-1597: `lean_spec::check` is a no-op stub; Lean

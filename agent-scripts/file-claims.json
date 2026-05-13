@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1605-drop-4-dead",
-      "claimed_at": "2026-05-13T05:29:46Z"
+      "branch": "res-1606-gate-fmt-validation",
+      "claimed_at": "2026-05-13T05:32:23Z"
     }
   }
 }
