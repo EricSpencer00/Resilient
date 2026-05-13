@@ -132,10 +132,6 @@
       "branch": "res-1544-blame-attribution-callers-borrow",
       "claimed_at": "2026-05-12T14:23:18Z"
     },
-    "resilient/src/type_aliases.rs": {
-      "branch": "res-1537-type-aliases-borrow",
-      "claimed_at": "2026-05-12T15:11:20Z"
-    },
     "resilient/src/termination.rs": {
       "branch": "res-1538-termination-fn-info-borrow",
       "claimed_at": "2026-05-12T15:15:14Z"
@@ -327,6 +323,14 @@
     "resilient/src/sum_types.rs": {
       "branch": "res-1788-rate-limit-presize",
       "claimed_at": "2026-05-13T12:35:40Z"
+    },
+    "resilient/src/type_aliases.rs": {
+      "branch": "res-1790-type-aliases-tuples-presize",
+      "claimed_at": "2026-05-13T12:39:38Z"
+    },
+    "resilient/src/tuples.rs": {
+      "branch": "res-1790-type-aliases-tuples-presize",
+      "claimed_at": "2026-05-13T12:39:38Z"
     }
   }
 }

@@ -93,7 +93,9 @@ pub(crate) fn parse_paren_or_tuple(parser: &mut Parser) -> Option<Node> {
 pub(crate) fn parse_let_tuple_destructure(parser: &mut Parser, stmt_span: Span) -> Node {
     parser.next_token(); // skip `(`
 
-    let mut names: Vec<String> = Vec::new();
+    // RES-1790: pre-size to 4 — tuple destructure `let (a, b, c, d) = ...`
+    // typically binds 2-4 names.
+    let mut names: Vec<String> = Vec::with_capacity(4);
     let mut first = true;
     loop {
         if parser.current_token == Token::RightParen {
