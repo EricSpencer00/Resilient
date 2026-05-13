@@ -385,7 +385,11 @@ fn bytes_lit(lex: &mut logos::Lexer<Tok>) -> Vec<u8> {
     // trailing `"`.
     let slice = lex.slice();
     let inner = &slice[2..slice.len().saturating_sub(1)];
-    let mut out: Vec<u8> = Vec::new();
+    // RES-1778: pre-size to inner.len() — each unescaped char yields
+    // one byte; escape sequences (`\n`, `\xNN`) yield one byte but
+    // consume 2-4 source chars, so this is an upper bound that
+    // slightly over-allocates only for escape-heavy literals.
+    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
     let mut chars = inner.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\\' {
