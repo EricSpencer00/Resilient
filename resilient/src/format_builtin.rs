@@ -34,7 +34,11 @@ pub enum FormatSegment {
 /// error. Previously the parser silently emitted an empty
 /// `Placeholder("")`, masking malformed templates.
 pub fn parse_template(s: &str) -> Result<Vec<FormatSegment>, String> {
-    let mut out = Vec::new();
+    // RES-1778: pre-size to (placeholder-count * 2 + 1) — at most one
+    // Literal per `{...}` placeholder plus a trailing Literal, so this
+    // matches the typical 1-3-placeholder shape. fmt_validation calls
+    // this on every `format(...)` expression at typecheck time.
+    let mut out = Vec::with_capacity(s.matches('{').count() * 2 + 1);
     let mut buf = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
