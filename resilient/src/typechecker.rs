@@ -4036,10 +4036,18 @@ impl TypeChecker {
                 // (impure builtin, unannotated user-fn call, etc.).
                 // Failures prepend the same file:line:col prefix as
                 // above so users land on the violating site.
-                check_program_purity(statements, source_path)?;
-
-                // RES-389: effect-annotation enforcement.
-                check_program_effects(statements, source_path)?;
+                //
+                // RES-1671 gate: both purity (RES-191) and effects
+                // (RES-389) bail at their internal RES-1296 fast-reject
+                // when no `@pure` fn exists. Markers already computed
+                // that signal during the shared whole-AST scan above —
+                // skip both passes entirely when the marker is false.
+                // Each pass's internal fast-reject stays as defense in
+                // depth for callers that bypass Markers.
+                if markers.has_pure_fn {
+                    check_program_purity(statements, source_path)?;
+                    check_program_effects(statements, source_path)?;
+                }
 
                 // RES-385: single-use enforcement for linear types.
                 // RES-1669 gate: the pass walks the whole program looking
