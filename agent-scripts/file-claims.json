@@ -252,9 +252,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/verifier_liveness.rs": {
-      "branch": "res-1730-liveness-presize",
-      "claimed_at": "2026-05-13T10:38:59Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1732-actor-commute-presize",
+      "claimed_at": "2026-05-13T10:42:32Z"
     }
   }
 }

@@ -2411,7 +2411,15 @@ pub struct ActorVerification {
 /// `receive` handlers in the given actor. See module docs above
 /// for the semantic contract.
 pub fn check_actor_commutativity(actor_name: &str, handlers: &[ActorHandler]) -> ActorVerification {
-    let mut pairs: Vec<(String, String, CommutativityResult)> = Vec::new();
+    // RES-1732: pre-size to N*(N-1)/2 — exact pair count. For an
+    // actor with 4 handlers, 6 pairs; with 8 handlers, 28 pairs.
+    // The original `Vec::new()` doubled from 0, paying multiple
+    // reallocations on the inner-loop push.
+    let cap = handlers
+        .len()
+        .saturating_mul(handlers.len().saturating_sub(1))
+        / 2;
+    let mut pairs: Vec<(String, String, CommutativityResult)> = Vec::with_capacity(cap);
     for i in 0..handlers.len() {
         for j in (i + 1)..handlers.len() {
             let a = &handlers[i];
