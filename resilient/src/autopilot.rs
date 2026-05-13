@@ -42,7 +42,9 @@ pub fn run(program: &Node) -> AutopilotReport {
     let vibe = crate::vibe_debt::analyze(program);
     let inferred = crate::contract_inference::infer_program(program);
 
-    let mut entries = Vec::new();
+    // RES-1758: pre-size to scores.len() — exactly one push per
+    // score entry, exact bound.
+    let mut entries = Vec::with_capacity(scores.len());
     for s in &scores {
         let v = vibe
             .entries

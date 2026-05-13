@@ -231,6 +231,18 @@
     "resilient/src/lean_spec.rs": {
       "branch": "res-1756-program-collect-presize",
       "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/autopilot.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
+    },
+    "resilient/src/iterator_protocol.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
+    },
+    "resilient/src/semver_behavior.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:38:11Z"
     }
   }
 }
