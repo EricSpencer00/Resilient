@@ -123,7 +123,10 @@ pub(crate) fn parse(parser: &mut crate::Parser) -> Node {
     parser.next_token();
 
     // Parse children array
-    let mut children = Vec::new();
+    // RES-1770: pre-size to 4 — supervisor trees typically have 2-8
+    // children. Same fixed-capacity shape as RES-1768's parser
+    // pre-sizes (no upstream count available).
+    let mut children = Vec::with_capacity(4);
     while parser.current_token != Token::RightBracket && parser.current_token != Token::Eof {
         // Parse child object: { id: "name", fn: fn_name, restart: restart_type }
         if parser.current_token != Token::LeftBrace {
