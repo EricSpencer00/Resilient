@@ -823,8 +823,13 @@ type ProveCacheEntry = (Option<bool>, Option<String>, Option<String>, bool);
 
 #[cfg(feature = "z3")]
 thread_local! {
+    // RES-1690: pre-size with capacity 64 — same pattern as RES-1688
+    // for the inner Z3 caches. PROVE_CACHE accumulates one entry per
+    // distinct `(clause, bindings, theory, timeout)` tuple within a
+    // single typecheck; programs with ~100 obligations would otherwise
+    // pay 5-6 rehashes per typecheck.
     static PROVE_CACHE: std::cell::RefCell<std::collections::HashMap<u64, ProveCacheEntry>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+        std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
 }
 
 /// RES-1631: reset the within-run Z3 proof cache. Called from
