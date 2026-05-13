@@ -22946,7 +22946,18 @@ impl Interpreter {
     /// `self.consts` (behind an `Rc`) so every sub-interpreter created
     /// for function calls sees the same set of constants.
     fn const_eval_program(&mut self, statements: &[span::Spanned<Node>]) -> RResult<()> {
-        let mut resolved: HashMap<String, Value> = HashMap::new();
+        // Pre-size `resolved` to the actual `Node::Const` count — same
+        // shape as `compile::fn_count` (RES-1461), `pure_fns`
+        // (RES-1796), and `collect_fn_effects::out` (RES-1734): one
+        // linear pre-scan to skip the default 0 → 3 → 7 → 14 → 28 ...
+        // bucket-grow cascade. Non-Const statements contribute zero so
+        // a `statements.len()` over-estimate would over-allocate for
+        // programs with many fns and few consts.
+        let const_count = statements
+            .iter()
+            .filter(|s| matches!(&s.node, Node::Const { .. }))
+            .count();
+        let mut resolved: HashMap<String, Value> = HashMap::with_capacity(const_count);
 
         for stmt in statements {
             let Node::Const { name, value, .. } = &stmt.node else {
