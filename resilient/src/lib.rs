@@ -23995,7 +23995,10 @@ impl Interpreter {
     }
 
     fn eval_expressions(&mut self, expressions: &[Node]) -> RResult<Vec<Value>> {
-        let mut result = Vec::new();
+        // RES-1828: pre-size to expressions.len() — exactly one push
+        // per expression on the happy path. Hot: every CallExpression
+        // and tuple-literal evaluation goes through here.
+        let mut result = Vec::with_capacity(expressions.len());
 
         for expr in expressions {
             let value = self.eval(expr)?;
@@ -24331,7 +24334,9 @@ impl Interpreter {
                 if *has_rest && fields.is_empty() {
                     return Ok(Some(vec![]));
                 }
-                let mut bindings = Vec::new();
+                // RES-1828: pre-size to fields.len() — each sub-pattern
+                // contributes at least one binding on the happy path.
+                let mut bindings = Vec::with_capacity(fields.len());
                 for (fname, sub) in fields {
                     let Some((_, fv)) = val_fields.iter().find(|(n, _)| n == fname) else {
                         return Ok(None);
@@ -24373,7 +24378,9 @@ impl Interpreter {
                 if pat_items.len() != val_items.len() {
                     return Ok(None);
                 }
-                let mut bindings = Vec::new();
+                // RES-1828: pre-size to pat_items.len() — each
+                // sub-pattern contributes at least one binding.
+                let mut bindings = Vec::with_capacity(pat_items.len());
                 for (sub, fv) in pat_items.iter().zip(val_items.iter()) {
                     match self.match_pattern(sub, fv)? {
                         None => return Ok(None),
@@ -24403,7 +24410,9 @@ impl Interpreter {
                 if fields.len() != vfields.len() {
                     return Ok(None);
                 }
-                let mut bindings = Vec::new();
+                // RES-1828: pre-size to fields.len() — same shape as
+                // the other match_pattern bindings.
+                let mut bindings = Vec::with_capacity(fields.len());
                 for (i, sub) in fields.iter().enumerate() {
                     let key = i.to_string();
                     let Some((_, fv)) = vfields.iter().find(|(n, _)| n == &key) else {
@@ -24524,7 +24533,9 @@ impl Interpreter {
                         EnumPatternPayload::Named(pat_fields),
                         EnumValuePayload::Named(val_fields),
                     ) => {
-                        let mut bindings = Vec::new();
+                        // RES-1828: pre-size to pat_fields.len() — one
+                        // sub-pattern per named payload field.
+                        let mut bindings = Vec::with_capacity(pat_fields.len());
                         for (fname, sub) in pat_fields {
                             let Some((_, fv)) = val_fields.iter().find(|(n, _)| n == fname) else {
                                 return Ok(None);
@@ -24540,7 +24551,9 @@ impl Interpreter {
                         if pat_items.len() != val_items.len() {
                             return Ok(None);
                         }
-                        let mut bindings = Vec::new();
+                        // RES-1828: pre-size to pat_items.len() — one
+                        // sub-pattern per tuple-payload position.
+                        let mut bindings = Vec::with_capacity(pat_items.len());
                         for (sub, fv) in pat_items.iter().zip(val_items.iter()) {
                             match self.match_pattern(sub, fv)? {
                                 None => return Ok(None),
