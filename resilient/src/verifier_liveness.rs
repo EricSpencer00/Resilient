@@ -106,7 +106,15 @@ pub(crate) fn verify_actor_liveness(
     receive_handlers: &[ReceiveHandler],
     timeout_ms: u32,
 ) -> Vec<LivenessObligation> {
-    let mut out = Vec::new();
+    // RES-1730: pre-size to a generous upper bound. Each eventually
+    // clause emits 1-3 obligations (target-handler missing/found,
+    // ranking-fn proofs across other handlers). Capacity sized for
+    // the common case — overshoot is bounded by the eventually-clause
+    // count which is typically 1-2 per actor.
+    let cap = eventually_clauses
+        .len()
+        .saturating_mul(2 + receive_handlers.len());
+    let mut out = Vec::with_capacity(cap);
 
     // MVP: single `state` field (same shape constraint the `always`
     // verifier enforces). Actors without state have nothing to
