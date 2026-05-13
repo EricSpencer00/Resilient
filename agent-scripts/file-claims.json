@@ -264,13 +264,9 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "resilient/src/pass_gate.rs": {
-      "branch": "res-1593-deep-ast-gate",
-      "claimed_at": "2026-05-13T05:06:52Z"
-    },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1593-deep-ast-gate",
-      "claimed_at": "2026-05-13T05:06:52Z"
+      "branch": "res-1597-drop-dead-passes",
+      "claimed_at": "2026-05-13T05:14:59Z"
     }
   }
 }

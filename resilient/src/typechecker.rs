@@ -4164,7 +4164,10 @@ impl TypeChecker {
                 crate::wcet_contracts::check(program, source_path)?;
                 crate::distributed_invariants::check(program, source_path)?;
                 crate::ghost_types::check(program, source_path)?;
-                crate::incremental_verify::check(program, source_path)?;
+                // RES-1597: `incremental_verify::check` is a documented
+                // no-op (`Ok(())`) until the cache lookup-side is wired
+                // — see the RES-1210 comment in `incremental_verify.rs`.
+                // Skip the dispatch until that lands.
                 crate::property_tests::check(program, source_path)?;
                 crate::mmio_regmap::check(program, source_path)?;
                 crate::power_contracts::check(program, source_path)?;
@@ -4180,20 +4183,27 @@ impl TypeChecker {
                 crate::const_fn::check(program, source_path)?;
                 crate::macros::check(program, source_path)?;
                 crate::full_modules::check(program, source_path)?;
-                crate::package_manager::check(program, source_path)?;
+                // RES-1597: `package_manager::check` is a no-op stub;
+                // manifest parsing happens elsewhere.
                 crate::iterator_protocol::check(program, source_path)?;
-                crate::mutation_testing::check(program, source_path)?;
-                crate::causal_trace::check(program, source_path)?;
-                crate::snapshot_regression::check(program, source_path)?;
+                // RES-1597: `mutation_testing::check` is a no-op stub;
+                // mutation generation only fires from a CLI subcommand.
+                // RES-1597: `causal_trace::check` is a no-op stub; trace
+                // replay only runs at runtime, not during type-check.
+                // RES-1597: `snapshot_regression::check` is a no-op stub;
+                // snapshot diffing only fires from the test harness.
                 crate::coverage_warnings::check(program, source_path)?;
                 crate::param_destructuring::check(program, source_path)?;
                 crate::format_builtin::check(program, source_path)?;
-                crate::struct_exhaustiveness::check(program, source_path)?;
-                crate::labeled_break::check(program, source_path)?;
+                // RES-1597: `struct_exhaustiveness::check` is a no-op
+                // stub for a future feature.
+                // RES-1597: `labeled_break::check` is a no-op stub; the
+                // parser already enforces label well-formedness.
                 crate::fmt_validation::check(program, source_path)?;
                 crate::no_panic_cert::check(program, source_path)?;
                 crate::ai_threat_model::check(program, source_path)?;
-                crate::lean_spec::check(program, source_path)?;
+                // RES-1597: `lean_spec::check` is a no-op stub; Lean
+                // export is driven by the `--emit-lean-spec` CLI flag.
                 // </EXTENSION_PASSES>
 
                 // RES-192: IO-effect inference. Binary lattice
