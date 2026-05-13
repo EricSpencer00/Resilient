@@ -4227,15 +4227,17 @@ impl TypeChecker {
                 // RES-1619: `resilience_score::check` is a no-op stub
                 // (RES-1206); real `score_program` runs from the
                 // `--score` CLI flag and external integrators.
-                crate::vibe_debt::check(program, source_path)?;
+                // RES-1623: `vibe_debt::check` is a no-op stub
+                // (RES-1206); real `analyze` runs from `autopilot::run`.
                 // RES-1619: `behavioral_fingerprint::check` is a no-op
                 // stub (RES-1206); real `fingerprint_program` runs
                 // from `--check-fingerprints` and external integrators.
                 // RES-1619: `contract_inference::check` is a no-op stub
                 // (RES-1206); real `infer_program` runs from
                 // `--suggest-contracts` and external integrators.
-                crate::semantic_regression::check(program, source_path)?;
-                crate::semver_behavior::check(program, source_path)?;
+                // RES-1623: `semantic_regression::check` is a no-op
+                // stub; real diff runs from the test harness.
+                // RES-1623: `semver_behavior::check` is a no-op stub.
                 crate::blame_attribution::check(program, source_path)?;
                 // RES-1619: `autopilot::check` is a no-op stub; the
                 // `--autopilot` CLI flag drives the actual `run()`.
@@ -4259,7 +4261,9 @@ impl TypeChecker {
                 // no-op (`Ok(())`) until the cache lookup-side is wired
                 // — see the RES-1210 comment in `incremental_verify.rs`.
                 // Skip the dispatch until that lands.
-                crate::property_tests::check(program, source_path)?;
+                // RES-1623: `property_tests::check` is a no-op stub
+                // (RES-1206); real `collect` runs from the
+                // `--run-property-tests` driver.
                 crate::mmio_regmap::check(program, source_path)?;
                 crate::power_contracts::check(program, source_path)?;
                 crate::stack_contracts::check(program, source_path)?;
