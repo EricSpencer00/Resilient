@@ -233,21 +233,25 @@ fn try_const_eval_bool(expr: &Node) -> Option<bool> {
                     _ => None,
                 };
             }
-            // RES-1680: BooleanLiteral-vs-BooleanLiteral equality
-            // / disequality. Appears after constant propagation on
-            // boolean values (e.g. `flag == true` where `flag` was
-            // inlined to `true`). Other operators (`&&`, `||`,
-            // `<`/`<=`/...) fall through to the bool-combinator
-            // arm below — `BooleanLiteral(true) && BooleanLiteral(true)`
+            // RES-1680 / RES-1684: generalized boolean-comparison
+            // fold. When the operator is `==` or `!=`, recursively
+            // fold both sides as bool expressions; if both fold,
+            // return the comparison verdict directly. Subsumes the
+            // pre-RES-1684 BoolLit-vs-BoolLit arm and also catches
+            // mixed shapes like `(x == x) == true` (left folds via
+            // RES-1673 reflexive, right is a bool literal).
+            //
+            // Termination: the recursion strictly shrinks the AST
+            // subtree so we always halt at the leaf level.
+            //
+            // Other operators (`&&`, `||`, `<`, ...) fall through to
+            // the bool-combinator arm below — `BoolLit(true) && BoolLit(true)`
             // must still fold via the `&&` combinator path.
-            if let (Node::BooleanLiteral { value: a, .. }, Node::BooleanLiteral { value: b, .. }) =
-                (left.as_ref(), right.as_ref())
+            if matches!(operator.as_str(), "==" | "!=")
+                && let (Some(la), Some(rb)) =
+                    (try_const_eval_bool(left), try_const_eval_bool(right))
             {
-                match operator.as_str() {
-                    "==" => return Some(a == b),
-                    "!=" => return Some(a != b),
-                    _ => {} // fall through to bool combinator arm
-                }
+                return Some(if operator == "==" { la == rb } else { la != rb });
             }
             // Boolean combinators — recurse to fold known sides,
             // short-circuiting before the other side has to fold.
@@ -4421,6 +4425,74 @@ mod tests {
         assert_eq!(
             after.bv_misses, before.bv_misses,
             "Z3Theory::Bv must not force BV dispatch for foldable inputs"
+        );
+    }
+
+    /// RES-1684: generalized fold catches `(x == x) == true` — left
+    /// folds via RES-1673 reflexive Identifier, right is a bool
+    /// literal, the outer `==` compares them.
+    #[test]
+    fn const_eval_reflexive_compared_to_bool_literal_folds() {
+        let reflexive_eq = infix(ident("x"), "==", ident("x")); // → true
+        assert_eq!(
+            try_const_eval_bool(&infix(reflexive_eq.clone(), "==", bool_lit(true))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(reflexive_eq.clone(), "==", bool_lit(false))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(reflexive_eq, "!=", bool_lit(false))),
+            Some(true)
+        );
+    }
+
+    /// RES-1684: generalized fold catches `(5 > 3) != false` — left
+    /// folds via int-literal comparison.
+    #[test]
+    fn const_eval_int_compare_compared_to_bool_literal_folds() {
+        let int_gt = infix(int(5), ">", int(3)); // → true
+        assert_eq!(
+            try_const_eval_bool(&infix(int_gt.clone(), "==", bool_lit(true))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(int_gt, "!=", bool_lit(true))),
+            Some(false)
+        );
+    }
+
+    /// RES-1684: both sides may be compound bool expressions —
+    /// `(5 > 3) == (10 == 10)` folds to true. Validates that the
+    /// recursion bottoms out at the leaves on both sides.
+    #[test]
+    fn const_eval_compound_bool_equality_folds() {
+        let lhs = infix(int(5), ">", int(3)); // → true
+        let rhs = infix(int(10), "==", int(10)); // → true
+        assert_eq!(
+            try_const_eval_bool(&infix(lhs.clone(), "==", rhs.clone())),
+            Some(true)
+        );
+        let rhs_false = infix(int(10), "<", int(5)); // → false
+        assert_eq!(
+            try_const_eval_bool(&infix(lhs, "==", rhs_false)),
+            Some(false)
+        );
+    }
+
+    /// RES-1684: when either side does NOT fold (free variable), the
+    /// generalized fold returns None and the caller falls through to
+    /// Z3.
+    #[test]
+    fn const_eval_generalized_falls_through_on_non_foldable_side() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "==", ident("flag"))),
+            None
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("a"), "==", ident("b"))),
+            None
         );
     }
 }
