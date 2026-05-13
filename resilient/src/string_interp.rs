@@ -87,7 +87,11 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
                 }
 
                 // Collect source up to the matching `}`.
-                let mut expr_src = String::new();
+                // RES-1822: pre-size to 16 — typical interpolation
+                // expressions are 5-30 chars (`name`, `arr[i]`,
+                // `x + 1`). Saves the 0→8→16→… doubling chain on
+                // every placeholder collected.
+                let mut expr_src = String::with_capacity(16);
                 let mut found_close = false;
                 for inner in chars.by_ref() {
                     if inner == '}' {
