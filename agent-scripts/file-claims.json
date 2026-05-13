@@ -32,10 +32,6 @@
       "branch": "res-1217-handler-suffix-fast-reject",
       "claimed_at": "2026-05-12T02:07:46Z"
     },
-    "resilient/src/rate_limit_static.rs": {
-      "branch": "res-1515-rate-limit-name-borrow",
-      "claimed_at": "2026-05-12T13:18:00Z"
-    },
     "resilient/src/priority_inheritance.rs": {
       "branch": "res-1232-priority-fast-reject",
       "claimed_at": "2026-05-12T02:35:05Z"
@@ -323,6 +319,14 @@
     "resilient/src/default_trait_methods.rs": {
       "branch": "res-1784-attr-collects-3",
       "claimed_at": "2026-05-13T12:28:38Z"
+    },
+    "resilient/src/rate_limit_static.rs": {
+      "branch": "res-1788-rate-limit-presize",
+      "claimed_at": "2026-05-13T12:33:38Z"
+    },
+    "resilient/src/sum_types.rs": {
+      "branch": "res-1788-rate-limit-presize",
+      "claimed_at": "2026-05-13T12:35:40Z"
     }
   }
 }
