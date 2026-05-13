@@ -70,7 +70,11 @@ pub(crate) fn verify_and_capture(tc: &mut crate::typechecker::TypeChecker, progr
     }
     let timeout_ms = tc.verifier_timeout_ms();
     let verbose = tc.verbose_loop_invariants();
-    let mut bindings: HashMap<String, i64> = HashMap::new();
+    // RES-1798: pre-size to 8 — bindings accumulate Let/Const literal-
+    // int bindings as `walk` descends. Programs that reach this point
+    // (have at least one invariant) typically declare 2-10 const
+    // bindings; 8 covers the common case without rehash churn.
+    let mut bindings: HashMap<String, i64> = HashMap::with_capacity(8);
     let mut next_idx = 0usize;
     walk(
         program,
@@ -122,7 +126,9 @@ fn walk(
             // declared inside the fn become bindings just for that
             // fn; the outer caller's bindings are NOT visible (we
             // don't track which globals get shadowed by params).
-            let mut fn_bindings: HashMap<String, i64> = HashMap::new();
+            // RES-1798: pre-size to 8 — same shape as the outer
+            // bindings map. Each fn body opens a fresh scope.
+            let mut fn_bindings: HashMap<String, i64> = HashMap::with_capacity(8);
             walk(body, &mut fn_bindings, tc, next_idx, timeout_ms, verbose);
         }
         Node::LetStatement { name, value, .. } | Node::Const { name, value, .. } => {
