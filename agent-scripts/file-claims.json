@@ -331,6 +331,10 @@
     "resilient/src/verifier_actors.rs": {
       "branch": "res-1808-flatten-body-presize",
       "claimed_at": "2026-05-13T13:17:34Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-1814-vm-locals-presize",
+      "claimed_at": "2026-05-13T13:28:08Z"
     }
   }
 }
