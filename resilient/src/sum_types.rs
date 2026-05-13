@@ -106,8 +106,9 @@ pub(crate) fn parse_enum_decl(parser: &mut Parser) -> Node {
     }
     parser.next_token(); // consume '{'
 
-    let mut variants: Vec<EnumVariant> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    // RES-1788: pre-size both to 4 — typical enum has 2-8 variants.
+    let mut variants: Vec<EnumVariant> = Vec::with_capacity(4);
+    let mut seen: HashSet<String> = HashSet::with_capacity(4);
 
     loop {
         match &parser.current_token {
@@ -210,8 +211,10 @@ fn skip_to_variant_separator(parser: &mut Parser) {
 /// continues parsing.
 fn parse_named_payload(parser: &mut Parser, enum_name: &str, variant_name: &str) -> EnumPayload {
     parser.next_token(); // consume '{'
-    let mut fields: Vec<EnumField> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    // RES-1788: pre-size both to 4 — variant payloads typically have
+    // 1-4 fields.
+    let mut fields: Vec<EnumField> = Vec::with_capacity(4);
+    let mut seen: HashSet<String> = HashSet::with_capacity(4);
     loop {
         match &parser.current_token {
             Token::RightBrace => {
@@ -284,7 +287,8 @@ fn parse_named_payload(parser: &mut Parser, enum_name: &str, variant_name: &str)
 /// Consumes from the `(` through (and including) the closing `)`.
 fn parse_tuple_payload(parser: &mut Parser, enum_name: &str, variant_name: &str) -> EnumPayload {
     parser.next_token(); // consume '('
-    let mut tys: Vec<String> = Vec::new();
+    // RES-1788: pre-size to 2 — tuple variants typically have 1-3 types.
+    let mut tys: Vec<String> = Vec::with_capacity(2);
     loop {
         match &parser.current_token {
             Token::RightParen => {
@@ -362,7 +366,8 @@ fn parse_payload_type(parser: &mut Parser) -> Option<String> {
 /// payload field under the same identifier.
 pub(crate) fn parse_named_pattern_payload(parser: &mut Parser) -> EnumPatternPayload {
     parser.next_token(); // past `{`
-    let mut fields: Vec<(String, Box<Pattern>)> = Vec::new();
+    // RES-1788: pre-size to 4 — pattern payloads typically bind 1-4 fields.
+    let mut fields: Vec<(String, Box<Pattern>)> = Vec::with_capacity(4);
     loop {
         match &parser.current_token {
             Token::RightBrace => return EnumPatternPayload::Named(fields),
@@ -408,7 +413,8 @@ pub(crate) fn parse_named_pattern_payload(parser: &mut Parser) -> EnumPatternPay
 /// the closing `)`.
 pub(crate) fn parse_tuple_pattern_payload(parser: &mut Parser) -> EnumPatternPayload {
     parser.next_token(); // past `(`
-    let mut subs: Vec<Pattern> = Vec::new();
+    // RES-1788: pre-size to 2 — tuple-variant patterns typically have 1-3 subs.
+    let mut subs: Vec<Pattern> = Vec::with_capacity(2);
     loop {
         match &parser.current_token {
             Token::RightParen => return EnumPatternPayload::Tuple(subs),

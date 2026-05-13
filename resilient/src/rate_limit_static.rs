@@ -54,7 +54,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // when the callee is new, falling back to `get_mut` for repeat
     // hits. Mirrors RES-1495 / RES-1500 / RES-1503 / RES-1507 /
     // RES-1508 / RES-1509 / RES-1511.
-    let mut decls: Vec<&str> = Vec::new();
+    // RES-1788: pre-size decls to stmts.len() (every top-level
+    // statement could be a Function, one push each).
+    let mut decls: Vec<&str> = Vec::with_capacity(stmts.len());
     let mut counts: HashMap<String, usize> = HashMap::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
