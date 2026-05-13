@@ -94,9 +94,12 @@ pub fn detect_cycle(graph: &ModuleGraph) -> Option<Vec<String>> {
         on_stack.pop();
         None
     }
-    let mut visited: HashSet<&str> = HashSet::new();
+    // RES-1786: pre-size both to graph.deps.len() — visited grows
+    // exactly to the module count; stack peaks at module-graph depth
+    // which is bounded by the same count.
+    let mut visited: HashSet<&str> = HashSet::with_capacity(graph.deps.len());
     for start in graph.deps.keys() {
-        let mut stack: Vec<&str> = Vec::new();
+        let mut stack: Vec<&str> = Vec::with_capacity(graph.deps.len());
         if let Some(cycle) = dfs(start.as_str(), graph, &mut stack, &mut visited) {
             return Some(cycle.into_iter().map(str::to_string).collect());
         }

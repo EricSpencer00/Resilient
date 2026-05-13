@@ -223,7 +223,9 @@ fn check_node(node: &Node) -> Result<(), String> {
         ..
     } = node
     {
-        let mut seen = std::collections::HashSet::new();
+        // RES-1786: pre-size to type_params.len() — one insert per
+        // type param on the happy path.
+        let mut seen = std::collections::HashSet::with_capacity(type_params.len());
         for tp in type_params {
             if !seen.insert(tp.as_str()) {
                 return Err(format!(
