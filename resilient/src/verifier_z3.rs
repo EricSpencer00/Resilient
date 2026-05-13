@@ -1878,7 +1878,10 @@ fn extract_counterexample_bv(
     // RES-1704: write directly into one accumulator — same shape as
     // the LIA counterexample fn above.
     use std::fmt::Write;
-    let mut out = String::new();
+    // RES-1712: a typical counterexample has 1-3 idents with short
+    // names + small int values — well under 64 bytes total. Pre-size
+    // to skip the initial 8 / 16 / 32-byte grow steps.
+    let mut out = String::with_capacity(64);
     for name in &idents {
         if bindings.contains_key(*name) {
             continue;
@@ -2016,7 +2019,10 @@ fn extract_counterexample(
     // is mechanical and the join allocation always matched the
     // intermediate Vec's total length anyway.
     use std::fmt::Write;
-    let mut out = String::new();
+    // RES-1712: a typical counterexample has 1-3 idents with short
+    // names + small int values — well under 64 bytes total. Pre-size
+    // to skip the initial 8 / 16 / 32-byte grow steps.
+    let mut out = String::with_capacity(64);
     for name in &idents {
         if bindings.contains_key(*name) {
             continue;
