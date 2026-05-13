@@ -311,6 +311,18 @@
     "resilient/src/traits.rs": {
       "branch": "res-1782-more-collect-presize",
       "claimed_at": "2026-05-13T12:23:31Z"
+    },
+    "resilient/src/hw_state_machine.rs": {
+      "branch": "res-1784-attr-collects-3",
+      "claimed_at": "2026-05-13T12:28:38Z"
+    },
+    "resilient/src/stack_contracts.rs": {
+      "branch": "res-1784-attr-collects-3",
+      "claimed_at": "2026-05-13T12:28:38Z"
+    },
+    "resilient/src/default_trait_methods.rs": {
+      "branch": "res-1784-attr-collects-3",
+      "claimed_at": "2026-05-13T12:28:38Z"
     }
   }
 }

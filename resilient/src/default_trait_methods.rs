@@ -69,7 +69,9 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // default bodies via the `#[derive]`-style attribute companion:
     // any trait method named in `#[default_impl(trait="T", method="m")]`
     // is registered here.
-    let mut items = Vec::new();
+    // RES-1784: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut items = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut trait_name = String::new();
         let mut method_name = item;

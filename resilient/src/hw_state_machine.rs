@@ -25,7 +25,9 @@ static PERIPHERALS: LazyLock<RwLock<HashMap<String, PeripheralSpec>>> =
 
 pub fn collect() -> Vec<PeripheralSpec> {
     let attrs = crate::feature_attrs::find_kind("peripheral");
-    let mut out = Vec::new();
+    // RES-1784: pre-size to attrs.len() — exactly one push per
+    // attribute record.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = PeripheralSpec {
             name: item,
