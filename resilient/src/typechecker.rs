@@ -4025,15 +4025,41 @@ impl TypeChecker {
                 // Ralph-Loop-Uniqueness #13: age-bounded data freshness.
                 crate::age_bounded_data::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #14: rate-limit static.
-                crate::rate_limit_static::check(program, source_path)?;
+                // RES-1590 gate: pass scans fn names with ONCE_SUFFIXES
+                // (`_oncepertick`, `_singleshot`) or FEW_SUFFIX (`_few`).
+                if markers.any_fn_name_with_suffix(&["_oncepertick", "_singleshot", "_few"]) {
+                    crate::rate_limit_static::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #15: stack budget.
-                crate::stack_budget::check(program, source_path)?;
+                // RES-1590 gate: pass scans fn names with `_stack{N}` suffix.
+                if markers.any_fn_name_with_suffix(&["_stack8", "_stack16", "_stack32", "_stack64"])
+                {
+                    crate::stack_budget::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #16: heap budget.
-                crate::heap_budget::check(program, source_path)?;
+                // RES-1590 gate: pass scans fn names with `_alloc{N}` suffix.
+                if markers.any_fn_name_with_suffix(&[
+                    "_alloc0", "_alloc1", "_alloc2", "_alloc3", "_alloc4", "_alloc5",
+                ]) {
+                    crate::heap_budget::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #17: bandwidth budget.
-                crate::bandwidth_budget::check(program, source_path)?;
+                // RES-1590 gate: pass scans fn names with `_iobytes{N}` suffix.
+                if markers.any_fn_name_with_suffix(&[
+                    "_iobytes16",
+                    "_iobytes32",
+                    "_iobytes64",
+                    "_iobytes128",
+                    "_iobytes256",
+                    "_iobytes512",
+                ]) {
+                    crate::bandwidth_budget::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #18: bounded-blocking budget.
-                crate::bounded_blocking::check(program, source_path)?;
+                // RES-1590 gate: pass scans fn names with `_bound{N}` suffix.
+                if markers.any_fn_name_with_suffix(&["_bound1", "_bound2", "_bound4", "_bound8"]) {
+                    crate::bounded_blocking::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #19: audit-log-required mutations.
                 crate::audit_log_required::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #20: degraded mode after critical assert.
@@ -4049,7 +4075,10 @@ impl TypeChecker {
                     crate::crash_only::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #22: idempotent handlers.
-                crate::idempotent_handler::check(program, source_path)?;
+                // RES-1590 gate: pass scans fn names ending in `_idempotent`.
+                if markers.any_fn_name_with_suffix(&["_idempotent"]) {
+                    crate::idempotent_handler::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #23: epoch ordering.
                 crate::epoch_ordering::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #24: priority-inheritance discipline.

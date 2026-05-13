@@ -68,6 +68,20 @@ impl Markers {
             .any(|n| prefixes.iter().any(|p| n.starts_with(p)))
     }
 
+    /// True if any top-level fn name ends with one of `suffixes`.
+    ///
+    /// RES-1590: backs the gate for `bounded_blocking`,
+    /// `idempotent_handler`, `rate_limit_static`, `stack_budget`,
+    /// `heap_budget`, and `bandwidth_budget` — all of which look for
+    /// suffix-tagged fn names (`_bound{N}`, `_idempotent`,
+    /// `_oncepertick`, `_stack{N}`, `_alloc{N}`, `_iobytes{N}`) as
+    /// their entry-point marker.
+    pub(crate) fn any_fn_name_with_suffix(&self, suffixes: &[&str]) -> bool {
+        self.fn_names
+            .iter()
+            .any(|n| suffixes.iter().any(|s| n.ends_with(s)))
+    }
+
     /// True if any top-level fn parameter type is an exact match for
     /// one of `types`.
     pub(crate) fn any_param_type_in(&self, types: &[&str]) -> bool {
@@ -154,6 +168,21 @@ mod tests {
         assert!(m.any_fn_name_with_prefix(&["crash_"]));
         assert!(!m.any_fn_name_with_prefix(&["xyz_"]));
         assert!(m.any_fn_name_with_prefix(&["xyz_", "crash_"]));
+    }
+
+    #[test]
+    fn any_fn_name_with_suffix_matches() {
+        let program = Node::Program(vec![
+            function_stmt("read_buffer_bound2", vec![]),
+            function_stmt("process_idempotent", vec![]),
+            function_stmt("plain", vec![]),
+        ]);
+        let m = Markers::scan(&program);
+        assert!(m.any_fn_name_with_suffix(&["_bound2"]));
+        assert!(m.any_fn_name_with_suffix(&["_idempotent"]));
+        assert!(!m.any_fn_name_with_suffix(&["_zzz"]));
+        // Any matching suffix wins.
+        assert!(m.any_fn_name_with_suffix(&["_zzz", "_bound2", "_other"]));
     }
 
     #[test]
