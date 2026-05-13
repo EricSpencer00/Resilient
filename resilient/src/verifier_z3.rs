@@ -683,6 +683,33 @@ pub fn reset_cache_stats() {
     Z3_CACHE_STATS.with(|s| s.set(Z3CacheStats::default()));
 }
 
+/// RES-1706: identity hasher for `u64` cache keys. The key is already
+/// a high-quality hash from `hash_node_spanless` + SipHash via
+/// `DefaultHasher`; re-hashing it inside the cache HashMap is
+/// wasted work (~5-10 cycles per lookup with SipHash on u64).
+/// Skipping that on ~300 cache touches per typecheck saves ~1.5-3µs.
+#[derive(Default)]
+struct IdentityU64Hasher(u64);
+
+impl std::hash::Hasher for IdentityU64Hasher {
+    fn write(&mut self, _bytes: &[u8]) {
+        // The Z3 cache code only stores `u64` keys, so the byte-write
+        // path is unreachable. If a non-u64 ever flows in, the hash
+        // is intentionally garbage rather than panicking — `finish`
+        // returns 0, every key collides, and the HashMap degrades to
+        // a linear scan. Safer than panicking inside a hash impl.
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n;
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type U64CacheMap<V> =
+    std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<IdentityU64Hasher>>;
+
 thread_local! {
     /// RES-1206: see `prove_with_axioms_and_timeout`. Stays the lifetime
     /// of the thread; reset between top-level compiles isn't needed
@@ -697,29 +724,23 @@ thread_local! {
     /// paid before.
     #[allow(clippy::type_complexity)]
     static Z3_VERDICT_CACHE: std::cell::RefCell<
-        std::collections::HashMap<
-            u64,
-            (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
-        >,
-    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
+        U64CacheMap<(Option<bool>, Option<ProofCertificate>, Option<String>, bool)>,
+    > = std::cell::RefCell::new(U64CacheMap::with_capacity_and_hasher(64, Default::default()));
 
     /// RES-1309 / RES-1635: thread-local cache for the tautology-only
     /// fast path. Disjoint key namespace from `Z3_VERDICT_CACHE` (the
     /// hash input ends with a `|TAUT` discriminator).
     #[allow(clippy::type_complexity)]
     static Z3_TAUTOLOGY_CACHE: std::cell::RefCell<
-        std::collections::HashMap<u64, (bool, Option<ProofCertificate>, bool)>,
-    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
+        U64CacheMap<(bool, Option<ProofCertificate>, bool)>,
+    > = std::cell::RefCell::new(U64CacheMap::with_capacity_and_hasher(64, Default::default()));
 
     /// RES-1316 / RES-1635: thread-local cache for the BV32 entry
     /// point. Disjoint key namespace (`|BV` suffix).
     #[allow(clippy::type_complexity)]
     static Z3_BV_CACHE: std::cell::RefCell<
-        std::collections::HashMap<
-            u64,
-            (Option<bool>, Option<ProofCertificate>, Option<String>, bool),
-        >,
-    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
+        U64CacheMap<(Option<bool>, Option<ProofCertificate>, Option<String>, bool)>,
+    > = std::cell::RefCell::new(U64CacheMap::with_capacity_and_hasher(64, Default::default()));
 }
 
 /// RES-1635: a `fmt::Write` adapter that streams formatted bytes

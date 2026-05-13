@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1704-counterexample-string",
-      "claimed_at": "2026-05-13T09:37:44Z"
+      "branch": "res-1706-identity-hasher-z3-caches",
+      "claimed_at": "2026-05-13T09:43:54Z"
     }
   }
 }
