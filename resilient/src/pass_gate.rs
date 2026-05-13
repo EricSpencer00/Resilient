@@ -114,6 +114,10 @@ pub(crate) struct Markers<'a> {
     /// `eventually_clauses` vector. Used by the `verifier_liveness`
     /// gate (RES-1616).
     pub has_actor_with_eventually: bool,
+    /// True if any `Node::ActorDecl` appears anywhere. Used by the
+    /// actor-invariant Z3 verifier pre-check (RES-1627) to skip
+    /// `collect_actor_obligations` when the program has no actors.
+    pub has_actor_decl: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -202,8 +206,11 @@ impl<'a> Markers<'a> {
             }
             Node::ActorDecl {
                 eventually_clauses, ..
-            } if !eventually_clauses.is_empty() => {
-                m.has_actor_with_eventually = true;
+            } => {
+                m.has_actor_decl = true;
+                if !eventually_clauses.is_empty() {
+                    m.has_actor_with_eventually = true;
+                }
             }
             Node::WhileStatement { invariants, .. } if !invariants.is_empty() => {
                 m.has_while_with_invariants = true;

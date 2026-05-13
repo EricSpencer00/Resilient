@@ -264,13 +264,13 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "benchmarks/compile_time/run.sh": {
-      "branch": "res-1625-bench-typecheck-delta",
-      "claimed_at": "2026-05-13T06:03:38Z"
+    "resilient/src/pass_gate.rs": {
+      "branch": "res-1627-gate-actor-precheck",
+      "claimed_at": "2026-05-13T06:07:32Z"
     },
-    "benchmarks/compile_time/RESULTS.md": {
-      "branch": "res-1625-bench-typecheck-delta",
-      "claimed_at": "2026-05-13T06:03:38Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1627-gate-actor-precheck",
+      "claimed_at": "2026-05-13T06:07:32Z"
     }
   }
 }
