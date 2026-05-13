@@ -4185,7 +4185,16 @@ impl TypeChecker {
                 crate::derives::check(program, source_path)?;
                 crate::const_fn::check(program, source_path)?;
                 crate::macros::check(program, source_path)?;
-                crate::full_modules::check(program, source_path)?;
+                // RES-1607 gate: pass scans top-level statements for
+                // `Node::ModuleDecl` or `Node::Use` to build a
+                // module-dependency graph. Programs that declare
+                // neither produce an empty graph and no cycle to
+                // report. Markers already collects both flags from
+                // the shared whole-AST walk (RES-1593), so the gate
+                // is two O(1) bool reads.
+                if markers.has_module_decl || markers.has_use {
+                    crate::full_modules::check(program, source_path)?;
+                }
                 // RES-1597: `package_manager::check` is a no-op stub;
                 // manifest parsing happens elsewhere.
                 // RES-1599 gate: pass scans for `Node::ImplBlock` with
