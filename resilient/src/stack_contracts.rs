@@ -20,7 +20,9 @@ const FRAME_BYTES: u64 = 64;
 
 pub fn collect() -> Vec<StackSpec> {
     let attrs = crate::feature_attrs::find_kind("stack");
-    let mut out = Vec::new();
+    // RES-1784: pre-size to attrs.len() — conditional push (only when
+    // `bytes` chunk parses), so this is an upper bound.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         for chunk in rec.args.split(',') {
             let chunk = chunk.trim();
