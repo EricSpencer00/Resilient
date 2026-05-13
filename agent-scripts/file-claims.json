@@ -128,6 +128,10 @@
       "branch": "res-1538-termination-fn-info-borrow",
       "claimed_at": "2026-05-12T15:15:14Z"
     },
+    "resilient/src/lib.rs": {
+      "branch": "res-1659-cli-persistent-cache",
+      "claimed_at": "2026-05-13T07:09:45Z"
+    },
     "resilient/src/lock_ordering.rs": {
       "branch": "res-1752-lock-ordering-presize",
       "claimed_at": "2026-05-13T11:18:18Z"
@@ -280,18 +284,6 @@
       "branch": "res-1778-lexer-format-presize",
       "claimed_at": "2026-05-13T12:14:23Z"
     },
-    "resilient/src/derives.rs": {
-      "branch": "res-1782-more-collect-presize",
-      "claimed_at": "2026-05-13T12:23:31Z"
-    },
-    "resilient/src/associated_constants.rs": {
-      "branch": "res-1782-more-collect-presize",
-      "claimed_at": "2026-05-13T12:23:31Z"
-    },
-    "resilient/src/traits.rs": {
-      "branch": "res-1782-more-collect-presize",
-      "claimed_at": "2026-05-13T12:23:31Z"
-    },
     "resilient/src/hw_state_machine.rs": {
       "branch": "res-1784-attr-collects-3",
       "claimed_at": "2026-05-13T12:28:38Z"
@@ -332,9 +324,9 @@
       "branch": "res-1798-vli-bindings-presize",
       "claimed_at": "2026-05-13T12:53:30Z"
     },
-    "resilient/src/lib.rs": {
-      "branch": "res-1804-impl-cluster-match-presize",
-      "claimed_at": "2026-05-13T13:05:23Z"
+    "resilient/src/traits.rs": {
+      "branch": "res-1802-traits-presize",
+      "claimed_at": "2026-05-13T13:02:04Z"
     }
   }
 }
