@@ -4606,8 +4606,14 @@ impl TypeChecker {
                     .get(sname)
                     .cloned()
                     .ok_or_else(|| format!("unknown struct `{}` in match pattern", sname))?;
-                let mut seen = HashSet::<String>::new();
-                let mut out = Vec::new();
+                // RES-1766: pre-size both — `seen` and `out` grow
+                // exactly to `fields.len()` on the happy path
+                // (every field contributes one seen entry + one
+                // binding-type push), so the 0→4→8 doubling chain
+                // was paid per struct-pattern-match. Hot path:
+                // every Struct match arm runs this.
+                let mut seen: HashSet<String> = HashSet::with_capacity(fields.len());
+                let mut out = Vec::with_capacity(fields.len());
                 for (fname, sub) in fields {
                     if !seen.insert(fname.clone()) {
                         return Err(format!(
@@ -5083,7 +5089,11 @@ impl TypeChecker {
                 // assumption into const_bindings so interior call
                 // sites can use them. This is the inter-procedural
                 // chaining step.
-                let mut pushed_assumptions: Vec<(String, Option<i64>)> = Vec::new();
+                // RES-1766: pre-size to requires.len() — at most one
+                // push per requires clause (only when it extracts an
+                // `eq` assumption). Hot: every checked function.
+                let mut pushed_assumptions: Vec<(String, Option<i64>)> =
+                    Vec::with_capacity(requires.len());
                 for clause in requires {
                     if let Some((aname, av)) = extract_eq_assumption(clause) {
                         let prev = self.const_bindings.get(&aname).copied();
@@ -5434,7 +5444,10 @@ impl TypeChecker {
                 // (non-`Any`) types is greater than one. `Any` items
                 // pair with anything (existing inference is permissive).
                 // Empty literals are allowed and remain `Type::Array`.
-                let mut concrete: Vec<(Type, &Node)> = Vec::new();
+                // RES-1766: pre-size to items.len() — at most one
+                // push per item (skipped only when ty is Any). Hot:
+                // every ArrayLiteral in source.
+                let mut concrete: Vec<(Type, &Node)> = Vec::with_capacity(items.len());
                 for item in items {
                     let ty = self.check_node(item)?;
                     if !matches!(ty, Type::Any) {
@@ -5505,7 +5518,10 @@ impl TypeChecker {
             } => {
                 // Evaluate the body's type in a child env with params
                 // bound, just like named Function.
-                let mut param_types = Vec::new();
+                // RES-1766: pre-size to parameters.len() — exactly
+                // one push per parameter, exact bound. Hot: every
+                // FunctionLiteral in source.
+                let mut param_types = Vec::with_capacity(parameters.len());
                 let mut fn_env = TypeEnvironment::new_enclosed(self.env.clone());
                 for (tname, pname) in parameters {
                     let ty = self.parse_type_name(tname)?;

@@ -279,6 +279,10 @@
     "resilient/src/monomorph.rs": {
       "branch": "res-1764-attr-collect-presize",
       "claimed_at": "2026-05-13T11:45:18Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1766-typechecker-hot-presize",
+      "claimed_at": "2026-05-13T11:50:22Z"
     }
   }
 }
