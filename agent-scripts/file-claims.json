@@ -264,13 +264,13 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1598-gate-coverage-warnings",
-      "claimed_at": "2026-05-13T05:16:06Z"
-    },
     "resilient/src/pass_gate.rs": {
       "branch": "res-1603-markers-borrow",
       "claimed_at": "2026-05-13T05:25:11Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1606-gate-fmt-validation",
+      "claimed_at": "2026-05-13T05:32:23Z"
     }
   }
 }
