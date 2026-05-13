@@ -4023,11 +4023,36 @@ impl TypeChecker {
                     crate::monotonic_field::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #11: saturation-required arithmetic.
-                crate::saturation_required::check(program, source_path)?;
+                // RES-1593 gate: pass scans `LetStatement` names with
+                // SAT_NAME_SUFFIXES.
+                if markers.any_let_name_with_suffix(&[
+                    "_pwm",
+                    "_duty",
+                    "_brightness",
+                    "_pct",
+                    "_throttle",
+                ]) {
+                    crate::saturation_required::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #12: numeric units mixing.
-                crate::numeric_units::check(program, source_path)?;
+                // RES-1593 gate: pass seeds its units map from both
+                // let bindings AND fn parameter names whose name ends
+                // with a unit suffix.
+                if markers.any_let_name_with_suffix(&[
+                    "_ms", "_s", "_us", "_ns", "_m", "_cm", "_mm", "_km", "_kg", "_g", "_n", "_v",
+                    "_mv", "_a", "_ma", "_hz", "_khz", "_mhz",
+                ]) || markers.any_param_name_with_suffix(&[
+                    "_ms", "_s", "_us", "_ns", "_m", "_cm", "_mm", "_km", "_kg", "_g", "_n", "_v",
+                    "_mv", "_a", "_ma", "_hz", "_khz", "_mhz",
+                ]) {
+                    crate::numeric_units::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #13: age-bounded data freshness.
-                crate::age_bounded_data::check(program, source_path)?;
+                // RES-1593 gate: pass scans `FieldAccess` field names
+                // ending in `_at` to detect age-comparison gates.
+                if markers.any_field_accessed_with_suffix(&["_at"]) {
+                    crate::age_bounded_data::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #14: rate-limit static.
                 // RES-1590 gate: pass scans fn names with ONCE_SUFFIXES
                 // (`_oncepertick`, `_singleshot`) or FEW_SUFFIX (`_few`).
@@ -4065,7 +4090,11 @@ impl TypeChecker {
                     crate::bounded_blocking::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #19: audit-log-required mutations.
-                crate::audit_log_required::check(program, source_path)?;
+                // RES-1593 gate: pass scans `FieldAssignment` field
+                // names with `audited_` prefix or `_audited` suffix.
+                if markers.any_field_assigned_with_prefix_or_suffix(&["audited_"], &["_audited"]) {
+                    crate::audit_log_required::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #20: degraded mode after critical assert.
                 // RES-1585 gate: pass scans fn names with CRITICAL_PREFIXES
                 // (and RECOVERY_PREFIXES are looked up only when CRITICAL
@@ -4084,14 +4113,27 @@ impl TypeChecker {
                     crate::idempotent_handler::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #23: epoch ordering.
-                crate::epoch_ordering::check(program, source_path)?;
+                // RES-1593 gate: pass matches call identifiers
+                // containing `_epoch` (then parses the numeric tail).
+                if markers.any_call_ident_containing(&["_epoch"]) {
+                    crate::epoch_ordering::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #24: priority-inheritance discipline.
                 // RES-1585 gate: pass scans fn names with LOW_PRI_PREFIXES.
                 if markers.any_fn_name_with_prefix(&["low_pri_", "bg_", "idle_"]) {
                     crate::priority_inheritance::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #25: TOCTOU guard.
-                crate::toctou_guard::check(program, source_path)?;
+                // RES-1593 gate: pass scans call identifiers with
+                // CHECK_SUFFIXES (`_exists`/`_is_valid`/`_status`/`_check`).
+                if markers.any_call_ident_with_suffix(&[
+                    "_exists",
+                    "_is_valid",
+                    "_status",
+                    "_check",
+                ]) {
+                    crate::toctou_guard::check(program, source_path)?;
+                }
                 // 50-feature missing-language-features pass.
                 // Each module owns one or more of the 50+1 features in
                 // the design doc; see per-module docs for what each
