@@ -4002,7 +4002,11 @@ impl TypeChecker {
                     crate::reentrancy_guard::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #8: actor drain-on-shutdown.
-                crate::actor_drain::check(program, source_path)?;
+                // RES-1594: pass body is a no-op (`Ok(())`) until the
+                // `Node::Actor` variant is wired — see the RES-1232
+                // comment in `actor_drain.rs`. Skip the call dispatch
+                // until that lands; re-add via the standard extension
+                // pattern when the pass becomes meaningful again.
                 // Ralph-Loop-Uniqueness #9: backpressure-safe handler.
                 // RES-1585 gate: pass scans param types ∈ QUEUE_TYPES.
                 if markers.any_param_type_in(&[
