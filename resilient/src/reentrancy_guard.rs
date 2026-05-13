@@ -51,11 +51,14 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     // the outer AST lifetime — same limitation hit by
     // RES-1509 / RES-1511. Pair with `reaches_self` borrowing into
     // the graph for the DFS (mirror of RES-1471 / RES-1474 / RES-1477).
-    let mut callees: HashMap<&str, HashSet<String>> = HashMap::new();
+    // RES-1742: pre-size the call-graph map to stmts.len() (upper
+    // bound — every top-level statement could be a Function). The
+    // per-fn callees HashSet starts empty; 8 fits a typical body.
+    let mut callees: HashMap<&str, HashSet<String>> = HashMap::with_capacity(stmts.len());
     let mut roots: Vec<&str> = Vec::new();
     for stmt in stmts {
         if let Node::Function { name, body, .. } = &stmt.node {
-            let mut cs = HashSet::new();
+            let mut cs = HashSet::with_capacity(8);
             visit(body, &mut |n| {
                 if let Node::CallExpression { function, .. } = n {
                     if let Node::Identifier { name, .. } = function.as_ref() {
