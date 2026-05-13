@@ -3924,6 +3924,16 @@ impl TypeChecker {
                 // RES-385: single-use enforcement for linear types.
                 crate::linear::check_linear_usage(program, source_path)?;
 
+                // RES-1585: one top-level walk collects fn names + param
+                // types, replacing ~15 independent `stmts.iter().any(...)`
+                // fast-rejects baked into the Ralph-Loop-Uniqueness pass
+                // call sites below. Each gated `if markers.X { ... }`
+                // saves the call dispatch + duplicate top-level walk when
+                // the marker is absent. The passes' own fast-reject stays
+                // as defense in depth for callers that bypass this gate
+                // (e.g. LSP per-doc re-checks).
+                let markers = crate::pass_gate::Markers::scan(program);
+
                 // <EXTENSION_PASSES>
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
@@ -3945,25 +3955,69 @@ impl TypeChecker {
                 crate::traits::check(program, source_path)?;
                 crate::region_inference::infer(program, source_path)?;
                 // Ralph-Loop-Uniqueness #1: watchdog-feed enforcement.
-                crate::watchdog_feed::check(program, source_path)?;
+                // RES-1585 gate: pass scans param types ∈ WATCHDOG_TYPES.
+                if markers.any_param_type_in(&["Watchdog", "&Watchdog", "&mut Watchdog"]) {
+                    crate::watchdog_feed::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #2: sensor freshness.
-                crate::sensor_freshness::check(program, source_path)?;
+                // RES-1585 gate: pass scans param types with SENSOR_TYPE_PREFIXES.
+                if markers.any_param_type_with_prefix(&["Sensor", "&Sensor", "&mut Sensor"]) {
+                    crate::sensor_freshness::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #3: secret erasure.
-                crate::secret_erasure::check(program, source_path)?;
+                // RES-1585 gate: pass scans for SECRET_NAME_PREFIXES on fn names
+                // or SECRET_TYPE_PREFIXES on param types; widen the gate to
+                // either marker source to match the pass's coverage.
+                if markers
+                    .any_fn_name_with_prefix(&["secret_", "key_", "priv_", "password", "nonce_"])
+                    || markers.any_param_type_with_prefix(&["Secret", "&Secret", "&mut Secret"])
+                {
+                    crate::secret_erasure::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #4: transaction close.
-                crate::transaction_commit::check(program, source_path)?;
+                // RES-1585 gate: pass scans param types ∈ TX_TYPES.
+                if markers.any_param_type_in(&[
+                    "Transaction",
+                    "Tx",
+                    "&Transaction",
+                    "&mut Transaction",
+                    "&Tx",
+                    "&mut Tx",
+                ]) {
+                    crate::transaction_commit::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #5: ISR transitive safety.
-                crate::isr_call_graph::check(program, source_path)?;
+                // RES-1585 gate: pass triggers on fn names with ISR_NAME_PREFIXES.
+                // The pass *also* honours `#[isr]` attributes via the central
+                // registry; that path keeps its own fast-reject so we don't
+                // need to gate on it here.
+                if markers.any_fn_name_with_prefix(&["isr_", "irq_"]) {
+                    crate::isr_call_graph::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #6: lock-ordering inversion.
                 crate::lock_ordering::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #7: reentrancy guard.
-                crate::reentrancy_guard::check(program, source_path)?;
+                // RES-1585 gate: pass scans for NR_PREFIXES on fn names.
+                if markers.any_fn_name_with_prefix(&["nonreentrant_", "exclusive_"]) {
+                    crate::reentrancy_guard::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #8: actor drain-on-shutdown.
                 crate::actor_drain::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #9: backpressure-safe handler.
-                crate::backpressure_safe::check(program, source_path)?;
+                // RES-1585 gate: pass scans param types ∈ QUEUE_TYPES.
+                if markers.any_param_type_in(&[
+                    "Mailbox",
+                    "BoundedQueue",
+                    "&Mailbox",
+                    "&mut Mailbox",
+                ]) {
+                    crate::backpressure_safe::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #10: monotonic-field invariant.
-                crate::monotonic_field::check(program, source_path)?;
+                // RES-1585 gate: pass scans fn names with MONO_PREFIXES.
+                if markers.any_fn_name_with_prefix(&["last_", "latest_", "max_", "monotonic_"]) {
+                    crate::monotonic_field::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #11: saturation-required arithmetic.
                 crate::saturation_required::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #12: numeric units mixing.
@@ -3983,15 +4037,26 @@ impl TypeChecker {
                 // Ralph-Loop-Uniqueness #19: audit-log-required mutations.
                 crate::audit_log_required::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #20: degraded mode after critical assert.
-                crate::degraded_mode::check(program, source_path)?;
+                // RES-1585 gate: pass scans fn names with CRITICAL_PREFIXES
+                // (and RECOVERY_PREFIXES are looked up only when CRITICAL
+                // matches at least once, so the same gate covers both).
+                if markers.any_fn_name_with_prefix(&["assert_critical_", "abort_", "halt_"]) {
+                    crate::degraded_mode::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #21: crash-only modules.
-                crate::crash_only::check(program, source_path)?;
+                // RES-1585 gate: pass scans fn names starting with `crash_`.
+                if markers.any_fn_name_with_prefix(&["crash_"]) {
+                    crate::crash_only::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #22: idempotent handlers.
                 crate::idempotent_handler::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #23: epoch ordering.
                 crate::epoch_ordering::check(program, source_path)?;
                 // Ralph-Loop-Uniqueness #24: priority-inheritance discipline.
-                crate::priority_inheritance::check(program, source_path)?;
+                // RES-1585 gate: pass scans fn names with LOW_PRI_PREFIXES.
+                if markers.any_fn_name_with_prefix(&["low_pri_", "bg_", "idle_"]) {
+                    crate::priority_inheritance::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #25: TOCTOU guard.
                 crate::toctou_guard::check(program, source_path)?;
                 // 50-feature missing-language-features pass.

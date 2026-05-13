@@ -184,10 +184,6 @@
       "branch": "res-1341-cache-opt-env-vars",
       "claimed_at": "2026-05-12T06:52:39Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1530-pure-builtins-hashset",
-      "claimed_at": "2026-05-12T14:15:00Z"
-    },
     "resilient/src/quantifiers.rs": {
       "branch": "res-1376-quantifier-eval-clone",
       "claimed_at": "2026-05-12T08:58:44Z"
@@ -211,10 +207,6 @@
     "resilient/src/compiler.rs": {
       "branch": "res-1430-compile-target-borrow",
       "claimed_at": "2026-05-12T10:45:02Z"
-    },
-    "resilient/src/lib.rs": {
-      "branch": "res-1471-apply-fn-consume-args",
-      "claimed_at": "2026-05-12T11:51:21Z"
     },
     "resilient/src/default_params.rs": {
       "branch": "res-1475-default-params-skip-no-defaults",
@@ -272,29 +264,17 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "benchmarks/compile_time/run.sh": {
-      "branch": "res-1586-compile-time-bench",
-      "claimed_at": "2026-05-13T04:34:29Z"
+    "resilient/src/pass_gate.rs": {
+      "branch": "res-1585-pass-gate",
+      "claimed_at": "2026-05-13T04:44:31Z"
     },
-    "benchmarks/compile_time/RESULTS.md": {
-      "branch": "res-1586-compile-time-bench",
-      "claimed_at": "2026-05-13T04:34:29Z"
+    "resilient/src/lib.rs": {
+      "branch": "res-1585-pass-gate",
+      "claimed_at": "2026-05-13T04:44:31Z"
     },
-    "benchmarks/compile_time/small.rz": {
-      "branch": "res-1586-compile-time-bench",
-      "claimed_at": "2026-05-13T04:34:29Z"
-    },
-    "benchmarks/compile_time/medium.rz": {
-      "branch": "res-1586-compile-time-bench",
-      "claimed_at": "2026-05-13T04:34:29Z"
-    },
-    "benchmarks/compile_time/large.rz": {
-      "branch": "res-1586-compile-time-bench",
-      "claimed_at": "2026-05-13T04:34:29Z"
-    },
-    "benchmarks/README.md": {
-      "branch": "res-1586-compile-time-bench",
-      "claimed_at": "2026-05-13T04:34:29Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1585-pass-gate",
+      "claimed_at": "2026-05-13T04:44:31Z"
     }
   }
 }

@@ -521,6 +521,11 @@ mod no_alloc_cert;
 mod no_panic_cert;
 mod package_manager;
 mod param_destructuring;
+// RES-1585: shared top-level marker pre-scan for the typechecker
+// `<EXTENSION_PASSES>` block. One walk collects fn names + parameter
+// types; per-pass call sites consult it to skip ~15 attribute-only
+// passes whose markers are absent in the input program.
+mod pass_gate;
 mod phantom_types;
 mod power_contracts;
 mod probabilistic_contracts;
