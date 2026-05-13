@@ -120,10 +120,6 @@
       "branch": "res-1531-lsp-completion-lazy-clone",
       "claimed_at": "2026-05-12T14:20:00Z"
     },
-    "resilient/src/recovery_checker.rs": {
-      "branch": "res-1534-recovery-checker-borrow",
-      "claimed_at": "2026-05-12T14:50:00Z"
-    },
     "resilient/src/imports.rs": {
       "branch": "res-1523-imports-canon-move",
       "claimed_at": "2026-05-12T13:18:45Z"
@@ -139,10 +135,6 @@
     "resilient/src/deadlock_freedom.rs": {
       "branch": "res-1522-deadlock-actors-borrow",
       "claimed_at": "2026-05-12T13:34:45Z"
-    },
-    "resilient/src/lint.rs": {
-      "branch": "res-1533-lint-l0001-borrow",
-      "claimed_at": "2026-05-12T14:35:00Z"
     },
     "resilient/src/blame_attribution.rs": {
       "branch": "res-1544-blame-attribution-callers-borrow",
@@ -295,6 +287,14 @@
     "resilient/src/verifier_liveness.rs": {
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
+    },
+    "resilient/src/recovery_checker.rs": {
+      "branch": "res-1774-recovery-lint-presize",
+      "claimed_at": "2026-05-13T12:06:03Z"
+    },
+    "resilient/src/lint.rs": {
+      "branch": "res-1774-recovery-lint-presize",
+      "claimed_at": "2026-05-13T12:06:03Z"
     }
   }
 }
