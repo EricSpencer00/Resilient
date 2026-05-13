@@ -3839,6 +3839,16 @@ impl TypeChecker {
                     })?;
                 }
 
+                // RES-1627: one shared whole-AST marker pre-scan
+                // serving both the actor-invariant pre-check below
+                // AND the <EXTENSION_PASSES> gates. The historical
+                // pattern computed `Markers` near the extension block
+                // and the actor pre-check did its own `iter().any`;
+                // sharing the walk avoids the duplicate top-level
+                // scan. See `crate::pass_gate::Markers` for the full
+                // marker surface.
+                let markers = crate::pass_gate::Markers::scan(program);
+
                 // RES-388: verify every `actor`'s `always` safety
                 // invariants. The walk happens *after* per-statement
                 // type-checking so we only reason about well-typed
@@ -3849,17 +3859,15 @@ impl TypeChecker {
                 // not fail the check (matching how partial proofs
                 // of `requires` / `ensures` are handled — RES-217).
                 //
-                // RES-1313: short-circuit when no `ActorDecl` exists.
-                // `collect_actor_obligations` would iterate `statements`
-                // filtering ActorDecls and call `verifier_actors::verify_actor`
-                // for each — for programs with zero actors the inner
-                // loop never enters, but the dispatch + Z3 setup call
-                // still happens. Pre-check once with a single
-                // `iter().any` on the top-level statement slice.
-                let has_actor = statements
-                    .iter()
-                    .any(|s| matches!(&s.node, Node::ActorDecl { .. }));
-                let obligations = if has_actor {
+                // RES-1313 / RES-1627: short-circuit when no
+                // `ActorDecl` exists. `collect_actor_obligations`
+                // would iterate `statements` filtering ActorDecls
+                // and call `verifier_actors::verify_actor` for each
+                // — for programs with zero actors the inner loop
+                // never enters, but the dispatch + Z3 setup call
+                // still happens. `markers.has_actor_decl` is set
+                // by the shared scan above.
+                let obligations = if markers.has_actor_decl {
                     collect_actor_obligations(statements, self.verifier_timeout_ms)
                 } else {
                     Vec::new()
@@ -3924,15 +3932,9 @@ impl TypeChecker {
                 // RES-385: single-use enforcement for linear types.
                 crate::linear::check_linear_usage(program, source_path)?;
 
-                // RES-1585: one top-level walk collects fn names + param
-                // types, replacing ~15 independent `stmts.iter().any(...)`
-                // fast-rejects baked into the Ralph-Loop-Uniqueness pass
-                // call sites below. Each gated `if markers.X { ... }`
-                // saves the call dispatch + duplicate top-level walk when
-                // the marker is absent. The passes' own fast-reject stays
-                // as defense in depth for callers that bypass this gate
-                // (e.g. LSP per-doc re-checks).
-                let markers = crate::pass_gate::Markers::scan(program);
+                // RES-1585 / RES-1627: `markers` was computed above
+                // (before the actor-invariant pre-check) so the same
+                // scan serves both that site and the gates below.
 
                 // <EXTENSION_PASSES>
                 // Add new compiler pass calls here (append-only).
