@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1665-int-comparison-fastpath",
-      "claimed_at": "2026-05-13T07:35:25Z"
+      "branch": "res-1667-unified-const-fold",
+      "claimed_at": "2026-05-13T07:39:56Z"
     }
   }
 }
