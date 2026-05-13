@@ -80,7 +80,13 @@ pub(crate) fn verify_actor(
     receive_handlers: &[crate::ReceiveHandler],
     timeout_ms: u32,
 ) -> Vec<ActorObligation> {
-    let mut out = Vec::new();
+    // RES-1728: pre-size to the exact obligation count. Each
+    // always-clause emits one base-case + one inductive-step per
+    // receive handler. Same shape as the rest of the pre-size series.
+    let cap = always_clauses
+        .len()
+        .saturating_mul(1 + receive_handlers.len());
+    let mut out = Vec::with_capacity(cap);
 
     // MVP: single `state` field. Actors without state have nothing
     // to prove — skip. Multi-field support is a follow-up.

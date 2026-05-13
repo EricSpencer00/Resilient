@@ -256,9 +256,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1726-match-pattern-presize",
-      "claimed_at": "2026-05-13T10:32:39Z"
+    "resilient/src/verifier_actors.rs": {
+      "branch": "res-1728-actor-obligations-presize",
+      "claimed_at": "2026-05-13T10:35:57Z"
     }
   }
 }
