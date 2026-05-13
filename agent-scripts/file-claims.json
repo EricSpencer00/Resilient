@@ -272,17 +272,29 @@
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
     },
-    "Cargo.toml": {
-      "branch": "res-1584-workspace-target",
-      "claimed_at": "2026-05-13T04:33:42Z"
+    "benchmarks/compile_time/run.sh": {
+      "branch": "res-1586-compile-time-bench",
+      "claimed_at": "2026-05-13T04:34:29Z"
     },
-    ".cargo/config.toml": {
-      "branch": "res-1584-workspace-target",
-      "claimed_at": "2026-05-13T04:33:42Z"
+    "benchmarks/compile_time/RESULTS.md": {
+      "branch": "res-1586-compile-time-bench",
+      "claimed_at": "2026-05-13T04:34:29Z"
     },
-    "resilient/Cargo.toml": {
-      "branch": "res-1584-workspace-target",
-      "claimed_at": "2026-05-13T04:33:42Z"
+    "benchmarks/compile_time/small.rz": {
+      "branch": "res-1586-compile-time-bench",
+      "claimed_at": "2026-05-13T04:34:29Z"
+    },
+    "benchmarks/compile_time/medium.rz": {
+      "branch": "res-1586-compile-time-bench",
+      "claimed_at": "2026-05-13T04:34:29Z"
+    },
+    "benchmarks/compile_time/large.rz": {
+      "branch": "res-1586-compile-time-bench",
+      "claimed_at": "2026-05-13T04:34:29Z"
+    },
+    "benchmarks/README.md": {
+      "branch": "res-1586-compile-time-bench",
+      "claimed_at": "2026-05-13T04:34:29Z"
     }
   }
 }
