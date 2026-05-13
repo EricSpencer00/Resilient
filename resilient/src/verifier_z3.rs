@@ -86,6 +86,42 @@ pub enum Z3Theory {
     Lia,
 }
 
+/// RES-1665: literal-on-both-sides integer comparison fast path. If
+/// `expr` has shape `IntegerLiteral OP IntegerLiteral` where `OP` is
+/// one of `== != < <= > >=`, return the constant verdict. Otherwise
+/// `None` and the caller falls through to Z3.
+///
+/// Trivially correct: both operands are concrete; bindings, axioms,
+/// theory, and timeout cannot change the result. The shape appears
+/// in real obligations after constant propagation through inlined
+/// helpers, contract specialisation, and `@trusted` ensures rewrites.
+fn try_const_int_compare(expr: &Node) -> Option<bool> {
+    let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    let Node::IntegerLiteral { value: a, .. } = left.as_ref() else {
+        return None;
+    };
+    let Node::IntegerLiteral { value: b, .. } = right.as_ref() else {
+        return None;
+    };
+    Some(match operator.as_str() {
+        "==" => a == b,
+        "!=" => a != b,
+        "<" => a < b,
+        "<=" => a <= b,
+        ">" => a > b,
+        ">=" => a >= b,
+        _ => return None,
+    })
+}
+
 /// Return `true` if `node` or any sub-expression uses a bitwise
 /// operator (`&`, `|`, `^`, `<<`, `>>`).
 pub fn has_bitwise_ops(node: &Node) -> bool {
@@ -226,6 +262,10 @@ pub fn prove_with_axioms_and_timeout(
     // and contracts the caller hasn't yet specialized.
     if let Node::BooleanLiteral { value, .. } = expr {
         return (Some(*value), None, None, false);
+    }
+    // RES-1665: literal-on-both-sides integer comparison fast path.
+    if let Some(verdict) = try_const_int_compare(expr) {
+        return (Some(verdict), None, None, false);
     }
     // RES-1206: thread-local verdict cache. Builds frequently re-ask
     // the verifier the same `(expr, bindings, axioms, timeout)` —
@@ -1155,6 +1195,10 @@ pub fn prove_tautology_with_axioms_and_timeout(
     if let Node::BooleanLiteral { value, .. } = expr {
         return (*value, None, false);
     }
+    // RES-1665: literal-on-both-sides integer comparison fast path.
+    if let Some(verdict) = try_const_int_compare(expr) {
+        return (verdict, None, false);
+    }
     // RES-1309: thread-local verdict cache for the tautology-only
     // entry point. RES-1206 already caches results going through
     // `prove_with_axioms_and_timeout`, but this fast path is its own
@@ -1362,6 +1406,10 @@ pub fn prove_bv(
     // trip needed.
     if let Node::BooleanLiteral { value, .. } = expr {
         return (Some(*value), None, None, false);
+    }
+    // RES-1665: literal-on-both-sides integer comparison fast path.
+    if let Some(verdict) = try_const_int_compare(expr) {
+        return (Some(verdict), None, None, false);
     }
     // RES-1316: thread-local verdict cache for the BV32 entry point.
     // RES-1206 caches the LIA path; RES-1309 the tautology fast path.
@@ -3530,6 +3578,128 @@ mod tests {
         assert_eq!(
             after.bv_misses, before.bv_misses,
             "BV fast path must not dispatch Z3 for BooleanLiteral"
+        );
+    }
+
+    /// RES-1665: every comparison operator over two `IntegerLiteral`
+    /// operands folds to the expected verdict.
+    #[test]
+    fn const_int_compare_covers_every_operator() {
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), "==", int(5))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), "==", int(6))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), "!=", int(6))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), "!=", int(5))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(3), "<", int(5))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), "<", int(3))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), "<=", int(5))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(6), "<=", int(5))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), ">", int(3))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(3), ">", int(5))),
+            Some(false)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(5), ">=", int(5))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_int_compare(&infix(int(4), ">=", int(5))),
+            Some(false)
+        );
+    }
+
+    /// RES-1665: non-comparison operators (`+`, `&&`, ...) and
+    /// non-literal operands return None — the caller falls through
+    /// to the regular Z3 dispatch.
+    #[test]
+    fn const_int_compare_falls_through_on_non_comparison() {
+        // `5 + 3` is not a comparison.
+        assert_eq!(try_const_int_compare(&infix(int(5), "+", int(3))), None);
+        // `x > 3` has a free variable.
+        assert_eq!(try_const_int_compare(&infix(ident("x"), ">", int(3))), None);
+        // `5 > x` has a free variable on the right.
+        assert_eq!(try_const_int_compare(&infix(int(5), ">", ident("x"))), None);
+        // A bare literal (no comparison) returns None.
+        assert_eq!(try_const_int_compare(&int(5)), None);
+    }
+
+    /// RES-1665: `prove(...)` short-circuits when the obligation is a
+    /// literal-vs-literal comparison — no verdict miss is recorded.
+    #[test]
+    fn const_int_compare_short_circuits_z3_lia_path() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        assert_eq!(prove(&infix(int(7), ">", int(3)), &no_b), Some(true));
+        assert_eq!(prove(&infix(int(7), "<", int(3)), &no_b), Some(false));
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "literal-comparison obligations must not consult Z3"
+        );
+    }
+
+    /// RES-1665: same fast path on the tautology entry point. Both
+    /// the "is tautology" and "not a tautology" answers come back
+    /// without dispatching Z3.
+    #[test]
+    fn const_int_compare_short_circuits_tautology_path() {
+        let no_b = HashMap::new();
+        let no_ax: Vec<Node> = Vec::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        let (proven_t, _, _) =
+            prove_tautology_with_axioms_and_timeout(&infix(int(5), "==", int(5)), &no_b, &no_ax, 0);
+        assert!(proven_t, "5 == 5 must prove as tautology");
+        let (proven_f, _, _) =
+            prove_tautology_with_axioms_and_timeout(&infix(int(5), "==", int(6)), &no_b, &no_ax, 0);
+        assert!(!proven_f, "5 == 6 must not prove as tautology");
+        let after = cache_stats();
+        assert_eq!(
+            after.tautology_misses, before.tautology_misses,
+            "tautology fast path must not dispatch Z3 for literal comparisons"
+        );
+    }
+
+    /// RES-1665: same fast path on the BV32 entry point.
+    #[test]
+    fn const_int_compare_short_circuits_bv_path() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        let (v, _, _, _) = prove_bv(&infix(int(10), ">=", int(10)), &no_b, 0);
+        assert_eq!(v, Some(true));
+        let after = cache_stats();
+        assert_eq!(
+            after.bv_misses, before.bv_misses,
+            "BV fast path must not dispatch Z3 for literal comparisons"
         );
     }
 }
