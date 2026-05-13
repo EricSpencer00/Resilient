@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1661-cache-version-stamp",
-      "claimed_at": "2026-05-13T07:16:51Z"
+      "branch": "res-1663-trivial-literal-fastpath",
+      "claimed_at": "2026-05-13T07:29:41Z"
     }
   }
 }

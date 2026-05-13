@@ -216,6 +216,17 @@ pub fn prove_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    // RES-1663: trivial-literal fast path. A bare `BooleanLiteral`
+    // evaluates to itself regardless of bindings, axioms, theory, or
+    // timeout. Returning here skips the cache-key hash, the
+    // persistent-set lookup, the verdict cache lookup, and the Z3
+    // dispatch entirely. The literal appears in real obligations more
+    // often than you'd expect — constant-propagated `if` guards,
+    // `invariant true` placeholders the typechecker hasn't dropped,
+    // and contracts the caller hasn't yet specialized.
+    if let Node::BooleanLiteral { value, .. } = expr {
+        return (Some(*value), None, None, false);
+    }
     // RES-1206: thread-local verdict cache. Builds frequently re-ask
     // the verifier the same `(expr, bindings, axioms, timeout)` —
     // identical bounds checks on different call sites that share an
@@ -440,7 +451,9 @@ pub fn cache_stats() -> Z3CacheStats {
 }
 
 /// RES-1641: zero out all six counters. Useful for measuring a
-/// single compilation in isolation.
+/// single compilation in isolation. Currently only exercised by
+/// the RES-1663 fast-path tests; left `pub` so future audit
+/// machinery can call it without re-exposing.
 #[allow(dead_code)]
 pub fn reset_cache_stats() {
     Z3_CACHE_STATS.with(|s| s.set(Z3CacheStats::default()));
@@ -1136,6 +1149,12 @@ pub fn prove_tautology_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (bool, Option<ProofCertificate>, bool) {
+    // RES-1663: trivial-literal fast path. `BooleanLiteral(true)` is
+    // tautologically true; `BooleanLiteral(false)` is not. Either way
+    // there's no need to hash, consult any cache, or dispatch to Z3.
+    if let Node::BooleanLiteral { value, .. } = expr {
+        return (*value, None, false);
+    }
     // RES-1309: thread-local verdict cache for the tautology-only
     // entry point. RES-1206 already caches results going through
     // `prove_with_axioms_and_timeout`, but this fast path is its own
@@ -1338,6 +1357,12 @@ pub fn prove_bv(
     bindings: &HashMap<String, i64>,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
+    // RES-1663: trivial-literal fast path. `BooleanLiteral` evaluates
+    // to itself in BV32 theory just as it does in LIA — no Z3 round
+    // trip needed.
+    if let Node::BooleanLiteral { value, .. } = expr {
+        return (Some(*value), None, None, false);
+    }
     // RES-1316: thread-local verdict cache for the BV32 entry point.
     // RES-1206 caches the LIA path; RES-1309 the tautology fast path.
     // This is the third uncached Z3 entry — routed to from
@@ -3426,5 +3451,85 @@ mod tests {
         let loaded = load_persistent_proven(&path).expect("garbage must be swallowed");
         assert_eq!(loaded, 0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn bool_lit(value: bool) -> Node {
+        Node::BooleanLiteral {
+            value,
+            span: crate::span::Span::default(),
+        }
+    }
+
+    /// RES-1663: `BooleanLiteral(true)` proves trivially without any
+    /// Z3 round trip — `cache_stats` shows zero verdict misses for the
+    /// query.
+    #[test]
+    fn trivial_true_literal_short_circuits_z3() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        assert_eq!(prove(&bool_lit(true), &no_b), Some(true));
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "BooleanLiteral(true) must not consult Z3"
+        );
+        assert_eq!(
+            after.verdict_hits, before.verdict_hits,
+            "and must not consult the verdict cache either"
+        );
+    }
+
+    /// RES-1663: `BooleanLiteral(false)` is correctly verified as not
+    /// a tautology without any Z3 round trip.
+    #[test]
+    fn trivial_false_literal_short_circuits_z3() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        assert_eq!(prove(&bool_lit(false), &no_b), Some(false));
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "BooleanLiteral(false) must not consult Z3"
+        );
+    }
+
+    /// RES-1663: the tautology-only entry point honors the fast path.
+    #[test]
+    fn trivial_literal_short_circuits_tautology_path() {
+        let no_b = HashMap::new();
+        let no_ax: Vec<Node> = Vec::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        let (proven, _cert, timed_out) =
+            prove_tautology_with_axioms_and_timeout(&bool_lit(true), &no_b, &no_ax, 0);
+        assert!(proven);
+        assert!(!timed_out);
+        let (proven_false, _, _) =
+            prove_tautology_with_axioms_and_timeout(&bool_lit(false), &no_b, &no_ax, 0);
+        assert!(!proven_false);
+        let after = cache_stats();
+        assert_eq!(
+            after.tautology_misses, before.tautology_misses,
+            "tautology fast path must not dispatch Z3 for BooleanLiteral"
+        );
+    }
+
+    /// RES-1663: the BV32 entry point honors the fast path. Without
+    /// it the bare-literal obligation would round-trip through a BV32
+    /// solver instance.
+    #[test]
+    fn trivial_literal_short_circuits_bv_path() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        let (verdict, _, _, _timed_out) = prove_bv(&bool_lit(true), &no_b, 0);
+        assert_eq!(verdict, Some(true));
+        let after = cache_stats();
+        assert_eq!(
+            after.bv_misses, before.bv_misses,
+            "BV fast path must not dispatch Z3 for BooleanLiteral"
+        );
     }
 }
