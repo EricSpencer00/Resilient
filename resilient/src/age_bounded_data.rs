@@ -37,9 +37,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         return Ok(());
     }
     for_each_function(program, |fname, _params, body| {
-        let mut reads_value: Vec<(String, String)> = Vec::new(); // (target, field)
+        // RES-1750: pre-size per-fn collections to 8 — typical fn
+        // body has a handful of field reads / age comparisons.
+        let mut reads_value: Vec<(String, String)> = Vec::with_capacity(8); // (target, field)
         let mut compares_age: std::collections::HashSet<(String, String)> =
-            std::collections::HashSet::new();
+            std::collections::HashSet::with_capacity(8);
 
         visit(body, &mut |n| match n {
             Node::FieldAccess { target, field, .. } => {
