@@ -5056,7 +5056,9 @@ impl Parser {
     /// `recovers_to` emits a diagnostic and overrides the first.
     /// On exit the cursor sits on whatever follows the last clause.
     fn parse_function_failures_and_recovery(&mut self) -> (Vec<String>, Option<Box<Node>>) {
-        let mut fails: Vec<String> = Vec::new();
+        // RES-1776: pre-size to 2 — typical fns with `fails` have 1-3
+        // variants. Same fixed-capacity shape as RES-1768 / RES-1772.
+        let mut fails: Vec<String> = Vec::with_capacity(2);
         let mut recovers_to: Option<Box<Node>> = None;
         loop {
             match self.current_token {
@@ -5578,7 +5580,9 @@ impl Parser {
     /// invariants. Interpreter / VM / JIT ignore the result, so an
     /// empty `Vec` is the no-op default.
     fn parse_loop_invariants(&mut self) -> Vec<Node> {
-        let mut invariants = Vec::new();
+        // RES-1776: pre-size to 2 — typical loops with invariants
+        // declare 1-2 of them.
+        let mut invariants = Vec::with_capacity(2);
         while self.current_token == Token::Invariant {
             self.next_token(); // skip `invariant`
             // Accept `invariant (EXPR)` or `invariant EXPR`. The
@@ -5959,7 +5963,9 @@ impl Parser {
     /// expression; `parse_statement` handles the trailing `;`.
     fn parse_let_destructure_struct(&mut self, struct_name: String, stmt_span: span::Span) -> Node {
         self.next_token(); // skip `{`
-        let mut fields: Vec<(String, String)> = Vec::new();
+        // RES-1776: pre-size to 4 — destructuring patterns typically
+        // bind 2-5 fields.
+        let mut fields: Vec<(String, String)> = Vec::with_capacity(4);
         let mut has_rest = false;
 
         loop {
@@ -6125,7 +6131,9 @@ impl Parser {
             return Pattern::Wildcard;
         }
         self.next_token(); // past `{`
-        let mut fields: Vec<(String, Box<Pattern>)> = Vec::new();
+        // RES-1776: pre-size to 4 — match-struct patterns typically
+        // bind 2-5 fields.
+        let mut fields: Vec<(String, Box<Pattern>)> = Vec::with_capacity(4);
         let mut has_rest = false;
 
         loop {
@@ -6306,7 +6314,9 @@ impl Parser {
         }
         self.next_token();
 
-        let mut decls: Vec<ExternDecl> = Vec::new();
+        // RES-1776: pre-size to 4 — extern blocks typically declare
+        // a handful of FFI symbols.
+        let mut decls: Vec<ExternDecl> = Vec::with_capacity(4);
         while !matches!(self.current_token, Token::RightBrace | Token::Eof) {
             if let Some(d) = self.parse_extern_decl() {
                 decls.push(d);
@@ -6484,7 +6494,9 @@ impl Parser {
     /// has already been consumed by the caller). On exit `current_token` is
     /// the token after `)`.
     fn parse_extern_fn_parameters(&mut self) -> (Vec<(String, String)>, bool) {
-        let mut parameters = Vec::new();
+        // RES-1776: pre-size to 4 — extern fns typically take 0-4
+        // parameters (mirroring RES-1768's parse_function_parameters).
+        let mut parameters = Vec::with_capacity(4);
         let mut is_variadic = false;
 
         // Empty param list: `()`.
