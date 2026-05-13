@@ -3918,8 +3918,10 @@ impl Parser {
             self.next_token(); // skip '{'
         }
 
-        let mut methods: Vec<Node> = Vec::new();
-        let mut associated_type_impls: Vec<(String, String)> = Vec::new();
+        // RES-1804: pre-size to 4 / 2 — typical impl block has
+        // 1-5 methods and 0-2 associated type impls.
+        let mut methods: Vec<Node> = Vec::with_capacity(4);
+        let mut associated_type_impls: Vec<(String, String)> = Vec::with_capacity(2);
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             match &self.current_token {
@@ -8172,8 +8174,10 @@ impl Parser {
         };
         let mut saw_state = false;
 
-        let mut concurrent_ensures: Vec<Node> = Vec::new();
-        let mut handlers: Vec<ActorHandler> = Vec::new();
+        // RES-1804: pre-size — actors typically have 1-3 handlers
+        // and 0-2 concurrent ensures clauses.
+        let mut concurrent_ensures: Vec<Node> = Vec::with_capacity(2);
+        let mut handlers: Vec<ActorHandler> = Vec::with_capacity(4);
 
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             match &self.current_token {
@@ -8366,8 +8370,10 @@ impl Parser {
         }
         self.next_token(); // skip `{`
 
-        let mut members: Vec<(String, String)> = Vec::new();
-        let mut invariants: Vec<Node> = Vec::new();
+        // RES-1804: pre-size — typical cluster has 2-4 members and
+        // 1-2 cluster_invariant clauses.
+        let mut members: Vec<(String, String)> = Vec::with_capacity(4);
+        let mut invariants: Vec<Node> = Vec::with_capacity(2);
         while self.current_token != Token::RightBrace && self.current_token != Token::Eof {
             let ident = match &self.current_token {
                 Token::Identifier(n) => n.clone(),
@@ -8493,7 +8499,9 @@ impl Parser {
             };
         }
 
-        let mut fields: Vec<(String, Node)> = Vec::new();
+        // RES-1804: pre-size to 4 — typical struct literal has
+        // 2-5 fields.
+        let mut fields: Vec<(String, Node)> = Vec::with_capacity(4);
 
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
@@ -8664,7 +8672,8 @@ impl Parser {
             };
         }
 
-        let mut arms: Vec<(Pattern, Option<Node>, Node)> = Vec::new();
+        // RES-1804: pre-size to 4 — typical match has 2-5 arms.
+        let mut arms: Vec<(Pattern, Option<Node>, Node)> = Vec::with_capacity(4);
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
             return Node::Match {
@@ -9347,7 +9356,8 @@ impl Parser {
     /// Trailing comma is accepted, like the array parser.
     fn parse_map_literal(&mut self) -> Node {
         let brace_span = self.span_at_current();
-        let mut entries: Vec<(Node, Node)> = Vec::new();
+        // RES-1804: pre-size to 4 — typical map literal has 2-8 entries.
+        let mut entries: Vec<(Node, Node)> = Vec::with_capacity(4);
         // Empty map: `{}`.
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to '}'
@@ -9389,7 +9399,8 @@ impl Parser {
     /// empty via `#{}`).
     fn parse_set_literal(&mut self) -> Node {
         let brace_span = self.span_at_current();
-        let mut items: Vec<Node> = Vec::new();
+        // RES-1804: pre-size to 4 — typical set literal has 2-8 items.
+        let mut items: Vec<Node> = Vec::with_capacity(4);
         // Empty: `#{}`.
         if self.peek_token == Token::RightBrace {
             self.next_token(); // to `}`
