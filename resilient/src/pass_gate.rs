@@ -151,7 +151,26 @@ impl<'a> Markers<'a> {
     /// `String::clone()` + matching free operations saved per
     /// type-check.
     pub(crate) fn scan(program: &'a Node) -> Self {
-        let mut m = Markers::default();
+        // RES-1686: pre-size HashSets with a small initial capacity
+        // so medium-to-large programs avoid 2-3 rehash rounds per
+        // marker set during the walk. 16 fits typical programs
+        // (~5-15 names per set on `medium.rz`-shaped inputs) and
+        // costs eight allocations of ~144 bytes each for tiny
+        // programs — small enough not to matter against the rest of
+        // a typecheck. Bool fields default to false; only the
+        // HashSets benefit from pre-sizing.
+        const PRESIZE: usize = 16;
+        let mut m = Markers {
+            fn_names: HashSet::with_capacity(PRESIZE),
+            param_types: HashSet::with_capacity(PRESIZE),
+            param_names: HashSet::with_capacity(PRESIZE),
+            let_names: HashSet::with_capacity(PRESIZE),
+            field_names_assigned: HashSet::with_capacity(PRESIZE),
+            field_names_accessed: HashSet::with_capacity(PRESIZE),
+            call_idents: HashSet::with_capacity(PRESIZE),
+            impl_trait_names: HashSet::with_capacity(PRESIZE),
+            ..Markers::default()
+        };
         crate::uniqueness_walk::visit(program, &mut |n| match n {
             Node::Function {
                 name,
