@@ -1,0 +1,377 @@
+// RES-1586: large program. ~50 contracted fns, broad mix of
+// arithmetic shapes. Stays inside the safe parser surface (no
+// structs, no array params); the AST size + contract count is
+// what makes this the heaviest input.
+//
+// Specifically aims to exercise:
+//   - The Z3 verifier's per-obligation discharge cost (a lot of
+//     `requires` / `ensures` clauses on integer fns).
+//   - The fan-out of the 130 typechecker passes against a larger
+//     fn count than medium.rz.
+//   - The interpreter on a wide recursion tree.
+
+fn abs(int x) -> int ensures result >= 0 {
+    if x < 0 { return -x; }
+    return x;
+}
+
+fn max(int a, int b) -> int ensures result >= a && result >= b {
+    if a > b { return a; }
+    return b;
+}
+
+fn min(int a, int b) -> int ensures result <= a && result <= b {
+    if a < b { return a; }
+    return b;
+}
+
+fn clamp(int x, int lo, int hi) -> int requires lo <= hi ensures result >= lo && result <= hi {
+    return min(max(x, lo), hi);
+}
+
+fn add_nn(int a, int b) -> int requires a >= 0 && b >= 0 ensures result >= a {
+    return a + b;
+}
+
+fn add_pos(int a, int b) -> int requires a > 0 && b > 0 ensures result > 0 {
+    return a + b;
+}
+
+fn sub_safe(int a, int b) -> int requires a >= b ensures result >= 0 {
+    return a - b;
+}
+
+fn mul_nn(int a, int b) -> int requires a >= 0 && b >= 0 ensures result >= 0 {
+    return a * b;
+}
+
+fn mul_pos(int a, int b) -> int requires a > 0 && b > 0 ensures result > 0 {
+    return a * b;
+}
+
+fn safe_div(int a, int b) -> int requires b != 0 {
+    return a / b;
+}
+
+fn safe_mod(int a, int b) -> int requires b > 0 ensures result >= 0 && result < b {
+    return a - (a / b) * b;
+}
+
+fn double(int x) -> int {
+    return x + x;
+}
+
+fn triple(int x) -> int {
+    return x + x + x;
+}
+
+fn quad(int x) -> int {
+    return double(double(x));
+}
+
+fn oct(int x) -> int {
+    return double(quad(x));
+}
+
+fn square(int x) -> int ensures result >= 0 {
+    return x * x;
+}
+
+fn cube(int x) -> int {
+    return x * x * x;
+}
+
+fn fourth(int x) -> int ensures result >= 0 {
+    return square(square(x));
+}
+
+fn is_even(int x) -> bool {
+    return safe_mod(abs(x), 2) == 0;
+}
+
+fn is_odd(int x) -> bool {
+    return safe_mod(abs(x), 2) == 1;
+}
+
+fn is_positive(int x) -> bool {
+    return x > 0;
+}
+
+fn is_negative(int x) -> bool {
+    return x < 0;
+}
+
+fn is_zero(int x) -> bool {
+    return x == 0;
+}
+
+fn is_nonneg(int x) -> bool {
+    return x >= 0;
+}
+
+fn is_nonpos(int x) -> bool {
+    return x <= 0;
+}
+
+fn sign(int x) -> int ensures result >= -1 && result <= 1 {
+    if x < 0 { return -1; }
+    if x > 0 { return 1; }
+    return 0;
+}
+
+fn classify(int x) -> string {
+    if x < 0 { return "neg"; }
+    if x == 0 { return "zero"; }
+    if x < 10 { return "small"; }
+    if x < 100 { return "medium"; }
+    if x < 1000 { return "large"; }
+    return "huge";
+}
+
+fn sum_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let total = 0;
+    let i = 1;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    }
+    return total;
+}
+
+fn sum_squares_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let total = 0;
+    let i = 1;
+    while i <= n {
+        total = total + i * i;
+        i = i + 1;
+    }
+    return total;
+}
+
+fn sum_cubes_to(int n) -> int requires n >= 0 {
+    let total = 0;
+    let i = 1;
+    while i <= n {
+        total = total + i * i * i;
+        i = i + 1;
+    }
+    return total;
+}
+
+fn count_evens_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let count = 0;
+    let i = 0;
+    while i <= n {
+        if is_even(i) { count = count + 1; }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn count_odds_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let count = 0;
+    let i = 0;
+    while i <= n {
+        if is_odd(i) { count = count + 1; }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn product_to(int n) -> int requires n >= 1 && n < 13 ensures result >= 1 {
+    let total = 1;
+    let i = 1;
+    while i <= n {
+        total = total * i;
+        i = i + 1;
+    }
+    return total;
+}
+
+fn pow_int(int base, int exp) -> int requires exp >= 0 && exp < 31 {
+    let result = 1;
+    let i = 0;
+    while i < exp {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn fib(int n) -> int requires n >= 0 && n < 30 ensures result >= 0 {
+    if n < 2 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn fib_iter(int n) -> int requires n >= 0 && n < 30 ensures result >= 0 {
+    if n < 2 { return n; }
+    let a = 0;
+    let b = 1;
+    let i = 2;
+    while i <= n {
+        let c = a + b;
+        a = b;
+        b = c;
+        i = i + 1;
+    }
+    return b;
+}
+
+fn factorial(int n) -> int requires n >= 0 && n < 13 ensures result >= 1 {
+    if n <= 1 { return 1; }
+    return n * factorial(n - 1);
+}
+
+// Ackermann with no contracts — its recursive shape grows n quickly
+// enough that any static bound on n violates at runtime even for
+// modest initial args. The bench only needs the typechecker to see
+// the fn shape; runtime correctness is not the point.
+fn ackermann(int m, int n) -> int {
+    if m == 0 { return n + 1; }
+    if n == 0 { return ackermann(m - 1, 1); }
+    return ackermann(m - 1, ackermann(m, n - 1));
+}
+
+fn gcd(int a, int b) -> int requires a >= 0 && b >= 0 {
+    if b == 0 { return a; }
+    return gcd(b, a - (a / b) * b);
+}
+
+fn lcm(int a, int b) -> int requires a > 0 && b > 0 {
+    return safe_div(a * b, gcd(a, b));
+}
+
+fn is_prime(int n) -> bool requires n >= 0 {
+    if n < 2 { return false; }
+    if n == 2 { return true; }
+    if is_even(n) { return false; }
+    let i = 3;
+    while i * i <= n {
+        if safe_mod(n, i) == 0 { return false; }
+        i = i + 2;
+    }
+    return true;
+}
+
+fn count_primes_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let count = 0;
+    let i = 0;
+    while i <= n {
+        if is_prime(i) { count = count + 1; }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn collatz_steps(int n) -> int requires n > 0 ensures result >= 0 {
+    let x = n;
+    let steps = 0;
+    while x != 1 {
+        if is_even(x) {
+            x = safe_div(x, 2);
+        } else {
+            x = 3 * x + 1;
+        }
+        steps = steps + 1;
+        if steps > 1000 { return steps; }
+    }
+    return steps;
+}
+
+fn digit_sum(int n) -> int requires n >= 0 ensures result >= 0 {
+    let x = n;
+    let total = 0;
+    while x > 0 {
+        total = total + safe_mod(x, 10);
+        x = safe_div(x, 10);
+    }
+    return total;
+}
+
+fn digit_count(int n) -> int requires n >= 0 ensures result >= 0 {
+    if n == 0 { return 1; }
+    let x = n;
+    let count = 0;
+    while x > 0 {
+        x = safe_div(x, 10);
+        count = count + 1;
+    }
+    return count;
+}
+
+fn reverse_int(int n) -> int requires n >= 0 ensures result >= 0 {
+    let x = n;
+    let result = 0;
+    while x > 0 {
+        result = result * 10 + safe_mod(x, 10);
+        x = safe_div(x, 10);
+    }
+    return result;
+}
+
+fn is_palindrome(int n) -> bool requires n >= 0 {
+    return n == reverse_int(n);
+}
+
+fn count_palindromes_to(int n) -> int requires n >= 0 ensures result >= 0 {
+    let count = 0;
+    let i = 0;
+    while i <= n {
+        if is_palindrome(i) { count = count + 1; }
+        i = i + 1;
+    }
+    return count;
+}
+
+fn triangular(int n) -> int requires n >= 0 ensures result >= 0 {
+    return safe_div(n * (n + 1), 2);
+}
+
+fn pentagonal(int n) -> int requires n >= 0 {
+    return safe_div(n * (3 * n - 1), 2);
+}
+
+fn hexagonal(int n) -> int requires n >= 0 {
+    return n * (2 * n - 1);
+}
+
+fn main() {
+    println(abs(-42));
+    println(max(7, 12));
+    println(clamp(150, 0, 100));
+    println(add_nn(8, 9));
+    println(sub_safe(15, 5));
+    println(mul_pos(3, 7));
+    println(safe_div(100, 4));
+    println(safe_mod(17, 5));
+    println(double(quad(oct(1))));
+    println(square(square(3)));
+    println(sign(-99));
+    println(classify(777));
+    println(sum_to(50));
+    println(sum_squares_to(20));
+    println(sum_cubes_to(10));
+    println(count_evens_to(30));
+    println(count_odds_to(30));
+    println(product_to(10));
+    println(pow_int(2, 16));
+    println(fib(20));
+    println(fib_iter(25));
+    println(factorial(10));
+    println(ackermann(2, 2));
+    println(gcd(120, 36));
+    println(lcm(12, 18));
+    println(is_prime(97));
+    println(count_primes_to(50));
+    println(collatz_steps(27));
+    println(digit_sum(987654));
+    println(digit_count(1234567));
+    println(reverse_int(12345));
+    println(is_palindrome(12321));
+    println(count_palindromes_to(100));
+    println(triangular(20));
+    println(pentagonal(10));
+    println(hexagonal(10));
+}
+
+main();

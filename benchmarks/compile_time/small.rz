@@ -1,0 +1,21 @@
+// RES-1586: small program. ~20 lines, trivial AST.
+//
+// Exercises the parser + the minimum set of typechecker passes.
+// Used as the "noise floor" — anything below this is fixed setup
+// cost (binary launch, arg parsing, file I/O), not analysis work.
+
+fn double(int x) -> int {
+    return x + x;
+}
+
+fn add(int a, int b) -> int requires a >= 0 && b >= 0 ensures result >= a {
+    return a + b;
+}
+
+fn main() {
+    let x = double(7);
+    let y = add(x, 3);
+    println(y);
+}
+
+main();
