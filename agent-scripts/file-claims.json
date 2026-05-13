@@ -271,6 +271,18 @@
     "resilient/src/lock_priority.rs": {
       "branch": "res-1539-lock-priority-borrow",
       "claimed_at": "2026-05-12T15:25:00Z"
+    },
+    "Cargo.toml": {
+      "branch": "res-1584-workspace-target",
+      "claimed_at": "2026-05-13T04:33:42Z"
+    },
+    ".cargo/config.toml": {
+      "branch": "res-1584-workspace-target",
+      "claimed_at": "2026-05-13T04:33:42Z"
+    },
+    "resilient/Cargo.toml": {
+      "branch": "res-1584-workspace-target",
+      "claimed_at": "2026-05-13T04:33:42Z"
     }
   }
 }

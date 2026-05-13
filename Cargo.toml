@@ -1,0 +1,83 @@
+# RES-1584: workspace root.
+#
+# Consolidates the compiler, runtime, and span crates so their
+# dependency graphs share a single `target/` directory. Cold builds
+# across the tree no longer re-compile identical deps (clap,
+# serde_json, sha2, libc, etc.) once per crate.
+#
+# Member crates:
+#
+#   - resilient/          — compiler, CLI driver, REPL, JIT, LSP
+#   - resilient-runtime/  — no_std embedded runtime
+#   - resilient-span/     — source-span types
+#
+# Excluded (each owns a `[profile.*]` block that cargo can't
+# express as a per-package override in a workspace, or follows its
+# own ecosystem convention):
+#
+#   - playground/                         — wasm32 with
+#                                            `[profile.release] panic=abort,
+#                                            lto=thin, strip=true` that has
+#                                            to stay at the profile level.
+#   - resilient-runtime-cortex-m-demo/    — embedded cross-compile with
+#                                            `[profile.release] opt-level=z,
+#                                            panic=abort, lto=true,
+#                                            codegen-units=1` for the
+#                                            size-gate workflow.
+#   - fuzz/                               — cargo-fuzz convention: its own
+#                                            implicit workspace.
+#
+# Target dir: the companion `.cargo/config.toml` pins `target-dir =
+# "resilient/target"` so existing CI workflows (release.yml,
+# fuzz.yml, perf_gate.yml, ci.yml) and contributor scripts
+# (benchmarks/run.sh, etc.) that hard-code `resilient/target/release/rz`
+# keep working unchanged. The workspace dedupe happens via the shared
+# directory regardless of where the path lives on disk.
+
+[workspace]
+resolver = "2"
+members = [
+    "resilient",
+    "resilient-runtime",
+    "resilient-span",
+]
+exclude = [
+    "playground",
+    "resilient-runtime-cortex-m-demo",
+    "fuzz",
+]
+
+# RES-1184 / RES-1189: dev / test profile inherited from
+# `resilient/Cargo.toml`. Moved here because cargo silently ignores
+# `[profile.*]` blocks declared in non-root workspace members.
+#
+# - `debug = "line-tables-only"` keeps panic backtraces + diagnostic
+#   `line:col` mapping while dropping variable / type DWARF entries.
+# - `[profile.{dev,test}.package."*"] opt-level = 1` builds third-party
+#   deps at -O1 so their generic instantiations don't explode at -O0;
+#   the cost is amortized by `Swatinem/rust-cache@v2` in CI.
+# - `[profile.{dev,test}.build-override] opt-level = 1` lifts the
+#   same gain to build scripts + proc-macros (the rebuild-every-time
+#   shapes of serde_derive, criterion's bench codegen, etc.).
+#
+# Workspace-wide is the correct scope: it now applies to the
+# resilient-runtime + resilient-span dev builds too, which never
+# inherited it before.
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+opt-level = 1
+
+[profile.dev.build-override]
+opt-level = 1
+
+[profile.test.build-override]
+opt-level = 1
