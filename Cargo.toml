@@ -81,3 +81,22 @@ opt-level = 1
 
 [profile.test.build-override]
 opt-level = 1
+
+# Release profile tuning for the `rz` compiler binary.
+#
+# `lto = "thin"`: cross-crate inlining across `resilient`, `resilient-runtime`,
+# `resilient-span`, and their transitive deps. Thin LTO trades a modest
+# build-time hit for measurable runtime speedups on the compiler's hot
+# paths (typechecker recursion, expression walks, format-builtin loops),
+# which is the right tradeoff for a binary that ships once per release
+# and runs against every user typecheck thereafter. Already validated as
+# safe by the `playground/` and `resilient-runtime-cortex-m-demo/` crates,
+# which use the same `lto = "thin"` setting (the former for the wasm
+# bundle, the latter as part of `lto = true`).
+#
+# `codegen-units = 1`: lets LLVM see the whole crate at once instead of
+# split-N parallel compilations that fence inlining. Pairs naturally with
+# `lto = "thin"` — splitting the crate would defeat half of the LTO gain.
+[profile.release]
+lto = "thin"
+codegen-units = 1
