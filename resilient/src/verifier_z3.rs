@@ -916,7 +916,11 @@ fn prove_with_axioms_and_timeout_in(
         // machinery copies straight into the buffer with no
         // intermediate `String` allocations from `format!`. The
         // emitted text is byte-identical to the previous shape.
-        let mut smt2 = String::new();
+        // RES-1653: pre-size to 512 bytes — typical cert is 300-600
+        // bytes, so the growth path hit 4-6 doubling reallocations
+        // before. Capacity is per-Some(true)-tautology cost, so the
+        // pre-size pays for itself on the first cert built.
+        let mut smt2 = String::with_capacity(512);
         smt2.push_str("; RES-071 verification certificate\n");
         smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
         smt2.push_str("(set-logic AUFLIA)\n");
@@ -1136,7 +1140,8 @@ fn prove_tautology_with_axioms_and_timeout_in(
     // RES-1383: same `writeln!`-into-buffer fix as the LIA verifier's
     // cert builder above — eliminates the intermediate `format!`
     // String allocations per declaration / axiom / assertion.
-    let mut smt2 = String::new();
+    // RES-1653: pre-size to 512 bytes (same shape as the LIA path).
+    let mut smt2 = String::with_capacity(512);
     smt2.push_str("; RES-071 verification certificate\n");
     smt2.push_str("; expected solver result: unsat (proves the contract is a tautology)\n");
     smt2.push_str("(set-logic AUFLIA)\n");

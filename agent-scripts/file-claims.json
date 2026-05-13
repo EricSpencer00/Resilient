@@ -261,8 +261,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1651-zero-hoist",
-      "claimed_at": "2026-05-13T06:59:53Z"
+      "branch": "res-1653-cert-presize",
+      "claimed_at": "2026-05-13T07:02:09Z"
     }
   }
 }
