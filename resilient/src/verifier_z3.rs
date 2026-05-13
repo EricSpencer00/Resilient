@@ -86,40 +86,92 @@ pub enum Z3Theory {
     Lia,
 }
 
-/// RES-1665: literal-on-both-sides integer comparison fast path. If
-/// `expr` has shape `IntegerLiteral OP IntegerLiteral` where `OP` is
-/// one of `== != < <= > >=`, return the constant verdict. Otherwise
-/// `None` and the caller falls through to Z3.
+/// RES-1663 / RES-1665 / RES-1667: pre-Z3 constant folding over the
+/// obligation AST. Returns `Some(verdict)` when the expression's value
+/// is fully determined by literals alone — bindings, axioms, theory,
+/// and timeout cannot change the result.
 ///
-/// Trivially correct: both operands are concrete; bindings, axioms,
-/// theory, and timeout cannot change the result. The shape appears
-/// in real obligations after constant propagation through inlined
-/// helpers, contract specialisation, and `@trusted` ensures rewrites.
-fn try_const_int_compare(expr: &Node) -> Option<bool> {
-    let Node::InfixExpression {
-        left,
-        operator,
-        right,
-        ..
-    } = expr
-    else {
-        return None;
-    };
-    let Node::IntegerLiteral { value: a, .. } = left.as_ref() else {
-        return None;
-    };
-    let Node::IntegerLiteral { value: b, .. } = right.as_ref() else {
-        return None;
-    };
-    Some(match operator.as_str() {
-        "==" => a == b,
-        "!=" => a != b,
-        "<" => a < b,
-        "<=" => a <= b,
-        ">" => a > b,
-        ">=" => a >= b,
-        _ => return None,
-    })
+/// Covered shapes:
+///
+/// 1. `BooleanLiteral(v)` → `Some(v)` (RES-1663).
+/// 2. `IntegerLiteral OP IntegerLiteral` for `==`, `!=`, `<`, `<=`,
+///    `>`, `>=` (RES-1665).
+/// 3. `!expr` (RES-1667) — recurse and negate.
+/// 4. `lhs && rhs` (RES-1667) — short-circuit on a constant-False
+///    side; fold to `true` only when both sides are constant-True.
+/// 5. `lhs || rhs` (RES-1667) — short-circuit on a constant-True
+///    side; fold to `false` only when both sides are constant-False.
+///
+/// Recursion is bounded by AST depth; typical obligations are < 10
+/// deep. The fast path runs in constant time relative to the cache
+/// hash + persistent-set lookup it replaces.
+///
+/// These shapes appear in real obligations after constant propagation
+/// through inlined helpers, contract specialisation, `@trusted`
+/// ensures rewrites, and partially-folded contracts the typechecker
+/// has normalized but not fully eliminated.
+fn try_const_eval_bool(expr: &Node) -> Option<bool> {
+    match expr {
+        Node::BooleanLiteral { value, .. } => Some(*value),
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "!" => try_const_eval_bool(right).map(|v| !v),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            // Integer-literal-vs-integer-literal comparisons.
+            if let (Node::IntegerLiteral { value: a, .. }, Node::IntegerLiteral { value: b, .. }) =
+                (left.as_ref(), right.as_ref())
+            {
+                return match operator.as_str() {
+                    "==" => Some(a == b),
+                    "!=" => Some(a != b),
+                    "<" => Some(a < b),
+                    "<=" => Some(a <= b),
+                    ">" => Some(a > b),
+                    ">=" => Some(a >= b),
+                    _ => None,
+                };
+            }
+            // Boolean combinators — recurse to fold known sides,
+            // short-circuiting before the other side has to fold.
+            match operator.as_str() {
+                "&&" => {
+                    let l = try_const_eval_bool(left);
+                    if l == Some(false) {
+                        return Some(false);
+                    }
+                    let r = try_const_eval_bool(right);
+                    if r == Some(false) {
+                        return Some(false);
+                    }
+                    if l == Some(true) && r == Some(true) {
+                        return Some(true);
+                    }
+                    None
+                }
+                "||" => {
+                    let l = try_const_eval_bool(left);
+                    if l == Some(true) {
+                        return Some(true);
+                    }
+                    let r = try_const_eval_bool(right);
+                    if r == Some(true) {
+                        return Some(true);
+                    }
+                    if l == Some(false) && r == Some(false) {
+                        return Some(false);
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Return `true` if `node` or any sub-expression uses a bitwise
@@ -252,19 +304,13 @@ pub fn prove_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
-    // RES-1663: trivial-literal fast path. A bare `BooleanLiteral`
-    // evaluates to itself regardless of bindings, axioms, theory, or
-    // timeout. Returning here skips the cache-key hash, the
-    // persistent-set lookup, the verdict cache lookup, and the Z3
-    // dispatch entirely. The literal appears in real obligations more
-    // often than you'd expect — constant-propagated `if` guards,
-    // `invariant true` placeholders the typechecker hasn't dropped,
-    // and contracts the caller hasn't yet specialized.
-    if let Node::BooleanLiteral { value, .. } = expr {
-        return (Some(*value), None, None, false);
-    }
-    // RES-1665: literal-on-both-sides integer comparison fast path.
-    if let Some(verdict) = try_const_int_compare(expr) {
+    // RES-1663 / RES-1665 / RES-1667: pre-Z3 constant fold over the
+    // obligation AST. Covers `BooleanLiteral`, literal-vs-literal
+    // integer comparisons, negation of any of the above, and
+    // `&&` / `||` short-circuits when at least one side is constant.
+    // Returns Some(verdict) only when the result is fully determined
+    // by literals; otherwise falls through to the cache + Z3 path.
+    if let Some(verdict) = try_const_eval_bool(expr) {
         return (Some(verdict), None, None, false);
     }
     // RES-1206: thread-local verdict cache. Builds frequently re-ask
@@ -1189,14 +1235,12 @@ pub fn prove_tautology_with_axioms_and_timeout(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (bool, Option<ProofCertificate>, bool) {
-    // RES-1663: trivial-literal fast path. `BooleanLiteral(true)` is
-    // tautologically true; `BooleanLiteral(false)` is not. Either way
-    // there's no need to hash, consult any cache, or dispatch to Z3.
-    if let Node::BooleanLiteral { value, .. } = expr {
-        return (*value, None, false);
-    }
-    // RES-1665: literal-on-both-sides integer comparison fast path.
-    if let Some(verdict) = try_const_int_compare(expr) {
+    // RES-1663 / RES-1665 / RES-1667: pre-Z3 constant fold. See
+    // `try_const_eval_bool` for the full pattern list. `(true, None,
+    // false)` means tautology; `(false, None, false)` means
+    // not-a-tautology — both verdicts come back without dispatching
+    // Z3.
+    if let Some(verdict) = try_const_eval_bool(expr) {
         return (verdict, None, false);
     }
     // RES-1309: thread-local verdict cache for the tautology-only
@@ -1401,14 +1445,10 @@ pub fn prove_bv(
     bindings: &HashMap<String, i64>,
     timeout_ms: u32,
 ) -> (Option<bool>, Option<ProofCertificate>, Option<String>, bool) {
-    // RES-1663: trivial-literal fast path. `BooleanLiteral` evaluates
-    // to itself in BV32 theory just as it does in LIA — no Z3 round
-    // trip needed.
-    if let Node::BooleanLiteral { value, .. } = expr {
-        return (Some(*value), None, None, false);
-    }
-    // RES-1665: literal-on-both-sides integer comparison fast path.
-    if let Some(verdict) = try_const_int_compare(expr) {
+    // RES-1663 / RES-1665 / RES-1667: pre-Z3 constant fold. BV32
+    // shares the same trivial-evaluation rules — a literal-bool or
+    // literal-comparison is independent of the underlying theory.
+    if let Some(verdict) = try_const_eval_bool(expr) {
         return (Some(verdict), None, None, false);
     }
     // RES-1316: thread-local verdict cache for the BV32 entry point.
@@ -3586,51 +3626,45 @@ mod tests {
     #[test]
     fn const_int_compare_covers_every_operator() {
         assert_eq!(
-            try_const_int_compare(&infix(int(5), "==", int(5))),
+            try_const_eval_bool(&infix(int(5), "==", int(5))),
             Some(true)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(5), "==", int(6))),
+            try_const_eval_bool(&infix(int(5), "==", int(6))),
             Some(false)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(5), "!=", int(6))),
+            try_const_eval_bool(&infix(int(5), "!=", int(6))),
             Some(true)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(5), "!=", int(5))),
+            try_const_eval_bool(&infix(int(5), "!=", int(5))),
+            Some(false)
+        );
+        assert_eq!(try_const_eval_bool(&infix(int(3), "<", int(5))), Some(true));
+        assert_eq!(
+            try_const_eval_bool(&infix(int(5), "<", int(3))),
             Some(false)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(3), "<", int(5))),
+            try_const_eval_bool(&infix(int(5), "<=", int(5))),
             Some(true)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(5), "<", int(3))),
+            try_const_eval_bool(&infix(int(6), "<=", int(5))),
+            Some(false)
+        );
+        assert_eq!(try_const_eval_bool(&infix(int(5), ">", int(3))), Some(true));
+        assert_eq!(
+            try_const_eval_bool(&infix(int(3), ">", int(5))),
             Some(false)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(5), "<=", int(5))),
+            try_const_eval_bool(&infix(int(5), ">=", int(5))),
             Some(true)
         );
         assert_eq!(
-            try_const_int_compare(&infix(int(6), "<=", int(5))),
-            Some(false)
-        );
-        assert_eq!(
-            try_const_int_compare(&infix(int(5), ">", int(3))),
-            Some(true)
-        );
-        assert_eq!(
-            try_const_int_compare(&infix(int(3), ">", int(5))),
-            Some(false)
-        );
-        assert_eq!(
-            try_const_int_compare(&infix(int(5), ">=", int(5))),
-            Some(true)
-        );
-        assert_eq!(
-            try_const_int_compare(&infix(int(4), ">=", int(5))),
+            try_const_eval_bool(&infix(int(4), ">=", int(5))),
             Some(false)
         );
     }
@@ -3641,13 +3675,13 @@ mod tests {
     #[test]
     fn const_int_compare_falls_through_on_non_comparison() {
         // `5 + 3` is not a comparison.
-        assert_eq!(try_const_int_compare(&infix(int(5), "+", int(3))), None);
+        assert_eq!(try_const_eval_bool(&infix(int(5), "+", int(3))), None);
         // `x > 3` has a free variable.
-        assert_eq!(try_const_int_compare(&infix(ident("x"), ">", int(3))), None);
+        assert_eq!(try_const_eval_bool(&infix(ident("x"), ">", int(3))), None);
         // `5 > x` has a free variable on the right.
-        assert_eq!(try_const_int_compare(&infix(int(5), ">", ident("x"))), None);
+        assert_eq!(try_const_eval_bool(&infix(int(5), ">", ident("x"))), None);
         // A bare literal (no comparison) returns None.
-        assert_eq!(try_const_int_compare(&int(5)), None);
+        assert_eq!(try_const_eval_bool(&int(5)), None);
     }
 
     /// RES-1665: `prove(...)` short-circuits when the obligation is a
@@ -3700,6 +3734,173 @@ mod tests {
         assert_eq!(
             after.bv_misses, before.bv_misses,
             "BV fast path must not dispatch Z3 for literal comparisons"
+        );
+    }
+
+    fn not_node(inner: Node) -> Node {
+        Node::PrefixExpression {
+            operator: "!".to_string(),
+            right: Box::new(inner),
+            span: crate::span::Span::default(),
+        }
+    }
+
+    /// RES-1667: negation folds when the inner expression folds.
+    #[test]
+    fn const_eval_negation_of_bool_literal() {
+        assert_eq!(try_const_eval_bool(&not_node(bool_lit(true))), Some(false));
+        assert_eq!(try_const_eval_bool(&not_node(bool_lit(false))), Some(true));
+    }
+
+    /// RES-1667: negation recurses through an integer comparison.
+    #[test]
+    fn const_eval_negation_of_int_compare() {
+        // !(5 > 3) → !true → false
+        assert_eq!(
+            try_const_eval_bool(&not_node(infix(int(5), ">", int(3)))),
+            Some(false)
+        );
+        // !(3 > 5) → !false → true
+        assert_eq!(
+            try_const_eval_bool(&not_node(infix(int(3), ">", int(5)))),
+            Some(true)
+        );
+    }
+
+    /// RES-1667: double negation collapses correctly.
+    #[test]
+    fn const_eval_double_negation() {
+        // !!true → true
+        assert_eq!(
+            try_const_eval_bool(&not_node(not_node(bool_lit(true)))),
+            Some(true)
+        );
+        // !!false → false
+        assert_eq!(
+            try_const_eval_bool(&not_node(not_node(bool_lit(false)))),
+            Some(false)
+        );
+    }
+
+    /// RES-1667: negation of a non-foldable expression returns None.
+    #[test]
+    fn const_eval_negation_falls_through() {
+        assert_eq!(try_const_eval_bool(&not_node(ident("x"))), None);
+        // !(x > 3) — inner has a free variable.
+        assert_eq!(
+            try_const_eval_bool(&not_node(infix(ident("x"), ">", int(3)))),
+            None
+        );
+    }
+
+    /// RES-1667: `&&` short-circuits on a constant-False side, even
+    /// when the other side has a free variable (Z3 can't change a
+    /// `false` conjunct).
+    #[test]
+    fn const_eval_and_short_circuits_on_false() {
+        // false && x → false
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(false), "&&", ident("x"))),
+            Some(false)
+        );
+        // x && false → false
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "&&", bool_lit(false))),
+            Some(false)
+        );
+        // (5 < 3) && x → false  (left folds to false)
+        assert_eq!(
+            try_const_eval_bool(&infix(infix(int(5), "<", int(3)), "&&", ident("x"))),
+            Some(false)
+        );
+    }
+
+    /// RES-1667: `&&` folds to true only when both sides are
+    /// constant-True; otherwise None and the caller falls through.
+    #[test]
+    fn const_eval_and_both_true_or_undetermined() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "&&", bool_lit(true))),
+            Some(true)
+        );
+        // true && x — can't determine; falls through.
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "&&", ident("x"))),
+            None
+        );
+        // x && true — same.
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "&&", bool_lit(true))),
+            None
+        );
+        // x && y — neither side folds.
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "&&", ident("y"))),
+            None
+        );
+    }
+
+    /// RES-1667: `||` short-circuits on a constant-True side.
+    #[test]
+    fn const_eval_or_short_circuits_on_true() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(true), "||", ident("x"))),
+            Some(true)
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "||", bool_lit(true))),
+            Some(true)
+        );
+        // (5 > 3) || x → true
+        assert_eq!(
+            try_const_eval_bool(&infix(infix(int(5), ">", int(3)), "||", ident("x"))),
+            Some(true)
+        );
+    }
+
+    /// RES-1667: `||` folds to false only when both sides fold to
+    /// false; otherwise None.
+    #[test]
+    fn const_eval_or_both_false_or_undetermined() {
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(false), "||", bool_lit(false))),
+            Some(false)
+        );
+        // false || x — falls through.
+        assert_eq!(
+            try_const_eval_bool(&infix(bool_lit(false), "||", ident("x"))),
+            None
+        );
+        assert_eq!(
+            try_const_eval_bool(&infix(ident("x"), "||", ident("y"))),
+            None
+        );
+    }
+
+    /// RES-1667: the unified helper drives the LIA prove entry point
+    /// for the new patterns — `false && x` must come back as
+    /// Some(false) with no verdict miss recorded.
+    #[test]
+    fn const_eval_short_circuits_z3_on_compound_obligations() {
+        let no_b = HashMap::new();
+        reset_cache_stats();
+        let before = cache_stats();
+        assert_eq!(
+            prove(&infix(bool_lit(false), "&&", ident("x")), &no_b),
+            Some(false)
+        );
+        assert_eq!(
+            prove(&infix(bool_lit(true), "||", ident("x")), &no_b),
+            Some(true)
+        );
+        assert_eq!(
+            prove(&not_node(infix(int(5), ">", int(3))), &no_b),
+            Some(false)
+        );
+        let after = cache_stats();
+        assert_eq!(
+            after.verdict_misses, before.verdict_misses,
+            "compound constant-folded obligations must not consult Z3"
         );
     }
 }
