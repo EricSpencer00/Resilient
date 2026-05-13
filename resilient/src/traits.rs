@@ -381,7 +381,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 ));
             }
             // Within a single trait, method names must be unique.
-            let mut seen = HashSet::new();
+            // RES-1782: pre-size to methods.len() — exactly one insert
+            // per method on the happy path.
+            let mut seen = HashSet::with_capacity(methods.len());
             for m in methods {
                 if !seen.insert(m.name.as_str()) {
                     return Err(format_err(
@@ -392,7 +394,9 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
                 }
             }
             // Within a single trait, associated type names must be unique.
-            let mut type_seen = HashSet::new();
+            // RES-1782: pre-size to associated_types.len() — exactly
+            // one insert per associated type on the happy path.
+            let mut type_seen = HashSet::with_capacity(associated_types.len());
             for at in associated_types {
                 if !type_seen.insert(at.name.as_str()) {
                     return Err(format_err(

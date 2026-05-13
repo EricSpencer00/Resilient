@@ -104,10 +104,6 @@
       "branch": "res-1386-vli-if-snap-clone",
       "claimed_at": "2026-05-12T09:18:45Z"
     },
-    "resilient/src/traits.rs": {
-      "branch": "res-1500-traits-fns-borrow",
-      "claimed_at": "2026-05-12T12:35:00Z"
-    },
     "resilient/src/inline.rs": {
       "branch": "res-1396-inline-chunk-fast-reject",
       "claimed_at": "2026-05-12T09:48:19Z"
@@ -303,6 +299,18 @@
     "resilient/src/format_builtin.rs": {
       "branch": "res-1778-lexer-format-presize",
       "claimed_at": "2026-05-13T12:14:23Z"
+    },
+    "resilient/src/derives.rs": {
+      "branch": "res-1782-more-collect-presize",
+      "claimed_at": "2026-05-13T12:23:31Z"
+    },
+    "resilient/src/associated_constants.rs": {
+      "branch": "res-1782-more-collect-presize",
+      "claimed_at": "2026-05-13T12:23:31Z"
+    },
+    "resilient/src/traits.rs": {
+      "branch": "res-1782-more-collect-presize",
+      "claimed_at": "2026-05-13T12:23:31Z"
     }
   }
 }
