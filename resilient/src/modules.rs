@@ -7,6 +7,14 @@
 //! `Node::Identifier { name: "math::add" }` via the `::` token path —
 //! so no extra runtime lookup machinery is needed.
 
+// RES-1605: `check` is no longer called from `EXTENSION_PASSES`
+// (the body is `Ok(())`; the actual module-graph build lives in
+// `full_modules`). The module-level `dead_code` allow keeps the
+// fn around for symmetry with the other extension-point passes;
+// re-adding the call when the pass becomes meaningful is a
+// one-line append in `typechecker.rs`.
+#![allow(dead_code)]
+
 use crate::{Environment, Interpreter, Node, RResult, Value};
 
 /// Evaluate a `mod name { ... }` block.

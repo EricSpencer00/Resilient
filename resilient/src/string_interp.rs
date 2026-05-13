@@ -14,6 +14,13 @@
 //! - [`eval_interp`]: evaluates an `InterpolatedString` node at runtime.
 //! - [`check`]: top-level pass (no-op; parse-time errors are sufficient).
 
+// RES-1605: `check` is no longer called from `EXTENSION_PASSES`
+// (the body is `Ok(())`). The module-level `dead_code` allow keeps
+// the fn around for symmetry with the other extension-point passes;
+// re-adding the typechecker call when the pass becomes meaningful
+// is a one-line append in `typechecker.rs`.
+#![allow(dead_code)]
+
 use crate::{Interpreter, Lexer, Node, Parser, RResult, Value};
 
 // ---------- AST helpers ----------
