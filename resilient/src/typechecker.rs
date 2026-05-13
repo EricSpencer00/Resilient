@@ -4640,7 +4640,11 @@ impl TypeChecker {
             Pattern::EnumVariant { payload, .. } => match payload {
                 crate::EnumPatternPayload::None => Ok(vec![]),
                 crate::EnumPatternPayload::Named(fields) => {
-                    let mut out = Vec::new();
+                    // RES-1726: pre-size to fields.len() — lower bound
+                    // (each sub-pattern produces >=0 binding entries via
+                    // extend), but typically each named field contributes
+                    // ~1 binding. Same shape as the broader pre-size series.
+                    let mut out = Vec::with_capacity(fields.len());
                     for (_, sub) in fields {
                         let sub_bt = self.match_pattern_binding_types(sub.as_ref(), &Type::Any)?;
                         out.extend(sub_bt);
@@ -4648,7 +4652,8 @@ impl TypeChecker {
                     Ok(out)
                 }
                 crate::EnumPatternPayload::Tuple(subs) => {
-                    let mut out = Vec::new();
+                    // RES-1726: pre-size to subs.len() — same heuristic.
+                    let mut out = Vec::with_capacity(subs.len());
                     for sub in subs {
                         let sub_bt = self.match_pattern_binding_types(sub, &Type::Any)?;
                         out.extend(sub_bt);
@@ -4685,7 +4690,8 @@ impl TypeChecker {
                         fields.len()
                     ));
                 }
-                let mut out = Vec::new();
+                // RES-1726: pre-size to fields.len().
+                let mut out = Vec::with_capacity(fields.len());
                 for (i, sub) in fields.iter().enumerate() {
                     let key = i.to_string();
                     let Some((_, fty)) = decl.iter().find(|(n, _)| n == &key) else {
@@ -4704,7 +4710,8 @@ impl TypeChecker {
             // typechecker doesn't track per-position tuple element
             // types yet, mirroring how Some/Ok bindings are widened.
             Pattern::Tuple(items) => {
-                let mut out = Vec::new();
+                // RES-1726: pre-size to items.len().
+                let mut out = Vec::with_capacity(items.len());
                 for sub in items {
                     let sub_bt = self.match_pattern_binding_types(sub, &Type::Any)?;
                     out.extend(sub_bt);

@@ -257,8 +257,8 @@
       "claimed_at": "2026-05-13T07:09:45Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1724-param-types-presize",
-      "claimed_at": "2026-05-13T10:29:38Z"
+      "branch": "res-1726-match-pattern-presize",
+      "claimed_at": "2026-05-13T10:32:39Z"
     }
   }
 }
