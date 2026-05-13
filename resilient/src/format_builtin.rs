@@ -54,7 +54,9 @@ pub fn parse_template(s: &str) -> Result<Vec<FormatSegment>, String> {
     // matches the typical 1-3-placeholder shape. fmt_validation calls
     // this on every `format(...)` expression at typecheck time.
     let mut out = Vec::with_capacity(s.matches('{').count() * 2 + 1);
-    let mut buf = String::new();
+    // RES-1832: pre-size to 16 — accumulates literal text between
+    // placeholders, typically 5-30 chars per segment.
+    let mut buf = String::with_capacity(16);
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '{' {
@@ -66,7 +68,9 @@ pub fn parse_template(s: &str) -> Result<Vec<FormatSegment>, String> {
             if !buf.is_empty() {
                 out.push(FormatSegment::Literal(std::mem::take(&mut buf)));
             }
-            let mut spec = String::new();
+            // RES-1832: pre-size to 8 — placeholder specs are 0-10
+            // chars (`""`, `":.2f"`, `":0Nd"`, etc.).
+            let mut spec = String::with_capacity(8);
             let mut closed = false;
             while let Some(&c2) = chars.peek() {
                 if c2 == '}' {

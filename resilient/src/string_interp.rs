@@ -53,7 +53,10 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
     // typical 1-3-placeholder shape and is computed in O(N) via
     // `matches`. Called for every interpolated string literal in source.
     let mut parts: Vec<StringPart> = Vec::with_capacity(raw.matches('{').count() * 2 + 1);
-    let mut literal_buf = String::new();
+    // RES-1832: pre-size to 16 — accumulates literal text between
+    // placeholders. Typical interpolated strings have 5-30 chars per
+    // literal segment.
+    let mut literal_buf = String::with_capacity(16);
     let mut chars = raw.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -151,7 +154,10 @@ pub(crate) fn parse_parts(raw: &str) -> Result<Option<Vec<StringPart>>, String> 
 /// directly into the output string or evaluated and converted to its
 /// string representation.
 pub(crate) fn eval_interp(interp: &mut Interpreter, parts: &[StringPart]) -> RResult<Value> {
-    let mut out = String::new();
+    // RES-1832: pre-size to 32 — interpolated string output is the
+    // sum of literal parts (each typically 5-30 chars) plus expr
+    // results. 32 covers the common case.
+    let mut out = String::with_capacity(32);
     for part in parts {
         match part {
             StringPart::Literal(s) => out.push_str(s),
