@@ -256,9 +256,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/region_inference.rs": {
-      "branch": "res-1722-region-inference-presize",
-      "claimed_at": "2026-05-13T10:23:48Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1724-param-types-presize",
+      "claimed_at": "2026-05-13T10:29:38Z"
     }
   }
 }
