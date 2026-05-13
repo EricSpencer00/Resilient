@@ -95,6 +95,20 @@ pub(crate) struct Markers<'a> {
     /// True if any `Node::NewtypeDecl` appears anywhere. Used by
     /// the `newtypes` gate (RES-1612).
     pub has_newtype_decl: bool,
+    /// True if any `Node::TypeAlias` appears anywhere. Used by the
+    /// `type_aliases` gate (RES-1616).
+    pub has_type_alias: bool,
+    /// True if any `Node::Function` declares a non-empty
+    /// `type_params` vector. Used by the `generics` gate (RES-1616).
+    pub has_generic_fn: bool,
+    /// True if any `Node::TraitDecl` appears anywhere. Used by the
+    /// `traits` gate (RES-1616), which also consults
+    /// `impl_trait_names` and `has_generic_fn`.
+    pub has_trait_decl: bool,
+    /// True if any `Node::ActorDecl` declares a non-empty
+    /// `eventually_clauses` vector. Used by the `verifier_liveness`
+    /// gate (RES-1616).
+    pub has_actor_with_eventually: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -114,12 +128,18 @@ impl<'a> Markers<'a> {
         let mut m = Markers::default();
         crate::uniqueness_walk::visit(program, &mut |n| match n {
             Node::Function {
-                name, parameters, ..
+                name,
+                parameters,
+                type_params,
+                ..
             } => {
                 m.fn_names.insert(name.as_str());
                 for (ty, pname) in parameters {
                     m.param_types.insert(ty.as_str());
                     m.param_names.insert(pname.as_str());
+                }
+                if !type_params.is_empty() {
+                    m.has_generic_fn = true;
                 }
             }
             Node::LetStatement { name, .. } => {
@@ -168,6 +188,17 @@ impl<'a> Markers<'a> {
             }
             Node::NewtypeDecl { .. } => {
                 m.has_newtype_decl = true;
+            }
+            Node::TypeAlias { .. } => {
+                m.has_type_alias = true;
+            }
+            Node::TraitDecl { .. } => {
+                m.has_trait_decl = true;
+            }
+            Node::ActorDecl {
+                eventually_clauses, ..
+            } if !eventually_clauses.is_empty() => {
+                m.has_actor_with_eventually = true;
             }
             _ => {}
         });
@@ -259,6 +290,15 @@ impl<'a> Markers<'a> {
         self.call_idents
             .iter()
             .any(|n| suffixes.iter().any(|s| n.ends_with(s)))
+    }
+
+    /// True if any `Node::CallExpression` whose function is an
+    /// `Identifier` has a name starting with one of `prefixes`.
+    /// Backs the `lock_ordering` gate (`lock_*` / `unlock_*`).
+    pub(crate) fn any_call_ident_with_prefix(&self, prefixes: &[&str]) -> bool {
+        self.call_idents
+            .iter()
+            .any(|n| prefixes.iter().any(|p| n.starts_with(p)))
     }
 
     /// True if any `Node::CallExpression` whose function is an

@@ -3942,7 +3942,12 @@ impl TypeChecker {
                 if markers.has_try_catch {
                     crate::try_catch::check(program, source_path)?;
                 }
-                crate::verifier_liveness::check(program, source_path)?;
+                // RES-1616 gate: pass walks `Node::ActorDecl` looking
+                // for non-empty `eventually_clauses`. Markers records
+                // the presence flag during the shared whole-AST walk.
+                if markers.has_actor_with_eventually {
+                    crate::verifier_liveness::check(program, source_path)?;
+                }
                 // RES-1612 gate: pass scans for `Node::LiveBlock`.
                 if markers.has_live_block {
                     crate::recovery_checker::check(program, source_path)?;
@@ -3966,7 +3971,10 @@ impl TypeChecker {
                     crate::loop_invariants::check(program, source_path)?;
                 }
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
-                crate::type_aliases::check(program, source_path)?;
+                // RES-1616 gate: pass scans for `Node::TypeAlias`.
+                if markers.has_type_alias {
+                    crate::type_aliases::check(program, source_path)?;
+                }
                 // RES-1612 gate: pass scans for `Node::Range`.
                 if markers.has_range {
                     crate::ranges::check(program, source_path)?;
@@ -3977,13 +3985,27 @@ impl TypeChecker {
                 // RES-1605: `modules::check` is a no-op stub; see
                 // `full_modules` for the actual module-graph build.
                 crate::default_params::check(program, source_path)?;
-                crate::generics::check(program, source_path)?;
+                // RES-1616 gate: pass scans for `Node::Function` with
+                // non-empty `type_params`. Markers records the flag
+                // during the shared whole-AST walk.
+                if markers.has_generic_fn {
+                    crate::generics::check(program, source_path)?;
+                }
                 // RES-1612 gate: pass loops top-level statements for
                 // `Node::NewtypeDecl`.
                 if markers.has_newtype_decl {
                     crate::newtypes::check(program, source_path)?;
                 }
-                crate::traits::check(program, source_path)?;
+                // RES-1616 gate: composite — pass validates trait
+                // decls, trait refs in impl blocks, and trait bounds
+                // on generic fn type-params. Any of the three signals
+                // means the pass has work.
+                if markers.has_trait_decl
+                    || !markers.impl_trait_names.is_empty()
+                    || markers.has_generic_fn
+                {
+                    crate::traits::check(program, source_path)?;
+                }
                 // RES-1611: `region_inference::infer` is a no-op stub
                 // (`Ok(())`); the real region-aliasing logic lives in
                 // `check_call_site_region_aliasing` which runs from a
@@ -4029,7 +4051,22 @@ impl TypeChecker {
                     crate::isr_call_graph::check(program, source_path)?;
                 }
                 // Ralph-Loop-Uniqueness #6: lock-ordering inversion.
-                crate::lock_ordering::check(program, source_path)?;
+                // RES-1616 gate: pass walks bodies for calls to
+                // `lock`/`acquire`/`mutex_lock` or `unlock`/`release`/
+                // `mutex_unlock` (LOCK_FNS / UNLOCK_FNS) or any
+                // identifier starting with `lock_` / `unlock_`. All
+                // three signals come from `markers.call_idents`,
+                // populated by the shared whole-AST walk (RES-1593).
+                let has_lock_call = markers.call_idents.contains("lock")
+                    || markers.call_idents.contains("acquire")
+                    || markers.call_idents.contains("mutex_lock")
+                    || markers.call_idents.contains("unlock")
+                    || markers.call_idents.contains("release")
+                    || markers.call_idents.contains("mutex_unlock")
+                    || markers.any_call_ident_with_prefix(&["lock_", "unlock_"]);
+                if has_lock_call {
+                    crate::lock_ordering::check(program, source_path)?;
+                }
                 // Ralph-Loop-Uniqueness #7: reentrancy guard.
                 // RES-1585 gate: pass scans for NR_PREFIXES on fn names.
                 if markers.any_fn_name_with_prefix(&["nonreentrant_", "exclusive_"]) {
