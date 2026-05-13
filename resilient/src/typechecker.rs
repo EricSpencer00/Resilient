@@ -895,6 +895,37 @@ fn z3_prove_with_cert(
 /// invariant — the recovery point is reached only after the
 /// precondition has already been checked, so requires still
 /// hold. Without `--features z3`, returns all-`None` / `false`.
+/// RES-1633: cache key for `z3_prove_with_axioms_and_cert`. Same
+/// shape as `prove_cache_key` (RES-1631) but folds the axioms
+/// slice's Debug repr into the hash so two distinct axiom sets
+/// can't collide. The leading `with_axioms:` tag also prevents
+/// any collision with `prove_cache_key`'s no-axioms entries that
+/// share the same `PROVE_CACHE`.
+#[cfg(feature = "z3")]
+fn prove_cache_key_with_axioms(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    axioms: &[Node],
+    timeout_ms: u32,
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    "with_axioms:".hash(&mut h);
+    format!("{:?}", expr).hash(&mut h);
+    let mut sorted: Vec<(&String, &i64)> = bindings.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in sorted {
+        k.hash(&mut h);
+        v.hash(&mut h);
+    }
+    for ax in axioms {
+        format!("{:?}", ax).hash(&mut h);
+    }
+    timeout_ms.hash(&mut h);
+    h.finish()
+}
+
 #[cfg(feature = "z3")]
 fn z3_prove_with_axioms_and_cert(
     expr: &Node,
@@ -902,9 +933,15 @@ fn z3_prove_with_axioms_and_cert(
     axioms: &[Node],
     timeout_ms: u32,
 ) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    let key = prove_cache_key_with_axioms(expr, bindings, axioms, timeout_ms);
+    if let Some(cached) = PROVE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
     let (verdict, cert, cx, timed_out) =
         crate::verifier_z3::prove_with_axioms_and_timeout(expr, bindings, axioms, timeout_ms);
-    (verdict, cert.map(|c| c.smt2), cx, timed_out)
+    let result = (verdict, cert.map(|c| c.smt2), cx, timed_out);
+    PROVE_CACHE.with(|c| c.borrow_mut().insert(key, result.clone()));
+    result
 }
 #[cfg(not(feature = "z3"))]
 fn z3_prove_with_axioms_and_cert(
