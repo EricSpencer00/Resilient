@@ -4413,8 +4413,11 @@ impl Parser {
             self.next_token(); // skip '('
         }
 
-        let mut parameters: Vec<(String, String)> = Vec::new();
-        let mut defaults: Vec<Option<Box<Node>>> = Vec::new();
+        // RES-1826: pre-size to 4 — methods typically take `self` plus
+        // 0-3 additional parameters. Mirrors RES-1768's pre-size for
+        // `parse_function_parameters`.
+        let mut parameters: Vec<(String, String)> = Vec::with_capacity(4);
+        let mut defaults: Vec<Option<Box<Node>>> = Vec::with_capacity(4);
         // Special-case the `self` first parameter: accept it bare
         // (no explicit type) and synthesize `(StructName, "self")`.
         if let Token::Identifier(name) = &self.current_token
@@ -6851,7 +6854,9 @@ impl Parser {
 
         // RES-036: zero or more `invariant EXPR` clauses between `live`
         // and `{`.
-        let mut invariants = Vec::new();
+        // RES-1826: pre-size to 2 — live blocks typically declare 0-2
+        // invariants. Same shape as RES-1776's parse_loop_invariants.
+        let mut invariants = Vec::with_capacity(2);
         while self.current_token == Token::Invariant {
             self.next_token(); // skip `invariant`
             let expr = self.parse_expression(0).unwrap_or(Node::BooleanLiteral {
@@ -9136,7 +9141,9 @@ impl Parser {
     fn parse_array_literal(&mut self) -> Node {
         // RES-086: capture the `[` token's span before advancing.
         let bracket_span = self.span_at_current();
-        let mut items = Vec::new();
+        // RES-1826: pre-size to 4 — typical array literals have
+        // 2-8 elements.
+        let mut items = Vec::with_capacity(4);
         if self.peek_token == Token::RightBracket {
             self.next_token(); // to ]
             return Node::ArrayLiteral {
