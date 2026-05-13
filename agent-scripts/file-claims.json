@@ -261,8 +261,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/verifier_z3.rs": {
-      "branch": "res-1639-spanless-more-variants",
-      "claimed_at": "2026-05-13T06:42:49Z"
+      "branch": "res-1641-z3-cache-stats",
+      "claimed_at": "2026-05-13T06:45:30Z"
     }
   }
 }

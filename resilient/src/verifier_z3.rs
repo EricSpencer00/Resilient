@@ -263,14 +263,66 @@ pub fn prove_with_axioms_and_timeout(
         h.finish()
     };
     if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.verdict_hits += 1;
+            s.set(v);
+        });
         return cached;
     }
+    Z3_CACHE_STATS.with(|s| {
+        let mut v = s.get();
+        v.verdict_misses += 1;
+        s.set(v);
+    });
     let result = Z3_CTX
         .with(|ctx| prove_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms));
     Z3_VERDICT_CACHE.with(|c| {
         c.borrow_mut().insert(key, result.clone());
     });
     result
+}
+
+/// RES-1641: cache-hit telemetry. Snapshot of the three thread-local
+/// verifier caches' hit + miss counts since the last `reset_cache_stats`.
+/// Returned by [`cache_stats`] for contributors who want to measure
+/// cache effectiveness across the RES-1635 / RES-1637 / RES-1639
+/// optimization series.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Z3CacheStats {
+    pub verdict_hits: u64,
+    pub verdict_misses: u64,
+    pub tautology_hits: u64,
+    pub tautology_misses: u64,
+    pub bv_hits: u64,
+    pub bv_misses: u64,
+}
+
+thread_local! {
+    /// RES-1641: hit/miss counters for the three caches below.
+    /// Thread-local so concurrent test runs don't cross-contaminate.
+    static Z3_CACHE_STATS: std::cell::Cell<Z3CacheStats> =
+        std::cell::Cell::new(Z3CacheStats {
+            verdict_hits: 0,
+            verdict_misses: 0,
+            tautology_hits: 0,
+            tautology_misses: 0,
+            bv_hits: 0,
+            bv_misses: 0,
+        });
+}
+
+/// RES-1641: return the current `Z3CacheStats` snapshot for this
+/// thread. Counters accumulate from process start (or the last
+/// [`reset_cache_stats`] call).
+pub fn cache_stats() -> Z3CacheStats {
+    Z3_CACHE_STATS.with(|s| s.get())
+}
+
+/// RES-1641: zero out all six counters. Useful for measuring a
+/// single compilation in isolation.
+pub fn reset_cache_stats() {
+    Z3_CACHE_STATS.with(|s| s.set(Z3CacheStats::default()));
 }
 
 thread_local! {
@@ -729,8 +781,18 @@ pub fn prove_tautology_with_axioms_and_timeout(
         h.finish()
     };
     if let Some(cached) = Z3_TAUTOLOGY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.tautology_hits += 1;
+            s.set(v);
+        });
         return cached;
     }
+    Z3_CACHE_STATS.with(|s| {
+        let mut v = s.get();
+        v.tautology_misses += 1;
+        s.set(v);
+    });
     let result = Z3_CTX.with(|ctx| {
         prove_tautology_with_axioms_and_timeout_in(ctx, expr, bindings, axioms, timeout_ms)
     });
@@ -883,8 +945,18 @@ pub fn prove_bv(
         h.finish()
     };
     if let Some(cached) = Z3_BV_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        Z3_CACHE_STATS.with(|s| {
+            let mut v = s.get();
+            v.bv_hits += 1;
+            s.set(v);
+        });
         return cached;
     }
+    Z3_CACHE_STATS.with(|s| {
+        let mut v = s.get();
+        v.bv_misses += 1;
+        s.set(v);
+    });
     let result = Z3_CTX.with(|ctx| prove_bv_in(ctx, expr, bindings, timeout_ms));
     Z3_BV_CACHE.with(|c| {
         c.borrow_mut().insert(key, result.clone());
