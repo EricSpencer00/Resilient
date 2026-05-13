@@ -3938,15 +3938,39 @@ impl TypeChecker {
                 // Add new compiler pass calls here (append-only).
                 // Pattern: crate::your_feature::check(program, source_path)?;
                 // Merge conflicts: keep ALL calls from both sides.
-                crate::try_catch::check(program, source_path)?;
+                // RES-1612 gate: pass scans for `Node::TryCatch`.
+                if markers.has_try_catch {
+                    crate::try_catch::check(program, source_path)?;
+                }
                 crate::verifier_liveness::check(program, source_path)?;
-                crate::recovery_checker::check(program, source_path)?;
-                crate::assume_false_checker::check(program, source_path)?;
-                crate::bounds_check::check_array_bounds(program, source_path)?;
-                crate::loop_invariants::check(program, source_path)?;
+                // RES-1612 gate: pass scans for `Node::LiveBlock`.
+                if markers.has_live_block {
+                    crate::recovery_checker::check(program, source_path)?;
+                }
+                // RES-1612 gate: pass scans for `Node::Assume`.
+                if markers.has_assume {
+                    crate::assume_false_checker::check(program, source_path)?;
+                }
+                // RES-1612 gate: pass scans for `Node::IndexExpression`.
+                // The pass's first call is `reset_stats()` to clear
+                // stale PROVEN_SITES from a prior compile — that only
+                // matters when this typecheck queries `is_proven_site`,
+                // which only happens when the program has index
+                // expressions. So skipping the call entirely on the
+                // gate-false case leaves stale state unobserved.
+                if markers.has_index_expression {
+                    crate::bounds_check::check_array_bounds(program, source_path)?;
+                }
+                // RES-1612 gate: pass scans for `Node::InvariantStatement`.
+                if markers.has_invariant_statement {
+                    crate::loop_invariants::check(program, source_path)?;
+                }
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
                 crate::type_aliases::check(program, source_path)?;
-                crate::ranges::check(program, source_path)?;
+                // RES-1612 gate: pass scans for `Node::Range`.
+                if markers.has_range {
+                    crate::ranges::check(program, source_path)?;
+                }
                 // RES-1605: `string_interp::check` is a no-op stub; the
                 // parser-side interpolation handling lives in
                 // `string_interp::parse`, not here.
@@ -3954,7 +3978,11 @@ impl TypeChecker {
                 // `full_modules` for the actual module-graph build.
                 crate::default_params::check(program, source_path)?;
                 crate::generics::check(program, source_path)?;
-                crate::newtypes::check(program, source_path)?;
+                // RES-1612 gate: pass loops top-level statements for
+                // `Node::NewtypeDecl`.
+                if markers.has_newtype_decl {
+                    crate::newtypes::check(program, source_path)?;
+                }
                 crate::traits::check(program, source_path)?;
                 crate::region_inference::infer(program, source_path)?;
                 // Ralph-Loop-Uniqueness #1: watchdog-feed enforcement.
