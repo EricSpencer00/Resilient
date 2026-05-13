@@ -335,7 +335,11 @@ struct CalleeInfo {
 /// Build a table from function name → `CalleeInfo` for all top-level
 /// functions with region type params.
 fn build_callee_table(stmts: &[crate::Spanned<crate::Node>]) -> HashMap<String, CalleeInfo> {
-    let mut table = HashMap::new();
+    // RES-1760: pre-size to stmts.len() — at most one insert per
+    // top-level statement (when it's a function with region type
+    // params). Same shape as the pre-size series for call-graph
+    // collections (RES-1742…RES-1756).
+    let mut table = HashMap::with_capacity(stmts.len());
     for spanned in stmts {
         if let crate::Node::Function {
             name,
