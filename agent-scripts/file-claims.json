@@ -264,9 +264,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1692-presize-typechecker-fields",
-      "claimed_at": "2026-05-13T09:00:38Z"
+    "resilient/src/bounds_check.rs": {
+      "branch": "res-1694-presize-proven-sites",
+      "claimed_at": "2026-05-13T09:06:43Z"
     }
   }
 }
