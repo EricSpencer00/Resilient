@@ -760,7 +760,9 @@ impl VerificationStats {
     /// discharged AND there was at least one such call site. Empty
     /// requires (no contract) is excluded — there's nothing to elide.
     pub fn fully_provable_fns(&self) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
+        // RES-1738: pre-size to per_fn_discharged.len() — exact upper
+        // bound, since every entry is a candidate for the output.
+        let mut out = std::collections::HashSet::with_capacity(self.per_fn_discharged.len());
         for (name, n) in &self.per_fn_discharged {
             if *n > 0 && !self.per_fn_runtime.contains_key(name) {
                 out.insert(name.clone());

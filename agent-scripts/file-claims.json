@@ -248,9 +248,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/cluster_verifier.rs": {
-      "branch": "res-1736-cluster-post-rewrites",
-      "claimed_at": "2026-05-13T10:49:36Z"
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1738-audit-presize",
+      "claimed_at": "2026-05-13T10:53:49Z"
     }
   }
 }
