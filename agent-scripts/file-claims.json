@@ -4,10 +4,6 @@
       "branch": "res-1198-embedded-rust-cache",
       "claimed_at": "2026-05-12T01:23:24Z"
     },
-    "resilient/src/region_inference.rs": {
-      "branch": "res-1202-region-inference-dead-work",
-      "claimed_at": "2026-05-12T01:33:01Z"
-    },
     "resilient/.cargo/config.toml": {
       "branch": "res-1192-cargo-config-linker",
       "claimed_at": "2026-05-12T01:09:57Z"
@@ -260,13 +256,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/bytecode.rs": {
-      "branch": "res-1720-chunk-with-capacity",
-      "claimed_at": "2026-05-13T10:19:17Z"
-    },
-    "resilient/src/compiler.rs": {
-      "branch": "res-1720-chunk-with-capacity",
-      "claimed_at": "2026-05-13T10:19:17Z"
+    "resilient/src/region_inference.rs": {
+      "branch": "res-1722-region-inference-presize",
+      "claimed_at": "2026-05-13T10:23:48Z"
     }
   }
 }
