@@ -28529,14 +28529,14 @@ pub fn run_cli() {
             // run is worth persisting even if the program later
             // panicked or asserted.
             #[cfg(feature = "z3")]
-            if let Some(ref path) = persistent_proof_cache_path {
-                if let Err(e) = verifier_z3::save_persistent_proven(path) {
-                    eprintln!(
-                        "warning: --persistent-proof-cache save failed for {}: {}",
-                        path.display(),
-                        e
-                    );
-                }
+            if let Some(ref path) = persistent_proof_cache_path
+                && let Err(e) = verifier_z3::save_persistent_proven(path)
+            {
+                eprintln!(
+                    "warning: --persistent-proof-cache save failed for {}: {}",
+                    path.display(),
+                    e
+                );
             }
             match run_result {
                 Ok(_) => {
