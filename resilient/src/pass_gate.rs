@@ -158,6 +158,7 @@ impl<'a> Markers<'a> {
                 parameters,
                 type_params,
                 pure,
+                effects,
                 ..
             } => {
                 m.fn_names.insert(name.as_str());
@@ -172,11 +173,18 @@ impl<'a> Markers<'a> {
                 if !type_params.is_empty() {
                     m.has_generic_fn = true;
                 }
-                // RES-1671: `@pure` marker. Set when the parser stamps
-                // `pure: true` on the Function (`@pure` lights up both
-                // `pure: bool` and `effects: EffectSet::pure()`, so
-                // this single signal gates both downstream passes).
-                if *pure {
+                // RES-1671: purity marker. There are TWO parser paths
+                // that produce a pure fn:
+                //   - `@pure fn foo()` sets `pure: true` + `effects:
+                //     EffectSet::pure()` (RES-191 attribute path).
+                //   - `pure fn foo()` sets `pure: false` + `effects:
+                //     EffectSet::pure()` (RES-389 keyword path).
+                // `check_program_purity` (RES-191) fires only on
+                // `pure: true`; `check_program_effects` (RES-389)
+                // fires only on `effects.pure: true`. Either signal
+                // means at least one downstream pass has work to do,
+                // so the gate fires on the union.
+                if *pure || effects.pure {
                     m.has_pure_fn = true;
                 }
             }
@@ -859,6 +867,38 @@ mod tests {
             function_stmt("imp", vec![]),
             pure_function_stmt("clean"),
         ]);
+        let m = Markers::scan(&program);
+        assert!(m.has_pure_fn);
+    }
+
+    /// RES-1671: the keyword-form `pure fn` sets `effects.pure: true`
+    /// but leaves `pure: false` (see RES-389 `parse_function_with_effects`).
+    /// The marker must still fire so `check_program_effects` gets to run.
+    #[test]
+    fn has_pure_fn_true_for_keyword_pure_function() {
+        let keyword_pure_fn = span::Spanned {
+            node: Node::Function {
+                name: "kpure".to_string(),
+                parameters: Vec::new(),
+                defaults: Vec::new(),
+                body: Box::new(Node::Block {
+                    stmts: Vec::new(),
+                    span: span::Span::default(),
+                }),
+                requires: Vec::new(),
+                ensures: Vec::new(),
+                recovers_to: None,
+                return_type: None,
+                span: span::Span::default(),
+                pure: false,
+                effects: crate::EffectSet::pure(),
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+                fails: Vec::new(),
+            },
+            span: span::Span::default(),
+        };
+        let program = Node::Program(vec![keyword_pure_fn]);
         let m = Markers::scan(&program);
         assert!(m.has_pure_fn);
     }
