@@ -845,8 +845,17 @@ thread_local! {
     // distinct `(clause, bindings, theory, timeout)` tuple within a
     // single typecheck; programs with ~100 obligations would otherwise
     // pay 5-6 rehashes per typecheck.
-    static PROVE_CACHE: std::cell::RefCell<std::collections::HashMap<u64, ProveCacheEntry>> =
-        std::cell::RefCell::new(std::collections::HashMap::with_capacity(64));
+    //
+    // RES-1708: use the same `IdentityU64Hasher` the inner Z3 caches
+    // use (RES-1706). The `u64` key is already a high-quality hash
+    // from `hash_node_spanless` + SipHash via `DefaultHasher`;
+    // re-hashing it inside the HashMap costs ~5-10 cycles per
+    // lookup that we can skip.
+    static PROVE_CACHE: std::cell::RefCell<
+        crate::verifier_z3::U64CacheMap<ProveCacheEntry>,
+    > = std::cell::RefCell::new(
+        crate::verifier_z3::U64CacheMap::with_capacity_and_hasher(64, Default::default()),
+    );
 }
 
 /// RES-1631: reset the within-run Z3 proof cache. Called from
