@@ -144,7 +144,11 @@ pub fn lower_program(program: &mut Node) -> Result<(), String> {
     if !crate::uniqueness_walk::any_node(program, |n| matches!(n, Node::NamedArg { .. })) {
         return Ok(());
     }
-    let mut sigs: HashMap<String, Vec<String>> = HashMap::new();
+    // RES-1794: pre-size to a moderate constant — sigs accumulates
+    // one entry per top-level fn plus impl-block methods. Programs
+    // using named args typically have 8-32 fns; 16 covers the common
+    // case without wasting space for tiny programs.
+    let mut sigs: HashMap<String, Vec<String>> = HashMap::with_capacity(16);
     collect_signatures(program, &mut sigs);
     rewrite_calls(program, &sigs)
 }

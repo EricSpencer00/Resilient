@@ -80,10 +80,6 @@
       "branch": "res-1303-feature-attrs-kind-index",
       "claimed_at": "2026-05-12T05:08:27Z"
     },
-    "resilient/src/named_args.rs": {
-      "branch": "res-1317-named-args-fast-reject",
-      "claimed_at": "2026-05-12T05:37:55Z"
-    },
     "resilient/src/const_fold.rs": {
       "branch": "res-1341-cache-opt-env-vars",
       "claimed_at": "2026-05-12T06:52:39Z"
@@ -331,6 +327,14 @@
     "resilient/src/tuples.rs": {
       "branch": "res-1790-type-aliases-tuples-presize",
       "claimed_at": "2026-05-13T12:39:38Z"
+    },
+    "resilient/src/infer.rs": {
+      "branch": "res-1794-infer-named-args-presize",
+      "claimed_at": "2026-05-13T12:47:28Z"
+    },
+    "resilient/src/named_args.rs": {
+      "branch": "res-1794-infer-named-args-presize",
+      "claimed_at": "2026-05-13T12:47:28Z"
     }
   }
 }
