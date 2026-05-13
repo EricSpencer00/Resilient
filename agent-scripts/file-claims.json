@@ -333,8 +333,8 @@
       "claimed_at": "2026-05-13T13:34:15Z"
     },
     "resilient/src/lexer_logos.rs": {
-      "branch": "res-1820-radix-int-fast-reject",
-      "claimed_at": "2026-05-13T13:43:38Z"
+      "branch": "res-1824-string-lit-out-presize",
+      "claimed_at": "2026-05-13T13:52:22Z"
     }
   }
 }
