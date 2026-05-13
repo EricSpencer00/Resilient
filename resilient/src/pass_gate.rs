@@ -74,6 +74,27 @@ pub(crate) struct Markers<'a> {
     /// True if any `Node::Use` appears anywhere in the AST. Used
     /// together with `has_module_decl` by the `full_modules` gate.
     pub has_use: bool,
+    /// True if any `Node::Assume` appears anywhere. Used by the
+    /// `assume_false_checker` gate (RES-1612).
+    pub has_assume: bool,
+    /// True if any `Node::InvariantStatement` appears anywhere. Used
+    /// by the `loop_invariants` gate (RES-1612).
+    pub has_invariant_statement: bool,
+    /// True if any `Node::Range` appears anywhere. Used by the
+    /// `ranges` gate (RES-1612).
+    pub has_range: bool,
+    /// True if any `Node::LiveBlock` appears anywhere. Used by the
+    /// `recovery_checker` gate (RES-1612).
+    pub has_live_block: bool,
+    /// True if any `Node::TryCatch` appears anywhere. Used by the
+    /// `try_catch` gate (RES-1612).
+    pub has_try_catch: bool,
+    /// True if any `Node::IndexExpression` appears anywhere. Used
+    /// by the `bounds_check` gate (RES-1612).
+    pub has_index_expression: bool,
+    /// True if any `Node::NewtypeDecl` appears anywhere. Used by
+    /// the `newtypes` gate (RES-1612).
+    pub has_newtype_decl: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -126,6 +147,27 @@ impl<'a> Markers<'a> {
             }
             Node::Use { .. } => {
                 m.has_use = true;
+            }
+            Node::Assume { .. } => {
+                m.has_assume = true;
+            }
+            Node::InvariantStatement { .. } => {
+                m.has_invariant_statement = true;
+            }
+            Node::Range { .. } => {
+                m.has_range = true;
+            }
+            Node::LiveBlock { .. } => {
+                m.has_live_block = true;
+            }
+            Node::TryCatch { .. } => {
+                m.has_try_catch = true;
+            }
+            Node::IndexExpression { .. } => {
+                m.has_index_expression = true;
+            }
+            Node::NewtypeDecl { .. } => {
+                m.has_newtype_decl = true;
             }
             _ => {}
         });
