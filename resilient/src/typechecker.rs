@@ -802,6 +802,66 @@ fn z3_prove_with_cert(
 /// RES-354: theory-aware variant of `z3_prove_with_cert`. Uses
 /// `prove_auto` which auto-selects BV32/LIA based on the theory hint
 /// and the presence of bitwise operations.
+// RES-1631: within-run Z3 proof cache for `z3_prove_with_cert_theory`.
+//
+// Two call paths feed this entry point: the per-fn-decl tautology
+// check (`check_program_with_source` line ~4664) and the per-call-site
+// `requires` check (`check_call_expression` line ~6314). For
+// programs that exercise the same `(clause, bindings, theory,
+// timeout)` tuple twice in one type-check — most commonly hot test
+// code calling a contracted fn with identical literal args — the
+// second call rebuilds a Z3 Context, re-compiles SMT-LIB2, and
+// re-runs `Solver::check` for an answer it has just computed.
+//
+// Cache is thread-local so concurrent tests don't share state, and
+// cleared at the start of every `check_program_with_source` so
+// state never leaks across compilations.
+#[cfg(feature = "z3")]
+thread_local! {
+    static PROVE_CACHE: std::cell::RefCell<
+        std::collections::HashMap<u64, (Option<bool>, Option<String>, Option<String>, bool)>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// RES-1631: reset the within-run Z3 proof cache. Called from
+/// `check_program_with_source` at the start of every typecheck so
+/// the cache never carries entries across compilations.
+#[cfg(feature = "z3")]
+pub(crate) fn reset_z3_prove_cache() {
+    PROVE_CACHE.with(|c| c.borrow_mut().clear());
+}
+#[cfg(not(feature = "z3"))]
+pub(crate) fn reset_z3_prove_cache() {}
+
+/// Hash the (expr, bindings, timeout, theory) tuple into a stable u64
+/// for `PROVE_CACHE`. Spans inside `expr`'s `Debug` output are part
+/// of the key — that's deliberate: per-call-site dispatches share
+/// the same `&Node` (and therefore span) for the same fn's clause,
+/// so same Node = same key. Bindings vary per call site.
+#[cfg(feature = "z3")]
+fn prove_cache_key(
+    expr: &Node,
+    bindings: &HashMap<String, i64>,
+    timeout_ms: u32,
+    theory: crate::verifier_z3::Z3Theory,
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    format!("{:?}", expr).hash(&mut h);
+    // HashMap iteration order is non-deterministic; sort by key for
+    // a stable hash regardless of insertion order.
+    let mut sorted: Vec<(&String, &i64)> = bindings.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in sorted {
+        k.hash(&mut h);
+        v.hash(&mut h);
+    }
+    timeout_ms.hash(&mut h);
+    format!("{:?}", theory).hash(&mut h);
+    h.finish()
+}
+
 #[cfg(feature = "z3")]
 fn z3_prove_with_cert_theory(
     expr: &Node,
@@ -809,9 +869,15 @@ fn z3_prove_with_cert_theory(
     timeout_ms: u32,
     theory: crate::verifier_z3::Z3Theory,
 ) -> (Option<bool>, Option<String>, Option<String>, bool) {
+    let key = prove_cache_key(expr, bindings, timeout_ms, theory);
+    if let Some(cached) = PROVE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
     let (verdict, cert, cx, timed_out) =
         crate::verifier_z3::prove_auto(expr, bindings, theory, timeout_ms);
-    (verdict, cert.map(|c| c.smt2), cx, timed_out)
+    let result = (verdict, cert.map(|c| c.smt2), cx, timed_out);
+    PROVE_CACHE.with(|c| c.borrow_mut().insert(key, result.clone()));
+    result
 }
 #[cfg(not(feature = "z3"))]
 fn z3_prove_with_cert(
@@ -3738,6 +3804,11 @@ impl TypeChecker {
         // RES-217: stash the source path for partial-proof
         // warnings that want to print `<file>:<line>:<col>`.
         self.source_path = source_path.to_string();
+        // RES-1631: clear the within-run Z3 proof cache so a prior
+        // compilation's entries don't leak into this typecheck. The
+        // cache is thread-local and per-`check_program_with_source`
+        // call; entries accumulate during one typecheck only.
+        reset_z3_prove_cache();
         match program {
             Node::Program(statements) => {
                 // RES-061: pre-pass to register every top-level Function
