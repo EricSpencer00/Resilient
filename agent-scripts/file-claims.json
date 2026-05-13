@@ -264,9 +264,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/pass_gate.rs": {
-      "branch": "res-1686-presize-markers",
-      "claimed_at": "2026-05-13T08:45:35Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1688-presize-z3-caches",
+      "claimed_at": "2026-05-13T08:53:32Z"
     }
   }
 }
