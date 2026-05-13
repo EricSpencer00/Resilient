@@ -265,12 +265,12 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/pass_gate.rs": {
-      "branch": "res-1590-extended-pass-gate",
-      "claimed_at": "2026-05-13T04:59:16Z"
+      "branch": "res-1593-deep-ast-gate",
+      "claimed_at": "2026-05-13T05:06:52Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1590-extended-pass-gate",
-      "claimed_at": "2026-05-13T04:59:16Z"
+      "branch": "res-1593-deep-ast-gate",
+      "claimed_at": "2026-05-13T05:06:52Z"
     }
   }
 }
