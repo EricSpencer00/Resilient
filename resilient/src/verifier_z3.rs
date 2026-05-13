@@ -1832,28 +1832,29 @@ fn extract_counterexample_bv(
     let mut idents: BTreeSet<&str> = BTreeSet::new();
     collect_bv_identifiers(expr, &mut idents);
 
-    let mut parts: Vec<String> = Vec::new();
+    // RES-1704: write directly into one accumulator — same shape as
+    // the LIA counterexample fn above.
+    use std::fmt::Write;
+    let mut out = String::new();
     for name in &idents {
         if bindings.contains_key(*name) {
             continue;
         }
         let var = BV::new_const(ctx, *name, 32);
-        if let Some(v) = model.eval(&var, false) {
-            // BV::as_i64() gives the unsigned bit pattern; sign-extend
-            // for display by treating values > i32::MAX as negative.
-            if let Some(n) = v.as_i64() {
-                // Mask to 32 bits then sign-extend.
-                let bits = n as u32;
-                let signed = bits as i32;
-                parts.push(format!("{} = {}", name, signed));
+        if let Some(v) = model.eval(&var, false)
+            && let Some(n) = v.as_i64()
+        {
+            // Mask to 32 bits then sign-extend for display
+            // (BV::as_i64 returns the unsigned bit pattern).
+            let bits = n as u32;
+            let signed = bits as i32;
+            if !out.is_empty() {
+                out.push_str(", ");
             }
+            let _ = write!(&mut out, "{} = {}", name, signed);
         }
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(", "))
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Translate an AST expression to a Z3 `Bool` under the BV32 theory.
@@ -1964,7 +1965,15 @@ fn extract_counterexample(
     let mut idents: BTreeSet<&str> = BTreeSet::new();
     collect_int_identifiers(expr, &mut idents);
 
-    let mut parts: Vec<String> = Vec::new();
+    // RES-1704: write directly into a single accumulator String
+    // instead of building a `Vec<String>` and then `.join(", ")`-ing
+    // it. Saves one allocation per surviving ident plus the join
+    // buffer. The counterexample path only fires on a SAT verdict
+    // (verification failed), so it's not super hot — but the change
+    // is mechanical and the join allocation always matched the
+    // intermediate Vec's total length anyway.
+    use std::fmt::Write;
+    let mut out = String::new();
     for name in &idents {
         if bindings.contains_key(*name) {
             continue;
@@ -1973,14 +1982,14 @@ fn extract_counterexample(
         if let Some(v) = model.eval(&var, false)
             && let Some(n) = v.as_i64()
         {
-            parts.push(format!("{} = {}", name, n));
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            // `write!` to a `String` is infallible.
+            let _ = write!(&mut out, "{} = {}", name, n);
         }
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(", "))
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Walk the AST collecting every identifier that the integer or boolean
