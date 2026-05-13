@@ -385,6 +385,12 @@ fn bytes_lit(lex: &mut logos::Lexer<Tok>) -> Vec<u8> {
     // trailing `"`.
     let slice = lex.slice();
     let inner = &slice[2..slice.len().saturating_sub(1)];
+    // RES-1818: fast-reject for byte literals without escape
+    // sequences. The escape-handling loop below walks every char
+    // only to push it back unchanged when there's no `\`.
+    if !inner.contains('\\') {
+        return inner.as_bytes().to_vec();
+    }
     // RES-1778: pre-size to inner.len() — each unescaped char yields
     // one byte; escape sequences (`\n`, `\xNN`) yield one byte but
     // consume 2-4 source chars, so this is an upper bound that
@@ -454,6 +460,16 @@ fn string_lit(lex: &mut logos::Lexer<Tok>) -> String {
     // The matched slice includes surrounding quotes; strip them.
     let slice = lex.slice();
     let inner = &slice[1..slice.len().saturating_sub(1)];
+    // RES-1818: fast-reject for strings without escape sequences.
+    // Most source-code strings contain no `\` — `b"hello"`,
+    // `"identifier"`, format templates, error messages with simple
+    // text. The escape-handling loop below allocates a fresh
+    // `String` and walks every char only to deposit them unchanged.
+    // A `contains('\\')` check is one O(N) byte scan, far cheaper
+    // than the chars-peekable walk plus `String::push` per char.
+    if !inner.contains('\\') {
+        return inner.to_string();
+    }
     let mut out = String::new();
     let mut chars = inner.chars().peekable();
     while let Some(c) = chars.next() {
