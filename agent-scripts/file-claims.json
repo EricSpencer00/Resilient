@@ -265,12 +265,12 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/pass_gate.rs": {
-      "branch": "res-1627-gate-actor-precheck",
-      "claimed_at": "2026-05-13T06:07:32Z"
+      "branch": "res-1629-blame-deadlock-gates",
+      "claimed_at": "2026-05-13T06:10:32Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1627-gate-actor-precheck",
-      "claimed_at": "2026-05-13T06:07:32Z"
+      "branch": "res-1629-blame-deadlock-gates",
+      "claimed_at": "2026-05-13T06:10:32Z"
     }
   }
 }
