@@ -200,10 +200,6 @@
       "branch": "res-1396-inline-chunk-fast-reject",
       "claimed_at": "2026-05-12T09:48:19Z"
     },
-    "resilient/src/compiler.rs": {
-      "branch": "res-1430-compile-target-borrow",
-      "claimed_at": "2026-05-12T10:45:02Z"
-    },
     "resilient/src/default_params.rs": {
       "branch": "res-1475-default-params-skip-no-defaults",
       "claimed_at": "2026-05-12T11:56:23Z"
@@ -264,9 +260,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/lexer_logos.rs": {
-      "branch": "res-1714-presize-token-vec",
-      "claimed_at": "2026-05-13T10:04:23Z"
+    "resilient/src/compiler.rs": {
+      "branch": "res-1716-compiler-presize",
+      "claimed_at": "2026-05-13T10:09:16Z"
     }
   }
 }
