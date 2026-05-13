@@ -3048,7 +3048,11 @@ impl Parser {
     }
 
     fn parse_program(&mut self) -> Node {
-        let mut program: Vec<span::Spanned<Node>> = Vec::new();
+        // RES-1812: pre-size to 16 — typical programs declare 5-50
+        // top-level statements (fns, structs, type aliases, impls).
+        // Saves the 0→4→8→16 doubling chain on every parse, paid
+        // once per source file.
+        let mut program: Vec<span::Spanned<Node>> = Vec::with_capacity(16);
 
         while self.current_token != Token::Eof {
             // RES-077 (G6 partial): capture each statement's source
