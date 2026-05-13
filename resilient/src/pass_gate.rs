@@ -117,7 +117,13 @@ pub(crate) struct Markers<'a> {
     /// True if any `Node::ActorDecl` appears anywhere. Used by the
     /// actor-invariant Z3 verifier pre-check (RES-1627) to skip
     /// `collect_actor_obligations` when the program has no actors.
+    /// Also used by the `deadlock_freedom` gate (RES-1629).
     pub has_actor_decl: bool,
+    /// True if any `Node::CallExpression` appears anywhere
+    /// (regardless of whether the callee is an `Identifier` —
+    /// method calls and indirect calls count too). Used by the
+    /// `blame_attribution` gate (RES-1629).
+    pub has_call_expression: bool,
 }
 
 impl<'a> Markers<'a> {
@@ -161,6 +167,7 @@ impl<'a> Markers<'a> {
                 m.field_names_accessed.insert(field.as_str());
             }
             Node::CallExpression { function, .. } => {
+                m.has_call_expression = true;
                 if let Node::Identifier { name, .. } = function.as_ref() {
                     m.call_idents.insert(name.as_str());
                 }

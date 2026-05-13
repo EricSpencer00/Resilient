@@ -4240,7 +4240,17 @@ impl TypeChecker {
                 // RES-1623: `semantic_regression::check` is a no-op
                 // stub; real diff runs from the test harness.
                 // RES-1623: `semver_behavior::check` is a no-op stub.
-                crate::blame_attribution::check(program, source_path)?;
+                // RES-1629 gate: pass walks bodies for `CallExpression`
+                // to build the (caller, callee) blame map. Without any
+                // call expressions, `build` returns an empty `BlameMap`
+                // — but the pass still installs `BlameMap::default()`
+                // to clear stale state from a previous compilation, so
+                // preserve that in the else branch.
+                if markers.has_call_expression {
+                    crate::blame_attribution::check(program, source_path)?;
+                } else {
+                    crate::blame_attribution::install(crate::blame_attribution::BlameMap::default());
+                }
                 // RES-1619: `autopilot::check` is a no-op stub; the
                 // `--autopilot` CLI flag drives the actual `run()`.
                 crate::crash_only_cert::check(program, source_path)?;
@@ -4253,7 +4263,13 @@ impl TypeChecker {
                 crate::info_flow::check(program, source_path)?;
                 crate::phantom_types::check(program, source_path)?;
                 crate::recursive_types::check(program, source_path)?;
-                crate::deadlock_freedom::check(program, source_path)?;
+                // RES-1629 gate: pass scans for `Node::ActorDecl` to
+                // build an actor→actors graph. With no ActorDecls,
+                // both `build` and `detect_cycles` are dead work.
+                // `markers.has_actor_decl` was added in RES-1627.
+                if markers.has_actor_decl {
+                    crate::deadlock_freedom::check(program, source_path)?;
+                }
                 crate::session_types::check(program, source_path)?;
                 crate::probabilistic_contracts::check(program, source_path)?;
                 crate::wcet_contracts::check(program, source_path)?;
