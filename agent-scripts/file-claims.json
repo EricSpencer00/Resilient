@@ -248,6 +248,10 @@
       "branch": "res-1764-attr-collect-presize",
       "claimed_at": "2026-05-13T11:45:18Z"
     },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1766-typechecker-hot-presize",
+      "claimed_at": "2026-05-13T11:55:37Z"
+    },
     "resilient/src/supervisor.rs": {
       "branch": "res-1770-verifier-presize",
       "claimed_at": "2026-05-13T11:59:58Z"
@@ -324,9 +328,9 @@
       "branch": "res-1806-misc-parser-presize",
       "claimed_at": "2026-05-13T13:11:05Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1810-parse-type-name-presize",
-      "claimed_at": "2026-05-13T13:19:00Z"
+    "resilient/src/verifier_actors.rs": {
+      "branch": "res-1808-flatten-body-presize",
+      "claimed_at": "2026-05-13T13:17:34Z"
     }
   }
 }

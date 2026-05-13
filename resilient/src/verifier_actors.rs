@@ -283,7 +283,11 @@ fn straight_line_post(body: &Node, state_name: &str) -> Option<Node> {
 fn flatten_body(body: &Node) -> Option<Vec<&Node>> {
     match body {
         Node::Block { stmts, .. } => {
-            let mut out = Vec::new();
+            // RES-1808: pre-size to stmts.len() — each stmt either
+            // pushes one item directly or recurses into a nested
+            // Block whose contributions can exceed this upper bound,
+            // but stmts.len() is a reasonable starting cap.
+            let mut out = Vec::with_capacity(stmts.len());
             for s in stmts {
                 match s {
                     Node::Block { .. } => {
