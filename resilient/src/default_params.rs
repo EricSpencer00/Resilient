@@ -60,7 +60,11 @@ struct FnDefaults {
 /// `FnDefaults` entry has a `Some(_)` slot, skip the walk entirely.
 /// `crate::newtypes::lower_program` follows the same shape.
 pub fn lower_program(program: &mut Node) {
-    let mut sigs: HashMap<String, FnDefaults> = HashMap::new();
+    // RES-1800: pre-size to 8 — `collect_defaults` only inserts fns
+    // that declare at least one default. Programs using defaults
+    // typically have a handful; 8 covers the common case without
+    // rehash churn. Same shape as RES-1794's `named_args::lower_program`.
+    let mut sigs: HashMap<String, FnDefaults> = HashMap::with_capacity(8);
     collect_defaults(program, &mut sigs);
     // RES-1475: `collect_defaults` now only inserts functions that
     // have at least one declared default, so `sigs.is_empty()`
