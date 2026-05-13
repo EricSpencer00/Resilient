@@ -97,8 +97,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 }
 
 fn collect_pairs(fn_name: &str, body: &Node, pairs: &mut HashMap<(String, String), Vec<String>>) {
-    let mut held: Vec<String> = Vec::new();
-    let mut acts: Vec<(bool, String)> = Vec::new(); // (is_lock, name)
+    // RES-1752: pre-size — a fn body typically has a small handful
+    // of lock/unlock calls. 8 covers the common case without
+    // doubling growth from 0.
+    let mut held: Vec<String> = Vec::with_capacity(8);
+    let mut acts: Vec<(bool, String)> = Vec::with_capacity(8); // (is_lock, name)
     visit(body, &mut |n| {
         if let Node::CallExpression {
             function,

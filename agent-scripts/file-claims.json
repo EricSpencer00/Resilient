@@ -92,10 +92,6 @@
       "branch": "res-1262-monotonic-fast-reject",
       "claimed_at": "2026-05-12T03:53:13Z"
     },
-    "resilient/src/lock_ordering.rs": {
-      "branch": "res-1524-lock-ordering-reported-borrow",
-      "claimed_at": "2026-05-12T13:45:00Z"
-    },
     "resilient/src/unsafe_check.rs": {
       "branch": "res-1281-unsafe-check-fast-reject",
       "claimed_at": "2026-05-12T04:21:23Z"
@@ -228,9 +224,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/age_bounded_data.rs": {
-      "branch": "res-1750-age-bounded-presize",
-      "claimed_at": "2026-05-13T11:14:47Z"
+    "resilient/src/lock_ordering.rs": {
+      "branch": "res-1752-lock-ordering-presize",
+      "claimed_at": "2026-05-13T11:18:18Z"
     }
   }
 }
