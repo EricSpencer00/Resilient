@@ -305,7 +305,9 @@ pub(crate) fn check(node: &Node, env: &TypeEnvironment) -> Result<(), String> {
             // is tied to `children` (owned by the AST node passed
             // in). Same shape as RES-1431 (pattern_bindings) /
             // RES-1439 (info_flow walk_calls).
-            let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            // RES-1740: pre-size to children.len() — exact upper bound.
+            let mut seen_ids: std::collections::HashSet<&str> =
+                std::collections::HashSet::with_capacity(children.len());
 
             // Validate each child
             for child in children {
