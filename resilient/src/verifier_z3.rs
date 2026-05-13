@@ -817,11 +817,20 @@ fn prove_with_axioms_and_timeout_in(
 
     // RES-137: apply the per-query timeout to both solvers below.
     // Z3's `"timeout"` param is in milliseconds; 0 disables it.
+    // RES-1655: build the Params once per prove call rather than
+    // per invocation of the closure — the closure runs twice (once
+    // for the tautology solver, once for the contradiction solver),
+    // and both invocations built an identical Params from scratch.
+    let timeout_params = if timeout_ms > 0 {
+        let mut p = z3::Params::new(ctx);
+        p.set_u32("timeout", timeout_ms);
+        Some(p)
+    } else {
+        None
+    };
     let apply_timeout = |solver: &z3::Solver<'_>| {
-        if timeout_ms > 0 {
-            let mut params = z3::Params::new(ctx);
-            params.set_u32("timeout", timeout_ms);
-            solver.set_params(&params);
+        if let Some(ref p) = timeout_params {
+            solver.set_params(p);
         }
     };
 
@@ -1076,11 +1085,18 @@ fn prove_tautology_with_axioms_and_timeout_in(
         None => return (false, None, false),
     };
 
+    // RES-1655: hoist the timeout Params out of the closure so it
+    // builds once per prove instead of once per solver.
+    let timeout_params = if timeout_ms > 0 {
+        let mut p = z3::Params::new(ctx);
+        p.set_u32("timeout", timeout_ms);
+        Some(p)
+    } else {
+        None
+    };
     let apply_timeout = |solver: &z3::Solver<'_>| {
-        if timeout_ms > 0 {
-            let mut params = z3::Params::new(ctx);
-            params.set_u32("timeout", timeout_ms);
-            solver.set_params(&params);
+        if let Some(ref p) = timeout_params {
+            solver.set_params(p);
         }
     };
 
@@ -1240,11 +1256,17 @@ fn prove_bv_in(
         None => return (None, None, None, false),
     };
 
+    // RES-1655: hoist the timeout Params out of the closure (BV path).
+    let timeout_params = if timeout_ms > 0 {
+        let mut p = z3::Params::new(ctx);
+        p.set_u32("timeout", timeout_ms);
+        Some(p)
+    } else {
+        None
+    };
     let apply_timeout = |solver: &z3::Solver<'_>| {
-        if timeout_ms > 0 {
-            let mut params = z3::Params::new(ctx);
-            params.set_u32("timeout", timeout_ms);
-            solver.set_params(&params);
+        if let Some(ref p) = timeout_params {
+            solver.set_params(p);
         }
     };
 
