@@ -4813,7 +4813,10 @@ impl TypeChecker {
                 fails,
                 ..
             } => {
-                let mut param_types = Vec::new();
+                // RES-1724: pre-size to `parameters.len()` — exact upper
+                // bound, the loop below pushes one entry per parameter.
+                // Same shape as the rest of the pre-size series.
+                let mut param_types = Vec::with_capacity(parameters.len());
 
                 // Create a new enclosed environment for function body
                 let mut function_env = TypeEnvironment::new_enclosed(self.env.clone());
