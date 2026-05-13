@@ -3947,8 +3947,11 @@ impl TypeChecker {
                 crate::verifier_loop_invariants::verify_and_capture(self, program);
                 crate::type_aliases::check(program, source_path)?;
                 crate::ranges::check(program, source_path)?;
-                crate::string_interp::check(program, source_path)?;
-                crate::modules::check(program, source_path)?;
+                // RES-1605: `string_interp::check` is a no-op stub; the
+                // parser-side interpolation handling lives in
+                // `string_interp::parse`, not here.
+                // RES-1605: `modules::check` is a no-op stub; see
+                // `full_modules` for the actual module-graph build.
                 crate::default_params::check(program, source_path)?;
                 crate::generics::check(program, source_path)?;
                 crate::newtypes::check(program, source_path)?;
@@ -4223,13 +4226,24 @@ impl TypeChecker {
                 if markers.call_idents.contains("Err") {
                     crate::coverage_warnings::check(program, source_path)?;
                 }
-                crate::param_destructuring::check(program, source_path)?;
-                crate::format_builtin::check(program, source_path)?;
+                // RES-1605: `param_destructuring::check` is a no-op stub;
+                // the parser handles destructured-param desugaring.
+                // RES-1605: `format_builtin::check` is a no-op stub;
+                // the `format` builtin is registered in the builtin
+                // table at startup, not per-typecheck.
                 // RES-1597: `struct_exhaustiveness::check` is a no-op
                 // stub for a future feature.
                 // RES-1597: `labeled_break::check` is a no-op stub; the
                 // parser already enforces label well-formedness.
-                crate::fmt_validation::check(program, source_path)?;
+                // RES-1606 gate: pass scans for `CallExpression` whose
+                // function is the `format` identifier — same shape as
+                // RES-1598's `coverage_warnings` gate on `"Err"`.
+                // `markers.call_idents` already records every such ident
+                // from the shared whole-AST walk (RES-1593), so the gate
+                // is an O(1) HashSet lookup.
+                if markers.call_idents.contains("format") {
+                    crate::fmt_validation::check(program, source_path)?;
+                }
                 crate::no_panic_cert::check(program, source_path)?;
                 crate::ai_threat_model::check(program, source_path)?;
                 // RES-1597: `lean_spec::check` is a no-op stub; Lean
