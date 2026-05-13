@@ -214,7 +214,11 @@ pub fn compile(program: &Node) -> Result<Program, CompileError> {
 
     // Pass 3: compile the remaining top-level statements into `main`.
     let mut main = Chunk::new();
-    let mut main_locals: HashMap<String, u16> = HashMap::new();
+    // RES-1716: pre-size `main_locals` — same shape as RES-1461 for
+    // `fn_index`. Top-level `let` / `const` / `static` bindings flow
+    // into this map; typical programs have 5-20 entries. Pre-sizing
+    // to 16 fits the common case in one allocation.
+    let mut main_locals: HashMap<String, u16> = HashMap::with_capacity(16);
     let mut main_next_local: u16 = 0;
     for spanned in stmts {
         // Skip fn/extern decls — handled in earlier passes.
