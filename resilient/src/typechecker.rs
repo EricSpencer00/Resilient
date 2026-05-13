@@ -7921,7 +7921,15 @@ pub fn infer_fn_effects(
     // because `self.stats.fn_effects` is an owned field — the
     // conversion happens once at the end (one `to_string()` per fn,
     // matching what the return type already costs).
-    let mut fn_bodies: std::collections::HashMap<&str, &Node> = std::collections::HashMap::new();
+    //
+    // Pre-size `fn_bodies` to `statements.len()` — upper bound, since
+    // every Function statement contributes one entry. Same shape as
+    // `check_program_purity::pure_fns` (RES-1796) and
+    // `collect_fn_effects::out` (RES-1734) — the two sibling passes
+    // that walk the same statement list to populate the same shape of
+    // map.
+    let mut fn_bodies: std::collections::HashMap<&str, &Node> =
+        std::collections::HashMap::with_capacity(statements.len());
     for stmt in statements {
         if let Node::Function { name, body, .. } = &stmt.node {
             fn_bodies.insert(name.as_str(), body.as_ref());
