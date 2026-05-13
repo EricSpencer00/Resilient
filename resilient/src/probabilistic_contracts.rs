@@ -27,7 +27,9 @@ static CONTRACTS: LazyLock<RwLock<HashMap<String, ProbContract>>> =
 
 pub fn collect() -> Vec<ProbContract> {
     let attrs = crate::feature_attrs::find_kind("probabilistic");
-    let mut out = Vec::new();
+    // RES-1756: pre-size to attrs.len() — exactly one push per
+    // attribute record, exact bound. Same shape as RES-1754.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut clause = String::new();
         let mut p = 1.0_f64;

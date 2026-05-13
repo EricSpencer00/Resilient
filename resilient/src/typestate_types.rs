@@ -35,7 +35,9 @@ static SPECS: RwLock<Vec<TypestateSpec>> = RwLock::new(Vec::new());
 
 pub fn collect() -> Vec<TypestateSpec> {
     let attrs = crate::feature_attrs::find_kind("typestate");
-    let mut out = Vec::new();
+    // RES-1756: pre-size to attrs.len() — exactly one push per
+    // attribute record. Same shape as RES-1754.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut spec = TypestateSpec {
             struct_name: item,

@@ -33,10 +33,13 @@ pub struct InferredContracts {
 }
 
 pub fn infer_program(program: &Node) -> Vec<InferredContracts> {
-    let mut out = Vec::new();
     let Node::Program(stmts) = program else {
-        return out;
+        return Vec::new();
     };
+    // RES-1756: pre-size to stmts.len() — every top-level statement
+    // could be a function and push one inferred entry. Same shape as
+    // semantic_regression's extract_contracts pre-size.
+    let mut out = Vec::with_capacity(stmts.len());
     for s in stmts {
         if let Node::Function {
             name,
