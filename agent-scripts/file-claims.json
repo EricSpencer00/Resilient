@@ -320,10 +320,6 @@
       "branch": "res-1808-flatten-body-presize",
       "claimed_at": "2026-05-13T13:17:34Z"
     },
-    "resilient/src/vm.rs": {
-      "branch": "res-1814-vm-locals-presize",
-      "claimed_at": "2026-05-13T13:30:39Z"
-    },
     "resilient/src/format_builtin.rs": {
       "branch": "res-1816-format-template-fast-reject",
       "claimed_at": "2026-05-13T13:34:15Z"
@@ -339,6 +335,10 @@
     "resilient/src/lib.rs": {
       "branch": "res-1826-parse-method-presize",
       "claimed_at": "2026-05-13T14:04:02Z"
+    },
+    "resilient/src/vm.rs": {
+      "branch": "res-1830-vm-run-direct-locals-presize",
+      "claimed_at": "2026-05-13T14:15:49Z"
     }
   }
 }
