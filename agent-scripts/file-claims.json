@@ -120,10 +120,6 @@
       "branch": "res-1281-unsafe-check-fast-reject",
       "claimed_at": "2026-05-12T04:21:23Z"
     },
-    "resilient/src/cluster_verifier.rs": {
-      "branch": "res-1285-cluster-fast-reject",
-      "claimed_at": "2026-05-12T04:31:08Z"
-    },
     "resilient/src/generics.rs": {
       "branch": "res-1523-generics-locals-borrow",
       "claimed_at": "2026-05-12T13:40:00Z"
@@ -252,9 +248,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1734-fn-effects-presize",
-      "claimed_at": "2026-05-13T10:46:20Z"
+    "resilient/src/cluster_verifier.rs": {
+      "branch": "res-1736-cluster-post-rewrites",
+      "claimed_at": "2026-05-13T10:49:36Z"
     }
   }
 }

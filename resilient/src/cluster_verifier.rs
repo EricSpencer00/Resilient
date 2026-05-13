@@ -337,7 +337,9 @@ fn verify_handler_against_invariant(
     // Fields not touched by this handler default to their pre-state
     // identifier. Other members' fields always keep their pre-state
     // identifier — the handler only mutates `self`.
-    let mut post_rewrites: HashMap<String, Node> = HashMap::new();
+    // RES-1736: pre-size to assignments.len() — exact upper bound,
+    // since the loop pushes one entry per assignment.
+    let mut post_rewrites: HashMap<String, Node> = HashMap::with_capacity(assignments.len());
     for (field, rhs) in &assignments {
         let rewritten = match rewrite_field_refs(rhs, Some(owning_member)) {
             Some(n) => n,
