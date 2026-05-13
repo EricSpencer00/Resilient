@@ -241,18 +241,25 @@ pub fn prove_with_axioms_and_timeout(
     // identical input maps produce identical keys regardless of
     // `HashMap`'s nondeterministic iteration order — otherwise the
     // cache would miss on semantically equal queries.
-    let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
     let key = {
         use std::collections::hash_map::DefaultHasher;
-        use std::fmt::Write;
-        use std::hash::Hasher;
+        use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
-        let mut w = HasherWriter(&mut h);
-        // Ignored — `HasherWriter::write_str` is infallible.
-        let _ = write!(
-            &mut w,
-            "{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}"
-        );
+        // RES-1637: structural span-free hash for the obligation.
+        hash_node_spanless(expr, &mut h);
+        b'|'.hash(&mut h);
+        let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+        for (k, v) in &bindings_sorted {
+            k.hash(&mut h);
+            v.hash(&mut h);
+        }
+        b'|'.hash(&mut h);
+        (axioms.len() as u32).hash(&mut h);
+        for ax in axioms {
+            hash_node_spanless(ax, &mut h);
+        }
+        b'|'.hash(&mut h);
+        timeout_ms.hash(&mut h);
         h.finish()
     };
     if let Some(cached) = Z3_VERDICT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
@@ -313,15 +320,116 @@ thread_local! {
 /// bytes hashed as the old `format!("...").into_bytes() → hash`
 /// pipeline, so identical inputs still produce identical u64 keys
 /// even after rebuilds.
-struct HasherWriter<'h>(&'h mut std::collections::hash_map::DefaultHasher);
-
-impl<'h> std::fmt::Write for HasherWriter<'h> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        use std::hash::Hasher;
-        self.0.write(s.as_bytes());
-        Ok(())
+/// RES-1637: span-free recursive hash for `Node`. Covers the
+/// variants that dominate `requires`/`ensures` contract clauses
+/// (literals, identifiers, infix/prefix expressions, calls, field
+/// access, index, array, range). For unsupported variants, falls
+/// back to span-inclusive `format!("{:?}", n)` so behaviour is
+/// strictly no-worse than the pre-RES-1637 cache.
+///
+/// The point is to make structurally-identical obligations at
+/// different call sites hash to the same key — today every site
+/// carries a distinct span and cache-misses. After this, the
+/// common arithmetic-comparison shape dedupes across sites.
+fn hash_node_spanless<H: std::hash::Hasher>(node: &Node, h: &mut H) {
+    use std::hash::Hash;
+    // One-byte discriminant per variant so distinct shapes never
+    // collide on accident.
+    match node {
+        Node::IntegerLiteral { value, .. } => {
+            b'I'.hash(h);
+            value.hash(h);
+        }
+        Node::FloatLiteral { value, .. } => {
+            b'F'.hash(h);
+            // f64 doesn't impl Hash directly; hash the bit pattern.
+            value.to_bits().hash(h);
+        }
+        Node::StringLiteral { value, .. } => {
+            b'S'.hash(h);
+            value.hash(h);
+        }
+        Node::BytesLiteral { value, .. } => {
+            b'Y'.hash(h);
+            value.hash(h);
+        }
+        Node::BooleanLiteral { value, .. } => {
+            b'B'.hash(h);
+            value.hash(h);
+        }
+        Node::Identifier { name, .. } => {
+            b'i'.hash(h);
+            name.hash(h);
+        }
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
+            b'P'.hash(h);
+            operator.hash(h);
+            hash_node_spanless(right, h);
+        }
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            b'X'.hash(h);
+            operator.hash(h);
+            hash_node_spanless(left, h);
+            hash_node_spanless(right, h);
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            b'C'.hash(h);
+            hash_node_spanless(function, h);
+            (arguments.len() as u32).hash(h);
+            for a in arguments {
+                hash_node_spanless(a, h);
+            }
+        }
+        Node::FieldAccess { target, field, .. } => {
+            b'.'.hash(h);
+            field.hash(h);
+            hash_node_spanless(target, h);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            b'['.hash(h);
+            hash_node_spanless(target, h);
+            hash_node_spanless(index, h);
+        }
+        Node::ArrayLiteral { items, .. } => {
+            b'A'.hash(h);
+            (items.len() as u32).hash(h);
+            for it in items {
+                hash_node_spanless(it, h);
+            }
+        }
+        Node::Range {
+            lo, hi, inclusive, ..
+        } => {
+            b'R'.hash(h);
+            inclusive.hash(h);
+            hash_node_spanless(lo, h);
+            hash_node_spanless(hi, h);
+        }
+        // Fallback: variant not in the covered subset. Use the
+        // existing span-inclusive Debug — strictly no-worse than
+        // pre-RES-1637, and the same key still uniquely identifies
+        // the obligation (just doesn't dedupe across sites).
+        other => {
+            b'?'.hash(h);
+            format!("{:?}", other).hash(h);
+        }
     }
 }
+
+// RES-1637 removed the `HasherWriter` adapter — `hash_node_spanless`
+// feeds bytes directly into the `Hasher` via `Hash::hash` calls, with
+// no `format!` step that would have needed a streaming write target.
 
 fn prove_with_axioms_and_timeout_in(
     ctx: &z3::Context,
@@ -533,17 +641,26 @@ pub fn prove_tautology_with_axioms_and_timeout(
     // separated by `|`, with bindings sorted into a `BTreeMap` for
     // deterministic ordering, and a `|TAUT` suffix so the cache key
     // namespace stays disjoint from the verdict cache.
-    let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
     let key = {
         use std::collections::hash_map::DefaultHasher;
-        use std::fmt::Write;
-        use std::hash::Hasher;
+        use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
-        let mut w = HasherWriter(&mut h);
-        let _ = write!(
-            &mut w,
-            "{expr:?}|{bindings_sorted:?}|{axioms:?}|{timeout_ms}|TAUT"
-        );
+        hash_node_spanless(expr, &mut h);
+        b'|'.hash(&mut h);
+        let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+        for (k, v) in &bindings_sorted {
+            k.hash(&mut h);
+            v.hash(&mut h);
+        }
+        b'|'.hash(&mut h);
+        (axioms.len() as u32).hash(&mut h);
+        for ax in axioms {
+            hash_node_spanless(ax, &mut h);
+        }
+        b'|'.hash(&mut h);
+        timeout_ms.hash(&mut h);
+        // Discriminator: disjoint namespace from the verdict cache.
+        b"TAUT".hash(&mut h);
         h.finish()
     };
     if let Some(cached) = Z3_TAUTOLOGY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
@@ -684,14 +801,20 @@ pub fn prove_bv(
     // the contract clause has bitwise operations. Same key shape as
     // the other caches; suffix `|BV` keeps the namespace disjoint
     // from `|TAUT` and the unsuffixed LIA cache.
-    let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
     let key = {
         use std::collections::hash_map::DefaultHasher;
-        use std::fmt::Write;
-        use std::hash::Hasher;
+        use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
-        let mut w = HasherWriter(&mut h);
-        let _ = write!(&mut w, "{expr:?}|{bindings_sorted:?}|{timeout_ms}|BV");
+        hash_node_spanless(expr, &mut h);
+        b'|'.hash(&mut h);
+        let bindings_sorted: std::collections::BTreeMap<&String, &i64> = bindings.iter().collect();
+        for (k, v) in &bindings_sorted {
+            k.hash(&mut h);
+            v.hash(&mut h);
+        }
+        b'|'.hash(&mut h);
+        timeout_ms.hash(&mut h);
+        b"BV".hash(&mut h);
         h.finish()
     };
     if let Some(cached) = Z3_BV_CACHE.with(|c| c.borrow().get(&key).cloned()) {
