@@ -291,6 +291,10 @@
     "resilient/src/cluster_verifier.rs": {
       "branch": "res-1762-more-collect-presize",
       "claimed_at": "2026-05-13T11:51:36Z"
+    },
+    "resilient/src/typechecker.rs": {
+      "branch": "res-1766-typechecker-hot-presize",
+      "claimed_at": "2026-05-13T11:55:37Z"
     }
   }
 }
