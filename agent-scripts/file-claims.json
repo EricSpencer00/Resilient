@@ -265,8 +265,8 @@
       "claimed_at": "2026-05-12T15:25:00Z"
     },
     "resilient/src/typechecker.rs": {
-      "branch": "res-1631-z3-prove-cache",
-      "claimed_at": "2026-05-13T06:13:16Z"
+      "branch": "res-1633-z3-axioms-cache",
+      "claimed_at": "2026-05-13T06:27:31Z"
     }
   }
 }
