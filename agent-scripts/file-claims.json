@@ -243,6 +243,18 @@
     "resilient/src/semver_behavior.rs": {
       "branch": "res-1758-more-collect-presize",
       "claimed_at": "2026-05-13T11:38:11Z"
+    },
+    "resilient/src/loop_invariants.rs": {
+      "branch": "res-1762-more-collect-presize",
+      "claimed_at": "2026-05-13T11:42:44Z"
+    },
+    "resilient/src/property_tests.rs": {
+      "branch": "res-1762-more-collect-presize",
+      "claimed_at": "2026-05-13T11:42:44Z"
+    },
+    "resilient/src/cluster_verifier.rs": {
+      "branch": "res-1762-more-collect-presize",
+      "claimed_at": "2026-05-13T11:42:44Z"
     }
   }
 }
