@@ -227,6 +227,18 @@
     "resilient/src/semantic_regression.rs": {
       "branch": "res-1754-collect-presize",
       "claimed_at": "2026-05-13T11:24:43Z"
+    },
+    "resilient/src/autopilot.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:34:18Z"
+    },
+    "resilient/src/iterator_protocol.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:34:18Z"
+    },
+    "resilient/src/semver_behavior.rs": {
+      "branch": "res-1758-more-collect-presize",
+      "claimed_at": "2026-05-13T11:34:18Z"
     }
   }
 }

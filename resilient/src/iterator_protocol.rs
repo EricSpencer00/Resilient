@@ -54,7 +54,11 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
         install_iterator_impls(HashSet::new());
         return Ok(());
     }
-    let mut iters = HashSet::new();
+    // RES-1758: pre-size to stmts.len() — every top-level statement
+    // could be a matching ImplBlock and contribute one insert. We
+    // already paid the `any_node` early-reject (RES-1291), so when
+    // we reach here we know at least one Iterator impl exists.
+    let mut iters = HashSet::with_capacity(stmts.len());
     for s in stmts {
         if let Node::ImplBlock {
             trait_name,

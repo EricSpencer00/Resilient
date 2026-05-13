@@ -47,7 +47,12 @@ pub fn classify(old_program: &Node, new_program: &Node) -> SemverDecision {
     let new_c = crate::semantic_regression::extract_contracts(new_program);
     let changes = crate::semantic_regression::diff(&old_c, &new_c);
 
-    let mut reasons = Vec::new();
+    // RES-1758: pre-size to changes.len() + 1 — the loop below pushes
+    // exactly one reason per `SemanticChange`, plus an optional
+    // fingerprint-regressed line. Saves the 0→4→8 doubling chain on
+    // realistic semver classifications (a typical refactor produces
+    // 5–20 reasons).
+    let mut reasons = Vec::with_capacity(changes.len() + 1);
     let mut kind = SemverKind::Patch;
 
     let old_fp = crate::behavioral_fingerprint::fingerprint_program(old_program);
