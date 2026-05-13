@@ -143,7 +143,9 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
 
     // Build an `actor name → &ActorDecl-fields` lookup so the
     // cluster verifier can resolve member types.
-    let mut actors: ActorTable = HashMap::new();
+    // RES-1762: pre-size to stmts.len() — every top-level statement
+    // could be an ActorDecl and produce one insert.
+    let mut actors: ActorTable = HashMap::with_capacity(stmts.len());
     for spanned in stmts {
         if let Node::ActorDecl {
             name,
@@ -159,7 +161,9 @@ pub(crate) fn verify_program(program: &Node, timeout_ms: u32) -> Vec<ClusterDiag
         }
     }
 
-    let mut out = Vec::new();
+    // RES-1762: pre-size to stmts.len() — verify_cluster pushes one
+    // result per ClusterDecl, upper-bounded by stmts.len().
+    let mut out = Vec::with_capacity(stmts.len());
     for spanned in stmts {
         if let Node::ClusterDecl {
             name,

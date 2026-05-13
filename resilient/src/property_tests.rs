@@ -30,7 +30,9 @@ pub struct PropertyResult {
 
 pub fn collect() -> Vec<PropertySpec> {
     let attrs = crate::feature_attrs::find_kind("property_test");
-    let mut out = Vec::new();
+    // RES-1762: pre-size to attrs.len() — exactly one push per
+    // attribute record, exact bound. Same shape as RES-1754 / 1756.
+    let mut out = Vec::with_capacity(attrs.len());
     for (item, rec) in attrs {
         let mut samples = 100_u32;
         for chunk in rec.args.split(',') {
