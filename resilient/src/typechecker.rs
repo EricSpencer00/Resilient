@@ -799,9 +799,9 @@ fn z3_prove_with_cert(
     )
 }
 
-/// RES-354: theory-aware variant of `z3_prove_with_cert`. Uses
-/// `prove_auto` which auto-selects BV32/LIA based on the theory hint
-/// and the presence of bitwise operations.
+// RES-354: theory-aware variant of `z3_prove_with_cert`. Uses
+// `prove_auto` which auto-selects BV32/LIA based on the theory hint
+// and the presence of bitwise operations.
 // RES-1631: within-run Z3 proof cache for `z3_prove_with_cert_theory`.
 //
 // Two call paths feed this entry point: the per-fn-decl tautology
@@ -816,11 +816,15 @@ fn z3_prove_with_cert(
 // Cache is thread-local so concurrent tests don't share state, and
 // cleared at the start of every `check_program_with_source` so
 // state never leaks across compilations.
+/// RES-1631: cached verdict for one `(clause, bindings, theory, timeout)`
+/// tuple — `(verdict, cert_smtlib, cx_smtlib, used_runtime_fallback)`.
+#[cfg(feature = "z3")]
+type ProveCacheEntry = (Option<bool>, Option<String>, Option<String>, bool);
+
 #[cfg(feature = "z3")]
 thread_local! {
-    static PROVE_CACHE: std::cell::RefCell<
-        std::collections::HashMap<u64, (Option<bool>, Option<String>, Option<String>, bool)>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    static PROVE_CACHE: std::cell::RefCell<std::collections::HashMap<u64, ProveCacheEntry>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// RES-1631: reset the within-run Z3 proof cache. Called from

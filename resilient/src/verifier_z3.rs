@@ -319,8 +319,12 @@ pub fn prove_with_axioms_and_timeout(
 /// `[load|save]_persistent_proven` provide JSON I/O for survival
 /// across processes; the caller decides when to load/save (future
 /// CLI flag).
-static PERSISTENT_PROVEN: std::sync::RwLock<std::collections::HashSet<u64>> =
-    std::sync::RwLock::new(std::collections::HashSet::new());
+// RES-1657 introduced this static with a bare `HashSet::new()`
+// initializer, which is not `const` on stable Rust — `cargo test
+// --features z3` has been red on `main` ever since. Wrap in
+// `LazyLock` so the HashSet is built on first access. RES-1661.
+static PERSISTENT_PROVEN: std::sync::LazyLock<std::sync::RwLock<std::collections::HashSet<u64>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashSet::new()));
 
 fn persistent_proven_contains(key: u64) -> bool {
     PERSISTENT_PROVEN
@@ -335,28 +339,53 @@ fn persistent_proven_insert(key: u64) {
     }
 }
 
-/// RES-1657: load a persistent proven-set from disk. JSON format
-/// is a flat array of `u64` keys. Missing file is not an error
-/// (treat as "no cache yet"). Returns the number of keys loaded.
+/// RES-1657 / RES-1661: load a persistent proven-set from disk.
+///
+/// On-disk format is a versioned JSON envelope:
+/// `{"compiler_version": "...", "keys": [u64, ...]}`.
+///
+/// Missing file is not an error (treat as "no cache yet"). A
+/// `compiler_version` that does not match `env!("CARGO_PKG_VERSION")`
+/// silently returns `Ok(0)` — the AST shape may have shifted between
+/// versions, which would invalidate keys produced by `hash_node_spanless`.
+/// Malformed JSON (including the pre-RES-1661 flat-array format) also
+/// silently returns `Ok(0)` — equivalent to a fresh cache.
 pub fn load_persistent_proven(path: &std::path::Path) -> std::io::Result<usize> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
     };
-    let keys: Vec<u64> = serde_json::from_str(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let n = keys.len();
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return Ok(0),
+    };
+    let stored_version = v
+        .get("compiler_version")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    if stored_version != env!("CARGO_PKG_VERSION") {
+        return Ok(0);
+    }
+    let keys_arr = match v.get("keys").and_then(|x| x.as_array()) {
+        Some(a) => a,
+        None => return Ok(0),
+    };
+    let mut n = 0;
     if let Ok(mut s) = PERSISTENT_PROVEN.write() {
-        for k in keys {
-            s.insert(k);
+        for k in keys_arr {
+            if let Some(k_u64) = k.as_u64() {
+                s.insert(k_u64);
+                n += 1;
+            }
         }
     }
     Ok(n)
 }
 
-/// RES-1657: save the current persistent proven-set to disk as
-/// JSON. The parent directory is created if missing.
+/// RES-1657 / RES-1661: save the current persistent proven-set to
+/// disk as a versioned JSON envelope. The parent directory is created
+/// if missing.
 pub fn save_persistent_proven(path: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -365,8 +394,11 @@ pub fn save_persistent_proven(path: &std::path::Path) -> std::io::Result<()> {
         .read()
         .map(|s| s.iter().copied().collect())
         .unwrap_or_default();
-    let text = serde_json::to_string(&keys)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let envelope = serde_json::json!({
+        "compiler_version": env!("CARGO_PKG_VERSION"),
+        "keys": keys,
+    });
+    let text = serde_json::to_string(&envelope).map_err(std::io::Error::other)?;
     std::fs::write(path, text)
 }
 
@@ -388,7 +420,7 @@ pub struct Z3CacheStats {
 thread_local! {
     /// RES-1641: hit/miss counters for the three caches below.
     /// Thread-local so concurrent test runs don't cross-contaminate.
-    static Z3_CACHE_STATS: std::cell::Cell<Z3CacheStats> =
+    static Z3_CACHE_STATS: std::cell::Cell<Z3CacheStats> = const {
         std::cell::Cell::new(Z3CacheStats {
             verdict_hits: 0,
             verdict_misses: 0,
@@ -396,7 +428,8 @@ thread_local! {
             tautology_misses: 0,
             bv_hits: 0,
             bv_misses: 0,
-        });
+        })
+    };
 }
 
 /// RES-1641: return the current `Z3CacheStats` snapshot for this
@@ -408,6 +441,7 @@ pub fn cache_stats() -> Z3CacheStats {
 
 /// RES-1641: zero out all six counters. Useful for measuring a
 /// single compilation in isolation.
+#[allow(dead_code)]
 pub fn reset_cache_stats() {
     Z3_CACHE_STATS.with(|s| s.set(Z3CacheStats::default()));
 }
@@ -3301,5 +3335,96 @@ mod tests {
             None,
             "non-identifier index target must bail to None"
         );
+    }
+
+    fn unique_cache_path(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "res-1661-{}-{}-{}.json",
+            tag,
+            std::process::id(),
+            nanos
+        ))
+    }
+
+    /// RES-1661: a versioned envelope written by `save` must round-trip
+    /// through `load` with the current `CARGO_PKG_VERSION`. Loading the
+    /// same path twice is idempotent — keys collapse into the global
+    /// proven-set.
+    #[test]
+    fn persistent_cache_envelope_roundtrip() {
+        let path = unique_cache_path("roundtrip");
+        save_persistent_proven(&path).expect("save");
+        let text = std::fs::read_to_string(&path).expect("read");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("envelope is JSON");
+        assert_eq!(
+            v.get("compiler_version").and_then(|x| x.as_str()),
+            Some(env!("CARGO_PKG_VERSION")),
+            "envelope must stamp current compiler version"
+        );
+        assert!(
+            v.get("keys").and_then(|x| x.as_array()).is_some(),
+            "envelope must contain a `keys` array"
+        );
+        // Load round-trips without error and returns the same key count
+        // the envelope claims (the global proven-set may have grown,
+        // but load returns only how many *this file* contributed).
+        let claimed_len = v.get("keys").and_then(|x| x.as_array()).unwrap().len();
+        let loaded = load_persistent_proven(&path).expect("load");
+        assert_eq!(loaded, claimed_len, "load count matches envelope keys");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// RES-1661: a stale envelope (different `compiler_version`) must
+    /// be ignored — loading returns Ok(0) without erroring. This is
+    /// the cross-version invalidation contract.
+    #[test]
+    fn persistent_cache_version_mismatch_returns_zero() {
+        let path = unique_cache_path("version-mismatch");
+        let stale = serde_json::json!({
+            "compiler_version": "0.0.0-stale-from-test",
+            "keys": [1u64, 2u64, 3u64],
+        });
+        std::fs::write(&path, serde_json::to_string(&stale).unwrap()).expect("write stale");
+        let loaded = load_persistent_proven(&path).expect("load mismatched envelope");
+        assert_eq!(loaded, 0, "stale version must be silently dropped");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// RES-1661: the pre-RES-1661 on-disk format was a flat `[u64,...]`
+    /// array with no envelope. Such files must silently fail to parse
+    /// (Ok(0)) so an upgrade clears the cache instead of erroring.
+    #[test]
+    fn persistent_cache_flat_array_is_ignored() {
+        let path = unique_cache_path("flat-array");
+        std::fs::write(&path, "[1,2,3,4]").expect("write flat array");
+        let loaded = load_persistent_proven(&path).expect("flat array must not error");
+        assert_eq!(loaded, 0, "pre-RES-1661 format is treated as empty cache");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// RES-1661: a missing cache file is the steady-state of a fresh
+    /// checkout. It must not error.
+    #[test]
+    fn persistent_cache_missing_file_is_ok() {
+        let path = unique_cache_path("missing");
+        // Ensure absent.
+        let _ = std::fs::remove_file(&path);
+        let loaded = load_persistent_proven(&path).expect("missing file is Ok");
+        assert_eq!(loaded, 0);
+    }
+
+    /// RES-1661: corrupt (non-JSON) cache files must not propagate an
+    /// `InvalidData` error to the CLI — the cache is purely advisory.
+    #[test]
+    fn persistent_cache_garbage_input_is_ignored() {
+        let path = unique_cache_path("garbage");
+        std::fs::write(&path, "not even valid JSON {{").expect("write garbage");
+        let loaded = load_persistent_proven(&path).expect("garbage must be swallowed");
+        assert_eq!(loaded, 0);
+        let _ = std::fs::remove_file(&path);
     }
 }
