@@ -264,9 +264,9 @@
       "branch": "res-1659-cli-persistent-cache",
       "claimed_at": "2026-05-13T07:09:45Z"
     },
-    "resilient/src/typechecker.rs": {
-      "branch": "res-1698-presize-type-env",
-      "claimed_at": "2026-05-13T09:21:42Z"
+    "resilient/src/verifier_z3.rs": {
+      "branch": "res-1700-presize-persistent-fastpath",
+      "claimed_at": "2026-05-13T09:29:14Z"
     }
   }
 }

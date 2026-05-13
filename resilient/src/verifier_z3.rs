@@ -540,7 +540,23 @@ pub fn prove_with_axioms_and_timeout(
 static PERSISTENT_PROVEN: std::sync::LazyLock<std::sync::RwLock<std::collections::HashSet<u64>>> =
     std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashSet::new()));
 
+// RES-1700: AtomicBool fast-reject. Same pattern as RES-1374 for
+// `feature_attrs::find_kind`. Default-mode typechecks (no
+// `--persistent-proof-cache` flag) leave the set empty; each
+// `persistent_proven_contains` call then drops from a ~100ns RwLock
+// read acquire to a ~1ns atomic load. With three caller sites per
+// prove (LIA, tautology, BV32) and 100+ obligations per typecheck,
+// that's ~30µs saved per typecheck against the no-persistent-cache
+// path. Acquire / Release ordering pairs the flag store in
+// `persistent_proven_insert` and `load_persistent_proven` with the
+// load here.
+static PERSISTENT_PROVEN_HAS_ENTRIES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn persistent_proven_contains(key: u64) -> bool {
+    if !PERSISTENT_PROVEN_HAS_ENTRIES.load(std::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
     PERSISTENT_PROVEN
         .read()
         .map(|s| s.contains(&key))
@@ -550,6 +566,7 @@ fn persistent_proven_contains(key: u64) -> bool {
 fn persistent_proven_insert(key: u64) {
     if let Ok(mut s) = PERSISTENT_PROVEN.write() {
         s.insert(key);
+        PERSISTENT_PROVEN_HAS_ENTRIES.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -592,6 +609,10 @@ pub fn load_persistent_proven(path: &std::path::Path) -> std::io::Result<usize> 
                 s.insert(k_u64);
                 n += 1;
             }
+        }
+        // RES-1700: flip the flag once instead of per insert.
+        if n > 0 {
+            PERSISTENT_PROVEN_HAS_ENTRIES.store(true, std::sync::atomic::Ordering::Release);
         }
     }
     Ok(n)
