@@ -41,10 +41,13 @@ pub struct Fingerprint {
 }
 
 pub fn fingerprint_program(program: &Node) -> HashMap<String, Fingerprint> {
-    let mut out = HashMap::new();
     let Node::Program(stmts) = program else {
-        return out;
+        return HashMap::new();
     };
+    // RES-1756: pre-size to stmts.len() — every top-level statement
+    // could be a function and produce one insert. Same shape as the
+    // semantic_regression / call-graph pre-sizes.
+    let mut out = HashMap::with_capacity(stmts.len());
     for s in stmts {
         if let Node::Function {
             name,

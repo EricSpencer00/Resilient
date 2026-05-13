@@ -71,7 +71,9 @@ pub fn analyze(program: &Node) -> VibeDebtReport {
         collect_refs(&s.node, &mut refs);
     }
 
-    let mut entries = Vec::new();
+    // RES-1756: pre-size to stmts.len() — every top-level statement
+    // is potentially a function and pushes one entry.
+    let mut entries = Vec::with_capacity(stmts.len());
     for s in stmts {
         if let Node::Function {
             name,

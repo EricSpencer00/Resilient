@@ -287,13 +287,16 @@ pub fn try_emit_for_fn(program: &Node, fn_name: &str) -> Result<String, String> 
 }
 
 pub fn list_emittable(program: &Node) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Node::Program(stmts) = program {
-        for s in stmts {
-            if let Node::Function { name, .. } = &s.node {
-                if lower_function(&s.node).is_ok() {
-                    out.push(name.clone());
-                }
+    let Node::Program(stmts) = program else {
+        return Vec::new();
+    };
+    // RES-1756: pre-size to stmts.len() — at most one push per
+    // top-level function (conditional on `lower_function` succeeding).
+    let mut out = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        if let Node::Function { name, .. } = &s.node {
+            if lower_function(&s.node).is_ok() {
+                out.push(name.clone());
             }
         }
     }

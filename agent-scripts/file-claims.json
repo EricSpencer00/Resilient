@@ -8,26 +8,6 @@
       "branch": "res-1192-cargo-config-linker",
       "claimed_at": "2026-05-12T01:09:57Z"
     },
-    "resilient/src/vibe_debt.rs": {
-      "branch": "res-1507-vibe-refs-borrow",
-      "claimed_at": "2026-05-12T12:55:00Z"
-    },
-    "resilient/src/behavioral_fingerprint.rs": {
-      "branch": "res-1206-kill-dead-work-checks",
-      "claimed_at": "2026-05-12T01:43:21Z"
-    },
-    "resilient/src/contract_inference.rs": {
-      "branch": "res-1206-kill-dead-work-checks",
-      "claimed_at": "2026-05-12T01:43:21Z"
-    },
-    "resilient/src/resilience_score.rs": {
-      "branch": "res-1507-vibe-refs-borrow",
-      "claimed_at": "2026-05-12T12:55:00Z"
-    },
-    "resilient/src/property_tests.rs": {
-      "branch": "res-1206-kill-dead-work-checks",
-      "claimed_at": "2026-05-12T01:43:21Z"
-    },
     "resilient/src/incremental_verify.rs": {
       "branch": "res-1210-incremental-verify-dead-work",
       "claimed_at": "2026-05-12T01:53:15Z"
@@ -168,10 +148,6 @@
       "branch": "res-1522-deadlock-actors-borrow",
       "claimed_at": "2026-05-12T13:34:45Z"
     },
-    "resilient/src/typestate_types.rs": {
-      "branch": "res-1549-typestate-validate-call-borrow",
-      "claimed_at": "2026-05-12T14:27:56Z"
-    },
     "resilient/src/lint.rs": {
       "branch": "res-1533-lint-l0001-borrow",
       "claimed_at": "2026-05-12T14:35:00Z"
@@ -228,17 +204,45 @@
       "branch": "res-1754-collect-presize",
       "claimed_at": "2026-05-13T11:24:43Z"
     },
+    "resilient/src/probabilistic_contracts.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/typestate_types.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/behavioral_fingerprint.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/contract_inference.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/vibe_debt.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/resilience_score.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
+    "resilient/src/lean_spec.rs": {
+      "branch": "res-1756-program-collect-presize",
+      "claimed_at": "2026-05-13T11:30:51Z"
+    },
     "resilient/src/autopilot.rs": {
       "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:34:18Z"
+      "claimed_at": "2026-05-13T11:38:11Z"
     },
     "resilient/src/iterator_protocol.rs": {
       "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:34:18Z"
+      "claimed_at": "2026-05-13T11:38:11Z"
     },
     "resilient/src/semver_behavior.rs": {
       "branch": "res-1758-more-collect-presize",
-      "claimed_at": "2026-05-13T11:34:18Z"
+      "claimed_at": "2026-05-13T11:38:11Z"
     }
   }
 }
