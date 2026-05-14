@@ -82,6 +82,8 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0020", // function parameter is never used in the body
     "L0021", // redundant boolean sub-expression (x && x, x || x)
     "L0022", // else branch after unconditional return is redundant
+    "L0023", // tautological comparison with boolean literal (x == true)
+    "L0025", // unreachable code after infinite `while true` loop (no break)
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -122,6 +124,8 @@ struct LintTriggers {
     has_let_in_nested_block: bool,
     has_format_call: bool,
     has_if_with_else: bool,
+    has_bool_literal: bool,
+    has_while_true: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -157,6 +161,12 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             }
         }
         Node::IntegerLiteral { .. } => t.has_integer_literal = true,
+        Node::BooleanLiteral { .. } => t.has_bool_literal = true,
+        Node::WhileStatement { condition, .. } => {
+            if matches!(condition.as_ref(), Node::BooleanLiteral { value: true, .. }) {
+                t.has_while_true = true;
+            }
+        }
         Node::IfStatement { alternative, .. } => {
             t.has_if_statement = true;
             if alternative.is_some() {
@@ -243,7 +253,12 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     if t.has_if_with_else {
         run_l0022_needless_else(program, &mut out);
     }
-
+    if t.has_bool_literal && t.has_infix {
+        run_l0023_bool_literal_comparison(program, &mut out);
+    }
+    if t.has_while_true && t.has_block {
+        run_l0025_unreachable_after_infinite_loop(program, &mut out);
+    }
     let safety_critical = safety_critical_mode();
     if safety_critical {
         for lint in out.iter_mut() {
@@ -3079,6 +3094,152 @@ fn walk_l0022(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0023: tautological comparison with boolean literal
+// ============================================================
+//
+// Detects `expr == true`, `expr == false`, `true == expr`,
+// `false == expr`. These comparisons are always redundant:
+// - `x == true`  → use `x` directly
+// - `x == false` → use `!x`
+// The reversed forms (literal on the left) are also caught.
+
+fn run_l0023_bool_literal_comparison(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0023(program, out);
+}
+
+fn walk_l0023(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
+        && operator == "=="
+    {
+        let (bool_val, other_side) = if let Node::BooleanLiteral { value, .. } = left.as_ref() {
+            (Some(*value), right.as_ref())
+        } else if let Node::BooleanLiteral { value, .. } = right.as_ref() {
+            (Some(*value), left.as_ref())
+        } else {
+            (None, left.as_ref())
+        };
+
+        if let Some(literal) = bool_val {
+            // Skip `true == true` / `false == false` (caught by L0003 or trivially obvious).
+            if matches!(other_side, Node::BooleanLiteral { .. }) {
+                // Let L0003 handle identical-operand case.
+            } else {
+                let suggestion = if literal {
+                    "use the expression directly instead of `== true`"
+                } else {
+                    "use `!expr` instead of `== false`"
+                };
+                out.push(Lint {
+                    code: "L0023".into(),
+                    severity: Severity::Warning,
+                    message: format!("tautological comparison with `{}`; {}", literal, suggestion),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0023(child, out));
+}
+
+// ============================================================
+// L0025: unreachable code after infinite while-true loop
+// ============================================================
+//
+// A `while true { ... }` loop that never `break`s or `return`s
+// from the enclosing function makes all subsequent statements
+// in the same block unreachable. Extends L0007 (unreachable
+// after explicit `return`) to cover the loop variant.
+
+fn run_l0025_unreachable_after_infinite_loop(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0025(program, out);
+}
+
+fn walk_l0025(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        let mut found_infinite = false;
+        for stmt in stmts {
+            if found_infinite {
+                if let Some(span) = node_span(stmt) {
+                    out.push(Lint {
+                        code: "L0025".into(),
+                        severity: Severity::Warning,
+                        message: "unreachable code after infinite `while true` loop".into(),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                }
+                // Only report the first unreachable statement (same as L0007).
+                break;
+            }
+            if is_infinite_while(stmt) {
+                found_infinite = true;
+            }
+            walk_l0025(stmt, out);
+        }
+        if !found_infinite {
+            for stmt in stmts {
+                walk_l0025(stmt, out);
+            }
+        }
+    } else {
+        recurse_children(node, &mut |child| walk_l0025(child, out));
+    }
+}
+
+/// True when `node` is a `while true { ... }` loop whose body
+/// never breaks out via `break` (returns are fine — they exit the
+/// whole function, making *everything* after the loop unreachable).
+fn is_infinite_while(node: &Node) -> bool {
+    let Node::WhileStatement {
+        condition, body, ..
+    } = node
+    else {
+        return false;
+    };
+    if !matches!(condition.as_ref(), Node::BooleanLiteral { value: true, .. }) {
+        return false;
+    }
+    !l0025_body_has_break(body)
+}
+
+fn l0025_body_has_break(node: &Node) -> bool {
+    match node {
+        Node::Break { .. } => true,
+        // Don't cross function boundaries.
+        Node::Function { .. } => false,
+        _ => {
+            let mut found = false;
+            recurse_children(node, &mut |child| {
+                if !found {
+                    found = l0025_body_has_break(child);
+                }
+            });
+            found
+        }
+    }
+}
+
+/// Extract the source span from common statement nodes (best-effort).
+fn node_span(node: &Node) -> Option<&Span> {
+    match node {
+        Node::LetStatement { span, .. }
+        | Node::ReturnStatement { span, .. }
+        | Node::IfStatement { span, .. }
+        | Node::WhileStatement { span, .. }
+        | Node::ForInStatement { span, .. }
+        | Node::ExpressionStatement { span, .. }
+        | Node::Assignment { span, .. } => Some(span),
+        _ => None,
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -4405,6 +4566,74 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0022".to_string()),
             "L0022 must not fire when there is no else branch"
+        );
+    }
+
+    // ---------- L0023: tautological comparison with boolean literal ----------
+
+    #[test]
+    fn l0023_fires_on_eq_true() {
+        let src = "fn f(bool x) -> bool { return x == true; }\nf(true);\n";
+        assert!(
+            codes(src).contains(&"L0023".to_string()),
+            "L0023 must fire for `x == true`"
+        );
+    }
+
+    #[test]
+    fn l0023_fires_on_eq_false() {
+        let src = "fn f(bool x) -> bool { return x == false; }\nf(true);\n";
+        assert!(
+            codes(src).contains(&"L0023".to_string()),
+            "L0023 must fire for `x == false`"
+        );
+    }
+
+    #[test]
+    fn l0023_fires_on_literal_left() {
+        let src = "fn f(bool x) -> bool { return true == x; }\nf(true);\n";
+        assert!(
+            codes(src).contains(&"L0023".to_string()),
+            "L0023 must fire when literal is on the left side"
+        );
+    }
+
+    #[test]
+    fn l0023_silent_for_non_bool_comparison() {
+        let src = "// source: test\nfn f(int x) -> bool requires x > 0 { return x == 1; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0023".to_string()),
+            "L0023 must not fire for integer comparisons"
+        );
+    }
+
+    // ---------- L0025: unreachable code after infinite while-true loop ----------
+
+    #[test]
+    fn l0025_fires_on_code_after_while_true() {
+        let src =
+            "fn f() {\n    while true {\n        let _x = 1;\n    }\n    let dead = 2;\n}\nf();\n";
+        assert!(
+            codes(src).contains(&"L0025".to_string()),
+            "L0025 must fire when code follows while-true with no break"
+        );
+    }
+
+    #[test]
+    fn l0025_silent_when_loop_has_break() {
+        let src = "// source: test\nfn f() -> int requires true {\n    while true {\n        break;\n    }\n    return 0;\n}\nf();\n";
+        assert!(
+            !codes(src).contains(&"L0025".to_string()),
+            "L0025 must not fire when while-true loop contains a break"
+        );
+    }
+
+    #[test]
+    fn l0025_silent_for_conditional_while() {
+        let src = "// source: test\nfn f(int x) -> int requires x > 0 {\n    while x > 0 {\n        let _y = 1;\n    }\n    return 0;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0025".to_string()),
+            "L0025 must not fire for non-literal while condition"
         );
     }
 }
