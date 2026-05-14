@@ -73,6 +73,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0011", // RES-308: unused variable warning (let binding never read)
     "L0012", // RES-397: spec annotation lacks `// source:` provenance comment
     "L0013", // RES-798: unchecked array indexing (not proven in-bounds)
+    "L0014", // function defined but never called (dead function)
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -107,6 +108,7 @@ struct LintTriggers {
     has_function: bool,
     has_let: bool,
     has_block: bool,
+    has_call: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -129,6 +131,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::Function { .. } => t.has_function = true,
         Node::LetStatement { .. } => t.has_let = true,
         Node::Block { .. } => t.has_block = true,
+        Node::CallExpression { .. } => t.has_call = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -181,6 +184,9 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_index {
         run_l0013_unchecked_indexing(program, &mut out);
+    }
+    if t.has_function {
+        run_l0014_unused_function(program, &mut out);
     }
 
     let safety_critical = safety_critical_mode();
@@ -2154,6 +2160,141 @@ fn l0013_walk(node: &Node, out: &mut Vec<Lint>) {
     }
 }
 
+// L0014: function defined but never called (dead function)
+//
+// Collects every top-level function name and every call-target
+// identifier anywhere in the program.  Any function that was defined
+// but whose name never appears as a callee is warned.
+//
+// Exceptions:
+// * `_`-prefixed names (silenced by convention, same as L0001/L0011).
+// * Names that appear as identifiers outside of call position (e.g.
+//   passed as higher-order values) are treated as "used" — the lint
+//   focuses on the unambiguous dead-function case.
+fn run_l0014_unused_function(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+
+    // Phase 1: collect (name, span) for every top-level fn definition.
+    let mut defined: Vec<(&str, Span)> = Vec::new();
+    for spanned in stmts {
+        if let Node::Function { name, span, .. } = &spanned.node {
+            defined.push((name.as_str(), *span));
+        }
+    }
+    if defined.is_empty() {
+        return;
+    }
+
+    // Phase 2: collect every identifier that appears as a call target
+    // anywhere in the program (including top-level call statements).
+    let mut called: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(defined.len());
+    for spanned in stmts {
+        l0014_collect_calls(&spanned.node, &mut called);
+    }
+
+    // Phase 3: warn for each defined fn whose name was never called.
+    for (name, span) in defined {
+        if name.starts_with('_') {
+            continue;
+        }
+        if !called.contains(name) {
+            out.push(Lint {
+                code: "L0014".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "function `{}` is defined but never called — prefix with `_` to silence",
+                    name
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+}
+
+/// Recursively collect all call-target identifiers in `node`.
+fn l0014_collect_calls<'a>(node: &'a Node, out: &mut std::collections::HashSet<&'a str>) {
+    match node {
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            if let Node::Identifier { name, .. } = function.as_ref() {
+                out.insert(name.as_str());
+            }
+            // Recurse into function expression itself (handles chained calls,
+            // method dispatch, etc.) and into all arguments.
+            l0014_collect_calls(function, out);
+            for a in arguments {
+                l0014_collect_calls(a, out);
+            }
+        }
+        Node::Function { body, .. } => l0014_collect_calls(body, out),
+        Node::Block { stmts, .. } => {
+            for s in stmts {
+                l0014_collect_calls(s, out);
+            }
+        }
+        Node::LetStatement { value, .. }
+        | Node::StaticLet { value, .. }
+        | Node::Const { value, .. }
+        | Node::Assignment { value, .. } => l0014_collect_calls(value, out),
+        Node::ReturnStatement { value: Some(v), .. } => l0014_collect_calls(v, out),
+        Node::ExpressionStatement { expr, .. } => l0014_collect_calls(expr, out),
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            l0014_collect_calls(condition, out);
+            l0014_collect_calls(consequence, out);
+            if let Some(e) = alternative {
+                l0014_collect_calls(e, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            l0014_collect_calls(condition, out);
+            l0014_collect_calls(body, out);
+        }
+        Node::ForInStatement { iterable, body, .. } => {
+            l0014_collect_calls(iterable, out);
+            l0014_collect_calls(body, out);
+        }
+        Node::InfixExpression { left, right, .. } => {
+            l0014_collect_calls(left, out);
+            l0014_collect_calls(right, out);
+        }
+        Node::PrefixExpression { right, .. } => l0014_collect_calls(right, out),
+        Node::ArrayLiteral { items, .. } => {
+            for i in items {
+                l0014_collect_calls(i, out);
+            }
+        }
+        Node::FieldAccess { target, .. } => l0014_collect_calls(target, out),
+        Node::FieldAssignment { target, value, .. } => {
+            l0014_collect_calls(target, out);
+            l0014_collect_calls(value, out);
+        }
+        Node::IndexExpression { target, index, .. } => {
+            l0014_collect_calls(target, out);
+            l0014_collect_calls(index, out);
+        }
+        Node::ImplBlock { methods, .. } => {
+            for m in methods {
+                l0014_collect_calls(m, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -3120,6 +3261,46 @@ mod tests {
         assert!(
             codes(src).contains(&"L0012".to_string()),
             "L0012 must fire on a fn with `recovers_to:` but no `// source:` comment"
+        );
+    }
+
+    // ---- L0014 tests ----
+
+    #[test]
+    fn l0014_defined_but_never_called() {
+        let src = "fn helper(int x) -> int { return x; }\nfn main() { let _y = 1; }\nmain();\n";
+        assert!(
+            codes(src).contains(&"L0014".to_string()),
+            "L0014 must fire for `helper` which is defined but never called"
+        );
+    }
+
+    #[test]
+    fn l0014_called_function_not_flagged() {
+        let src =
+            "fn helper(int x) -> int { return x; }\nfn main() { let _y = helper(1); }\nmain();\n";
+        assert!(
+            !codes(src).contains(&"L0014".to_string()),
+            "L0014 must not fire when the function is actually called"
+        );
+    }
+
+    #[test]
+    fn l0014_underscore_prefix_not_flagged() {
+        let src = "fn _unused(int x) -> int { return x; }\nfn main() {}\nmain();\n";
+        assert!(
+            !codes(src).contains(&"L0014".to_string()),
+            "L0014 must not fire for `_`-prefixed functions"
+        );
+    }
+
+    #[test]
+    fn l0014_main_not_flagged_even_if_only_at_top_level() {
+        // `main` called at top level (as a statement) should not be flagged.
+        let src = "fn main() { let _x = 1; }\nmain();\n";
+        assert!(
+            !codes(src).contains(&"L0014".to_string()),
+            "L0014 must not fire for `main` when called at top level"
         );
     }
 }

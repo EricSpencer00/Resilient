@@ -26,9 +26,10 @@ fn tmp_file(tag: &str, body: &str) -> PathBuf {
 #[test]
 fn lint_exits_zero_on_clean_program() {
     // RES-397: `// source:` comment satisfies L0012 spec-provenance lint.
+    // Call `f` at top level so L0014 (unused function) does not fire.
     let src = tmp_file(
         "clean",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -95,9 +96,10 @@ fn lint_deny_escalates_to_error_exit_two() {
 fn lint_allow_flag_suppresses_code() {
     // RES-397: `// source:` comment satisfies L0012; `--allow L0001`
     // silences the unused-let warning, leaving a clean lint.
+    // Call `f` so L0014 does not fire alongside L0001.
     let src = tmp_file(
         "allow",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let unused = 42;\n    return a;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -210,10 +212,10 @@ fn lint_l0011_fires_on_unused_let_with_rustc_message() {
 #[test]
 fn lint_l0011_silent_for_underscore_prefix() {
     // `_temp` is exempt — file is clean, exit 0.
-    // RES-397: `// source:` satisfies L0012.
+    // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
     let src = tmp_file(
         "l0011_underscore",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let _temp = 42;\n    return a;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])
@@ -232,9 +234,10 @@ fn lint_l0011_silent_for_underscore_prefix() {
 #[test]
 fn lint_l0011_silent_when_let_is_used() {
     // Used `let` is clean. RES-397: `// source:` satisfies L0012.
+    // Call `f` to silence L0014 (unused function).
     let src = tmp_file(
         "l0011_used",
-        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\n",
+        "// source: test fixture\nfn f(int a) requires a > 0 {\n    let used = a + 1;\n    return used;\n}\nf(1);\n",
     );
     let out = Command::new(bin())
         .args(["lint"])

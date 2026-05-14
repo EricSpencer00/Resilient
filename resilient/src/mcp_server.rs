@@ -601,9 +601,9 @@ mod tests {
 
     #[test]
     fn lint_clean_program() {
-        // Suppress the "missing contract" lint (L0010) so the function is
-        // lint-clean without requiring requires/ensures boilerplate in tests.
-        let src = "// resilient: allow L0010\nfn add(int a, int b) -> int { a + b }";
+        // Suppress L0010 (missing contract) and L0014 (unused function) so the
+        // function is lint-clean without call-site or contract boilerplate.
+        let src = "// resilient: allow L0010, L0014\nfn add(int a, int b) -> int { a + b }";
         let r = call("resilient_lint", src);
         assert!(r.is_ok(), "{r:?}");
     }
@@ -634,9 +634,9 @@ mod tests {
 
     #[test]
     fn check_clean_program() {
-        // Suppress L0010 (missing contract) so the full pipeline passes
-        // without requiring requires/ensures boilerplate in tests.
-        let src = "// resilient: allow L0010\nfn add(int a, int b) -> int { a + b }";
+        // Suppress L0010 (missing contract) and L0014 (unused function) so the
+        // full pipeline passes without call-site or contract boilerplate.
+        let src = "// resilient: allow L0010, L0014\nfn add(int a, int b) -> int { a + b }";
         let r = call("resilient_check", src);
         assert!(r.is_ok(), "{r:?}");
         assert!(r.unwrap().contains("OK"));
