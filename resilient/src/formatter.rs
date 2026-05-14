@@ -658,8 +658,47 @@ impl Formatter {
                 }
                 self.newline();
             }
-            // FFI v1: extern blocks not yet formatted (Tasks 4-8).
-            Node::Extern { .. } => {}
+            Node::Extern { library, decls, .. } => {
+                self.write(&format!("extern \"{}\" {{", library));
+                self.newline();
+                self.indent();
+                for decl in decls {
+                    if decl.trusted {
+                        self.write("@trusted ");
+                    }
+                    self.write(&format!("fn {}(", decl.resilient_name));
+                    for (i, (ty, name)) in decl.parameters.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        // extern fn uses `name: Type` (not `Type name`).
+                        self.write(&format!("{}: {}", name, ty));
+                    }
+                    if decl.is_variadic {
+                        if !decl.parameters.is_empty() {
+                            self.write(", ");
+                        }
+                        self.write("...");
+                    }
+                    self.write(&format!(") -> {}", decl.return_type));
+                    if decl.c_name != decl.resilient_name {
+                        self.write(&format!(" = \"{}\"", decl.c_name));
+                    }
+                    for req in &decl.requires {
+                        self.write(" requires ");
+                        self.fmt_expr(req);
+                    }
+                    for ens in &decl.ensures {
+                        self.write(" ensures ");
+                        self.fmt_expr(ens);
+                    }
+                    self.write(";");
+                    self.newline();
+                }
+                self.dedent();
+                self.write("}");
+                self.newline();
+            }
             // RES-324: `mod name { ... }` namespace block.
             Node::ModuleDecl { name, body, .. } => {
                 self.write(&format!("mod {} {{", name));
@@ -1693,5 +1732,55 @@ struct Point {
         );
         let twice = Formatter::format(&p2);
         assert_eq!(once, twice, "formatter is not idempotent");
+    }
+
+    #[test]
+    fn fmt_extern_block_basic() {
+        // extern fn uses `name: Type` parameter syntax.
+        let src =
+            "extern \"libm\" {\n    fn sin(x: float) -> float;\n    fn cos(x: float) -> float;\n}";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let formatted = Formatter::format(&prog);
+        assert!(
+            formatted.contains("extern \"libm\""),
+            "extern block must appear in formatted output; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("fn sin(x: float) -> float;"),
+            "extern decl must be formatted; got:\n{formatted}"
+        );
+    }
+
+    #[test]
+    fn fmt_extern_block_trusted_and_aliased() {
+        let src = "extern \"libfoo\" {\n    @trusted fn foo(x: int) -> int = \"foo_impl\";\n}";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let formatted = Formatter::format(&prog);
+        assert!(
+            formatted.contains("@trusted"),
+            "trusted attribute must appear; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("= \"foo_impl\""),
+            "C-name alias must appear; got:\n{formatted}"
+        );
+    }
+
+    #[test]
+    fn fmt_extern_block_idempotent() {
+        let src = "extern \"libmath\" {\n    fn abs(x: int) -> int;\n    @trusted fn sqrt(x: float) -> float;\n}";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let once = Formatter::format(&prog);
+        let (prog2, errs2) = parse(&once);
+        assert!(
+            errs2.is_empty(),
+            "re-parse of formatted output failed: {:?}\nsource:\n{once}",
+            errs2
+        );
+        let twice = Formatter::format(&prog2);
+        assert_eq!(once, twice, "extern block formatting is not idempotent");
     }
 }
