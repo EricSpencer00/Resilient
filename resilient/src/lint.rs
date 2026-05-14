@@ -76,6 +76,8 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0014", // function defined but never called (dead function)
     "L0015", // constant arithmetic expression overflows `int`
     "L0016", // constant boolean condition in `if` (always-true or always-false)
+    "L0017", // variable binding shadows an outer binding of the same name
+    "L0018", // function with return type may not return on all paths
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -113,6 +115,7 @@ struct LintTriggers {
     has_call: bool,
     has_integer_literal: bool,
     has_if_statement: bool,
+    has_let_in_nested_block: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -134,7 +137,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         }
         Node::Function { .. } => t.has_function = true,
         Node::LetStatement { .. } => t.has_let = true,
-        Node::Block { .. } => t.has_block = true,
+        Node::Block { stmts, .. } => {
+            t.has_block = true;
+            // L0017 trigger: a let inside a block (potential shadowing site).
+            if stmts.iter().any(|s| matches!(s, Node::LetStatement { .. })) {
+                t.has_let_in_nested_block = true;
+            }
+        }
         Node::CallExpression { .. } => t.has_call = true,
         Node::IntegerLiteral { .. } => t.has_integer_literal = true,
         Node::IfStatement { .. } => t.has_if_statement = true,
@@ -199,6 +208,12 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_if_statement {
         run_l0016_constant_condition(program, &mut out);
+    }
+    if t.has_function && t.has_let_in_nested_block {
+        run_l0017_variable_shadowing(program, &mut out);
+    }
+    if t.has_function {
+        run_l0018_missing_return(program, &mut out);
     }
 
     let safety_critical = safety_critical_mode();
@@ -2492,6 +2507,237 @@ fn walk_l0016(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0017: variable shadowing
+// ============================================================
+//
+// Fires when a `let` binding in an inner scope uses the same name
+// as a binding in any enclosing scope (parameters or outer let).
+// Names starting with `_` are exempt — the leading underscore is
+// the conventional "I know this shadows" signal.
+
+fn run_l0017_variable_shadowing(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::Function {
+                parameters, body, ..
+            } => {
+                let mut scopes: Vec<std::collections::HashSet<String>> =
+                    vec![parameters.iter().map(|(_, name)| name.clone()).collect()];
+                l0017_walk(body, &mut scopes, out);
+            }
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function {
+                        parameters, body, ..
+                    } = method
+                    {
+                        let mut scopes: Vec<std::collections::HashSet<String>> =
+                            vec![parameters.iter().map(|(_, name)| name.clone()).collect()];
+                        l0017_walk(body, &mut scopes, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn l0017_walk(
+    node: &Node,
+    scopes: &mut Vec<std::collections::HashSet<String>>,
+    out: &mut Vec<Lint>,
+) {
+    match node {
+        Node::Block { stmts, .. } => {
+            scopes.push(std::collections::HashSet::new());
+            for stmt in stmts {
+                l0017_walk(stmt, scopes, out);
+            }
+            scopes.pop();
+        }
+        Node::LetStatement {
+            name, value, span, ..
+        } => {
+            if !name.starts_with('_') {
+                let outer_len = scopes.len().saturating_sub(1);
+                let shadows = scopes[..outer_len]
+                    .iter()
+                    .any(|s| s.contains(name.as_str()));
+                if shadows {
+                    out.push(Lint {
+                        code: "L0017".into(),
+                        severity: Severity::Warning,
+                        message: format!(
+                            "variable `{}` shadows a previous declaration — \
+                             rename to avoid confusion, or prefix with `_` to silence",
+                            name
+                        ),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                }
+            }
+            if let Some(top) = scopes.last_mut() {
+                top.insert(name.clone());
+            }
+            l0017_walk(value, scopes, out);
+        }
+        Node::IfStatement {
+            condition,
+            consequence,
+            alternative,
+            ..
+        } => {
+            l0017_walk(condition, scopes, out);
+            l0017_walk(consequence, scopes, out);
+            if let Some(alt) = alternative {
+                l0017_walk(alt, scopes, out);
+            }
+        }
+        Node::WhileStatement {
+            condition, body, ..
+        } => {
+            l0017_walk(condition, scopes, out);
+            l0017_walk(body, scopes, out);
+        }
+        Node::ForInStatement { body, iterable, .. } => {
+            l0017_walk(iterable, scopes, out);
+            l0017_walk(body, scopes, out);
+        }
+        Node::ReturnStatement { value, .. } => {
+            if let Some(v) = value {
+                l0017_walk(v, scopes, out);
+            }
+        }
+        Node::ExpressionStatement { expr, .. } => {
+            l0017_walk(expr, scopes, out);
+        }
+        Node::Assignment { value, .. } => {
+            l0017_walk(value, scopes, out);
+        }
+        // Nested function definitions have independent scopes; don't
+        // carry the outer scope stack into them.
+        Node::Function { .. } => {}
+        _ => {
+            recurse_children(node, &mut |child| l0017_walk(child, scopes, out));
+        }
+    }
+}
+
+// ============================================================
+// L0018: missing return on all paths
+// ============================================================
+//
+// Fires for functions with an explicit `-> TYPE` annotation (where
+// TYPE is not `void`) whose body does not return on every code path.
+// Heuristic: a block "returns on all paths" when its last statement
+// is a `return`, or is an `if/else` where both branches return.
+// A function with no else clause, or that falls off the end of its
+// body, gets a warning.
+
+fn run_l0018_missing_return(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::Function {
+                name,
+                return_type,
+                body,
+                span,
+                ..
+            } => {
+                if let Some(rt) = return_type
+                    && !l0018_is_void(rt)
+                    && !l0018_all_paths_return(body)
+                {
+                    out.push(Lint {
+                        code: "L0018".into(),
+                        severity: Severity::Warning,
+                        message: format!(
+                            "function `{}` has return type `{}` but may not return \
+                             on all paths — add a `return` or suppress with \
+                             `// resilient: allow L0018`",
+                            name, rt
+                        ),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                }
+            }
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function {
+                        name,
+                        return_type,
+                        body,
+                        span,
+                        ..
+                    } = method
+                        && let Some(rt) = return_type
+                        && !l0018_is_void(rt)
+                        && !l0018_all_paths_return(body)
+                    {
+                        out.push(Lint {
+                            code: "L0018".into(),
+                            severity: Severity::Warning,
+                            message: format!(
+                                "function `{}` has return type `{}` but may not \
+                                 return on all paths",
+                                name, rt
+                            ),
+                            line: span.start.line as u32,
+                            column: span.start.column as u32,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn l0018_is_void(rt: &str) -> bool {
+    matches!(rt.trim(), "void" | "()" | "")
+}
+
+/// Returns `true` when `node` is guaranteed to produce a value (explicit
+/// `return` or implicit expression result) on every execution path through it.
+/// Conservative — never false-positive.
+fn l0018_all_paths_return(node: &Node) -> bool {
+    match node {
+        Node::ReturnStatement { .. } => true,
+        // An expression statement at the tail of a block is Resilient's
+        // implicit-return form (same as Rust's expression-oriented blocks).
+        // `fn f() -> int { a + b }` is valid — `a + b` IS the return value.
+        Node::ExpressionStatement { .. } => true,
+        Node::Block { stmts, .. } => {
+            // A block returns on all paths if any statement in it does (once
+            // a return is reached, subsequent stmts are unreachable).
+            stmts.iter().any(l0018_all_paths_return)
+        }
+        // Returns on all paths only when both branches cover all paths.
+        // No `else` means the `if`-false path falls through.
+        Node::IfStatement {
+            consequence,
+            alternative: Some(alt),
+            ..
+        } => l0018_all_paths_return(consequence) && l0018_all_paths_return(alt),
+        Node::IfStatement {
+            alternative: None, ..
+        } => false,
+        // A while/for loop body might not execute at all, so it doesn't
+        // guarantee a return.
+        Node::WhileStatement { .. } | Node::ForInStatement { .. } => false,
+        _ => false,
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -3578,6 +3824,92 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0016".to_string()),
             "L0016 must not fire when condition involves a variable"
+        );
+    }
+
+    // ---- L0017: variable shadowing ----
+
+    #[test]
+    fn l0017_fires_when_let_shadows_outer_let() {
+        // Inner `let x` shadows outer `let x`.
+        let src = "fn f(int n) -> int {\n    let x = n;\n    if n > 0 {\n        let x = n + 1;\n        return x;\n    }\n    return x;\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0017".to_string()),
+            "L0017 must fire when inner let shadows outer let; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0017_fires_when_let_shadows_parameter() {
+        // `let n` shadows parameter `n`.
+        let src = "fn f(int n) -> int {\n    let n = n + 1;\n    return n;\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0017".to_string()),
+            "L0017 must fire when let shadows a parameter"
+        );
+    }
+
+    #[test]
+    fn l0017_silent_for_underscore_prefix() {
+        // `_x` is exempt — underscore prefix signals intentional shadowing.
+        let src = "fn f(int n) -> int {\n    let x = n;\n    if n > 0 {\n        let _x = n + 1;\n        return _x;\n    }\n    return x;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0017".to_string()),
+            "L0017 must not fire for `_`-prefixed bindings"
+        );
+    }
+
+    #[test]
+    fn l0017_silent_when_no_shadowing() {
+        // `y` is a new name, not a shadow.
+        let src = "fn f(int n) -> int {\n    let x = n;\n    if n > 0 {\n        let y = n + 1;\n        return y;\n    }\n    return x;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0017".to_string()),
+            "L0017 must not fire when names are distinct"
+        );
+    }
+
+    // ---- L0018: missing return on all paths ----
+
+    #[test]
+    fn l0018_fires_when_if_without_else_is_last() {
+        // Return type is `int` but the if-without-else path falls through.
+        let src = "fn f(int x) -> int {\n    if x > 0 { return 1; }\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0018".to_string()),
+            "L0018 must fire when fn with return type lacks an else branch; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0018_silent_when_all_paths_return() {
+        // Both branches of the if/else return, so all paths are covered.
+        let src = "fn f(int x) -> int {\n    if x > 0 { return 1; } else { return 0; }\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0018".to_string()),
+            "L0018 must not fire when every path ends with return"
+        );
+    }
+
+    #[test]
+    fn l0018_silent_for_void_function() {
+        // No return type annotation — void function, L0018 does not apply.
+        let src = "fn f(int x) {\n    if x > 0 { let _y = 1; }\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0018".to_string()),
+            "L0018 must not fire for functions with no return type"
+        );
+    }
+
+    #[test]
+    fn l0018_silent_when_return_at_end_of_body() {
+        // Unconditional return at end of body covers all paths.
+        let src = "fn f(int x) -> int {\n    let y = x + 1;\n    return y;\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0018".to_string()),
+            "L0018 must not fire when body ends with an unconditional return"
         );
     }
 }
