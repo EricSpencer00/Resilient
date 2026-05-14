@@ -305,3 +305,95 @@ fn lint_handles_multiple_codes_per_invocation() {
     assert!(stdout.contains("warning[L0005]"), "stdout: {stdout}");
     let _ = std::fs::remove_file(&src);
 }
+
+// ---------- L0015: constant expression integer overflow ----------
+
+#[test]
+fn lint_l0015_fires_on_overflow() {
+    // i64::MAX + 1 overflows.
+    let src = tmp_file(
+        "l0015_overflow",
+        "fn f() -> int { return 9223372036854775807 + 1; }\nf();\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("warning[L0015]"),
+        "expected warning[L0015] in stdout, got: {stdout}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 for L0015 warning, got {:?}",
+        out.status
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0015_silent_for_valid_arithmetic() {
+    // 100 + 200 does not overflow — should exit 0.
+    // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
+    let src = tmp_file(
+        "l0015_clean",
+        "// source: test fixture\nfn f() -> int requires true { return 100 + 200; }\nf();\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    assert!(
+        out.status.success(),
+        "expected exit 0 for non-overflowing arithmetic, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+// ---------- L0016: constant boolean condition ----------
+
+#[test]
+fn lint_l0016_fires_on_literal_true() {
+    let src = tmp_file(
+        "l0016_true",
+        "fn f() { if true { let _x = 1; } }\nf();\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("warning[L0016]"),
+        "expected warning[L0016] in stdout, got: {stdout}"
+    );
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_l0016_silent_for_variable_condition() {
+    // RES-397: `// source:` satisfies L0012. Call `f` to silence L0014.
+    let src = tmp_file(
+        "l0016_var",
+        "// source: test fixture\nfn f(int x) -> int requires x > 0 { if x > 0 { return 1; } return 0; }\nf(1);\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .output()
+        .expect("spawn lint");
+    assert!(
+        out.status.success(),
+        "expected exit 0 for variable condition, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let _ = std::fs::remove_file(&src);
+}

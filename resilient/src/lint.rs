@@ -74,6 +74,8 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0012", // RES-397: spec annotation lacks `// source:` provenance comment
     "L0013", // RES-798: unchecked array indexing (not proven in-bounds)
     "L0014", // function defined but never called (dead function)
+    "L0015", // constant arithmetic expression overflows `int`
+    "L0016", // constant boolean condition in `if` (always-true or always-false)
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -94,7 +96,7 @@ pub fn safety_critical_mode() -> bool {
     SAFETY_CRITICAL_MODE.load(Ordering::Relaxed)
 }
 
-/// RES-1376: cached trigger-presence flags for the 13 lint passes.
+/// RES-1376: cached trigger-presence flags for the lint passes.
 /// Built by `scan_lint_triggers` in one AST visit; each lint pass is
 /// gated on the flag for its trigger node so passes whose trigger
 /// never appears in the program don't pay for a full AST walk.
@@ -109,6 +111,8 @@ struct LintTriggers {
     has_let: bool,
     has_block: bool,
     has_call: bool,
+    has_integer_literal: bool,
+    has_if_statement: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -132,6 +136,8 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::LetStatement { .. } => t.has_let = true,
         Node::Block { .. } => t.has_block = true,
         Node::CallExpression { .. } => t.has_call = true,
+        Node::IntegerLiteral { .. } => t.has_integer_literal = true,
+        Node::IfStatement { .. } => t.has_if_statement = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -187,6 +193,12 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_function {
         run_l0014_unused_function(program, &mut out);
+    }
+    if t.has_infix && t.has_integer_literal {
+        run_l0015_const_overflow(program, &mut out);
+    }
+    if t.has_if_statement {
+        run_l0016_constant_condition(program, &mut out);
     }
 
     let safety_critical = safety_critical_mode();
@@ -2296,6 +2308,190 @@ fn l0014_collect_calls<'a>(node: &'a Node, out: &mut std::collections::HashSet<&
 }
 
 // ============================================================
+// L0015: constant arithmetic expression overflows `int`
+// ============================================================
+//
+// Fires when every operand of an arithmetic infix expression is a
+// compile-time-known integer literal and the operation overflows
+// signed 64-bit integer range.  Division/modulo by zero is already
+// covered by L0009 and is not re-reported here.
+
+fn run_l0015_const_overflow(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0015(program, out);
+}
+
+/// Try to evaluate `node` to a compile-time constant `i64`.
+/// Returns `None` on any free identifier, function call, or
+/// arithmetic overflow (so the caller can detect the overflow case
+/// separately).
+fn try_const_int(node: &Node) -> Option<i64> {
+    match node {
+        Node::IntegerLiteral { value, .. } => Some(*value),
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => try_const_int(right).and_then(i64::checked_neg),
+        Node::InfixExpression {
+            operator,
+            left,
+            right,
+            ..
+        } => {
+            let l = try_const_int(left)?;
+            let r = try_const_int(right)?;
+            match operator.as_str() {
+                "+" => l.checked_add(r),
+                "-" => l.checked_sub(r),
+                "*" => l.checked_mul(r),
+                "/" => {
+                    if r == 0 {
+                        None
+                    } else {
+                        l.checked_div(r)
+                    }
+                }
+                "%" => {
+                    if r == 0 {
+                        None
+                    } else {
+                        l.checked_rem(r)
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn walk_l0015(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+    } = node
+    {
+        let op = operator.as_str();
+        if matches!(op, "+" | "-" | "*" | "/" | "%") {
+            let l_val = try_const_int(left);
+            let r_val = try_const_int(right);
+            if let (Some(l), Some(r)) = (l_val, r_val) {
+                let overflows = match op {
+                    "+" => l.checked_add(r).is_none(),
+                    "-" => l.checked_sub(r).is_none(),
+                    "*" => l.checked_mul(r).is_none(),
+                    // div/rem by zero → L0009, not L0015
+                    "/" => r != 0 && l.checked_div(r).is_none(),
+                    "%" => r != 0 && l.checked_rem(r).is_none(),
+                    _ => false,
+                };
+                if overflows {
+                    out.push(Lint {
+                        code: "L0015".into(),
+                        severity: Severity::Warning,
+                        message: format!(
+                            "constant expression `{l} {op} {r}` overflows `int` — \
+                             use smaller values or suppress with \
+                             `// resilient: allow L0015`"
+                        ),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                    return;
+                }
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0015(child, out));
+}
+
+// ============================================================
+// L0016: constant boolean condition in `if` statement
+// ============================================================
+//
+// Fires when the condition of an `if` is a compile-time constant
+// (`true`, `false`, or a fully-folded boolean expression).  This
+// catches dead branches (`if false { ... }`) and tautological ones
+// (`if true { ... }`) that should be simplified or removed.
+
+fn run_l0016_constant_condition(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0016(program, out);
+}
+
+fn try_const_bool(node: &Node) -> Option<bool> {
+    match node {
+        Node::BooleanLiteral { value, .. } => Some(*value),
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "!" => try_const_bool(right).map(|v| !v),
+        Node::InfixExpression {
+            operator,
+            left,
+            right,
+            ..
+        } => match operator.as_str() {
+            "==" => {
+                let (l, r) = (try_const_int(left)?, try_const_int(right)?);
+                Some(l == r)
+            }
+            "!=" => {
+                let (l, r) = (try_const_int(left)?, try_const_int(right)?);
+                Some(l != r)
+            }
+            "<" => {
+                let (l, r) = (try_const_int(left)?, try_const_int(right)?);
+                Some(l < r)
+            }
+            ">" => {
+                let (l, r) = (try_const_int(left)?, try_const_int(right)?);
+                Some(l > r)
+            }
+            "<=" => {
+                let (l, r) = (try_const_int(left)?, try_const_int(right)?);
+                Some(l <= r)
+            }
+            ">=" => {
+                let (l, r) = (try_const_int(left)?, try_const_int(right)?);
+                Some(l >= r)
+            }
+            "&&" => match (try_const_bool(left), try_const_bool(right)) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+            "||" => match (try_const_bool(left), try_const_bool(right)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn walk_l0016(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        condition, span, ..
+    } = node
+        && let Some(val) = try_const_bool(condition)
+    {
+        let branch = if val { "always taken" } else { "never taken" };
+        out.push(Lint {
+            code: "L0016".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "condition is always `{val}` — this branch is {branch}; \
+                 simplify or suppress with `// resilient: allow L0016`"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0016(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -3301,6 +3497,87 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0014".to_string()),
             "L0014 must not fire for `main` when called at top level"
+        );
+    }
+
+    // ---- L0015: constant integer overflow ----
+
+    #[test]
+    fn l0015_fires_on_addition_overflow() {
+        // 9223372036854775807 + 1 overflows i64.
+        let src = "fn f() -> int { return 9223372036854775807 + 1; }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0015".to_string()),
+            "L0015 must fire when literal addition overflows i64; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0015_fires_on_multiplication_overflow() {
+        let src = "fn f() -> int { return 1000000000 * 1000000000000000; }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0015".to_string()),
+            "L0015 must fire on multiplication overflow"
+        );
+    }
+
+    #[test]
+    fn l0015_silent_for_non_overflowing_expression() {
+        let src = "fn f() -> int { return 100 + 200; }\nf();\n";
+        assert!(
+            !codes(src).contains(&"L0015".to_string()),
+            "L0015 must not fire for non-overflowing constant arithmetic"
+        );
+    }
+
+    #[test]
+    fn l0015_silent_when_operand_is_variable() {
+        // `x + 1` — not fully constant, so overflow cannot be proven.
+        let src = "fn f(int x) -> int { return x + 1; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0015".to_string()),
+            "L0015 must not fire when an operand is a variable"
+        );
+    }
+
+    // ---- L0016: constant boolean condition ----
+
+    #[test]
+    fn l0016_fires_on_literal_true_condition() {
+        let src = "fn f() { if true { let _x = 1; } }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0016".to_string()),
+            "L0016 must fire when `if` condition is literal `true`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0016_fires_on_literal_false_condition() {
+        let src = "fn f() { if false { let _x = 1; } }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0016".to_string()),
+            "L0016 must fire when `if` condition is literal `false`"
+        );
+    }
+
+    #[test]
+    fn l0016_fires_on_constant_comparison() {
+        // `1 < 2` is always true — equivalent to a literal `true`.
+        let src = "fn f() { if 1 < 2 { let _x = 1; } }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0016".to_string()),
+            "L0016 must fire when condition folds to a constant bool"
+        );
+    }
+
+    #[test]
+    fn l0016_silent_for_variable_condition() {
+        let src = "fn f(int x) -> int { if x > 0 { return 1; } return 0; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0016".to_string()),
+            "L0016 must not fire when condition involves a variable"
         );
     }
 }
