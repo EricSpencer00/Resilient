@@ -110,9 +110,13 @@ mod lsp_server;
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
+// TLA+ bridge: `rz tla check <file.tla>` shells out to TLC and surfaces
+// results in Resilient's diagnostic format.  CLI-only (no wasm32).
 pub mod output_sink;
 mod peephole;
 mod span;
+#[cfg(not(target_arch = "wasm32"))]
+mod tla_bridge;
 // RES-400: sum-type declarations. PR 1 lands the parser scaffold for
 // payload-less variants. Subsequent PRs extend with payloads,
 // constructor expressions, exhaustive `match`, and the typechecker
@@ -24753,6 +24757,8 @@ fn start_repl() -> RustylineResult<()> {
                 crate::default_params::lower_program(&mut program);
                 // RES-319: rewrite newtype constructor calls before eval.
                 crate::newtypes::lower_program(&mut program);
+                // Expand textual macros declared with `#[macro(...)]`.
+                crate::macros::lower_program(&mut program);
 
                 // Run type checker if enabled
                 if type_check_enabled {
@@ -25134,7 +25140,38 @@ fn parse(src: &str) -> (Node, Vec<String>) {
     crate::default_params::lower_program(&mut program);
     // RES-319: rewrite newtype constructor calls before eval.
     crate::newtypes::lower_program(&mut program);
+    crate::macros::lower_program(&mut program);
     (program, errs)
+}
+
+/// Macro expansion helper: parse a single expression string into a `Node`.
+///
+/// The source is wrapped in a synthetic function body so the existing
+/// program parser can handle it; the first statement from the body is
+/// returned. Returns `None` when the source has parse errors or is empty.
+///
+/// Used by `macros::lower_program` to parse textual expansion results
+/// back into AST nodes.
+pub(crate) fn parse_single_expression(src: &str) -> Option<Node> {
+    let wrapped = format!("fn __mexp__() {{ {} }}", src);
+    let lexer = Lexer::new(&wrapped);
+    let mut parser = Parser::new(lexer);
+    let program = parser.parse_program();
+    if !parser.errors.is_empty() {
+        return None;
+    }
+    if let Node::Program(stmts) = program
+        && let Some(spanned) = stmts.into_iter().next()
+        && let Node::Function { body, .. } = spanned.node
+        && let Node::Block { stmts, .. } = *body
+    {
+        // Unwrap ExpressionStatement wrapper if present.
+        return stmts.into_iter().next().map(|n| match n {
+            Node::ExpressionStatement { expr, .. } => *expr,
+            other => other,
+        });
+    }
+    None
 }
 
 /// RES-391: a parsed reference-type annotation. The parser encodes
@@ -26114,6 +26151,8 @@ fn execute_file(
     crate::default_params::lower_program(&mut program);
     // RES-319: rewrite newtype constructor calls before eval.
     crate::newtypes::lower_program(&mut program);
+    // Expand textual macros declared with `#[macro(...)]`.
+    crate::macros::lower_program(&mut program);
 
     // RES-391: syntactic non-aliasing check over reference-type
     // parameters. Runs unconditionally — a borrow-check violation is
@@ -27752,6 +27791,7 @@ SUBCOMMANDS:\n\
     pkg <verb>          Package manager operations (RES-205)\n\
     fmt <file>          Canonical source formatter\n\
     lint <file>         Run the starter lints\n\
+    tla check <file>    TLA+ model checking via TLC\n\
     verify-cert <dir>   Verify an RES-071 certificate directory\n\
     verify-all <dir>    Re-check every obligation in a manifest\n\
 \n\
@@ -27856,6 +27896,13 @@ pub fn run_cli() {
             env!("CARGO_PKG_VERSION")
         );
         std::process::exit(0);
+    }
+
+    // TLA+ bridge: `rz tla check <file.tla>` — shells out to TLC and
+    // surfaces results in Resilient's diagnostic format.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(code) = tla_bridge::dispatch_tla_subcommand(&args) {
+        std::process::exit(code);
     }
 
     // RES-205: intercept `pkg` subcommands before the normal flow.
@@ -29225,6 +29272,8 @@ mod tests {
         crate::default_params::lower_program(&mut program);
         // RES-319: rewrite newtype constructor calls before eval.
         crate::newtypes::lower_program(&mut program);
+        // Expand textual macros declared with `#[macro(...)]`.
+        crate::macros::lower_program(&mut program);
         (program, errs)
     }
 
