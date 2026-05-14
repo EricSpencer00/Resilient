@@ -360,10 +360,7 @@ fn lint_l0015_silent_for_valid_arithmetic() {
 
 #[test]
 fn lint_l0016_fires_on_literal_true() {
-    let src = tmp_file(
-        "l0016_true",
-        "fn f() { if true { let _x = 1; } }\nf();\n",
-    );
+    let src = tmp_file("l0016_true", "fn f() { if true { let _x = 1; } }\nf();\n");
     let out = Command::new(bin())
         .args(["lint"])
         .arg(&src)
