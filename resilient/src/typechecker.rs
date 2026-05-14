@@ -4887,87 +4887,90 @@ impl TypeChecker {
                             format!("{name}:{decl_idx}:{clause:?}").hash(&mut h);
                             h.finish()
                         };
-                        if let Some(cached) =
-                            crate::incremental_verify::lookup(name, clause_digest)
+                        if let Some(cached) = crate::incremental_verify::lookup(name, clause_digest)
                         {
                             verdict = Some(matches!(
                                 cached,
                                 crate::incremental_verify::ProofResult::Discharged
                             ));
                         } else {
-                        // RES-071: capture the SMT-LIB2 certificate
-                        // alongside the verdict so the driver can dump
-                        // it to disk if --emit-certificate is set.
-                        // RES-354: thread the theory selection through.
-                        let (v, cert, cx, timed_out) = {
-                            #[cfg(feature = "z3")]
-                            {
-                                z3_prove_with_cert_theory(
-                                    clause,
-                                    &no_bindings,
-                                    self.verifier_timeout_ms,
-                                    self.z3_theory,
-                                )
+                            // RES-071: capture the SMT-LIB2 certificate
+                            // alongside the verdict so the driver can dump
+                            // it to disk if --emit-certificate is set.
+                            // RES-354: thread the theory selection through.
+                            let (v, cert, cx, timed_out) = {
+                                #[cfg(feature = "z3")]
+                                {
+                                    z3_prove_with_cert_theory(
+                                        clause,
+                                        &no_bindings,
+                                        self.verifier_timeout_ms,
+                                        self.z3_theory,
+                                    )
+                                }
+                                #[cfg(not(feature = "z3"))]
+                                {
+                                    z3_prove_with_cert(
+                                        clause,
+                                        &no_bindings,
+                                        self.verifier_timeout_ms,
+                                    )
+                                }
+                            };
+                            verdict = v;
+                            if matches!(verdict, Some(true)) {
+                                self.stats.requires_discharged_by_z3 += 1;
+                                // Store in cache so next compile skips Z3
+                                // for this unchanged clause.
+                                crate::incremental_verify::store(
+                                    name,
+                                    clause_digest,
+                                    crate::incremental_verify::ProofResult::Discharged,
+                                );
+                                // RES-1357: only stash the SMT-LIB2 cert
+                                // when a consumer asked for it.
+                                if self.emit_certificates
+                                    && let Some(smt2) = cert
+                                {
+                                    self.certificates.push(CapturedCertificate {
+                                        fn_name: name.clone(),
+                                        kind: "decl",
+                                        idx: decl_idx,
+                                        smt2,
+                                    });
+                                }
+                            } else if matches!(verdict, Some(false)) {
+                                // Cache the refuted verdict so subsequent
+                                // compiles see the same counterexample
+                                // without re-running Z3.
+                                crate::incremental_verify::store(
+                                    name,
+                                    clause_digest,
+                                    crate::incremental_verify::ProofResult::Failed(
+                                        cx.clone().unwrap_or_default(),
+                                    ),
+                                );
                             }
-                            #[cfg(not(feature = "z3"))]
-                            {
-                                z3_prove_with_cert(clause, &no_bindings, self.verifier_timeout_ms)
+                            if timed_out {
+                                // RES-137: soft-failure — compilation
+                                // continues, runtime check stays in,
+                                // audit counter bumps, user sees a hint.
+                                self.stats.verifier_timeouts += 1;
+                                eprintln!(
+                                    "hint: proof timed out after {}ms — runtime check retained (fn {})",
+                                    self.verifier_timeout_ms, name
+                                );
                             }
-                        };
-                        verdict = v;
-                        if matches!(verdict, Some(true)) {
-                            self.stats.requires_discharged_by_z3 += 1;
-                            // Store in cache so next compile skips Z3
-                            // for this unchanged clause.
-                            crate::incremental_verify::store(
-                                name,
-                                clause_digest,
-                                crate::incremental_verify::ProofResult::Discharged,
-                            );
-                            // RES-1357: only stash the SMT-LIB2 cert
-                            // when a consumer asked for it.
-                            if self.emit_certificates
-                                && let Some(smt2) = cert
-                            {
-                                self.certificates.push(CapturedCertificate {
-                                    fn_name: name.clone(),
-                                    kind: "decl",
-                                    idx: decl_idx,
-                                    smt2,
-                                });
+                            // RES-217: any unresolved verdict (timeout OR a
+                            // genuine Z3 `Unknown`) is a partial proof. Emit
+                            // the structured diagnostic so CI / LSP tooling
+                            // can discover the specific assertion via a
+                            // stable `[partial-proof]` tag. Suppressed with
+                            // `--no-warn-unverified`.
+                            if verdict.is_none() && self.warn_unverified {
+                                emit_partial_proof_warning(&self.source_path, clause);
                             }
-                        } else if matches!(verdict, Some(false)) {
-                            // Cache the refuted verdict so subsequent
-                            // compiles see the same counterexample
-                            // without re-running Z3.
-                            crate::incremental_verify::store(
-                                name,
-                                clause_digest,
-                                crate::incremental_verify::ProofResult::Failed(
-                                    cx.clone().unwrap_or_default(),
-                                ),
-                            );
-                        }
-                        if timed_out {
-                            // RES-137: soft-failure — compilation
-                            // continues, runtime check stays in,
-                            // audit counter bumps, user sees a hint.
-                            self.stats.verifier_timeouts += 1;
-                            eprintln!(
-                                "hint: proof timed out after {}ms — runtime check retained (fn {})",
-                                self.verifier_timeout_ms, name
-                            );
-                        }
-                        // RES-217: any unresolved verdict (timeout OR a
-                        // genuine Z3 `Unknown`) is a partial proof. Emit
-                        // the structured diagnostic so CI / LSP tooling
-                        // can discover the specific assertion via a
-                        // stable `[partial-proof]` tag. Suppressed with
-                        // `--no-warn-unverified`.
-                        if verdict.is_none() && self.warn_unverified {
-                            emit_partial_proof_warning(&self.source_path, clause);
-                        }
-                        decl_counterexample = cx;
+                            decl_counterexample = cx;
                         } // end cache-miss branch
                     }
                     match verdict {
