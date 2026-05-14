@@ -21548,6 +21548,34 @@ fn struct_fields_strict_eq(l: &[(String, Value)], r: &[(String, Value)]) -> bool
     true
 }
 
+/// Scalar total-order comparison for primitive `Value` kinds. Returns
+/// `None` for compound or incomparable types.
+fn values_cmp(left: &Value, right: &Value) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (Value::Int(l), Value::Int(r)) => Some(l.cmp(r)),
+        (Value::Float(l), Value::Float(r)) => l.partial_cmp(r),
+        (Value::String(l), Value::String(r)) => Some(l.cmp(r)),
+        (Value::Bool(l), Value::Bool(r)) => Some(l.cmp(r)),
+        _ => None,
+    }
+}
+
+/// Lexicographic comparison of two struct field-value lists, following
+/// declaration order. Used by `#[derive(PartialOrd)]` dispatch.
+fn struct_fields_lexicographic_cmp(
+    l: &[(String, Value)],
+    r: &[(String, Value)],
+) -> Result<std::cmp::Ordering, String> {
+    for ((lname, lv), (_, rv)) in l.iter().zip(r.iter()) {
+        let cmp =
+            values_cmp(lv, rv).ok_or_else(|| format!("field `{}` is not orderable", lname))?;
+        if cmp != std::cmp::Ordering::Equal {
+            return Ok(cmp);
+        }
+    }
+    Ok(l.len().cmp(&r.len()))
+}
+
 impl Interpreter {
     fn new() -> Self {
         // RES-1453: share the populated builtin Environment across
@@ -23859,6 +23887,33 @@ impl Interpreter {
             && let Some(eq) = compound_values_equal(&left, &right)
         {
             let result = if operator == "==" { eq } else { !eq };
+            return Ok(Value::Bool(result));
+        }
+
+        // PartialOrd for structs that carry `#[derive(PartialOrd)]`:
+        // compare lexicographically by declaration-order fields.
+        if matches!(operator, "<" | ">" | "<=" | ">=")
+            && let (
+                Value::Struct {
+                    name: ln,
+                    fields: lf,
+                },
+                Value::Struct {
+                    name: rn,
+                    fields: rf,
+                },
+            ) = (&left, &right)
+            && ln == rn
+            && crate::derives::derives_trait(ln.as_str(), "PartialOrd")
+        {
+            let cmp = struct_fields_lexicographic_cmp(lf, rf)?;
+            let result = match operator {
+                "<" => cmp == std::cmp::Ordering::Less,
+                ">" => cmp == std::cmp::Ordering::Greater,
+                "<=" => cmp != std::cmp::Ordering::Greater,
+                ">=" => cmp != std::cmp::Ordering::Less,
+                _ => unreachable!(),
+            };
             return Ok(Value::Bool(result));
         }
 

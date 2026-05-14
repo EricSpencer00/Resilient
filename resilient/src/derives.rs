@@ -5,9 +5,13 @@
 //!
 //! * `Debug` — `to_string` returning a struct-like Rust-style debug
 //!   representation.
-//! * `Eq` — pairwise field equality.
+//! * `Eq` / `PartialEq` — pairwise field equality; enables `==`/`!=`.
+//! * `Ord` / `PartialOrd` — lexicographic field ordering; enables `<`/`>`.
 //! * `Hash` — combine field hashes via the SipHash default.
 //! * `Default` — constructor with primitive defaults.
+//! * `Clone` / `Copy` — value duplication semantics.
+//! * `Display` — human-readable `to_string` with field names.
+//! * `Iterator` / `From` / `Into` — standard conversion traits.
 //!
 //! The actual lowering (synthesizing trait impl AST nodes) is a
 //! follow-up; this module records what was requested so runtime
@@ -28,7 +32,21 @@ pub struct DeriveSet {
 static DERIVES: LazyLock<RwLock<HashMap<String, DeriveSet>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-const SUPPORTED: &[&str] = &["Debug", "Eq", "Hash", "Default", "Clone", "Ord"];
+const SUPPORTED: &[&str] = &[
+    "Debug",
+    "Eq",
+    "Hash",
+    "Default",
+    "Clone",
+    "Ord",
+    "PartialEq",
+    "PartialOrd",
+    "Display",
+    "Iterator",
+    "From",
+    "Into",
+    "Copy",
+];
 
 pub fn collect() -> Vec<DeriveSet> {
     let attrs = crate::feature_attrs::find_kind("derive");
@@ -146,6 +164,46 @@ mod tests {
         );
         let res = check(&Node::Program(vec![]), "test");
         assert!(res.is_err());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn partial_eq_and_partial_ord_accepted() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Point",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "PartialEq, PartialOrd, Display".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "expected ok, got {:?}", res);
+        assert!(derives_trait("Point", "PartialEq"));
+        assert!(derives_trait("Point", "PartialOrd"));
+        assert!(derives_trait("Point", "Display"));
+        assert!(!derives_trait("Point", "Iterator"));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn copy_and_iterator_accepted() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "MyIter",
+            crate::feature_attrs::AttrRecord {
+                name: "derive".into(),
+                args: "Copy, Iterator, From, Into".into(),
+                line: 0,
+            },
+        );
+        let res = check(&Node::Program(vec![]), "test");
+        assert!(res.is_ok(), "expected ok, got {:?}", res);
+        assert!(derives_trait("MyIter", "Copy"));
+        assert!(derives_trait("MyIter", "Iterator"));
         crate::feature_attrs::reset();
     }
 }

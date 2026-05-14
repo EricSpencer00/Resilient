@@ -3932,7 +3932,22 @@ impl TypeChecker {
                             );
                             // RES-340: remember the fn keyword's span so
                             // the rich type-mismatch path can point at
-                            // the declaration.
+                            // the declaration. Reject duplicate fn names
+                            // here — a second `fn foo` silently overwrote
+                            // the first before this guard, making the
+                            // program non-deterministic.
+                            if let Some(prev) = self.fn_decl_spans.get(name) {
+                                return Err(format!(
+                                    "{}:{}:{}: error: duplicate function name `{}` — \
+                                     previously declared at {}:{}",
+                                    self.source_path,
+                                    span.start.line,
+                                    span.start.column,
+                                    name,
+                                    prev.start.line,
+                                    prev.start.column,
+                                ));
+                            }
                             self.fn_decl_spans.insert(name.clone(), *span);
                             // RES-1105 + RES-1106: also register the
                             // function name in `self.env` so identifier
@@ -5966,9 +5981,19 @@ impl TypeChecker {
             // `FieldAccess` / `FieldAssignment` downstream can check
             // field existence and surface typed-field errors
             // statically.
-            Node::StructDecl { name, fields, .. } => {
+            Node::StructDecl {
+                name, fields, span, ..
+            } => {
+                let mut seen_fields: std::collections::HashSet<&str> =
+                    std::collections::HashSet::with_capacity(fields.len());
                 let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
                 for (type_name, field_name) in fields {
+                    if !seen_fields.insert(field_name.as_str()) {
+                        return Err(format!(
+                            "{}:{}:{}: error: duplicate field `{}` in struct `{}`",
+                            self.source_path, span.start.line, span.start.column, field_name, name,
+                        ));
+                    }
                     let ty = self.parse_type_name(type_name)?;
                     resolved.push((field_name.clone(), ty));
                 }
@@ -9603,5 +9628,57 @@ mod scope_and_reachability_tests {
             }",
         )
         .expect("conditional return must not flag subsequent code");
+    }
+}
+
+#[cfg(test)]
+mod duplicate_detection_tests {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected typechecker error")
+    }
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect("unexpected typechecker error");
+    }
+
+    #[test]
+    fn duplicate_fn_name_is_rejected() {
+        let err = check_err("fn foo() {} fn foo() {}");
+        assert!(
+            err.contains("duplicate function name") && err.contains("`foo`"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unique_fn_names_pass() {
+        check_ok("fn foo(int x) -> int { return x; } fn bar(int x) -> int { return x; }");
+    }
+
+    #[test]
+    fn duplicate_struct_field_is_rejected() {
+        let err = check_err("struct Point { int x, int x }");
+        assert!(
+            err.contains("duplicate field") && err.contains("`x`"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unique_struct_fields_pass() {
+        check_ok("struct Point { int x, int y }");
     }
 }
