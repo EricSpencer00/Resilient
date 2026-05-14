@@ -4889,10 +4889,15 @@ impl TypeChecker {
                         };
                         if let Some(cached) = crate::incremental_verify::lookup(name, clause_digest)
                         {
-                            verdict = Some(matches!(
-                                cached,
-                                crate::incremental_verify::ProofResult::Discharged
-                            ));
+                            match cached {
+                                crate::incremental_verify::ProofResult::Discharged => {
+                                    verdict = Some(true);
+                                }
+                                crate::incremental_verify::ProofResult::Failed(cx) => {
+                                    verdict = Some(false);
+                                    decl_counterexample = Some(cx);
+                                }
+                            }
                         } else {
                             // RES-071: capture the SMT-LIB2 certificate
                             // alongside the verdict so the driver can dump

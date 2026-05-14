@@ -79,6 +79,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0017", // variable binding shadows an outer binding of the same name
     "L0018", // function with return type may not return on all paths
     "L0019", // format() argument count does not match template placeholder count
+    "L0020", // function parameter is never used in the body
+    "L0021", // redundant boolean sub-expression (x && x, x || x)
+    "L0022", // else branch after unconditional return is redundant
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -118,6 +121,7 @@ struct LintTriggers {
     has_if_statement: bool,
     has_let_in_nested_block: bool,
     has_format_call: bool,
+    has_if_with_else: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -153,7 +157,12 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             }
         }
         Node::IntegerLiteral { .. } => t.has_integer_literal = true,
-        Node::IfStatement { .. } => t.has_if_statement = true,
+        Node::IfStatement { alternative, .. } => {
+            t.has_if_statement = true;
+            if alternative.is_some() {
+                t.has_if_with_else = true;
+            }
+        }
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -224,6 +233,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_format_call {
         run_l0019_format_arity(program, &mut out);
+    }
+    if t.has_function {
+        run_l0020_unused_parameter(program, &mut out);
+    }
+    if t.has_infix {
+        run_l0021_redundant_bool_subexpr(program, &mut out);
+    }
+    if t.has_if_with_else {
+        run_l0022_needless_else(program, &mut out);
     }
 
     let safety_critical = safety_critical_mode();
@@ -2852,6 +2870,215 @@ fn walk_l0019(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0020: unused function parameter
+// ============================================================
+//
+// For each `fn`, collect parameter names and check whether each
+// appears in the body (or in `requires`/`ensures` clauses).
+// `_`-prefixed params are intentionally silenced by convention.
+// Parameters that appear only in `requires`/`ensures` (pre/post-
+// conditions) are considered used — they constrain the contract
+// even if the body doesn't directly reference them.
+
+fn run_l0020_unused_parameter(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::Function {
+                parameters,
+                body,
+                requires,
+                ensures,
+                span,
+                ..
+            } => {
+                l0020_check_params(parameters, body, requires, ensures, span, out);
+            }
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function {
+                        parameters,
+                        body,
+                        requires,
+                        ensures,
+                        span,
+                        ..
+                    } = method
+                    {
+                        l0020_check_params(parameters, body, requires, ensures, span, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn l0020_check_params(
+    parameters: &[(String, String)],
+    body: &Node,
+    requires: &[Node],
+    ensures: &[Node],
+    fn_span: &Span,
+    out: &mut Vec<Lint>,
+) {
+    if parameters.is_empty() {
+        return;
+    }
+    let mut used: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    collect_identifier_reads_in(body, &mut used);
+    for req in requires {
+        collect_identifier_reads_in(req, &mut used);
+    }
+    for ens in ensures {
+        collect_identifier_reads_in(ens, &mut used);
+    }
+    for (_ty, pname) in parameters {
+        if pname.starts_with('_') {
+            continue;
+        }
+        if !used.contains(pname.as_str()) {
+            out.push(Lint {
+                code: "L0020".into(),
+                severity: Severity::Warning,
+                message: format!("unused parameter `{}` — prefix with `_` to silence", pname),
+                line: fn_span.start.line as u32,
+                column: fn_span.start.column as u32,
+            });
+        }
+    }
+}
+
+// ============================================================
+// L0021: redundant boolean sub-expression (x && x, x || x)
+// ============================================================
+//
+// Detects infix `&&` or `||` where both operands are structurally
+// identical (same identifier or same literal). The always-true
+// tautology `x || x` and always-redundant `x && x` are bugs or
+// dead code. This extends L0003 (which catches `x == x`) to
+// logical operators.
+
+fn run_l0021_redundant_bool_subexpr(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0021(program, out);
+}
+
+fn walk_l0021(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
+        && (operator == "&&" || operator == "||")
+        && nodes_structurally_equal(left, right)
+    {
+        out.push(Lint {
+            code: "L0021".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "redundant sub-expression: both sides of `{}` are identical",
+                operator
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0021(child, out));
+}
+
+/// Shallow structural equality for L0021.
+/// Two nodes are equal if they are:
+/// - The same `Identifier` (same name)
+/// - The same `IntegerLiteral` / `FloatLiteral` / `BooleanLiteral`
+/// - The same `StringLiteral`
+/// - The same `PrefixExpression` with equal operands
+/// - The same `InfixExpression` with equal operands
+fn nodes_structurally_equal(a: &Node, b: &Node) -> bool {
+    match (a, b) {
+        (Node::Identifier { name: na, .. }, Node::Identifier { name: nb, .. }) => na == nb,
+        (Node::IntegerLiteral { value: va, .. }, Node::IntegerLiteral { value: vb, .. }) => {
+            va == vb
+        }
+        (Node::FloatLiteral { value: va, .. }, Node::FloatLiteral { value: vb, .. }) => {
+            va.to_bits() == vb.to_bits()
+        }
+        (Node::BooleanLiteral { value: va, .. }, Node::BooleanLiteral { value: vb, .. }) => {
+            va == vb
+        }
+        (Node::StringLiteral { value: va, .. }, Node::StringLiteral { value: vb, .. }) => va == vb,
+        (
+            Node::PrefixExpression {
+                operator: oa,
+                right: ra,
+                ..
+            },
+            Node::PrefixExpression {
+                operator: ob,
+                right: rb,
+                ..
+            },
+        ) => oa == ob && nodes_structurally_equal(ra, rb),
+        (
+            Node::InfixExpression {
+                left: la,
+                operator: oa,
+                right: ra,
+                ..
+            },
+            Node::InfixExpression {
+                left: lb,
+                operator: ob,
+                right: rb,
+                ..
+            },
+        ) => oa == ob && nodes_structurally_equal(la, lb) && nodes_structurally_equal(ra, rb),
+        _ => false,
+    }
+}
+
+// ============================================================
+// L0022: needless else after unconditional return
+// ============================================================
+//
+// Detects `if cond { return x; } else { ... }` where the
+// consequence block always returns. The `else` keyword is
+// redundant because control flow after the if-block already
+// implies the condition was false. Removing the `else` and
+// de-indenting the body is cleaner and avoids confusion.
+
+fn run_l0022_needless_else(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0022(program, out);
+}
+
+fn walk_l0022(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence,
+        alternative: Some(alt),
+        span,
+        ..
+    } = node
+    {
+        if l0018_all_paths_return(consequence) {
+            out.push(Lint {
+                code: "L0022".into(),
+                severity: Severity::Warning,
+                message: "else block is redundant after a block that always returns; \
+                          remove the `else` and de-indent the body"
+                    .into(),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+        // Still recurse into the alternative since nested ifs can also trigger.
+        walk_l0022(alt, out);
+    }
+    recurse_children(node, &mut |child| walk_l0022(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -4079,6 +4306,105 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0019".to_string()),
             "L0019 must not fire for template with no placeholders and empty array"
+        );
+    }
+
+    // ---------- L0020: unused function parameter ----------
+
+    #[test]
+    fn l0020_fires_on_unused_parameter() {
+        let src = "fn f(int a, int b) -> int { return a; }\nf(1, 2);\n";
+        assert!(
+            codes(src).contains(&"L0020".to_string()),
+            "L0020 must fire when parameter `b` is never used"
+        );
+    }
+
+    #[test]
+    fn l0020_silent_when_all_params_used() {
+        let src = "// source: test\nfn f(int a, int b) -> int requires a > 0 && b > 0 { return a + b; }\nf(1, 2);\n";
+        assert!(
+            !codes(src).contains(&"L0020".to_string()),
+            "L0020 must not fire when all parameters are used"
+        );
+    }
+
+    #[test]
+    fn l0020_silent_for_underscore_prefix() {
+        let src = "// source: test\nfn f(int a, int _unused) -> int requires a > 0 { return a; }\nf(1, 2);\n";
+        assert!(
+            !codes(src).contains(&"L0020".to_string()),
+            "L0020 must not fire for `_`-prefixed parameters"
+        );
+    }
+
+    #[test]
+    fn l0020_silent_when_param_used_only_in_requires() {
+        // Parameter only in `requires` clause counts as used.
+        let src =
+            "// source: test\nfn f(int a, int b) -> int requires b > 0 { return a; }\nf(1, 2);\n";
+        assert!(
+            !codes(src).contains(&"L0020".to_string()),
+            "L0020 must not fire when parameter used in requires clause"
+        );
+    }
+
+    // ---------- L0021: redundant boolean sub-expression ----------
+
+    #[test]
+    fn l0021_fires_on_x_and_x() {
+        let src = "fn f(bool x) -> bool { return x && x; }\nf(true);\n";
+        assert!(
+            codes(src).contains(&"L0021".to_string()),
+            "L0021 must fire for `x && x`"
+        );
+    }
+
+    #[test]
+    fn l0021_fires_on_x_or_x() {
+        let src = "fn f(bool x) -> bool { return x || x; }\nf(true);\n";
+        assert!(
+            codes(src).contains(&"L0021".to_string()),
+            "L0021 must fire for `x || x`"
+        );
+    }
+
+    #[test]
+    fn l0021_silent_for_distinct_operands() {
+        let src = "// source: test\nfn f(bool x, bool y) -> bool requires true { return x && y; }\nf(true, false);\n";
+        assert!(
+            !codes(src).contains(&"L0021".to_string()),
+            "L0021 must not fire when operands differ"
+        );
+    }
+
+    // ---------- L0022: needless else after return ----------
+
+    #[test]
+    fn l0022_fires_on_else_after_return() {
+        let src = "fn f(int x) -> int { if x > 0 { return 1; } else { return 0; } }\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0022".to_string()),
+            "L0022 must fire when if-consequence always returns and else is present"
+        );
+    }
+
+    #[test]
+    fn l0022_silent_when_consequence_may_fall_through() {
+        // Consequence doesn't always return (loop without return).
+        let src = "// source: test\nfn f(int x) -> int requires x > 0 { if x > 0 { let _y = 1; } else { return 0; } return 1; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0022".to_string()),
+            "L0022 must not fire when consequence doesn't always return"
+        );
+    }
+
+    #[test]
+    fn l0022_silent_when_no_else() {
+        let src = "// source: test\nfn f(int x) -> int requires x > 0 { if x > 0 { return 1; } return 0; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0022".to_string()),
+            "L0022 must not fire when there is no else branch"
         );
     }
 }
