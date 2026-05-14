@@ -46,6 +46,7 @@ enum EdgeKind {
 #[derive(Debug)]
 struct ControlFlowGraph {
     /// All nodes in the graph, indexed by id
+    #[allow(dead_code)]
     nodes: HashMap<usize, CfgNode>,
     /// Entry node ID
     #[allow(dead_code)]
@@ -53,106 +54,248 @@ struct ControlFlowGraph {
     /// Exit node ID
     #[allow(dead_code)]
     exit: usize,
-    /// Instruction boundary markers (line numbers where prefixes begin)
-    prefix_boundaries: Vec<(usize, Span)>, // (node_id, span)
+    /// Instruction boundary markers — one per statement-level node,
+    /// ordered by control-flow position.
+    prefix_boundaries: Vec<(usize, Span)>,
+}
+
+/// Builder state threaded through the recursive CFG construction.
+struct Builder {
+    nodes: HashMap<usize, CfgNode>,
+    boundaries: Vec<(usize, Span)>,
+    next_id: usize,
+    exit_id: usize,
+}
+
+impl Builder {
+    fn new_node(&mut self, node: Option<Box<Node>>, span: Span) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.nodes.insert(
+            id,
+            CfgNode {
+                id,
+                node,
+                span,
+                successors: Vec::new(),
+            },
+        );
+        id
+    }
+
+    fn add_edge(&mut self, from: usize, to: usize, kind: EdgeKind) {
+        if let Some(n) = self.nodes.get_mut(&from) {
+            n.successors.push((to, kind));
+        }
+    }
+
+    /// Build a linear chain of nodes from a list of statements.
+    /// Returns the id of the last node in the chain (or `successor` if
+    /// the list is empty) so callers can connect the continuation.
+    ///
+    /// Each statement node is recorded as a prefix boundary.
+    fn build_stmts(&mut self, stmts: &[Node], successor: usize) -> usize {
+        if stmts.is_empty() {
+            return successor;
+        }
+        // Process in reverse so each node knows its successor.
+        let mut next = successor;
+        for stmt in stmts.iter().rev() {
+            next = self.build_node(stmt, next);
+        }
+        next
+    }
+
+    /// Build a CFG sub-graph for a single AST node, connecting its last
+    /// outgoing edge to `successor`. Returns the id of the node that is
+    /// entered first when control reaches this sub-graph.
+    fn build_node(&mut self, node: &Node, successor: usize) -> usize {
+        let span = node_span(node);
+
+        match node {
+            Node::Block { stmts, .. } => {
+                // Build the block's statements as a chain.
+                self.build_stmts(stmts.as_slice(), successor)
+            }
+
+            Node::IfStatement {
+                condition,
+                consequence,
+                alternative,
+                ..
+            } => {
+                // consequence branch
+                let cons_entry = self.build_node(consequence, successor);
+                // alternative branch (falls through to successor if absent)
+                let alt_entry = match alternative {
+                    Some(alt) => self.build_node(alt, successor),
+                    None => successor,
+                };
+                // condition node — taken (Branch) goes to consequence,
+                // not-taken (Fallthrough) goes to alternative / successor.
+                let cond_id = self.new_node(Some(Box::new(*condition.clone())), span);
+                self.boundaries.push((cond_id, span));
+                self.add_edge(cond_id, cons_entry, EdgeKind::Branch);
+                self.add_edge(cond_id, alt_entry, EdgeKind::Fallthrough);
+                cond_id
+            }
+
+            Node::WhileStatement {
+                condition, body, ..
+            } => {
+                // Header node evaluates the condition.
+                let header = self.new_node(Some(Box::new(*condition.clone())), span);
+                self.boundaries.push((header, span));
+                // Body: its last node loops back to the header.
+                let body_entry = self.build_node(body, header);
+                // header → body (Branch) or falls through to successor
+                // when condition is false.
+                self.add_edge(header, body_entry, EdgeKind::Branch);
+                self.add_edge(header, successor, EdgeKind::Fallthrough);
+                // Also mark the body→header back edge as Loop.
+                // (The body's last successor already points to `header`
+                // via the build_node call above.)
+                header
+            }
+
+            Node::ForInStatement { iterable, body, .. } => {
+                // Treat like while: iterable evaluation + body with back edge.
+                let header = self.new_node(Some(Box::new(*iterable.clone())), span);
+                self.boundaries.push((header, span));
+                let body_entry = self.build_node(body, header);
+                self.add_edge(header, body_entry, EdgeKind::Branch);
+                self.add_edge(header, successor, EdgeKind::Fallthrough);
+                header
+            }
+
+            Node::ReturnStatement { .. } => {
+                // Return always transfers to the exit; the normal
+                // `successor` is unreachable from here.
+                let ret_id = self.new_node(Some(Box::new(node.clone())), span);
+                self.boundaries.push((ret_id, span));
+                self.add_edge(ret_id, self.exit_id, EdgeKind::Exception);
+                ret_id
+            }
+
+            Node::Match { arms, .. } => {
+                // Each arm is an independent branch from the match node.
+                // Arms are (Pattern, Option<guard>, body_Node) tuples.
+                let match_id = self.new_node(Some(Box::new(node.clone())), span);
+                self.boundaries.push((match_id, span));
+                for arm in arms {
+                    let arm_entry = self.build_node(&arm.2, successor);
+                    self.add_edge(match_id, arm_entry, EdgeKind::Branch);
+                }
+                // Fallthrough when no arm matches (should not happen in
+                // exhaustive match, but keeps the graph well-formed).
+                self.add_edge(match_id, successor, EdgeKind::Fallthrough);
+                match_id
+            }
+
+            // Any other statement (let, expr-stmt, assignment, etc.)
+            // is a single basic-block node.
+            _ => {
+                let id = self.new_node(Some(Box::new(node.clone())), span);
+                self.boundaries.push((id, span));
+                self.add_edge(id, successor, EdgeKind::Fallthrough);
+                id
+            }
+        }
+    }
+}
+
+/// Extract the span from an AST node (best-effort).
+fn node_span(node: &Node) -> Span {
+    match node {
+        Node::Block { span, .. }
+        | Node::IfStatement { span, .. }
+        | Node::WhileStatement { span, .. }
+        | Node::ForInStatement { span, .. }
+        | Node::ReturnStatement { span, .. }
+        | Node::LetStatement { span, .. }
+        | Node::ExpressionStatement { span, .. }
+        | Node::Function { span, .. }
+        | Node::Match { span, .. } => *span,
+        _ => Span::default(),
+    }
 }
 
 impl ControlFlowGraph {
-    /// Build a CFG from a function body
+    /// Build a proper statement-level CFG from a function body.
+    ///
+    /// Each statement, if-condition, loop-header, and return becomes its own
+    /// node and prefix boundary.  This replaces the previous MVP that treated
+    /// the entire body as one opaque node, giving Phase 2 BMC verification
+    /// per-instruction granularity when it is implemented.
     fn from_body(body: &Node) -> Self {
-        let mut graph = ControlFlowGraph {
+        // Reserve id=0 for entry, id=1 for exit.
+        let mut b = Builder {
             nodes: HashMap::new(),
-            entry: 0,
-            exit: 1,
-            prefix_boundaries: Vec::new(),
+            boundaries: Vec::new(),
+            next_id: 2,
+            exit_id: 1,
         };
 
-        // Create entry and exit nodes
-        graph.nodes.insert(
+        // Synthetic entry node
+        b.nodes.insert(
             0,
             CfgNode {
                 id: 0,
                 node: None,
                 span: Span::default(),
-                successors: vec![(1, EdgeKind::Fallthrough)],
+                successors: Vec::new(),
             },
         );
-        graph.nodes.insert(
+        // Synthetic exit node
+        b.nodes.insert(
             1,
             CfgNode {
                 id: 1,
                 node: None,
                 span: Span::default(),
-                successors: vec![],
+                successors: Vec::new(),
             },
         );
 
-        // Extract CFG structure from body
-        // RES-392b Phase 1: Extract basic blocks and control-flow edges
-        let mut next_node_id = 2;
-        let body_span = match body {
-            Node::Block { span, .. } => *span,
-            _ => Span::default(),
-        };
+        // Build the body sub-graph. The continuation of the entire body is
+        // the exit node (normal fall-off).
+        let body_entry = b.build_node(body, 1 /* exit */);
 
-        // For MVP: treat body as a single basic block
-        // TODO: RES-392b Phase 1 - implement full CFG extraction for:
-        //   - If/else branches
-        //   - Loop back edges (while, for)
-        //   - Match arms
-        //   - Return/early exit edges
-        let body_node = CfgNode {
-            id: next_node_id,
-            node: Some(Box::new(body.clone())),
-            span: body_span,
-            successors: vec![(1, EdgeKind::Fallthrough)],
-        };
+        // Wire entry → body.
+        b.nodes
+            .get_mut(&0)
+            .expect("entry always present")
+            .successors
+            .push((body_entry, EdgeKind::Fallthrough));
 
-        graph.nodes.insert(next_node_id, body_node);
-        next_node_id += 1;
-
-        // Connect entry to body
-        if let Some(entry_node) = graph.nodes.get_mut(&0) {
-            entry_node.successors = vec![(next_node_id - 1, EdgeKind::Fallthrough)];
+        ControlFlowGraph {
+            nodes: b.nodes,
+            entry: 0,
+            exit: 1,
+            prefix_boundaries: b.boundaries,
         }
-
-        // Mark prefix boundaries (instruction entry points)
-        // Each statement in the body becomes a potential crash recovery point
-        graph.prefix_boundaries.push((next_node_id - 1, body_span));
-
-        graph
     }
 
-    /// Enumerate all instruction prefixes in the CFG
-    /// Returns: list of (prefix_id, reachable_state_at_boundary, span)
+    /// Enumerate all instruction-boundary prefixes in the CFG.
     fn enumerate_prefixes(&self) -> Vec<(usize, Span)> {
         self.prefix_boundaries.clone()
     }
 }
 
 /// Generate Z3 SMT-LIB2 obligation for per-prefix recovery invariant.
-/// Returns the formatted obligation string for solver submission.
 ///
-/// RES-392b Phase 2: Z3 integration stub.
-fn _generate_prefix_obligation(
+/// RES-392b Phase 2 — not yet implemented. Returns an empty string so
+/// the Phase 3 loop can iterate without changes when Phase 2 lands.
+#[allow(dead_code)]
+fn generate_prefix_obligation(
     prefix_id: usize,
     _init_state: &str,
     recovers_clause: &Node,
 ) -> String {
-    // TODO: RES-392b Phase 2 - emit Z3 obligation per prefix
-    // Current stub: return empty obligation (all prefixes recover)
-    //
-    // Full implementation:
-    // let clause_z3 = z3_encode_expr(recovers_clause);
-    // let obligation = format!(
-    //     "(push)\n\
-    //      (assert (not (=> init_{} {})))\n\
-    //      (check-sat)",
-    //     prefix_id,
-    //     clause_z3
-    // );
-    // obligation
-
+    // TODO: RES-392b Phase 2 — emit:
+    //   (push)
+    //   (assert (not (=> init_<prefix_id> <recovers_clause_z3>)))
+    //   (check-sat)
     let _ = (prefix_id, recovers_clause);
     String::new()
 }
@@ -160,47 +303,90 @@ fn _generate_prefix_obligation(
 /// Check crash-recovery guarantees for a function's recovers_to clause
 /// via per-prefix bounded model checking.
 ///
-/// Returns Ok(()) if all prefixes are verified to recover.
-/// Returns Err(msg) with diagnostic pointing to a failing prefix.
+/// Phase 1 now produces a proper statement-level CFG with per-instruction
+/// boundaries for if/else, while, for, return, and match.  Phase 2/3 Z3
+/// integration is still pending (always returns Ok); the infrastructure is
+/// in place for when the solver is wired up.
 pub(crate) fn check_recovers_to_bmc(
     _fn_name: &str,
     fn_body: &Node,
     _recovers_clause: &Node,
 ) -> Result<(), String> {
-    // RES-392b Phase 1: CFG extraction
     let cfg = ControlFlowGraph::from_body(fn_body);
-
-    // RES-392b Phase 2: Per-prefix enumeration and Z3 verification
     let prefixes = cfg.enumerate_prefixes();
 
     for (prefix_id, _span) in prefixes {
-        // Placeholder for Z3 obligation generation
-        let _obligation = _generate_prefix_obligation(prefix_id, "init_state", _recovers_clause);
-
-        // TODO: RES-392b Phase 2 - invoke Z3 solver
-        // For now, assume all prefixes recover (stub)
-        //
-        // if z3_solve(&obligation).is_sat() {
-        //     return Err(format!(
-        //         "{}:{}: no recovery guarantee after instruction {} — add to init or narrow recovers_to",
-        //         fn_name, span.line, span.column
-        //     ));
-        // }
+        let _obligation = generate_prefix_obligation(prefix_id, "init_state", _recovers_clause);
+        // TODO: RES-392b Phase 2 — invoke Z3 solver on `_obligation`.
+        // On SAT: return Err with the failing prefix span.
     }
 
-    // RES-392b Phase 3: All prefixes verified
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_cfg_construction() {
-        // TODO: RES-392b - test CFG extraction on simple function bodies
+    use super::*;
+    use crate::parse;
+
+    fn body_of(src: &str) -> Node {
+        let (prog, _) = parse(src);
+        match prog {
+            Node::Program(stmts) => match &stmts[0].node {
+                Node::Function { body, .. } => *body.clone(),
+                other => panic!("expected Function, got {:?}", other),
+            },
+            other => panic!("expected Program, got {:?}", other),
+        }
     }
 
     #[test]
-    fn test_prefix_enumeration() {
-        // TODO: RES-392b - test that all instruction boundaries are enumerated
+    fn linear_body_produces_one_boundary_per_statement() {
+        let body = body_of("fn f(int x) -> int { let a = 1; let b = 2; return a; }");
+        let cfg = ControlFlowGraph::from_body(&body);
+        let prefixes = cfg.enumerate_prefixes();
+        // Three statements → at least 3 boundaries.
+        assert!(
+            prefixes.len() >= 3,
+            "expected ≥3 boundaries, got {}",
+            prefixes.len()
+        );
+    }
+
+    #[test]
+    fn if_else_produces_extra_boundaries() {
+        let body = body_of("fn f(int x) -> int { if x > 0 { return 1; } else { return 0; } }");
+        let cfg = ControlFlowGraph::from_body(&body);
+        // Condition node + two return nodes = at least 3 boundaries.
+        let prefixes = cfg.enumerate_prefixes();
+        assert!(
+            prefixes.len() >= 3,
+            "if/else must produce ≥3 boundaries, got {}",
+            prefixes.len()
+        );
+    }
+
+    #[test]
+    fn while_loop_produces_header_boundary() {
+        let body = body_of("fn f(int x) -> int { while x > 0 { let _y = x; } return x; }");
+        let cfg = ControlFlowGraph::from_body(&body);
+        let prefixes = cfg.enumerate_prefixes();
+        // Header + let + return = at least 3 boundaries.
+        assert!(
+            prefixes.len() >= 3,
+            "while loop must produce ≥3 boundaries, got {}",
+            prefixes.len()
+        );
+    }
+
+    #[test]
+    fn bmc_check_returns_ok_for_simple_fn() {
+        let body = body_of("fn f(int x) -> int { return x; }");
+        let clause = Node::BooleanLiteral {
+            value: true,
+            span: Span::default(),
+        };
+        let result = check_recovers_to_bmc("f", &body, &clause);
+        assert!(result.is_ok(), "stub must return Ok: {:?}", result);
     }
 }
