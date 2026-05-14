@@ -78,6 +78,7 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0016", // constant boolean condition in `if` (always-true or always-false)
     "L0017", // variable binding shadows an outer binding of the same name
     "L0018", // function with return type may not return on all paths
+    "L0019", // format() argument count does not match template placeholder count
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -116,6 +117,7 @@ struct LintTriggers {
     has_integer_literal: bool,
     has_if_statement: bool,
     has_let_in_nested_block: bool,
+    has_format_call: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -144,7 +146,12 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_let_in_nested_block = true;
             }
         }
-        Node::CallExpression { .. } => t.has_call = true,
+        Node::CallExpression { function, .. } => {
+            t.has_call = true;
+            if matches!(function.as_ref(), Node::Identifier { name, .. } if name == "format") {
+                t.has_format_call = true;
+            }
+        }
         Node::IntegerLiteral { .. } => t.has_integer_literal = true,
         Node::IfStatement { .. } => t.has_if_statement = true,
         _ => {}
@@ -214,6 +221,9 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_function {
         run_l0018_missing_return(program, &mut out);
+    }
+    if t.has_format_call {
+        run_l0019_format_arity(program, &mut out);
     }
 
     let safety_critical = safety_critical_mode();
@@ -2738,6 +2748,110 @@ fn l0018_all_paths_return(node: &Node) -> bool {
 }
 
 // ============================================================
+// L0019: format() argument count mismatch
+// ============================================================
+//
+// `format(template, args_array)` takes exactly two arguments.
+// Fires when:
+//   (a) The call has != 2 arguments, OR
+//   (b) The template is a static string (no runtime interpolation)
+//       and args is an array literal, and the placeholder count
+//       doesn't match the array length.
+//
+// Notes on AST shape:
+//   - A Resilient template like `"\{} \{}"` stores `\{` as an
+//     "unknown escape" in the lexer; string_interp's parse_parts
+//     converts `\{` → `{`, so the InterpolatedString's Literal
+//     parts already contain `{}` as the placeholder text.
+//   - A template with no braces (e.g. `"hello"`) is a plain
+//     StringLiteral; parse_template sees no placeholders.
+//   - Templates with runtime interpolation (`"{expr}"`) have
+//     Expr parts — arity is not statically checkable.
+
+fn run_l0019_format_arity(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0019(program, out);
+}
+
+/// Extract the concatenated literal text from a template node, if it
+/// has no runtime-interpolation `Expr` parts.
+fn l0019_literal_template(node: &Node) -> Option<String> {
+    match node {
+        Node::StringLiteral { value, .. } => Some(value.clone()),
+        Node::InterpolatedString { parts, .. } => {
+            if parts
+                .iter()
+                .all(|p| matches!(p, crate::string_interp::StringPart::Literal(_)))
+            {
+                Some(
+                    parts
+                        .iter()
+                        .map(|p| match p {
+                            crate::string_interp::StringPart::Literal(s) => s.as_str(),
+                            _ => "",
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn walk_l0019(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::CallExpression {
+        function,
+        arguments,
+        span,
+    } = node
+        && let Node::Identifier { name, .. } = function.as_ref()
+        && name == "format"
+    {
+        if arguments.len() != 2 {
+            out.push(Lint {
+                code: "L0019".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "format() requires exactly 2 arguments (template, args_array) but {} {} supplied \
+                     — suppress with `// resilient: allow L0019`",
+                    arguments.len(),
+                    if arguments.len() == 1 { "was" } else { "were" },
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        } else if let Some(tmpl) = l0019_literal_template(&arguments[0])
+            && let Node::ArrayLiteral { items, .. } = &arguments[1]
+            && let Ok(segments) = crate::format_builtin::parse_template(&tmpl)
+        {
+            let placeholders = segments
+                .iter()
+                .filter(|s| matches!(s, crate::format_builtin::FormatSegment::Placeholder(_)))
+                .count();
+            let array_len = items.len();
+            if placeholders != array_len {
+                out.push(Lint {
+                    code: "L0019".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "format() template has {} placeholder{} but args array has {} element{} \
+                         — counts must match; suppress with `// resilient: allow L0019`",
+                        placeholders,
+                        if placeholders == 1 { "" } else { "s" },
+                        array_len,
+                        if array_len == 1 { "" } else { "s" },
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0019(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -3910,6 +4024,61 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0018".to_string()),
             "L0018 must not fire when body ends with an unconditional return"
+        );
+    }
+
+    // ---- L0019: format() arity mismatch ----
+
+    #[test]
+    fn l0019_fires_on_missing_args_array() {
+        // format() called with only 1 argument (missing args array).
+        let src = "fn f() { let _s = format(\"hello\"); }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0019".to_string()),
+            "L0019 must fire when format() has only 1 argument; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0019_fires_on_too_many_toplevel_args() {
+        // format() called with 3 arguments instead of 2.
+        let src = "fn f() { let _s = format(\"hello\", [], []); }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0019".to_string()),
+            "L0019 must fire when format() has 3+ arguments"
+        );
+    }
+
+    #[test]
+    fn l0019_fires_on_placeholder_array_mismatch() {
+        // Template `\{} \{}` has 2 placeholders but array has 1 element.
+        // Rust string "\{} \{}" encodes the Resilient source `\{} \{}`.
+        let src = "fn f() { let _s = format(\"\\{} \\{}\", [1]); }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0019".to_string()),
+            "L0019 must fire when placeholder count != array length; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0019_silent_on_exact_placeholder_match() {
+        // Template `\{}` has 1 placeholder and array has 1 element.
+        let src = "fn f() { let _s = format(\"\\{}\", [42]); }\nf();\n";
+        assert!(
+            !codes(src).contains(&"L0019".to_string()),
+            "L0019 must not fire when placeholder count matches array length"
+        );
+    }
+
+    #[test]
+    fn l0019_silent_for_no_placeholders_empty_array() {
+        // Plain string with no placeholders, empty args array — clean.
+        let src = "fn f() { let _s = format(\"hello world\", []); }\nf();\n";
+        assert!(
+            !codes(src).contains(&"L0019".to_string()),
+            "L0019 must not fire for template with no placeholders and empty array"
         );
     }
 }
