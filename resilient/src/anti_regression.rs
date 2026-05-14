@@ -54,6 +54,12 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if specs.is_empty() {
         return Ok(());
     }
+    // RES-1529: skip the expensive fingerprint walk when no spec has a
+    // locked digest — the walk is only useful when at least one `#[stable]`
+    // attribute carries a `behavior = "..."` argument.
+    if !specs.iter().any(|s| s.locked_digest.is_some()) {
+        return Ok(());
+    }
     let fps = crate::behavioral_fingerprint::fingerprint_program(program);
     for s in &specs {
         if let Some(locked) = s.locked_digest {

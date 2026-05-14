@@ -344,7 +344,7 @@ fn tool_verify(args: &Value) -> Result<String, String> {
         let mut tc = crate::typechecker::TypeChecker::new();
         match tc.check_program_with_source(&program, "<mcp>") {
             Ok(_) => {
-                let provable = tc.fully_provable_fns();
+                let provable = tc.stats.fully_provable_fns();
                 if provable.is_empty() {
                     Ok(
                         "OK — no contracts to verify (no requires/ensures clauses found)."

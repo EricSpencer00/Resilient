@@ -54,6 +54,13 @@ pub fn check_program(program: &Node) -> Vec<String> {
         .map(|(k, _)| k.as_str())
         .collect();
 
+    // RES-1527: skip the program walk when no public fn exists — the
+    // leak diagnostic only fires inside public-tagged fn bodies, so
+    // without any public fn the walk produces nothing.
+    if public_fns.is_empty() {
+        return errors;
+    }
+
     let Node::Program(stmts) = program else {
         return errors;
     };

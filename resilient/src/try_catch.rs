@@ -185,14 +185,13 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     if !has_try_catch {
         return Ok(());
     }
-    // Collect the table of each fn's declared `fails` set so we can
-    // resolve call sites inside try bodies without round-tripping
-    // through the main typechecker.
-    let mut fn_fails: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
+    // RES-1525: borrow fn name + fails slice into fn_fails instead of
+    // cloning. Both only live for the check call and the AST outlives it.
+    // For N functions this saves N String clones + N Vec<String> clones.
+    let mut fn_fails: std::collections::HashMap<&str, &[String]> = std::collections::HashMap::new();
     for stmt in statements {
         if let Node::Function { name, fails, .. } = &stmt.node {
-            fn_fails.insert(name.clone(), fails.clone());
+            fn_fails.insert(name.as_str(), fails.as_slice());
         }
     }
     for stmt in statements {
@@ -206,7 +205,7 @@ pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
 /// Walk an AST subtree and validate every `TryCatch` encountered.
 fn walk(
     node: &Node,
-    fn_fails: &std::collections::HashMap<String, Vec<String>>,
+    fn_fails: &std::collections::HashMap<&str, &[String]>,
     source_path: &str,
 ) -> Result<(), String> {
     match node {
@@ -271,7 +270,7 @@ fn walk(
 /// MVP, so a `catch` arm covering them would always be spurious.
 fn collect_emitted_variants(
     body: &[Node],
-    fn_fails: &std::collections::HashMap<String, Vec<String>>,
+    fn_fails: &std::collections::HashMap<&str, &[String]>,
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for stmt in body {
@@ -282,7 +281,7 @@ fn collect_emitted_variants(
 
 fn collect_from_node(
     node: &Node,
-    fn_fails: &std::collections::HashMap<String, Vec<String>>,
+    fn_fails: &std::collections::HashMap<&str, &[String]>,
     out: &mut Vec<String>,
 ) {
     match node {
@@ -292,7 +291,7 @@ fn collect_from_node(
             ..
         } => {
             if let Node::Identifier { name, .. } = function.as_ref()
-                && let Some(variants) = fn_fails.get(name)
+                && let Some(variants) = fn_fails.get(name.as_str()).copied()
             {
                 for v in variants {
                     if !out.iter().any(|x| x == v) {
