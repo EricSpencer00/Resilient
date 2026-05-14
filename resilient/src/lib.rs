@@ -106,6 +106,10 @@ mod inline;
 mod jit_backend;
 #[cfg(feature = "lsp")]
 mod lsp_server;
+// MCP server: exposes the Resilient compiler as MCP tools over stdio.
+// CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
+#[cfg(not(target_arch = "wasm32"))]
+mod mcp_server;
 pub mod output_sink;
 mod peephole;
 mod span;
@@ -27730,6 +27734,10 @@ COMMON FLAGS:\n\
         --emit-live-log PATH     NDJSON log of live-block retries (RES-371)\n\
         --examples-dir DIR       REPL examples directory\n\
         --lsp                    Run the LSP server on stdio\n\
+        --mcp                    Run the MCP server on stdio\n\
+                                 Exposes compiler tools (parse/typecheck/run/\n\
+                                 lint/format/verify) to AI assistants via the\n\
+                                 Model Context Protocol (2024-11-05)\n\
         --no-cache               Disable the incremental compilation cache\n\
                                  for this run (RES-355)\n\
         --feature NAME           Activate a `#[cfg(feature=\"NAME\")]` flag\n\
@@ -27935,6 +27943,7 @@ pub fn run_cli() {
     let mut use_vm = false;
     let mut use_jit = false;
     let mut lsp_mode = false;
+    let mut mcp_mode = false;
     // RES-112: --dump-tokens prints the lexer output and exits, so
     // lexer regressions are inspectable without editing source.
     let mut dump_tokens = false;
@@ -28095,6 +28104,11 @@ pub fn run_cli() {
                 // functional when built with `--features lsp`; the
                 // non-feature path prints a helpful message and exits.
                 lsp_mode = true;
+            } else if arg == "--mcp" {
+                // MCP server: expose compiler tools over Model Context
+                // Protocol (NDJSON JSON-RPC 2.0 on stdio). Always
+                // available on native builds; not available on wasm32.
+                mcp_mode = true;
             } else if arg == "--dump-tokens" {
                 // RES-112: print the lexer's token stream and exit.
                 // Accepts both the hand-rolled scanner (default) and
@@ -28675,6 +28689,22 @@ pub fn run_cli() {
             eprintln!(
                 "--lsp requires the `lsp` feature. Rebuild with:\n  cargo build --features lsp"
             );
+            std::process::exit(1);
+        }
+    }
+
+    // MCP mode: serve the Model Context Protocol on stdio.
+    // Always available on native builds (no feature gate required —
+    // the server only uses serde_json which is already an unconditional dep).
+    if mcp_mode {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            mcp_server::run();
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            eprintln!("--mcp is not available on wasm32 builds.");
             std::process::exit(1);
         }
     }
