@@ -27357,10 +27357,13 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
     let mut deny: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut allow: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut safety_critical = false;
+    let mut emit_diagnostics_json = false;
     let mut i = 2;
     while i < args.len() {
         let a = &args[i];
-        if a == "--safety-critical" {
+        if a == "--emit-diagnostics-json" {
+            emit_diagnostics_json = true;
+        } else if a == "--safety-critical" {
             safety_critical = true;
         } else if a == "--deny" {
             i += 1;
@@ -27472,15 +27475,39 @@ fn dispatch_lint_subcommand(args: &[String]) -> Option<i32> {
 
     let mut any_warn = false;
     let mut any_error = false;
+    if emit_diagnostics_json {
+        // RES-emit-diag-json: machine-readable JSON array for IDE consumers.
+        let path_str = path.to_string_lossy();
+        let json_diags: Vec<serde_json::Value> = lints
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "severity": l.severity.to_string(),
+                    "code": l.code,
+                    "line": l.line,
+                    "column": l.column,
+                    "message": l.message,
+                    "file": path_str.as_ref(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+        );
+    } else {
+        for l in &lints {
+            println!("{}", lint::format_lint(l, path.to_string_lossy().as_ref()));
+        }
+        if lints.is_empty() {
+            println!("\x1B[32mlint: no diagnostics\x1B[0m");
+        }
+    }
     for l in &lints {
-        println!("{}", lint::format_lint(l, path.to_string_lossy().as_ref()));
         match l.severity {
             lint::Severity::Warning => any_warn = true,
             lint::Severity::Error => any_error = true,
         }
-    }
-    if lints.is_empty() {
-        println!("\x1B[32mlint: no diagnostics\x1B[0m");
     }
 
     if any_error {

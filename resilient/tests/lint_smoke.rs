@@ -394,3 +394,81 @@ fn lint_l0016_silent_for_variable_condition() {
     );
     let _ = std::fs::remove_file(&src);
 }
+
+// ---------- --emit-diagnostics-json flag ----------
+
+#[test]
+fn lint_emit_diagnostics_json_produces_valid_json_array() {
+    let src = tmp_file(
+        "json_output",
+        "fn f(int a) {\n    let unused = 42;\n    return a;\n}\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .arg("--emit-diagnostics-json")
+        .output()
+        .expect("spawn lint --emit-diagnostics-json");
+    // Should exit 1 (warning) or 0; not 2 (error) for basic warnings.
+    assert_ne!(
+        out.status.code(),
+        Some(2),
+        "expected non-error exit, got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Output must be a valid JSON array.
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
+    assert!(parsed.is_ok(), "expected valid JSON array, got: {stdout}");
+    let arr = parsed.unwrap();
+    assert!(
+        arr.is_array(),
+        "expected JSON array at top level, got: {stdout}"
+    );
+    // Each element must have severity, code, line, column, message, file fields.
+    for diag in arr.as_array().unwrap() {
+        assert!(
+            diag.get("severity").is_some(),
+            "missing severity field: {diag}"
+        );
+        assert!(diag.get("code").is_some(), "missing code field: {diag}");
+        assert!(diag.get("line").is_some(), "missing line field: {diag}");
+        assert!(diag.get("column").is_some(), "missing column field: {diag}");
+        assert!(
+            diag.get("message").is_some(),
+            "missing message field: {diag}"
+        );
+        assert!(diag.get("file").is_some(), "missing file field: {diag}");
+    }
+    let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn lint_emit_diagnostics_json_empty_for_clean_file() {
+    // Clean file with source: comment, requires, and top-level call.
+    let src = tmp_file(
+        "json_clean",
+        "// source: test fixture\nfn f(int a) requires a > 0 { let used = a + 1; return used; }\nf(1);\n",
+    );
+    let out = Command::new(bin())
+        .args(["lint"])
+        .arg(&src)
+        .arg("--emit-diagnostics-json")
+        .output()
+        .expect("spawn lint --emit-diagnostics-json clean");
+    assert!(
+        out.status.success(),
+        "expected exit 0 for clean file with JSON flag, got {:?}\nstdout: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let arr: serde_json::Value =
+        serde_json::from_str(&stdout).expect("expected valid JSON even for clean file");
+    assert_eq!(
+        arr.as_array().map(|a| a.len()),
+        Some(0),
+        "expected empty JSON array for clean file, got: {stdout}"
+    );
+    let _ = std::fs::remove_file(&src);
+}
