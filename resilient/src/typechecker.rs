@@ -4876,6 +4876,25 @@ impl TypeChecker {
                     // the Z3 branch below.
                     let mut decl_counterexample: Option<String> = None;
                     if verdict.is_none() {
+                        // RES-1210: consult the incremental-verification
+                        // cache before calling Z3. The digest is a hash
+                        // of the function name + clause index + clause
+                        // debug text — enough to detect any rewrite of
+                        // the requires/ensures body.
+                        let clause_digest = {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = std::collections::hash_map::DefaultHasher::new();
+                            format!("{name}:{decl_idx}:{clause:?}").hash(&mut h);
+                            h.finish()
+                        };
+                        if let Some(cached) =
+                            crate::incremental_verify::lookup(name, clause_digest)
+                        {
+                            verdict = Some(matches!(
+                                cached,
+                                crate::incremental_verify::ProofResult::Discharged
+                            ));
+                        } else {
                         // RES-071: capture the SMT-LIB2 certificate
                         // alongside the verdict so the driver can dump
                         // it to disk if --emit-certificate is set.
@@ -4898,6 +4917,13 @@ impl TypeChecker {
                         verdict = v;
                         if matches!(verdict, Some(true)) {
                             self.stats.requires_discharged_by_z3 += 1;
+                            // Store in cache so next compile skips Z3
+                            // for this unchanged clause.
+                            crate::incremental_verify::store(
+                                name,
+                                clause_digest,
+                                crate::incremental_verify::ProofResult::Discharged,
+                            );
                             // RES-1357: only stash the SMT-LIB2 cert
                             // when a consumer asked for it.
                             if self.emit_certificates
@@ -4910,6 +4936,17 @@ impl TypeChecker {
                                     smt2,
                                 });
                             }
+                        } else if matches!(verdict, Some(false)) {
+                            // Cache the refuted verdict so subsequent
+                            // compiles see the same counterexample
+                            // without re-running Z3.
+                            crate::incremental_verify::store(
+                                name,
+                                clause_digest,
+                                crate::incremental_verify::ProofResult::Failed(
+                                    cx.clone().unwrap_or_default(),
+                                ),
+                            );
                         }
                         if timed_out {
                             // RES-137: soft-failure — compilation
@@ -4931,6 +4968,7 @@ impl TypeChecker {
                             emit_partial_proof_warning(&self.source_path, clause);
                         }
                         decl_counterexample = cx;
+                        } // end cache-miss branch
                     }
                     match verdict {
                         Some(false) => {
