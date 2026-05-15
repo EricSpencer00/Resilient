@@ -546,6 +546,7 @@ mod no_panic_cert;
 mod number_theory;
 mod package_manager;
 mod param_destructuring;
+mod statistics;
 // RES-1585: shared top-level marker pre-scan for the typechecker
 // `<EXTENSION_PASSES>` block. One walk collects fn names + parameter
 // types; per-pass call sites consult it to skip ~15 attribute-only
@@ -11930,6 +11931,59 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "graph_dijkstra",
         crate::graph_algorithms::builtin_graph_dijkstra,
     ),
+    // RES-2660: extended statistics and matrix decomposition builtins.
+    (
+        "stats_covariance",
+        crate::statistics::builtin_stats_covariance,
+    ),
+    (
+        "stats_correlation",
+        crate::statistics::builtin_stats_correlation,
+    ),
+    (
+        "stats_percentile",
+        crate::statistics::builtin_stats_percentile,
+    ),
+    ("stats_zscore", crate::statistics::builtin_stats_zscore),
+    (
+        "stats_normalize",
+        crate::statistics::builtin_stats_normalize,
+    ),
+    (
+        "stats_histogram",
+        crate::statistics::builtin_stats_histogram,
+    ),
+    (
+        "stats_linear_regression",
+        crate::statistics::builtin_stats_linear_regression,
+    ),
+    (
+        "stats_moving_average",
+        crate::statistics::builtin_stats_moving_average,
+    ),
+    (
+        "stats_weighted_mean",
+        crate::statistics::builtin_stats_weighted_mean,
+    ),
+    (
+        "stats_geometric_mean",
+        crate::statistics::builtin_stats_geometric_mean,
+    ),
+    (
+        "stats_harmonic_mean",
+        crate::statistics::builtin_stats_harmonic_mean,
+    ),
+    ("stats_mode_int", crate::statistics::builtin_stats_mode_int),
+    ("stats_iqr", crate::statistics::builtin_stats_iqr),
+    ("mat_det", crate::statistics::builtin_mat_det),
+    ("mat_inv", crate::statistics::builtin_mat_inv),
+    ("mat_solve", crate::statistics::builtin_mat_solve),
+    (
+        "mat_norm_frobenius",
+        crate::statistics::builtin_mat_norm_frobenius,
+    ),
+    ("mat_rank", crate::statistics::builtin_mat_rank),
+    ("mat_lu", crate::statistics::builtin_mat_lu),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
