@@ -142,3 +142,49 @@ fn type_name(v: &Value) -> &'static str {
         _ => "<value>",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        builtin_snapshot_save(&[Value::String("test_key".into()), Value::Int(42)]).unwrap();
+        let loaded = builtin_snapshot_load(&[Value::String("test_key".into())]).unwrap();
+        // load returns a Result value wrapping the Int
+        assert!(
+            format!("{loaded:?}").contains("42"),
+            "loaded value must be 42: {loaded:?}"
+        );
+    }
+
+    #[test]
+    fn load_missing_snapshot_returns_err_result_value() {
+        let result = builtin_snapshot_load(&[Value::String("does_not_exist_xyz".into())]).unwrap();
+        assert!(
+            matches!(result, Value::Result { ok: false, .. }),
+            "loading a missing snapshot must return a Result with ok=false"
+        );
+    }
+
+    #[test]
+    fn snapshot_clear_returns_true_if_existed() {
+        builtin_snapshot_save(&[Value::String("clearme".into()), Value::Int(1)]).unwrap();
+        let cleared = builtin_snapshot_clear(&[Value::String("clearme".into())]).unwrap();
+        assert!(
+            matches!(cleared, Value::Bool(true)),
+            "clear must return true for existing snapshot"
+        );
+        let cleared_again = builtin_snapshot_clear(&[Value::String("clearme".into())]).unwrap();
+        assert!(
+            matches!(cleared_again, Value::Bool(false)),
+            "second clear must return false — already gone"
+        );
+    }
+
+    #[test]
+    fn save_wrong_arity_errors() {
+        let result = builtin_snapshot_save(&[Value::String("k".into())]);
+        assert!(result.is_err(), "wrong arity must return Err");
+    }
+}

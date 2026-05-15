@@ -165,3 +165,79 @@ fn type_name(v: &Value) -> &'static str {
         _ => "<value>",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clear() {
+        builtin_clear_events(&[]).unwrap();
+        // Reset tick to 0 by using tick_advance(0) then accessing TICK directly.
+        // Since tick only goes forward, we just clear events for isolation.
+    }
+
+    fn tick_now() -> i64 {
+        match builtin_tick_now(&[]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        }
+    }
+
+    fn event_count() -> i64 {
+        match builtin_event_count(&[]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        }
+    }
+
+    #[test]
+    fn tick_now_returns_int() {
+        let t = tick_now();
+        assert!(t >= 0, "tick must be non-negative");
+    }
+
+    #[test]
+    fn tick_advance_increases_tick() {
+        let before = tick_now();
+        let after = match builtin_tick_advance(&[Value::Int(3)]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        };
+        assert_eq!(after, before + 3, "tick_advance must increase tick by n");
+    }
+
+    #[test]
+    fn tick_advance_wrong_arity_errors() {
+        let result = builtin_tick_advance(&[]);
+        assert!(result.is_err(), "wrong arity must return Err");
+    }
+
+    #[test]
+    fn record_and_count_events() {
+        clear();
+        let before = event_count();
+        builtin_record_event(&[Value::String("test_evt".into()), Value::Int(99)]).unwrap();
+        assert_eq!(
+            event_count(),
+            before + 1,
+            "record_event must increment event count"
+        );
+    }
+
+    #[test]
+    fn clear_events_returns_prior_count() {
+        clear();
+        builtin_record_event(&[Value::String("e1".into()), Value::Int(1)]).unwrap();
+        builtin_record_event(&[Value::String("e2".into()), Value::Int(2)]).unwrap();
+        let count_before = event_count();
+        let cleared = match builtin_clear_events(&[]).unwrap() {
+            Value::Int(n) => n,
+            _ => panic!("expected Int"),
+        };
+        assert_eq!(
+            cleared, count_before,
+            "clear_events must return prior event count"
+        );
+        assert_eq!(event_count(), 0, "after clear, event count must be 0");
+    }
+}
