@@ -5633,13 +5633,25 @@ impl TypeChecker {
                         timed_out_flag = t;
                     }
 
-                    // Contradiction: clause is unreachable regardless
-                    // of `fails`. Always a compile error.
+                    // Z3 disproved the clause. Always a compile error.
+                    // When `fails` is non-empty, include the fails set so
+                    // the diagnostic matches the `None`-verdict message
+                    // shape ("cannot be proven" + the failing variant).
                     if matches!(verdict, Some(false)) {
-                        let base = format!(
-                            "{}fn {}: `recovers_to` can never hold — the recovery invariant is a contradiction",
-                            pos_prefix, name
-                        );
+                        let base = if !fails.is_empty() {
+                            format!(
+                                "{}fn {}: `recovers_to` invariant cannot be proven — \
+                                 fn declares `fails` {:?} but Z3 found a counterexample \
+                                 showing the invariant does not hold under `requires`",
+                                pos_prefix, name, fails
+                            )
+                        } else {
+                            format!(
+                                "{}fn {}: `recovers_to` can never hold — \
+                                 the recovery invariant is a contradiction",
+                                pos_prefix, name
+                            )
+                        };
                         return Err(match cx {
                             Some(m) => format!("{} — counterexample (final state): {}", base, m),
                             None => base,
