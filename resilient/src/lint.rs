@@ -132,6 +132,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0070", // `x || false` / `false || x` — OR with false is the identity; simplify to `x`
     "L0071", // function has more than 5 parameters — consider grouping into a struct
     "L0072", // for-loop variable is never used in the loop body — dead iteration variable
+    "L0073", // duplicate requires/ensures contract clause (same text repeated)
+    "L0074", // pure function call result discarded as expression statement
+    "L0075", // trivially-vacuous contract clause (requires true / requires false / ensures false)
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -921,6 +924,49 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: use `x` in the body, or rename it to `_` to signal intentional discard.\n\
              Suppress: // resilient: allow L0072",
         ),
+        "L0073" => Some(
+            "L0073 — duplicate contract clause\n\
+             \n\
+             The same `requires` or `ensures` clause text appears more than once in the\n\
+             same function declaration. The duplicate adds no information and is almost\n\
+             always a copy-paste error.\n\
+             \n\
+             Example (bad): fn f(int x) requires x > 0 requires x > 0 { ... }\n\
+             \n\
+             Fix: remove the duplicate clause.\n\
+             Suppress: // resilient: allow L0073",
+        ),
+        "L0074" => Some(
+            "L0074 — pure function call result discarded\n\
+             \n\
+             A function declared `pure` (no side effects) is called as a standalone\n\
+             expression statement, meaning its return value is thrown away. Since the\n\
+             function has no observable side effects, the call has no effect at all.\n\
+             This is almost always a logic error — the programmer likely forgot to\n\
+             use the return value.\n\
+             \n\
+             Example (bad): pure fn square(int x) -> int { return x * x; }\n\
+                            fn f() { square(5); }  // result never used\n\
+             \n\
+             Fix: assign the result to a variable, or remove the call if it was accidental.\n\
+             Suppress: // resilient: allow L0074",
+        ),
+        "L0075" => Some(
+            "L0075 — trivially-vacuous contract clause\n\
+             \n\
+             A `requires` or `ensures` clause is a boolean literal:\n\
+             * `requires true` — vacuous precondition; every call satisfies it and the\n\
+               clause provides no safety guarantee. Remove it or write a real constraint.\n\
+             * `requires false` — unsatisfiable precondition; the function can never be\n\
+               called legally. This is almost always wrong.\n\
+             * `ensures false` — impossible postcondition; the function can never satisfy\n\
+               its own specification. Almost always wrong.\n\
+             * `ensures true` — vacuous postcondition; every return value satisfies it.\n\
+               Remove it or write a real constraint.\n\
+             \n\
+             Fix: replace with a meaningful contract, or remove the clause.\n\
+             Suppress: // resilient: allow L0075",
+        ),
         _ => None,
     }
 }
@@ -1016,6 +1062,13 @@ struct LintTriggers {
     has_many_param_fn: bool,
     /// L0072: any `for`-in statement with a named loop variable.
     has_for_in_with_var: bool,
+    /// L0073: any function with ≥2 contract clauses (potential duplicate).
+    has_multi_contract_fn: bool,
+    /// L0074: any `pure`-declared function AND any expression-statement call.
+    has_pure_fn: bool,
+    has_expr_stmt_call: bool,
+    /// L0075: any function with a boolean-literal contract clause.
+    has_bool_literal_contract: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -1098,10 +1151,31 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_negated_bool_literal = true;
             }
         }
-        Node::Function { parameters, .. } => {
+        Node::Function {
+            parameters,
+            pure,
+            requires,
+            ensures,
+            ..
+        } => {
             t.has_function = true;
             if parameters.len() > 5 {
                 t.has_many_param_fn = true;
+            }
+            if *pure {
+                t.has_pure_fn = true;
+            }
+            // L0073: ≥2 requires OR ≥2 ensures → possible duplicate.
+            if requires.len() >= 2 || ensures.len() >= 2 {
+                t.has_multi_contract_fn = true;
+            }
+            // L0075: any clause that is a boolean literal.
+            let has_bool_clause = requires
+                .iter()
+                .chain(ensures.iter())
+                .any(|c| matches!(c, Node::BooleanLiteral { .. }));
+            if has_bool_clause {
+                t.has_bool_literal_contract = true;
             }
         }
         Node::LetStatement { .. } => {
@@ -1175,6 +1249,9 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 if matches!(operator.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">="))
             {
                 t.has_expr_stmt_cmp = true;
+            }
+            if matches!(expr.as_ref(), Node::CallExpression { .. }) {
+                t.has_expr_stmt_call = true;
             }
         }
         Node::StringLiteral { .. } => t.has_string_literal = true,
@@ -1395,6 +1472,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_for_in_with_var {
         run_l0072_unused_for_var(program, &mut out);
+    }
+    if t.has_multi_contract_fn {
+        run_l0073_duplicate_contract_clause(program, &mut out);
+    }
+    if t.has_pure_fn && t.has_expr_stmt_call {
+        run_l0074_pure_call_result_discarded(program, &mut out);
+    }
+    if t.has_bool_literal_contract {
+        run_l0075_vacuous_contract_clause(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -6174,6 +6260,178 @@ fn ident_used_in(node: &Node, target: &str) -> bool {
     })
 }
 
+// ---- L0073: duplicate contract clause ----
+
+fn run_l0073_duplicate_contract_clause(program: &Node, out: &mut Vec<Lint>) {
+    if let Node::Program(stmts) = program {
+        for s in stmts {
+            if let Node::Function {
+                requires,
+                ensures,
+                span,
+                name,
+                ..
+            } = &s.node
+            {
+                check_duplicate_clauses(name, requires, "requires", *span, out);
+                check_duplicate_clauses(name, ensures, "ensures", *span, out);
+            }
+        }
+    }
+}
+
+fn clause_text(n: &Node) -> String {
+    match n {
+        Node::Identifier { name, .. } => name.clone(),
+        Node::BooleanLiteral { value, .. } => value.to_string(),
+        Node::IntegerLiteral { value, .. } => value.to_string(),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => format!("{} {operator} {}", clause_text(left), clause_text(right)),
+        Node::PrefixExpression { operator, right, .. } => {
+            format!("{operator}{}", clause_text(right))
+        }
+        Node::CallExpression {
+            function,
+            arguments,
+            ..
+        } => {
+            let args: Vec<String> = arguments.iter().map(clause_text).collect();
+            format!("{}({})", clause_text(function), args.join(", "))
+        }
+        _ => format!("{:?}", n as *const _),
+    }
+}
+
+fn check_duplicate_clauses(
+    fn_name: &str,
+    clauses: &[Node],
+    kind: &str,
+    span: Span,
+    out: &mut Vec<Lint>,
+) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for clause in clauses {
+        let text = clause_text(clause);
+        if !seen.insert(text.clone()) {
+            out.push(Lint {
+                code: "L0073".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "function `{fn_name}` has duplicate `{kind}` clause `{text}` — \
+                     remove the repeated clause"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+}
+
+// ---- L0074: pure function call result discarded ----
+
+fn run_l0074_pure_call_result_discarded(program: &Node, out: &mut Vec<Lint>) {
+    // Phase 1: collect names of all `pure`-declared functions.
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    let pure_fns: std::collections::HashSet<&str> = stmts
+        .iter()
+        .filter_map(|s| {
+            if let Node::Function { name, pure, .. } = &s.node
+                && *pure
+            {
+                return Some(name.as_str());
+            }
+            None
+        })
+        .collect();
+    if pure_fns.is_empty() {
+        return;
+    }
+    // Phase 2: find expression-statement calls to pure functions.
+    for s in stmts {
+        walk_l0074(&s.node, &pure_fns, out);
+    }
+}
+
+fn walk_l0074(node: &Node, pure_fns: &std::collections::HashSet<&str>, out: &mut Vec<Lint>) {
+    if let Node::ExpressionStatement { expr, span } = node
+        && let Node::CallExpression { function, .. } = expr.as_ref()
+        && let Node::Identifier { name, .. } = function.as_ref()
+        && pure_fns.contains(name.as_str())
+    {
+        out.push(Lint {
+            code: "L0074".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "result of `pure` function `{name}` is discarded — \
+                 the call has no observable effect; assign the result \
+                 or remove the call"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0074(child, pure_fns, out));
+}
+
+// ---- L0075: trivially-vacuous contract clause ----
+
+fn run_l0075_vacuous_contract_clause(program: &Node, out: &mut Vec<Lint>) {
+    if let Node::Program(stmts) = program {
+        for s in stmts {
+            if let Node::Function {
+                name,
+                requires,
+                ensures,
+                span,
+                ..
+            } = &s.node
+            {
+                check_vacuous_clauses(name, requires, "requires", *span, out);
+                check_vacuous_clauses(name, ensures, "ensures", *span, out);
+            }
+        }
+    }
+}
+
+fn check_vacuous_clauses(
+    fn_name: &str,
+    clauses: &[Node],
+    kind: &str,
+    span: Span,
+    out: &mut Vec<Lint>,
+) {
+    for clause in clauses {
+        if let Node::BooleanLiteral { value, .. } = clause {
+            let desc = if *value { "trivially true" } else { "trivially false" };
+            let hint = match (kind, *value) {
+                ("requires", true) => "vacuous precondition — remove it or write a real constraint",
+                ("requires", false) => "unsatisfiable precondition — function can never be called",
+                ("ensures", true) => "vacuous postcondition — remove it or write a real constraint",
+                ("ensures", false) => "impossible postcondition — function can never satisfy this",
+                _ => "trivial clause",
+            };
+            out.push(Lint {
+                code: "L0075".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "function `{fn_name}` has `{kind} {value}` ({desc}): {hint}"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+}
+
 // ---- L0054: empty `while` loop body ----
 
 fn run_l0054_empty_while_body(program: &Node, out: &mut Vec<Lint>) {
@@ -8764,6 +9022,102 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0072".to_string()),
             "L0072 must not fire when for-loop variable is used in nested expr"
+        );
+    }
+
+    // ── L0073 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0073_fires_on_duplicate_requires() {
+        let src = "fn f(int x) requires x > 0 requires x > 0 { return x; }";
+        assert!(
+            codes(src).contains(&"L0073".to_string()),
+            "L0073 must fire for duplicate requires clause"
+        );
+    }
+
+    #[test]
+    fn l0073_no_fire_on_distinct_requires() {
+        let src = "fn f(int x) requires x > 0 requires x < 100 { return x; }";
+        assert!(
+            !codes(src).contains(&"L0073".to_string()),
+            "L0073 must not fire when requires clauses are distinct"
+        );
+    }
+
+    #[test]
+    fn l0073_fires_on_duplicate_ensures() {
+        let src = "fn f(int x) -> int ensures result > 0 ensures result > 0 { return x + 1; }";
+        assert!(
+            codes(src).contains(&"L0073".to_string()),
+            "L0073 must fire for duplicate ensures clause"
+        );
+    }
+
+    // ── L0074 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0074_fires_on_pure_call_result_discarded() {
+        let src = "@pure fn sq(int x) -> int { return x * x; } fn caller(int x) { sq(x); }";
+        assert!(
+            codes(src).contains(&"L0074".to_string()),
+            "L0074 must fire when pure fn result is discarded"
+        );
+    }
+
+    #[test]
+    fn l0074_no_fire_when_result_used() {
+        let src = "@pure fn sq(int x) -> int { return x * x; } fn caller(int x) { let r = sq(x); }";
+        assert!(
+            !codes(src).contains(&"L0074".to_string()),
+            "L0074 must not fire when result is assigned"
+        );
+    }
+
+    #[test]
+    fn l0074_no_fire_on_non_pure_call_discarded() {
+        let src = "fn sq(int x) -> int { return x * x; } fn caller(int x) { sq(x); }";
+        assert!(
+            !codes(src).contains(&"L0074".to_string()),
+            "L0074 must not fire for non-pure functions"
+        );
+    }
+
+    // ── L0075 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0075_fires_on_requires_true() {
+        let src = "fn f(int x) requires true { return x; }";
+        assert!(
+            codes(src).contains(&"L0075".to_string()),
+            "L0075 must fire for requires true"
+        );
+    }
+
+    #[test]
+    fn l0075_fires_on_requires_false() {
+        let src = "fn f(int x) requires false { return x; }";
+        assert!(
+            codes(src).contains(&"L0075".to_string()),
+            "L0075 must fire for requires false"
+        );
+    }
+
+    #[test]
+    fn l0075_fires_on_ensures_false() {
+        let src = "fn f(int x) -> int ensures false { return x; }";
+        assert!(
+            codes(src).contains(&"L0075".to_string()),
+            "L0075 must fire for ensures false"
+        );
+    }
+
+    #[test]
+    fn l0075_no_fire_on_normal_contract() {
+        let src = "fn f(int x) requires x > 0 ensures result > 0 { return x + 1; }";
+        assert!(
+            !codes(src).contains(&"L0075".to_string()),
+            "L0075 must not fire for real contracts"
         );
     }
 

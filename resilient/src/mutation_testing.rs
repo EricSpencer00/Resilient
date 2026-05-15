@@ -170,7 +170,18 @@ pub fn summarize(mutations: &[Mutation]) -> HashMap<String, (usize, Vec<String>)
     map
 }
 
-pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+/// Report mutation sites and contract coverage.
+///
+/// Beyond just counting sites, this pass cross-references the mutation
+/// inventory against the function's contract declarations. Functions that
+/// have mutation sites but zero `requires`/`ensures` contracts are flagged:
+/// the Z3 verifier has nothing to kill their mutants with, so any behavioral
+/// regression in those functions would pass undetected.
+///
+/// The "unconstrained mutation ratio" is a useful CI metric: 0% means every
+/// function with mutations is contractually verified; 100% means vibe-coded
+/// all the way down.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
     // Fast-reject: skip when there are no infix expressions or literals to mutate.
     let has_mutatable = crate::uniqueness_walk::any_node(program, |n| {
         matches!(
@@ -196,7 +207,7 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     );
     let mut fns: Vec<_> = summary.iter().collect();
     fns.sort_by_key(|(n, _)| n.as_str());
-    for (fn_name, (count, kinds)) in fns {
+    for (fn_name, (count, kinds)) in &fns {
         let mut kinds_sorted = kinds.clone();
         kinds_sorted.sort();
         eprintln!(
@@ -204,7 +215,58 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
             kinds_sorted.join(", ")
         );
     }
+
+    // Cross-reference with contract declarations to identify unconstrained sites.
+    let contracted_fns = contract_coverage(program);
+    let unconstrained: Vec<(&str, usize)> = fns
+        .iter()
+        .filter_map(|(name, (count, _))| {
+            if !contracted_fns.contains(name.as_str()) {
+                Some((name.as_str(), *count))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !unconstrained.is_empty() {
+        let unconstrained_total: usize = unconstrained.iter().map(|(_, n)| n).sum();
+        let pct = unconstrained_total * 100 / total.max(1);
+        eprintln!(
+            "{source_path}:0:0: warning[mutation]: \
+             {unconstrained_total}/{total} mutation site(s) ({pct}%) are in \
+             functions with no contracts — the Z3 verifier cannot kill them"
+        );
+        for (name, count) in &unconstrained {
+            eprintln!(
+                "{source_path}:0:0: warning[mutation]: \
+                 `{name}`: {count} unconstrained mutation site(s) — \
+                 add `requires`/`ensures` contracts"
+            );
+        }
+    }
     Ok(())
+}
+
+/// Returns the set of function names that have at least one
+/// `requires` or `ensures` contract clause.
+fn contract_coverage(program: &Node) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    if let Node::Program(stmts) = program {
+        for s in stmts {
+            if let Node::Function {
+                name,
+                requires,
+                ensures,
+                ..
+            } = &s.node
+            {
+                if !requires.is_empty() || !ensures.is_empty() {
+                    out.insert(name.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -354,6 +416,40 @@ mod tests {
     #[test]
     fn check_ok_on_program_with_mutations() {
         let src = r#"fn f(int x) -> int { return x + 1; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    // ── contract_coverage / check() cross-reference ──────────────────────────
+
+    #[test]
+    fn contract_coverage_finds_contracted_fn() {
+        let src = "fn f(int x) requires x > 0 { return x; }";
+        let (prog, _) = parse(src);
+        let cov = contract_coverage(&prog);
+        assert!(cov.contains("f"));
+    }
+
+    #[test]
+    fn contract_coverage_empty_for_uncontracted_fn() {
+        let src = "fn f(int x) { return x; }";
+        let (prog, _) = parse(src);
+        let cov = contract_coverage(&prog);
+        assert!(!cov.contains("f"));
+    }
+
+    #[test]
+    fn check_ok_on_contracted_fn_with_mutations() {
+        // Contracted function — no unconstrained-mutation warning, still Ok.
+        let src = "fn add(int a, int b) -> int requires a >= 0 ensures result >= 0 { return a + b; }";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_uncontracted_fn_with_mutations() {
+        // Uncontracted function — warns about unconstrained sites but is NOT an error.
+        let src = "fn add(int a, int b) -> int { return a + b; }";
         let (prog, _) = parse(src);
         assert!(check(&prog, "test").is_ok());
     }
