@@ -102,7 +102,43 @@ pub fn format_report(report: &AutopilotReport) -> String {
     s
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
+pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
+    let has_fn = crate::uniqueness_walk::any_node(program, |n| {
+        matches!(n, Node::Function { .. })
+    });
+    if !has_fn {
+        return Ok(());
+    }
+    let report = run(program);
+    if report.entries.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "autopilot: program-wide vibe debt {:.1}%",
+        report.program_debt_pct
+    );
+    for e in &report.entries {
+        if !e.action_items.is_empty() {
+            eprintln!(
+                "autopilot: `{}` [{}] — {}",
+                e.function_name,
+                e.grade,
+                e.action_items.join("; ")
+            );
+        }
+        for r in &e.inferred_requires {
+            eprintln!(
+                "autopilot: `{}` suggested: requires {}",
+                e.function_name, r
+            );
+        }
+        for r in &e.inferred_ensures {
+            eprintln!(
+                "autopilot: `{}` suggested: ensures {}",
+                e.function_name, r
+            );
+        }
+    }
     Ok(())
 }
 
@@ -161,5 +197,18 @@ mod tests {
         let r = run(&prog);
         let formatted = format_report(&r);
         assert!(formatted.contains("vibe debt"));
+    }
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_program_with_functions() {
+        let src = r#"fn g(int x) { return x + 1; }"#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
     }
 }

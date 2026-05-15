@@ -402,12 +402,87 @@ pub fn reset_for_test() {
 // Typecheck pass entry-point (no-op for PR 1).
 // ---------------------------------------------------------------------------
 
-/// Wired into `<EXTENSION_PASSES>` in `typechecker.rs` so PRs 2-5 can
-/// progressively add validation (e.g. "first arg of `spawn` must be a
-/// fn-value with no parameters") without further core-file edits. For
-/// PR 1 there's nothing to check.
-pub fn check(_program: &crate::Node, _source_path: &str) -> Result<(), String> {
+/// Wired into `<EXTENSION_PASSES>` in `typechecker.rs`. Validates static
+/// actor usage patterns: counts spawn/send/receive sites and checks that
+/// `receive()` is not called outside a function (top-level receive has no
+/// actor context and would always error at runtime).
+pub fn check(program: &crate::Node, _source_path: &str) -> Result<(), String> {
+    // Fast-reject: skip programs with no actor call sites.
+    let has_actor = crate::uniqueness_walk::any_node(program, |n| {
+        if let crate::Node::CallExpression { function, .. } = n
+            && let crate::Node::Identifier { name, .. } = function.as_ref()
+        {
+            return matches!(name.as_str(), "spawn" | "send" | "receive");
+        }
+        false
+    });
+    if !has_actor {
+        return Ok(());
+    }
+
+    // Walk the AST: tally spawn/send/receive sites and flag top-level receive.
+    let crate::Node::Program(stmts) = program else {
+        return Ok(());
+    };
+    let mut spawn_count = 0u32;
+    let mut send_count = 0u32;
+    let mut receive_count = 0u32;
+
+    for spanned in stmts {
+        match &spanned.node {
+            crate::Node::Function { body, .. } => {
+                count_actor_calls_in_body(body, &mut spawn_count, &mut send_count, &mut receive_count);
+            }
+            other => {
+                // Top-level receive() is always wrong — no actor context exists.
+                if is_actor_call(other, "receive") {
+                    return Err(
+                        "actor: `receive()` called at top level — \
+                         receive must be called from within an actor function"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    if spawn_count > 0 || send_count > 0 || receive_count > 0 {
+        eprintln!(
+            "actor-runtime: {} spawn, {} send, {} receive call site(s) detected",
+            spawn_count, send_count, receive_count
+        );
+    }
     Ok(())
+}
+
+fn is_actor_call(node: &crate::Node, target: &str) -> bool {
+    if let crate::Node::CallExpression { function, .. } = node
+        && let crate::Node::Identifier { name, .. } = function.as_ref()
+    {
+        return name == target;
+    }
+    false
+}
+
+fn count_actor_calls_in_body(
+    node: &crate::Node,
+    spawn: &mut u32,
+    send: &mut u32,
+    receive: &mut u32,
+) {
+    if let crate::Node::CallExpression { function, .. } = node
+        && let crate::Node::Identifier { name, .. } = function.as_ref()
+    {
+        match name.as_str() {
+            "spawn" => *spawn += 1,
+            "send" => *send += 1,
+            "receive" => *receive += 1,
+            _ => {}
+        }
+    }
+    crate::uniqueness_walk::walk_children(node, &mut |child| {
+        count_actor_calls_in_body(child, spawn, send, receive);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -654,5 +729,26 @@ mod tests {
         set_current_actor(None);
         let err = actor_receive().expect_err("receive outside actor context should error");
         assert!(err.contains("outside of an actor context"), "got: {}", err);
+    }
+
+    // check() static analysis tests
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_program_without_actors() {
+        let src = r#"fn f(int x) -> int { return x + 1; }"#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn check_ok_with_spawn_and_send_in_fn() {
+        let src = r#"fn launcher(int dummy) { let pid = spawn(worker); send(pid, 1); }"#;
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
     }
 }

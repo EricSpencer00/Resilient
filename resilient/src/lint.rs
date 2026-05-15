@@ -124,6 +124,10 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0064", // empty else block (else {}) can be removed
     "L0065", // `if cond { return true; } else { return false; }` simplifies to `return cond;`
     "L0066", // `if cond { return false; } else { return true; }` simplifies to `return !cond;`
+    "L0067", // `x && true` / `true && x` — AND with true is the identity; simplify to `x`
+    "L0068", // `x && false` / `false && x` — AND with false always yields false
+    "L0069", // `x || true` / `true || x` — OR with true always yields true
+    "L0070", // `x || false` / `false || x` — OR with false is the identity; simplify to `x`
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -825,6 +829,46 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: replace with `return !cond;`.\n\
              Suppress: // resilient: allow L0066",
         ),
+        "L0067" => Some(
+            "L0067 — `x && true` / `true && x` — AND with `true` is the identity\n\
+             \n\
+             In boolean algebra, `x && true` always equals `x`. The `&& true` operand\n\
+             is redundant and can be removed. This often indicates a leftover from\n\
+             refactoring or a misunderstood guard condition.\n\
+             \n\
+             Fix: replace `x && true` with `x`.\n\
+             Suppress: // resilient: allow L0067",
+        ),
+        "L0068" => Some(
+            "L0068 — `x && false` / `false && x` — AND with `false` is always false\n\
+             \n\
+             In boolean algebra, `x && false` always evaluates to `false` regardless\n\
+             of `x`. The `x &&` part is dead code (short-circuit may even skip it).\n\
+             This is almost certainly a logic error.\n\
+             \n\
+             Fix: remove the dead operand or fix the condition logic.\n\
+             Suppress: // resilient: allow L0068",
+        ),
+        "L0069" => Some(
+            "L0069 — `x || true` / `true || x` — OR with `true` is always true\n\
+             \n\
+             In boolean algebra, `x || true` always evaluates to `true` regardless\n\
+             of `x`. The `x ||` part is dead code (short-circuit may skip it entirely).\n\
+             This is almost certainly a logic error or leftover guard.\n\
+             \n\
+             Fix: remove the dead operand or replace the expression with `true`.\n\
+             Suppress: // resilient: allow L0069",
+        ),
+        "L0070" => Some(
+            "L0070 — `x || false` / `false || x` — OR with `false` is the identity\n\
+             \n\
+             In boolean algebra, `x || false` always equals `x`. The `|| false` operand\n\
+             is redundant and can be removed. This often indicates a leftover from\n\
+             refactoring or an unnecessary guard.\n\
+             \n\
+             Fix: replace `x || false` with `x`.\n\
+             Suppress: // resilient: allow L0070",
+        ),
         _ => None,
     }
 }
@@ -912,6 +956,8 @@ struct LintTriggers {
     has_arith_identity: bool,
     /// L0063: any `break` or `continue` statement found in the program.
     has_break_continue: bool,
+    /// L0067–L0070: any `&&` / `||` infix where one operand is a boolean literal.
+    has_bool_logic_with_literal: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -976,6 +1022,13 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                     || matches!(right.as_ref(), Node::IntegerLiteral { value: 0 | 1, .. }))
             {
                 t.has_arith_identity = true;
+            }
+            // L0067-L0070: `&&` / `||` where one operand is a boolean literal.
+            if matches!(operator.as_str(), "&&" | "||")
+                && (matches!(left.as_ref(), Node::BooleanLiteral { .. })
+                    || matches!(right.as_ref(), Node::BooleanLiteral { .. }))
+            {
+                t.has_bool_logic_with_literal = true;
             }
         }
         Node::PrefixExpression {
@@ -1253,6 +1306,12 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     if t.has_if_with_else {
         run_l0065_bool_identity_if(program, &mut out);
         run_l0066_bool_negation_if(program, &mut out);
+    }
+    if t.has_bool_logic_with_literal {
+        run_l0067_and_true(program, &mut out);
+        run_l0068_and_false(program, &mut out);
+        run_l0069_or_true(program, &mut out);
+        run_l0070_or_false(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -5974,6 +6033,98 @@ fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
     recurse_children(node, &mut |child| walk_l0066(child, out));
 }
 
+// ---- L0067: `x && true` / `true && x` — AND with true is identity ----
+
+fn run_l0067_and_true(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0067(program, out);
+}
+
+fn walk_l0067(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression { operator, left, right, span, .. } = node
+        && operator == "&&"
+        && (matches!(left.as_ref(), Node::BooleanLiteral { value: true, .. })
+            || matches!(right.as_ref(), Node::BooleanLiteral { value: true, .. }))
+    {
+        out.push(Lint {
+            code: "L0067".into(),
+            severity: Severity::Warning,
+            message: "`x && true` / `true && x` — AND with `true` is the identity; simplify to `x`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0067(child, out));
+}
+
+// ---- L0068: `x && false` / `false && x` — AND with false is always false ----
+
+fn run_l0068_and_false(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0068(program, out);
+}
+
+fn walk_l0068(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression { operator, left, right, span, .. } = node
+        && operator == "&&"
+        && (matches!(left.as_ref(), Node::BooleanLiteral { value: false, .. })
+            || matches!(right.as_ref(), Node::BooleanLiteral { value: false, .. }))
+    {
+        out.push(Lint {
+            code: "L0068".into(),
+            severity: Severity::Warning,
+            message: "`x && false` / `false && x` — AND with `false` is always `false`; likely a logic error".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0068(child, out));
+}
+
+// ---- L0069: `x || true` / `true || x` — OR with true is always true ----
+
+fn run_l0069_or_true(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0069(program, out);
+}
+
+fn walk_l0069(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression { operator, left, right, span, .. } = node
+        && operator == "||"
+        && (matches!(left.as_ref(), Node::BooleanLiteral { value: true, .. })
+            || matches!(right.as_ref(), Node::BooleanLiteral { value: true, .. }))
+    {
+        out.push(Lint {
+            code: "L0069".into(),
+            severity: Severity::Warning,
+            message: "`x || true` / `true || x` — OR with `true` is always `true`; likely a logic error".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0069(child, out));
+}
+
+// ---- L0070: `x || false` / `false || x` — OR with false is identity ----
+
+fn run_l0070_or_false(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0070(program, out);
+}
+
+fn walk_l0070(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression { operator, left, right, span, .. } = node
+        && operator == "||"
+        && (matches!(left.as_ref(), Node::BooleanLiteral { value: false, .. })
+            || matches!(right.as_ref(), Node::BooleanLiteral { value: false, .. }))
+    {
+        out.push(Lint {
+            code: "L0070".into(),
+            severity: Severity::Warning,
+            message: "`x || false` / `false || x` — OR with `false` is the identity; simplify to `x`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0070(child, out));
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -8667,6 +8818,122 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0066".to_string()),
             "L0066 must not fire when both branches return false"
+        );
+    }
+
+    // ---- L0067: x && true ----
+
+    #[test]
+    fn l0067_fires_on_and_true_rhs() {
+        let src = r#"fn f(bool x) -> bool { return x && true; }"#;
+        assert!(
+            codes(src).contains(&"L0067".to_string()),
+            "L0067 must fire for `x && true`"
+        );
+    }
+
+    #[test]
+    fn l0067_fires_on_true_and_lhs() {
+        let src = r#"fn f(bool x) -> bool { return true && x; }"#;
+        assert!(
+            codes(src).contains(&"L0067".to_string()),
+            "L0067 must fire for `true && x`"
+        );
+    }
+
+    #[test]
+    fn l0067_silent_on_and_false() {
+        let src = r#"fn f(bool x) -> bool { return x && false; }"#;
+        assert!(
+            !codes(src).contains(&"L0067".to_string()),
+            "L0067 must not fire for `x && false`"
+        );
+    }
+
+    // ---- L0068: x && false ----
+
+    #[test]
+    fn l0068_fires_on_and_false_rhs() {
+        let src = r#"fn f(bool x) -> bool { return x && false; }"#;
+        assert!(
+            codes(src).contains(&"L0068".to_string()),
+            "L0068 must fire for `x && false`"
+        );
+    }
+
+    #[test]
+    fn l0068_fires_on_false_and_lhs() {
+        let src = r#"fn f(bool x) -> bool { return false && x; }"#;
+        assert!(
+            codes(src).contains(&"L0068".to_string()),
+            "L0068 must fire for `false && x`"
+        );
+    }
+
+    #[test]
+    fn l0068_silent_on_and_true() {
+        let src = r#"fn f(bool x) -> bool { return x && true; }"#;
+        assert!(
+            !codes(src).contains(&"L0068".to_string()),
+            "L0068 must not fire for `x && true`"
+        );
+    }
+
+    // ---- L0069: x || true ----
+
+    #[test]
+    fn l0069_fires_on_or_true_rhs() {
+        let src = r#"fn f(bool x) -> bool { return x || true; }"#;
+        assert!(
+            codes(src).contains(&"L0069".to_string()),
+            "L0069 must fire for `x || true`"
+        );
+    }
+
+    #[test]
+    fn l0069_fires_on_true_or_lhs() {
+        let src = r#"fn f(bool x) -> bool { return true || x; }"#;
+        assert!(
+            codes(src).contains(&"L0069".to_string()),
+            "L0069 must fire for `true || x`"
+        );
+    }
+
+    #[test]
+    fn l0069_silent_on_or_false() {
+        let src = r#"fn f(bool x) -> bool { return x || false; }"#;
+        assert!(
+            !codes(src).contains(&"L0069".to_string()),
+            "L0069 must not fire for `x || false`"
+        );
+    }
+
+    // ---- L0070: x || false ----
+
+    #[test]
+    fn l0070_fires_on_or_false_rhs() {
+        let src = r#"fn f(bool x) -> bool { return x || false; }"#;
+        assert!(
+            codes(src).contains(&"L0070".to_string()),
+            "L0070 must fire for `x || false`"
+        );
+    }
+
+    #[test]
+    fn l0070_fires_on_false_or_lhs() {
+        let src = r#"fn f(bool x) -> bool { return false || x; }"#;
+        assert!(
+            codes(src).contains(&"L0070".to_string()),
+            "L0070 must fire for `false || x`"
+        );
+    }
+
+    #[test]
+    fn l0070_silent_on_or_true() {
+        let src = r#"fn f(bool x) -> bool { return x || true; }"#;
+        assert!(
+            !codes(src).contains(&"L0070".to_string()),
+            "L0070 must not fire for `x || true`"
         );
     }
 }
