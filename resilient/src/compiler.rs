@@ -2590,6 +2590,74 @@ fn compile_expr(
             );
             Ok(())
         }
+        // RES-1857/RES-duration: DurationLiteral is a nanoseconds constant.
+        // The nanos value is already computed by the parser; emit it as an Int.
+        Node::DurationLiteral { nanos, .. } => {
+            let idx = chunk.add_constant(Value::Int(*nanos as i64))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
+        // RES-newtypes: NewtypeConstruct wraps a value in a one-field struct.
+        // The interpreter creates `Struct { name, fields: [("__value", inner)] }`;
+        // we replicate that by emitting a string-const for "__value", compiling
+        // the inner expression, then emitting StructLiteral with field_count=1.
+        Node::NewtypeConstruct {
+            type_name, value, ..
+        } => {
+            let name_const = chunk.add_string_constant(type_name)?;
+            let field_name_idx = chunk.add_string_constant("__value")?;
+            chunk.emit(Op::Const(field_name_idx), line);
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(
+                Op::StructLiteral {
+                    name_const,
+                    field_count: 1,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-375: TryExpression (`expr?`) — compile the inner expression,
+        // then emit TryUnwrap which either leaves the unwrapped value on the
+        // stack or triggers an early return from the current function.
+        Node::TryExpression { expr: inner, .. } => {
+            compile_expr(
+                inner,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            chunk.emit(Op::TryUnwrap, line);
+            Ok(())
+        }
+        // RES-325: NamedArg — the name is a type-check annotation only;
+        // for bytecode purposes just compile the value.
+        Node::NamedArg { value, .. } => compile_expr(
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -4308,6 +4376,142 @@ x;
                 assert!(matches!(v[1], Value::Int(30)));
             }
             other => panic!("expected [20,30], got {:?}", other),
+        }
+    }
+
+    // ── DurationLiteral ──────────────────────────────────────────────────────
+
+    #[test]
+    fn duration_literal_compiles_in_live_block() {
+        // DurationLiteral appears as the `deadline` of a `live within`
+        // block. The bytecode compiler ignores the deadline and compiles
+        // the body; the live block should run without Unsupported errors.
+        match vm_ok("live within 100ms { 42; } 42;") {
+            Value::Int(42) => {}
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    // ── NewtypeConstruct ─────────────────────────────────────────────────────
+
+    #[test]
+    fn newtype_construct_wraps_value() {
+        // lower_program rewrites Meters(42) → NewtypeConstruct; the bytecode
+        // compiler must not return Unsupported. Result is a Struct.
+        let mut p = parse_one("newtype Meters = Int; let x = Meters(42); x;");
+        crate::newtypes::lower_program(&mut p);
+        let prog = compile(&p).expect("NewtypeConstruct must compile");
+        let v = crate::vm::run(&prog).expect("NewtypeConstruct must run");
+        assert!(
+            matches!(v, Value::Struct { .. }),
+            "expected Struct from newtype constructor, got {:?}",
+            v
+        );
+    }
+
+    // ── TryExpression (bytecode VM path) ─────────────────────────────────────
+
+    #[test]
+    fn try_unwrap_ok_result_via_vm() {
+        // Build a tiny program directly in bytecode: push `Result{ok:true,
+        // payload:Int(42)}`, emit TryUnwrap, emit Return. The VM must
+        // leave Int(42) on the stack.
+        use crate::bytecode::{Chunk, Op, Program};
+        let mut main = Chunk::new();
+        // Const 0 → Value::Result { ok: true, payload: Box(Int(42)) }
+        main.constants.push(Value::Result {
+            ok: true,
+            payload: Box::new(Value::Int(42)),
+        });
+        main.code.push(Op::Const(0));
+        main.line_info.push(1);
+        main.code.push(Op::TryUnwrap);
+        main.line_info.push(1);
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        let prog = Program {
+            main,
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Int(42) => {}
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_unwrap_some_option_via_vm() {
+        use crate::bytecode::{Chunk, Op, Program};
+        let mut main = Chunk::new();
+        main.constants
+            .push(Value::Option(Some(Box::new(Value::Int(7)))));
+        main.code.push(Op::Const(0));
+        main.line_info.push(1);
+        main.code.push(Op::TryUnwrap);
+        main.line_info.push(1);
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        let prog = Program {
+            main,
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Int(7) => {}
+            other => panic!("expected Int(7), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_unwrap_err_result_early_returns() {
+        // TryUnwrap on Err early-returns to the caller. When in main
+        // (frames.len()==1 after pop), the VM halts with the Err value.
+        use crate::bytecode::{Chunk, Op, Program};
+        let mut main = Chunk::new();
+        main.constants.push(Value::Result {
+            ok: false,
+            payload: Box::new(Value::Int(99)),
+        });
+        main.code.push(Op::Const(0));
+        main.line_info.push(1);
+        main.code.push(Op::TryUnwrap);
+        main.line_info.push(1);
+        // This Return is unreachable; TryUnwrap halts via early-return.
+        main.code.push(Op::Return);
+        main.line_info.push(1);
+        let prog = Program {
+            main,
+            functions: Vec::new(),
+            #[cfg(feature = "ffi")]
+            foreign_syms: Vec::new(),
+        };
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Result { ok: false, payload } => {
+                assert!(
+                    matches!(*payload, Value::Int(99)),
+                    "expected Int(99) payload, got {:?}",
+                    payload
+                );
+            }
+            other => panic!("expected Err(99), got {:?}", other),
+        }
+    }
+
+    // ── NamedArg ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn named_arg_compiles_without_unsupported() {
+        // NamedArg nodes appear at call sites with labelled arguments.
+        // The bytecode compiler must not return Unsupported for them.
+        // Compile `add(a: 3, b: 4)` — only the values matter.
+        let p = parse_one("fn add(int a, int b) -> int { return a + b; } add(a: 3, b: 4);");
+        let prog = compile(&p).expect("NamedArg must compile");
+        match crate::vm::run(&prog).expect("must run") {
+            Value::Int(7) => {}
+            other => panic!("expected Int(7), got {:?}", other),
         }
     }
 }

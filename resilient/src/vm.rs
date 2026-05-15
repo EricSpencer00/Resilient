@@ -836,6 +836,40 @@ fn run_inner(
                 let items: Vec<Value> = stack.drain(split_at..).collect();
                 stack.push(Value::Tuple(items));
             }
+            // RES-375/RES-363: `expr?` — try-unwrap.
+            Op::TryUnwrap => {
+                let v = stack.pop().ok_or(VmError::EmptyStack)?;
+                match v {
+                    Value::Result { ok: true, payload } => {
+                        stack.push(*payload);
+                    }
+                    Value::Option(Some(inner)) => {
+                        stack.push(*inner);
+                    }
+                    Value::Result { ok: false, payload } => {
+                        let ret = Value::Result { ok: false, payload };
+                        let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                        if frames.is_empty() {
+                            return Ok(ret);
+                        }
+                        locals.truncate(popped.locals_base);
+                        stack.push(ret);
+                    }
+                    Value::Option(None) => {
+                        let popped = frames.pop().ok_or(VmError::CallStackUnderflow)?;
+                        if frames.is_empty() {
+                            return Ok(Value::Option(None));
+                        }
+                        locals.truncate(popped.locals_base);
+                        stack.push(Value::Option(None));
+                    }
+                    _ => {
+                        return Err(VmError::TypeMismatch(
+                            "TryUnwrap: expected Result or Option",
+                        ));
+                    }
+                }
+            }
             Op::LoadIndex => {
                 let idx_val = stack.pop().ok_or(VmError::EmptyStack)?;
                 let target = stack.pop().ok_or(VmError::EmptyStack)?;
@@ -1157,7 +1191,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 37;
+const OP_KIND_COUNT: usize = 38;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -1212,6 +1246,7 @@ fn op_to_index(op: Op) -> usize {
         Op::AssertFail => OP_KIND_ASSERT_FAIL,
         Op::MakeTuple { .. } => OP_KIND_MAKE_TUPLE,
         Op::CallClosure { .. } => OP_KIND_CALL_CLOSURE,
+        Op::TryUnwrap => OP_KIND_TRY_UNWRAP,
     }
 }
 
@@ -1227,7 +1262,8 @@ const OP_KIND_SHR: usize = 39;
 const OP_KIND_ASSERT_FAIL: usize = 40;
 const OP_KIND_MAKE_TUPLE: usize = 41;
 const OP_KIND_CALL_CLOSURE: usize = 42;
-const HANDLER_TABLE_LEN: usize = 43;
+const OP_KIND_TRY_UNWRAP: usize = 43;
+const HANDLER_TABLE_LEN: usize = 44;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1276,6 +1312,7 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_ASSERT_FAIL] = h_assert_fail;
     table[OP_KIND_MAKE_TUPLE] = h_make_tuple;
     table[OP_KIND_CALL_CLOSURE] = h_call_closure;
+    table[OP_KIND_TRY_UNWRAP] = h_try_unwrap;
     table
 };
 
@@ -2060,6 +2097,48 @@ fn h_make_tuple(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     let items: Vec<Value> = state.stack.drain(split_at..).collect();
     state.stack.push(Value::Tuple(items));
     Ok(Step::Continue)
+}
+
+// RES-375/RES-363: try-unwrap handler for the direct-threaded path.
+// Mirrors the run_inner Op::TryUnwrap arm exactly.
+#[inline(never)]
+fn h_try_unwrap(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
+    if !matches!(op, Op::TryUnwrap) {
+        return Err(VmError::Unsupported("h_try_unwrap: wrong op"));
+    }
+    let v = state.stack.pop().ok_or(VmError::EmptyStack)?;
+    match v {
+        Value::Result { ok: true, payload } => {
+            state.stack.push(*payload);
+            Ok(Step::Continue)
+        }
+        Value::Option(Some(inner)) => {
+            state.stack.push(*inner);
+            Ok(Step::Continue)
+        }
+        Value::Result { ok: false, payload } => {
+            let ret = Value::Result { ok: false, payload };
+            let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            if state.frames.is_empty() {
+                return Ok(Step::Halt(ret));
+            }
+            state.locals.truncate(popped.locals_base);
+            state.stack.push(ret);
+            Ok(Step::Continue)
+        }
+        Value::Option(None) => {
+            let popped = state.frames.pop().ok_or(VmError::CallStackUnderflow)?;
+            if state.frames.is_empty() {
+                return Ok(Step::Halt(Value::Option(None)));
+            }
+            state.locals.truncate(popped.locals_base);
+            state.stack.push(Value::Option(None));
+            Ok(Step::Continue)
+        }
+        _ => Err(VmError::TypeMismatch(
+            "TryUnwrap: expected Result or Option",
+        )),
+    }
 }
 
 #[cfg(test)]

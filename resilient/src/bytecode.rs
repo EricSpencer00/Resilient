@@ -212,6 +212,18 @@ pub enum Op {
     /// same convention as `MakeArray`) and wrap them in a
     /// `Value::Tuple(Vec<Value>)`. Emitted for `(a, b, c)` tuple literals.
     MakeTuple { len: u16 },
+    /// RES-375/RES-363: pop TOS and unwrap it.
+    ///
+    /// - `Result { ok: true, payload }` → push `*payload`, continue.
+    /// - `Option(Some(v))` → push `*v`, continue.
+    /// - `Result { ok: false, payload }` → early return from the current
+    ///   function frame with `Result { ok: false, payload }` as the value.
+    /// - `Option(None)` → early return from the current function frame
+    ///   with `Option(None)` as the value.
+    /// - Any other type → `VmError::TypeMismatch`.
+    ///
+    /// Emitted for `expr?` (`Node::TryExpression`) nodes.
+    TryUnwrap,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
