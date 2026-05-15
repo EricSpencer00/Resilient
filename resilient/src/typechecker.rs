@@ -1649,28 +1649,26 @@ impl TypeChecker {
             env.set("array_is_sorted_float".to_string(), fn_array_to_bool());
             env.set("array_is_sorted_string".to_string(), fn_array_to_bool());
             // RES-1148: binary search on sorted int / float / string arrays.
-            // Return type is Result<Int, Int> — typed as `Any` since the type
-            // system has no generic Result<T, E> yet (same convention as the
-            // `checked_*` builtins in RES-1115).
+            // Returns Result<Int, Int> — typed as Result (RES-1859).
             env.set(
                 "array_binary_search".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             env.set(
                 "array_binary_search_float".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::Float],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             env.set(
                 "array_binary_search_string".to_string(),
                 Type::Function {
                     params: vec![Type::Array, Type::String],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             // RES-1150: statistical reductions — variance, stddev,
@@ -2368,42 +2366,42 @@ impl TypeChecker {
                     return_type: Box::new(Type::Int),
                 },
             );
-            // RES-449: array padding (3-arg: arr, n, fill).
-            let fn_any_int_any_to_any = Type::Function {
-                params: vec![Type::Any, Type::Int, Type::Any],
-                return_type: Box::new(Type::Any),
+            // RES-449: array padding (3-arg: arr, n, fill). Returns Array (RES-1859).
+            let fn_arr_int_any_to_arr = Type::Function {
+                params: vec![Type::Array, Type::Int, Type::Any],
+                return_type: Box::new(Type::Array),
             };
-            env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
-            env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
-            // RES-450: array_swap(arr, i, j) — 3-arg.
+            env.set("array_pad_left".to_string(), fn_arr_int_any_to_arr.clone());
+            env.set("array_pad_right".to_string(), fn_arr_int_any_to_arr);
+            // RES-450: array_swap(arr, i, j) — returns Array (RES-1859).
             env.set(
                 "array_swap".to_string(),
                 Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    params: vec![Type::Array, Type::Int, Type::Int],
+                    return_type: Box::new(Type::Array),
                 },
             );
-            // RES-451: insert/remove at index.
+            // RES-451: insert/remove at index — return Array (RES-1859).
             env.set(
                 "array_insert_at".to_string(),
                 Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
+                    params: vec![Type::Array, Type::Int, Type::Any],
+                    return_type: Box::new(Type::Array),
                 },
             );
             env.set(
                 "array_remove_at".to_string(),
                 Type::Function {
-                    params: vec![Type::Any, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    params: vec![Type::Array, Type::Int],
+                    return_type: Box::new(Type::Array),
                 },
             );
-            // RES-452: replace element at index.
+            // RES-452: replace element at index — returns Array (RES-1859).
             env.set(
                 "array_set_at".to_string(),
                 Type::Function {
-                    params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
+                    params: vec![Type::Array, Type::Int, Type::Any],
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-453: total Unicode-scalar at index.
@@ -2487,12 +2485,12 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
-            // RES-566: array of bytes → Result<String, String>.
+            // RES-566: array of bytes → Result<String, String> (RES-1859).
             env.set(
                 "string_from_bytes".to_string(),
                 Type::Function {
-                    params: vec![Type::Any],
-                    return_type: Box::new(Type::Any),
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Result),
                 },
             );
             // RES-464: parse int with explicit radix → Result<Int, String>.
@@ -2517,8 +2515,8 @@ impl TypeChecker {
             env.set("array_remove_all".to_string(), fn_any_any_to_array());
             // RES-468: collapse adjacent duplicates.
             env.set("array_dedup".to_string(), fn_array_to_array());
-            // RES-504: partition into maximal runs of equal int elements.
-            env.set("array_group_by_int".to_string(), fn_any_to_any());
+            // RES-504: partition into maximal runs of equal int elements — returns Array (RES-1859).
+            env.set("array_group_by_int".to_string(), fn_array_to_array());
             // RES-533: count of maximal runs.
             env.set(
                 "array_count_runs".to_string(),
@@ -5401,7 +5399,10 @@ impl TypeChecker {
             // expression itself has type `Array` so it can flow through
             // a `for x in <range>` (where the loop variable then gets
             // typed `Int`) or a `let r = <range>;` binding.
-            Node::Range { lo, hi, .. } => {
+            Node::Range { lo, hi, span, .. } => {
+                // RES-1862: track range span so the outer handler can prefix
+                // the error with file:line:col pointing at this expression.
+                self.current_span = *span;
                 let lo_t = self.check_node(lo)?;
                 let hi_t = self.check_node(hi)?;
                 let ok = |t: &Type| matches!(t, Type::Int | Type::Any);
@@ -5415,8 +5416,14 @@ impl TypeChecker {
             }
 
             Node::Assert {
-                condition, message, ..
+                condition,
+                message,
+                span: assert_span,
+                ..
             } => {
+                // RES-1862: track assert span so the outer file:line:col
+                // handler points here rather than the containing statement.
+                self.current_span = *assert_span;
                 // Condition must be a boolean expression
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
@@ -5446,8 +5453,13 @@ impl TypeChecker {
 
             // RES-133a: assume has the same type rules as assert
             Node::Assume {
-                condition, message, ..
+                condition,
+                message,
+                span: assume_span,
+                ..
             } => {
+                // RES-1862: track assume span for better diagnostics.
+                self.current_span = *assume_span;
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!(
@@ -5595,8 +5607,11 @@ impl TypeChecker {
                 fields,
                 has_rest,
                 value,
+                span: ds_span,
                 ..
             } => {
+                // RES-1862: track destructure span for diagnostics.
+                self.current_span = *ds_span;
                 let _ = self.check_node(value)?;
                 // Look up the struct's declared field list (may be
                 // absent if the struct hasn't been declared — we
@@ -5702,7 +5717,13 @@ impl TypeChecker {
                 Ok(Type::Any)
             }
 
-            Node::TryExpression { expr: inner, .. } => {
+            Node::TryExpression {
+                expr: inner,
+                span: try_span,
+                ..
+            } => {
+                // RES-1862: track the `?` expression span for diagnostics.
+                self.current_span = *try_span;
                 let inner_type = self.check_node(inner)?;
                 // `?` expects a Result and unwraps to Any at MVP (we
                 // don't track Ok's payload type yet).

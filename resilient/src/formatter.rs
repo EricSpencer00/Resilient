@@ -2129,6 +2129,56 @@ struct Point {
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         let out = Formatter::format(&prog);
         assert!(out.contains("forall"), "forall must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "forall quantifier format not idempotent");
+    }
+
+    #[test]
+    fn fmt_quantifier_exists() {
+        let src = "let ok = exists x in 0..10: x > 5;";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("exists"), "exists must appear: {out}");
+        assert!(out.contains("x"), "variable x must appear: {out}");
+        assert!(out.contains("> 5"), "body must appear: {out}");
+        // Idempotence.
+        let (prog2, errs2) = parse(&out);
+        assert!(errs2.is_empty(), "re-parse failed: {:?}\n{out}", errs2);
+        let out2 = Formatter::format(&prog2);
+        assert_eq!(out, out2, "exists quantifier format not idempotent");
+    }
+
+    #[test]
+    fn fmt_quantifier_iterable() {
+        let src = "fn f(array a) -> bool { return forall x in a: x > 0; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("forall"), "forall must appear: {out}");
+        assert!(out.contains("in a"), "iterable range must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_unsafe_block() {
+        let src = "unsafe { let x = 1; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains("unsafe"), "unsafe must appear: {out}");
+        assert!(out.contains("let x"), "body must appear: {out}");
+    }
+
+    #[test]
+    fn fmt_slice_expression() {
+        let src = "fn f(array a) -> array { return a[1..3]; }";
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let out = Formatter::format(&prog);
+        assert!(out.contains(".."), "slice .. must appear: {out}");
     }
 
     #[test]
