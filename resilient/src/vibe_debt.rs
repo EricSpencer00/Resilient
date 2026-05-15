@@ -182,15 +182,35 @@ fn collect_refs<'a>(node: &'a Node, out: &mut HashMap<&'a str, u32>) {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1206: this pass historically called `analyze(program)` and
-    // immediately discarded the returned `VibeDebtReport`. The real
-    // consumer (`autopilot::run` at autopilot.rs:42) calls `analyze`
-    // directly when it needs the report, so the work here was
-    // unobservable: a HashMap allocation, an AST walk, and a Vec
-    // population, all dropped on function exit. The entry point is
-    // kept so the `EXTENSION_PASSES` block in `typechecker.rs` stays
-    // undisturbed and a future use can flow data through this slot.
+/// Warn when any function has zero contracts and when program-wide
+/// vibe debt exceeds 75%.
+///
+/// These are advisory warnings — high vibe debt is not a compile
+/// error, but it should surface in the build log so developers
+/// know they are shipping unverified code.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let report = analyze(program);
+    if report.entries.is_empty() {
+        return Ok(());
+    }
+    for entry in report.entries.iter().filter(|e| e.is_full_vibe()) {
+        eprintln!(
+            "{source_path}:0:0: warning[vibe_debt]: \
+             `{}` has no contracts, no effect annotation, and is \
+             unreferenced — fully vibe-coded",
+            entry.function_name
+        );
+    }
+    if report.debt_percent > 75.0 {
+        eprintln!(
+            "{source_path}:0:0: warning[vibe_debt]: \
+             program-wide vibe debt is {:.1}% \
+             ({} of {} function(s) have zero verification signals)",
+            report.debt_percent,
+            report.fully_vibe_count,
+            report.entries.len()
+        );
+    }
     Ok(())
 }
 
@@ -242,6 +262,42 @@ mod tests {
         assert!(add.is_referenced);
         assert!(add.has_effect_annotation);
         assert_eq!(add.signals_present(), 4);
+    }
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_fully_vibe_program() {
+        // check() is advisory — it always returns Ok() regardless of debt.
+        let src = r#"
+            fn a(int x) { return x; }
+            fn b(int x) { return x; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_well_specified_program() {
+        let src = r#"
+            pure fn add(int a, int b) -> int
+                requires a >= 0 && b >= 0
+                ensures result >= 0
+            {
+                return a + b;
+            }
+            fn caller(int dummy) {
+                let x = add(1, 2);
+            }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
     }
 
     #[test]

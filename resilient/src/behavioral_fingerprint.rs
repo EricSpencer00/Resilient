@@ -150,16 +150,79 @@ pub fn diff_fingerprints(
     changed
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1206: this pass historically called `fingerprint_program`
-    // and discarded the returned `HashMap<String, Fingerprint>`. The
-    // CLI's `--check-fingerprints` mode (and any external integrator)
-    // builds its own map from `fingerprint_program(program)` when it
-    // needs one, so the work here was unobservable. The entry point
-    // is kept so the `EXTENSION_PASSES` block in `typechecker.rs`
-    // stays undisturbed and a future use can flow data through this
-    // slot.
-    Ok(())
+/// Check for behavioral regressions against a stored fingerprint
+/// snapshot in `.resilient/fingerprints.lock`.
+///
+/// If no fingerprints file exists the check passes silently (first
+/// run). If the file exists, each function whose contract digest
+/// changed since the snapshot was recorded is reported as a hard
+/// error so the regression surfaces in CI.
+///
+/// Update the snapshot with `rz fingerprint --update` after an
+/// intentional contract change.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let source_dir = std::path::Path::new(source_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    let fp_path = source_dir.join(".resilient").join("fingerprints.lock");
+    if !fp_path.exists() {
+        return Ok(());
+    }
+    let content = match std::fs::read_to_string(&fp_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let stored = parse_fingerprint_lock(&content);
+    if stored.is_empty() {
+        return Ok(());
+    }
+    let current = fingerprint_program(program);
+    let mut regressions: Vec<String> = Vec::new();
+    for (name, fp) in &current {
+        if let Some(&stored_digest) = stored.get(name.as_str()) {
+            if stored_digest != fp.digest {
+                regressions.push(name.clone());
+            }
+        }
+    }
+    regressions.sort();
+    if regressions.is_empty() {
+        return Ok(());
+    }
+    let msgs: Vec<String> = regressions
+        .iter()
+        .map(|name| {
+            format!(
+                "{source_path}:0:0: error[fingerprint]: behavioral fingerprint of \
+                 `{name}` changed — contracts or parameter types were modified; \
+                 run `rz fingerprint --update` if the change is intentional"
+            )
+        })
+        .collect();
+    Err(msgs.join("\n"))
+}
+
+/// Parse `.resilient/fingerprints.lock` — lines of the form:
+/// ```text
+/// fn_name = 0xdeadbeef01234567
+/// ```
+fn parse_fingerprint_lock(s: &str) -> HashMap<String, u64> {
+    let mut out = HashMap::new();
+    for line in s.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim().to_string();
+            let v = v.trim();
+            let hex = v.strip_prefix("0x").unwrap_or(v);
+            if let Ok(digest) = u64::from_str_radix(hex, 16) {
+                out.insert(k, digest);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -210,6 +273,78 @@ mod tests {
             f1["f"].digest, f2["f"].digest,
             "body refactor must not break the fingerprint"
         );
+    }
+
+    // ── parse_fingerprint_lock ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_lock_valid_entries() {
+        let s = "# comment\nf = 0xdeadbeef00000001\ng = 0x0000000000000002\n";
+        let m = parse_fingerprint_lock(s);
+        assert_eq!(m.get("f"), Some(&0xdeadbeef00000001_u64));
+        assert_eq!(m.get("g"), Some(&0x0000000000000002_u64));
+    }
+
+    #[test]
+    fn parse_lock_skips_bad_lines() {
+        let s = "f = not_a_hex\ng = 0xABCD\n";
+        let m = parse_fingerprint_lock(s);
+        assert!(!m.contains_key("f"));
+        assert_eq!(m.get("g"), Some(&0xABCD_u64));
+    }
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_ok_when_no_fingerprints_file() {
+        let tmp = std::env::temp_dir().join("__rz_fp_no_file_test.rz");
+        std::fs::write(&tmp, b"fn f() {}").unwrap();
+        let (prog, _) = parse("fn f(int x) { return x; }");
+        assert!(check(&prog, tmp.to_str().unwrap()).is_ok());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn check_ok_when_fingerprints_match() {
+        let dir = std::env::temp_dir().join("__rz_fp_match_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }";
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, src.as_bytes()).unwrap();
+        let (prog, _) = parse(src);
+        let fps = fingerprint_program(&prog);
+        let digest = fps["f"].digest;
+        let fp_dir = dir.join(".resilient");
+        std::fs::create_dir_all(&fp_dir).unwrap();
+        std::fs::write(
+            fp_dir.join("fingerprints.lock"),
+            format!("f = 0x{:016x}\n", digest).as_bytes(),
+        )
+        .unwrap();
+        assert!(check(&prog, src_path.to_str().unwrap()).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_errors_when_fingerprint_changed() {
+        let dir = std::env::temp_dir().join("__rz_fp_changed_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }";
+        let src_path = dir.join("main.rz");
+        std::fs::write(&src_path, src.as_bytes()).unwrap();
+        let (prog, _) = parse(src);
+        let fp_dir = dir.join(".resilient");
+        std::fs::create_dir_all(&fp_dir).unwrap();
+        // Store a deliberately wrong digest
+        std::fs::write(
+            fp_dir.join("fingerprints.lock"),
+            b"f = 0x0000000000000001\n",
+        )
+        .unwrap();
+        let result = check(&prog, src_path.to_str().unwrap());
+        assert!(result.is_err(), "expected error for changed fingerprint");
+        assert!(result.unwrap_err().contains("fingerprint"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
