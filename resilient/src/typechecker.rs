@@ -2397,6 +2397,30 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+            // RES-2651: Result/Option HOF.
+            let result_fn_2 = Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            };
+            env.set("result_map".to_string(), result_fn_2.clone());
+            env.set("result_and_then".to_string(), result_fn_2.clone());
+            env.set("result_map_err".to_string(), result_fn_2.clone());
+            env.set("result_or_else".to_string(), result_fn_2);
+            let option_fn_2 = Type::Function {
+                params: vec![Type::Any, Type::Any],
+                return_type: Box::new(Type::Any),
+            };
+            env.set("option_map".to_string(), option_fn_2.clone());
+            env.set("option_and_then".to_string(), option_fn_2.clone());
+            env.set("option_filter".to_string(), option_fn_2.clone());
+            env.set("option_or_else".to_string(), option_fn_2);
+            env.set(
+                "option_ok_or".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -8769,6 +8793,16 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_frequency_map",
         "array_key_by",
         "array_iterate",
+        // RES-2651: Result/Option HOF.
+        "result_map",
+        "result_and_then",
+        "result_map_err",
+        "result_or_else",
+        "option_map",
+        "option_and_then",
+        "option_filter",
+        "option_or_else",
+        "option_ok_or",
         "map_invert",
         // RES-416: array reductions.
         "array_sum",

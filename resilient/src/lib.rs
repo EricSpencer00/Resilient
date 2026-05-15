@@ -21,6 +21,7 @@ mod map_functional;
 mod string_hof;
 mod numeric_utils;
 mod collection_extras;
+mod result_option_hof;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -11655,6 +11656,11 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "array_frequency_map",
         crate::collection_extras::builtin_array_frequency_map,
     ),
+    // RES-2651: Option/Result HOF (pure).
+    (
+        "option_ok_or",
+        crate::result_option_hof::builtin_option_ok_or,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -22738,6 +22744,39 @@ impl Interpreter {
                         "array_iterate" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::collection_extras::builtin_array_iterate(self, &args);
+                        }
+                        // RES-2651: Result/Option higher-order operations.
+                        "result_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_map(self, &args);
+                        }
+                        "result_and_then" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_and_then(self, &args);
+                        }
+                        "result_map_err" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_map_err(self, &args);
+                        }
+                        "result_or_else" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_result_or_else(self, &args);
+                        }
+                        "option_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_map(self, &args);
+                        }
+                        "option_and_then" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_and_then(self, &args);
+                        }
+                        "option_filter" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_filter(self, &args);
+                        }
+                        "option_or_else" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::result_option_hof::builtin_option_or_else(self, &args);
                         }
                         _ => {}
                     }
