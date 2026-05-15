@@ -15,6 +15,7 @@ mod alignment_helpers;
 // RES-1160: argmax / argmin for float and string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_argminmax;
+mod array_functional;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -11622,6 +11623,11 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("rotate_left", crate::int_rotate::builtin_rotate_left),
     ("rotate_right", crate::int_rotate::builtin_rotate_right),
     ("signum", crate::int_rotate::builtin_signum),
+    // RES-2646: map construction from key-value pairs.
+    (
+        "map_from_pairs",
+        crate::array_functional::builtin_map_from_pairs,
+    ),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
@@ -22601,6 +22607,21 @@ impl Interpreter {
                                     ));
                                 }
                             }
+                        }
+                        // RES-2646: array_flat_map / array_group_by / array_partition.
+                        // These need interpreter access (apply_function) so they
+                        // are dispatched inline like array_map / array_filter.
+                        "array_flat_map" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_flat_map(self, &args);
+                        }
+                        "array_group_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_group_by(self, &args);
+                        }
+                        "array_partition" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_functional::builtin_array_partition(self, &args);
                         }
                         _ => {}
                     }

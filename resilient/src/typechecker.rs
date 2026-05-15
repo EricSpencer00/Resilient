@@ -2160,6 +2160,39 @@ impl TypeChecker {
                     return_type: Box::new(Type::Bool),
                 },
             );
+            // RES-2646: higher-order functional array operations.
+            env.set(
+                "array_flat_map".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // array_group_by returns a Map (unparameterised, same convention
+            // as other map builtins — Type::Any until Map<K,V> lands).
+            env.set(
+                "array_group_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // array_partition returns [[passing], [failing]] — two-element array.
+            env.set(
+                "array_partition".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
+            // map_from_pairs(pairs) -> Map (Any until Map<K,V> lands).
+            env.set(
+                "map_from_pairs".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Any),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -8491,6 +8524,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_find_index",
         "array_any",
         "array_all",
+        // RES-2646: higher-order functional array operations.
+        "array_flat_map",
+        "array_group_by",
+        "array_partition",
+        "map_from_pairs",
         // RES-416: array reductions.
         "array_sum",
         "array_product",
