@@ -306,7 +306,11 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
             }
         }
         Node::BooleanLiteral { value, .. } => {
-            if *value { "true".to_string() } else { "false".to_string() }
+            if *value {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
         }
         Node::Identifier { name, .. } => name.clone(),
         Node::InfixExpression {
@@ -335,7 +339,9 @@ pub(crate) fn node_to_smtlib2(node: &Node) -> String {
             };
             format!("({op} {l} {r})")
         }
-        Node::PrefixExpression { operator, right, .. } => {
+        Node::PrefixExpression {
+            operator, right, ..
+        } => {
             let r = node_to_smtlib2(right);
             match operator.as_str() {
                 "!" => format!("(not {r})"),
@@ -399,7 +405,9 @@ pub(crate) fn generate_prefix_obligation(
 
     let mut buf = String::with_capacity(256);
     buf.push_str("(push)\n");
-    buf.push_str(&format!("; RES-392b: per-prefix obligation for prefix {prefix_id}\n"));
+    buf.push_str(&format!(
+        "; RES-392b: per-prefix obligation for prefix {prefix_id}\n"
+    ));
 
     // Declare each free variable as an Int (conservative: the solver
     // will accept Int arithmetic for most embedded numeric programs).
@@ -527,8 +535,14 @@ mod tests {
 
     #[test]
     fn smtlib2_bool_literal() {
-        let t = Node::BooleanLiteral { value: true, span: Span::default() };
-        let f = Node::BooleanLiteral { value: false, span: Span::default() };
+        let t = Node::BooleanLiteral {
+            value: true,
+            span: Span::default(),
+        };
+        let f = Node::BooleanLiteral {
+            value: false,
+            span: Span::default(),
+        };
         assert_eq!(node_to_smtlib2(&t), "true");
         assert_eq!(node_to_smtlib2(&f), "false");
     }
@@ -623,7 +637,10 @@ mod tests {
 
     #[test]
     fn generate_prefix_obligation_push_pop_balanced() {
-        let clause = Node::BooleanLiteral { value: true, span: Span::default() };
+        let clause = Node::BooleanLiteral {
+            value: true,
+            span: Span::default(),
+        };
         let obligation = generate_prefix_obligation(3, "init_f", &clause);
         assert!(
             obligation.starts_with("(push)"),

@@ -3453,9 +3453,7 @@ fn walk_l0028(node: &Node, out: &mut Vec<Lint>) {
         out.push(Lint {
             code: "L0028".into(),
             severity: Severity::Warning,
-            message: format!(
-                "`!{literal}` is always `{result}` — use `{result}` directly"
-            ),
+            message: format!("`!{literal}` is always `{result}` — use `{result}` directly"),
             line: span.start.line as u32,
             column: span.start.column as u32,
         });
@@ -5122,7 +5120,8 @@ mod tests {
 
     #[test]
     fn l0029_silent_when_used_in_if() {
-        let src = "fn f(int x, int y) -> bool { if x == y { return true; } return false; }\nf(1, 2);\n";
+        let src =
+            "fn f(int x, int y) -> bool { if x == y { return true; } return false; }\nf(1, 2);\n";
         assert!(
             !codes(src).contains(&"L0029".to_string()),
             "L0029 must not fire when comparison is used as condition"
