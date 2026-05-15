@@ -6078,15 +6078,29 @@ impl TypeChecker {
             // RES-128: register the alias. Resolution (with cycle
             // detection) happens in `parse_type_name` / the companion
             // `resolve_type_alias` helper; this arm just records the
-            // mapping. A duplicate alias-name declaration overwrites
-            // the earlier one — consistent with how `StructDecl`
-            // treats duplicate struct names today.
+            // mapping.
             //
             // NOTE: aliases are NOT nominal — `Meters` unifies with
             // `Int`. Users who want a fresh nominal type wrap the
             // target in a one-field struct (RES-126 covers the
             // nominal rule).
-            Node::TypeAlias { name, target, .. } => {
+            Node::TypeAlias { name, target, span } => {
+                // RES-410: duplicate type alias is an error, but only
+                // when the alias is being registered for the first time
+                // in the main pass. The pre-pass at the top of
+                // Node::Program may have already inserted the alias so
+                // function parameters can reference it; in that case
+                // the target string matches and we silently accept the
+                // re-registration. A genuine re-declaration with a
+                // *different* target is the error we want to catch.
+                if let Some(prev_target) = self.type_aliases.get(name)
+                    && prev_target != target
+                {
+                    return Err(format!(
+                        "{}:{}:{}: error: duplicate type alias `{}` — previously defined as `{}`, now re-defined as `{}`",
+                        self.source_path, span.start.line, span.start.column, name, prev_target, target,
+                    ));
+                }
                 self.type_aliases.insert(name.clone(), target.clone());
                 Ok(Type::Void)
             }
@@ -7214,6 +7228,29 @@ impl TypeChecker {
                                 }
                             }
                         }
+                    }
+                }
+
+                // RES-410: call-site type inference for numeric polymorphic
+                // builtins registered as (Any, Any) -> Any. When all
+                // arguments agree on the same concrete numeric type,
+                // propagate that type as the return instead of Any.
+                // This catches cases like `let x = min(1, 2); x + 1`
+                // which previously inferred x as Any.
+                if let Node::Identifier { name: callee_name, .. } = function.as_ref()
+                    && matches!(
+                        callee_name.as_str(),
+                        "min" | "max" | "pow" | "abs" | "sign" | "clamp"
+                    )
+                    && matches!(func_type, Type::Function { .. })
+                {
+                    let mut arg_types: Vec<Type> = Vec::with_capacity(arguments.len());
+                    for arg in arguments {
+                        arg_types.push(self.check_node(arg)?);
+                    }
+                    let common = infer_common_arm_type(&arg_types);
+                    if common != Type::Any {
+                        return Ok(common);
                     }
                 }
 
@@ -11365,6 +11402,89 @@ fn f() -> void { }
         assert!(
             err.contains("duplicate") || err.contains("Point"),
             "expected duplicate struct error; got: {err}"
+        );
+    }
+}
+
+// ── RES-410: min/max/pow type inference + duplicate TypeAlias ──────────────
+
+#[cfg(test)]
+mod res410_numeric_poly_and_type_alias {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── min/max/pow type inference ────────────────────────────────────────────
+
+    #[test]
+    fn min_int_args_returns_int() {
+        // min(1, 2) should infer Int; `x + 1` must succeed.
+        check_ok(r#"fn f() -> int { let x = min(1, 2); return x + 1; }"#);
+    }
+
+    #[test]
+    fn max_float_args_returns_float() {
+        check_ok(r#"fn f() -> float { let x = max(1.0, 2.0); return x; }"#);
+    }
+
+    #[test]
+    fn pow_int_args_returns_int() {
+        check_ok(r#"fn f() -> int { let x = pow(2, 10); return x; }"#);
+    }
+
+    #[test]
+    fn min_mixed_types_returns_any() {
+        // Mixed types → Any; the function call itself still succeeds.
+        check_ok(r#"fn f() -> void { let _x = min(1, 2.0); }"#);
+    }
+
+    // ── duplicate type alias ──────────────────────────────────────────────────
+
+    #[test]
+    fn unique_type_alias_ok() {
+        check_ok(r#"
+type Meters = float;
+fn f(Meters m) -> float { return m; }
+"#);
+    }
+
+    #[test]
+    fn duplicate_type_alias_same_target_ok() {
+        // Re-declaring to the same target is silently accepted (the
+        // pre-pass may have already registered it).
+        check_ok(r#"
+type Meters = float;
+fn f() -> void { }
+"#);
+    }
+
+    #[test]
+    fn duplicate_type_alias_different_target_errors() {
+        // Re-declaring with a different target is a compile error.
+        let src = "type M = int;\ntype M = float;\nfn f() -> void { }\n";
+        let (prog, parse_errs) = crate::parse(src);
+        assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
+        let err = TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected duplicate alias error");
+        assert!(
+            err.contains("duplicate type alias") || err.contains("M"),
+            "expected duplicate-alias error; got: {err}"
         );
     }
 }
