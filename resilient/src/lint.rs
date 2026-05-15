@@ -135,6 +135,16 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0073", // duplicate requires/ensures contract clause (same text repeated)
     "L0074", // pure function call result discarded as expression statement
     "L0075", // trivially-vacuous contract clause (requires true / requires false / ensures false)
+    "L0076", // `result` identifier used in a `requires` clause (only valid in `ensures`)
+    "L0077", // `ensures result` in a function without a declared return type
+    "L0078", // function parameter name shadows a builtin function
+    "L0079", // function body is empty (no statements)
+    "L0080", // `let` binding is immediately overwritten before first use
+    "L0081", // duplicate consecutive `assert` statements with the same condition
+    "L0082", // both branches of `if/else` are empty blocks
+    "L0083", // `@noreturn`-annotated function has a declared return type
+    "L0084", // function defined inside another function body (nested function)
+    "L0085", // struct declaration with zero fields
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -967,6 +977,68 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: replace with a meaningful contract, or remove the clause.\n\
              Suppress: // resilient: allow L0075",
         ),
+        "L0076" => Some(
+            "L0076 — `result` in `requires` clause\n\
+             `result` refers to the return value of a function and is only in scope inside\n\
+             `ensures` clauses. Using it in `requires` is almost certainly a typo — move\n\
+             the condition to an `ensures` clause.\n\
+             Suppress: // resilient: allow L0076",
+        ),
+        "L0077" => Some(
+            "L0077 — `ensures result` on a void function\n\
+             The special identifier `result` refers to a function's return value. A function\n\
+             with no declared return type has no `result` to constrain.\n\
+             Suppress: // resilient: allow L0077",
+        ),
+        "L0078" => Some(
+            "L0078 — parameter name shadows builtin\n\
+             Choosing a parameter name that matches a builtin function name hides the builtin\n\
+             inside the function body. Rename the parameter to avoid confusion.\n\
+             Suppress: // resilient: allow L0078",
+        ),
+        "L0079" => Some(
+            "L0079 — empty function body\n\
+             The function contains no statements. If this is intentional (a stub or no-op),\n\
+             add a comment explaining why. Otherwise add the missing implementation.\n\
+             Suppress: // resilient: allow L0079",
+        ),
+        "L0080" => Some(
+            "L0080 — initial `let` value overwritten before use\n\
+             The binding is assigned in the `let` declaration and then immediately overwritten\n\
+             on the next line before the original value is read. The initializer is dead code.\n\
+             Suppress: // resilient: allow L0080",
+        ),
+        "L0081" => Some(
+            "L0081 — duplicate consecutive `assert`\n\
+             The same condition is asserted twice in a row. The second assertion is redundant\n\
+             because the first already guarantees it holds (or aborts if it doesn't).\n\
+             Suppress: // resilient: allow L0081",
+        ),
+        "L0082" => Some(
+            "L0082 — both `if/else` branches are empty\n\
+             Both the `if` and `else` blocks contain no statements. The entire `if/else`\n\
+             expression has no effect and can be removed.\n\
+             Suppress: // resilient: allow L0082",
+        ),
+        "L0083" => Some(
+            "L0083 — `@noreturn` function with return type\n\
+             A function annotated with `// @noreturn` never returns to its caller, so a\n\
+             return-type annotation is a contradiction. Remove the return type or the\n\
+             `@noreturn` annotation.\n\
+             Suppress: // resilient: allow L0083",
+        ),
+        "L0084" => Some(
+            "L0084 — nested function definition\n\
+             Defining a function inside another function body is unusual and can make the\n\
+             code harder to follow. Consider hoisting the inner function to the top level.\n\
+             Suppress: // resilient: allow L0084",
+        ),
+        "L0085" => Some(
+            "L0085 — struct with no fields\n\
+             A struct with zero fields is usually a placeholder. If it's intentional,\n\
+             add a comment. Otherwise add the missing fields.\n\
+             Suppress: // resilient: allow L0085",
+        ),
         _ => None,
     }
 }
@@ -1069,6 +1141,8 @@ struct LintTriggers {
     has_expr_stmt_call: bool,
     /// L0075: any function with a boolean-literal contract clause.
     has_bool_literal_contract: bool,
+    /// L0085: any `struct` declaration with zero fields.
+    has_empty_struct: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -1258,6 +1332,9 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::Assignment { .. } => t.has_assignment = true,
         Node::ReturnStatement { .. } => t.has_return_in_block = true,
         Node::Break { .. } | Node::Continue { .. } => t.has_break_continue = true,
+        Node::StructDecl { fields, .. } if fields.is_empty() => {
+            t.has_empty_struct = true;
+        }
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -1481,6 +1558,28 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_bool_literal_contract {
         run_l0075_vacuous_contract_clause(program, &mut out);
+    }
+    if t.has_function {
+        run_l0076_result_in_requires(program, &mut out);
+        run_l0077_ensures_result_void(program, &mut out);
+        run_l0078_param_shadows_builtin(program, &mut out);
+        run_l0079_empty_function_body(program, &mut out);
+        run_l0084_nested_function(program, &mut out);
+    }
+    if t.has_let_binding && t.has_assignment {
+        run_l0080_dead_let_init(program, &mut out);
+    }
+    if t.has_assert_stmt {
+        run_l0081_duplicate_assert(program, &mut out);
+    }
+    if t.has_if_with_else {
+        run_l0082_both_branches_empty(program, &mut out);
+    }
+    if t.has_noreturn_call {
+        run_l0083_noreturn_with_return_type(program, source, &mut out);
+    }
+    if t.has_empty_struct {
+        run_l0085_empty_struct(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -6573,6 +6672,340 @@ fn walk_l0070(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0076: `result` identifier used inside a `requires` clause
+// ============================================================
+
+fn contains_result_identifier(node: &Node) -> bool {
+    if matches!(node, Node::Identifier { name, .. } if name == "result") {
+        return true;
+    }
+    let mut found = false;
+    recurse_children(node, &mut |child| {
+        if contains_result_identifier(child) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn run_l0076_result_in_requires(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::Function {
+            name,
+            requires,
+            span,
+            ..
+        } = &s.node
+        {
+            for req in requires {
+                if contains_result_identifier(req) {
+                    out.push(Lint {
+                        code: "L0076".into(),
+                        message: format!(
+                            "`result` is not in scope in `requires` clauses — \
+                             use `ensures` for postconditions (function `{name}`)"
+                        ),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                        severity: Severity::Warning,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// L0077: `ensures result` in a function with no return type
+// ============================================================
+
+fn run_l0077_ensures_result_void(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::Function {
+            name,
+            return_type: None,
+            ensures,
+            span,
+            ..
+        } = &s.node
+        {
+            for ens in ensures {
+                if contains_result_identifier(ens) {
+                    out.push(Lint {
+                        code: "L0077".into(),
+                        message: format!(
+                            "`ensures result` on void function `{name}` — \
+                             function has no return value to constrain"
+                        ),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                        severity: Severity::Warning,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// L0078: Function parameter shadows a builtin function name
+// ============================================================
+
+const SHADOWED_BUILTINS: &[&str] = &[
+    "len", "print", "println", "assert", "format", "abs", "min", "max",
+    "sqrt", "panic", "abort", "push", "pop", "contains", "split", "join",
+    "range", "keys", "values", "type_of", "exit",
+];
+
+fn run_l0078_param_shadows_builtin(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::Function {
+            name: fn_name,
+            parameters,
+            span,
+            ..
+        } = &s.node
+        {
+            for (_ty, param_name) in parameters {
+                if SHADOWED_BUILTINS.contains(&param_name.as_str()) {
+                    out.push(Lint {
+                        code: "L0078".into(),
+                        message: format!(
+                            "parameter `{param_name}` in `{fn_name}` shadows \
+                             builtin function `{param_name}()`"
+                        ),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                        severity: Severity::Warning,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// L0079: Empty function body
+// ============================================================
+
+fn run_l0079_empty_function_body(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::Function { name, body, span, .. } = &s.node
+            && let Node::Block { stmts: body_stmts, .. } = body.as_ref()
+            && body_stmts.is_empty()
+        {
+            out.push(Lint {
+                code: "L0079".into(),
+                message: format!("function `{name}` has an empty body"),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+}
+
+// ============================================================
+// L0080: `let` binding immediately overwritten before first use
+// ============================================================
+
+fn run_l0080_dead_let_init(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0080(program, out);
+}
+
+fn walk_l0080(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        for i in 0..stmts.len().saturating_sub(1) {
+            if let Node::LetStatement { name, span, .. } = &stmts[i]
+                && let Node::Assignment { name: asgn_name, .. } = &stmts[i + 1]
+                && asgn_name == name
+            {
+                out.push(Lint {
+                    code: "L0080".into(),
+                    message: format!(
+                        "initial value of `{name}` is overwritten before use — \
+                         the `let` initialization is dead"
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                    severity: Severity::Warning,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0080(child, out));
+}
+
+// ============================================================
+// L0081: Duplicate consecutive `assert` statements
+// ============================================================
+
+fn run_l0081_duplicate_assert(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0081(program, out);
+}
+
+fn walk_l0081(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        for i in 0..stmts.len().saturating_sub(1) {
+            if let Node::Assert { condition: cond1, span: span1, .. } = &stmts[i]
+                && let Node::Assert { condition: cond2, span, .. } = &stmts[i + 1]
+                && clause_text(cond1) == clause_text(cond2)
+            {
+                out.push(Lint {
+                    code: "L0081".into(),
+                    message: format!(
+                        "duplicate `assert` — condition `{}` was already asserted \
+                         on line {}",
+                        clause_text(cond1),
+                        span1.start.line
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                    severity: Severity::Warning,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0081(child, out));
+}
+
+// ============================================================
+// L0082: Both branches of if/else are empty
+// ============================================================
+
+fn run_l0082_both_branches_empty(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0082(program, out);
+}
+
+fn walk_l0082(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence,
+        alternative: Some(alt),
+        span,
+        ..
+    } = node
+    {
+        let then_empty =
+            matches!(consequence.as_ref(), Node::Block { stmts, .. } if stmts.is_empty());
+        let else_empty = matches!(alt.as_ref(), Node::Block { stmts, .. } if stmts.is_empty());
+        if then_empty && else_empty {
+            out.push(Lint {
+                code: "L0082".into(),
+                message: "both branches of this `if/else` are empty — the statement has no effect"
+                    .into(),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0082(child, out));
+}
+
+// ============================================================
+// L0083: `@noreturn`-annotated function has a declared return type
+// ============================================================
+
+fn run_l0083_noreturn_with_return_type(program: &Node, source: &str, out: &mut Vec<Lint>) {
+    let noreturn_fns = collect_noreturn_functions(source);
+    if noreturn_fns.is_empty() {
+        return;
+    }
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::Function {
+            name,
+            return_type: Some(rt),
+            span,
+            ..
+        } = &s.node
+            && noreturn_fns.contains(name.as_str())
+        {
+            out.push(Lint {
+                code: "L0083".into(),
+                message: format!(
+                    "`@noreturn` function `{name}` declares return type `{rt}` — \
+                     `@noreturn` functions never return to the caller"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+}
+
+// ============================================================
+// L0084: Nested function definition
+// ============================================================
+
+fn run_l0084_nested_function(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::Function {
+            name: outer_name,
+            body,
+            ..
+        } = &s.node
+        {
+            walk_l0084_in_body(body, outer_name, out);
+        }
+    }
+}
+
+fn walk_l0084_in_body(node: &Node, outer_name: &str, out: &mut Vec<Lint>) {
+    if let Node::Function { name, span, .. } = node {
+        out.push(Lint {
+            code: "L0084".into(),
+            message: format!(
+                "nested function `{name}` defined inside `{outer_name}` — \
+                 consider hoisting to top level"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+            severity: Severity::Warning,
+        });
+        // don't recurse deeper into nested-of-nested to avoid duplicate reports
+        return;
+    }
+    recurse_children(node, &mut |child| walk_l0084_in_body(child, outer_name, out));
+}
+
+// ============================================================
+// L0085: Struct with zero fields
+// ============================================================
+
+fn run_l0085_empty_struct(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else { return };
+    for s in stmts {
+        if let Node::StructDecl {
+            name,
+            fields,
+            span,
+            ..
+        } = &s.node
+            && fields.is_empty()
+        {
+            out.push(Lint {
+                code: "L0085".into(),
+                message: format!(
+                    "struct `{name}` has no fields — add fields or replace with a type alias"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+                severity: Severity::Warning,
+            });
+        }
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -9567,6 +10000,218 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0070".to_string()),
             "L0070 must not fire for `x || true`"
+        );
+    }
+
+    // ── L0076 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0076_fires_on_result_in_requires() {
+        let src = "fn f(int x) -> int requires result > 0 { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0076".to_string()),
+            "L0076 must fire when `result` appears in a requires clause; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0076_silent_for_result_in_ensures() {
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }\n";
+        assert!(
+            !codes(src).contains(&"L0076".to_string()),
+            "L0076 must not fire when `result` appears in an ensures clause"
+        );
+    }
+
+    // ── L0077 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0077_fires_on_ensures_result_in_void_fn() {
+        let src = "fn f(int x) ensures result > 0 { println(x); }\n";
+        assert!(
+            codes(src).contains(&"L0077".to_string()),
+            "L0077 must fire for ensures result in void function; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0077_silent_for_ensures_result_in_returning_fn() {
+        let src = "fn f(int x) -> int ensures result > 0 { return x + 1; }\n";
+        assert!(
+            !codes(src).contains(&"L0077".to_string()),
+            "L0077 must not fire when function has a return type"
+        );
+    }
+
+    // ── L0078 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0078_fires_on_builtin_shadow() {
+        let src = "fn f(int len) { return len; }\n";
+        assert!(
+            codes(src).contains(&"L0078".to_string()),
+            "L0078 must fire when parameter shadows builtin `len`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0078_silent_for_normal_param_name() {
+        let src = "fn f(int size) { return size; }\n";
+        assert!(
+            !codes(src).contains(&"L0078".to_string()),
+            "L0078 must not fire for normal parameter names"
+        );
+    }
+
+    // ── L0079 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0079_fires_on_empty_body() {
+        let src = "fn f(int x) { }\n";
+        assert!(
+            codes(src).contains(&"L0079".to_string()),
+            "L0079 must fire for function with empty body; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0079_silent_for_non_empty_body() {
+        let src = "fn f(int x) { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0079".to_string()),
+            "L0079 must not fire when function has statements"
+        );
+    }
+
+    // ── L0080 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0080_fires_on_dead_let_init() {
+        let src = "fn f(int x) { let y = x + 1; y = x * 2; return y; }\n";
+        assert!(
+            codes(src).contains(&"L0080".to_string()),
+            "L0080 must fire when let binding is immediately overwritten; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0080_silent_when_let_is_used_first() {
+        let src = "fn f(int x) { let y = x + 1; let _z = y * 2; y = 0; return y; }\n";
+        assert!(
+            !codes(src).contains(&"L0080".to_string()),
+            "L0080 must not fire when the let binding is used before overwrite"
+        );
+    }
+
+    // ── L0081 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0081_fires_on_duplicate_assert() {
+        let src =
+            "fn f(int x) requires x > 0 { assert(x > 0); assert(x > 0); return x; }\n";
+        assert!(
+            codes(src).contains(&"L0081".to_string()),
+            "L0081 must fire for duplicate consecutive assert; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0081_silent_for_different_asserts() {
+        let src =
+            "fn f(int x) requires x > 0 { assert(x > 0); assert(x < 100); return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0081".to_string()),
+            "L0081 must not fire for different assert conditions"
+        );
+    }
+
+    // ── L0082 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0082_fires_on_both_empty_branches() {
+        let src = "fn f(bool cond) { if cond { } else { } }\n";
+        assert!(
+            codes(src).contains(&"L0082".to_string()),
+            "L0082 must fire when both if/else branches are empty; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0082_silent_when_then_has_stmt() {
+        let src = "fn f(bool cond) { if cond { let _x = 1; } else { } }\n";
+        assert!(
+            !codes(src).contains(&"L0082".to_string()),
+            "L0082 must not fire when then-branch has statements"
+        );
+    }
+
+    // ── L0083 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0083_fires_on_noreturn_with_return_type() {
+        let src = "// @noreturn\nfn die(int code) -> int { abort(); }\n";
+        assert!(
+            codes(src).contains(&"L0083".to_string()),
+            "L0083 must fire when @noreturn function has a return type; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0083_silent_for_noreturn_void_fn() {
+        let src = "// @noreturn\nfn die(int code) { abort(); }\n";
+        assert!(
+            !codes(src).contains(&"L0083".to_string()),
+            "L0083 must not fire for @noreturn void function"
+        );
+    }
+
+    // ── L0084 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0084_fires_on_nested_function() {
+        let src = "fn outer(int x) { fn inner(int y) { return y; } return x; }\n";
+        assert!(
+            codes(src).contains(&"L0084".to_string()),
+            "L0084 must fire for nested function definition; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0084_silent_for_top_level_functions() {
+        let src = "fn f(int x) { return x; }\nfn g(int y) { return y; }\n";
+        assert!(
+            !codes(src).contains(&"L0084".to_string()),
+            "L0084 must not fire for separate top-level functions"
+        );
+    }
+
+    // ── L0085 tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn l0085_fires_on_empty_struct() {
+        let src = "struct Empty { }\nfn f(int x) { return x; }\n";
+        assert!(
+            codes(src).contains(&"L0085".to_string()),
+            "L0085 must fire for struct with zero fields; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0085_silent_for_non_empty_struct() {
+        let src = "struct Point { int x, int y }\nfn f(int x) { return x; }\n";
+        assert!(
+            !codes(src).contains(&"L0085".to_string()),
+            "L0085 must not fire for struct with fields"
         );
     }
 }

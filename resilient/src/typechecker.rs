@@ -2524,7 +2524,14 @@ impl TypeChecker {
             // RES-468: collapse adjacent duplicates.
             env.set("array_dedup".to_string(), fn_array_to_array());
             // RES-504: partition into maximal runs of equal int elements.
-            env.set("array_group_by_int".to_string(), fn_any_to_any());
+            // RES-2645: returns an array of groups (array of arrays).
+            env.set(
+                "array_group_by_int".to_string(),
+                Type::Function {
+                    params: vec![Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-533: count of maximal runs.
             env.set(
                 "array_count_runs".to_string(),
@@ -2585,8 +2592,8 @@ impl TypeChecker {
             };
             env.set("trim_start_chars".to_string(), str_str_to_str_b.clone());
             env.set("trim_end_chars".to_string(), str_str_to_str_b);
-            // RES-478: array_count_eq alias.
-            env.set("array_count_eq".to_string(), fn_any_any_to_any());
+            // RES-478: array_count_eq alias. RES-2645: count is always Int.
+            env.set("array_count_eq".to_string(), fn_any_any_to_int());
             // RES-479: string predicates.
             let str_to_bool_b = Type::Function {
                 params: vec![Type::String],
@@ -4559,20 +4566,17 @@ impl TypeChecker {
                 // does. Order is mostly independent (analysis-only
                 // passes), but blame_attribution must run before
                 // anti_regression so the latter has the call graph.
-                // RES-1619: `resilience_score::check` is a no-op stub
-                // (RES-1206); real `score_program` runs from the
-                // `--score` CLI flag and external integrators.
-                // RES-1623: `vibe_debt::check` is a no-op stub
-                // (RES-1206); real `analyze` runs from `autopilot::run`.
-                // RES-1619: `behavioral_fingerprint::check` is a no-op
-                // stub (RES-1206); real `fingerprint_program` runs
-                // from `--check-fingerprints` and external integrators.
-                // RES-1619: `contract_inference::check` is a no-op stub
-                // (RES-1206); real `infer_program` runs from
-                // `--suggest-contracts` and external integrators.
-                // RES-1623: `semantic_regression::check` is a no-op
-                // stub; real diff runs from the test harness.
-                // RES-1623: `semver_behavior::check` is a no-op stub.
+                // RES-2645: resilience_score warns for F-grade functions;
+                // vibe_debt warns for fully-vibe-coded functions;
+                // behavioral_fingerprint checks for contract regressions;
+                // contract_inference emits inline contract suggestions.
+                crate::resilience_score::check(program, source_path)?;
+                crate::vibe_debt::check(program, source_path)?;
+                crate::behavioral_fingerprint::check(program, source_path)?;
+                crate::contract_inference::check(program, source_path)?;
+                // RES-2645: mutation_testing cross-references mutation
+                // sites with contract declarations; warns on unconstrained.
+                crate::mutation_testing::check(program, source_path)?;
                 // RES-1629 gate: pass walks bodies for `CallExpression`
                 // to build the (caller, callee) blame map. Without any
                 // call expressions, `build` returns an empty `BlameMap`
@@ -4608,10 +4612,9 @@ impl TypeChecker {
                 crate::wcet_contracts::check(program, source_path)?;
                 crate::distributed_invariants::check(program, source_path)?;
                 crate::ghost_types::check(program, source_path)?;
-                // RES-1597: `incremental_verify::check` is a documented
-                // no-op (`Ok(())`) until the cache lookup-side is wired
-                // — see the RES-1210 comment in `incremental_verify.rs`.
-                // Skip the dispatch until that lands.
+                // RES-2645: incremental_verify evicts stale proof-cache
+                // entries for functions that no longer exist in the AST.
+                crate::incremental_verify::check(program, source_path)?;
                 // RES-1623: `property_tests::check` is a no-op stub
                 // (RES-1206); real `collect` runs from the
                 // `--run-property-tests` driver.
