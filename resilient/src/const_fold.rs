@@ -356,6 +356,13 @@ pub(crate) fn try_fold_binop(chunk: &Chunk, i: usize, targets: &[bool]) -> Optio
         // when both sides are bool literals (`true == false`).
         (Value::Bool(a), Value::Bool(b), Op::Eq) => Value::Bool(a == b),
         (Value::Bool(a), Value::Bool(b), Op::Neq) => Value::Bool(a != b),
+        // Bitwise ops — integer only; shift amounts are masked to 0..63
+        // matching the VM's `a << (b & 63)` semantics.
+        (Value::Int(a), Value::Int(b), Op::Band) => Value::Int(a & b),
+        (Value::Int(a), Value::Int(b), Op::Bor) => Value::Int(a | b),
+        (Value::Int(a), Value::Int(b), Op::Bxor) => Value::Int(a ^ b),
+        (Value::Int(a), Value::Int(b), Op::Shl) => Value::Int(a << (b & 63)),
+        (Value::Int(a), Value::Int(b), Op::Shr) => Value::Int(a >> (b & 63)),
         _ => return None,
     };
     Some((folded, chunk.line_info[i]))
@@ -924,5 +931,95 @@ mod tests {
         let before = chunk.code.clone();
         optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code, before);
+    }
+
+    // ---------- bitwise op folds ----------
+
+    #[test]
+    fn folds_band() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Band, Op::Return],
+            vec![Value::Int(0b1111), Value::Int(0b1010)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 2);
+        let Op::Const(k) = chunk.code[0] else {
+            panic!()
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 0b1010);
+    }
+
+    #[test]
+    fn folds_bor() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Bor, Op::Return],
+            vec![Value::Int(0b0101), Value::Int(0b1010)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        let Op::Const(k) = chunk.code[0] else {
+            panic!()
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 0b1111);
+    }
+
+    #[test]
+    fn folds_bxor() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Bxor, Op::Return],
+            vec![Value::Int(0b1111), Value::Int(0b0101)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        let Op::Const(k) = chunk.code[0] else {
+            panic!()
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 0b1010);
+    }
+
+    #[test]
+    fn folds_shl() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Shl, Op::Return],
+            vec![Value::Int(1), Value::Int(4)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        let Op::Const(k) = chunk.code[0] else {
+            panic!()
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 16);
+    }
+
+    #[test]
+    fn folds_shr() {
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Shr, Op::Return],
+            vec![Value::Int(256), Value::Int(3)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        let Op::Const(k) = chunk.code[0] else {
+            panic!()
+        };
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 32);
+    }
+
+    #[test]
+    fn shl_masks_shift_amount_to_63() {
+        // Shifts of 64 or more are undefined in many languages; we mask
+        // the shift amount to 0..63 to match the VM's `a << (b & 63)`.
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::Const(1), Op::Shl, Op::Return],
+            vec![Value::Int(1), Value::Int(64)],
+            &[1, 1, 1, 1],
+        );
+        optimize(&mut chunk).unwrap();
+        let Op::Const(k) = chunk.code[0] else {
+            panic!()
+        };
+        // 64 & 63 == 0, so 1 << 0 == 1
+        assert_eq!(unwrap_int(&chunk.constants[k as usize]), 1);
     }
 }

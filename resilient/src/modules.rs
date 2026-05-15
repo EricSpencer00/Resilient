@@ -80,3 +80,66 @@ pub(crate) fn eval_module(
 pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::parse;
+
+    #[test]
+    fn check_always_returns_ok() {
+        let (prog, _) = parse("fn f(int x) -> int { return x; }");
+        assert!(super::check(&prog, "test.rz").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(super::check(&prog, "test.rz").is_ok());
+    }
+
+    #[test]
+    fn module_fn_is_registered_under_qualified_name() {
+        // A fn declared inside `mod math { fn add ... }` should be
+        // callable as `math::add` from the outer scope.
+        let src = r#"
+            mod math {
+                fn add(int x, int y) -> int { return x + y; }
+            }
+            fn main(int _d) -> int { return math::add(1, 2); }
+        "#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = crate::Interpreter::new();
+        let result = interp.eval(&prog);
+        assert!(result.is_ok(), "eval failed: {:?}", result);
+    }
+
+    #[test]
+    fn eval_module_registers_struct_with_prefix() {
+        // A struct declared inside a mod block should be accessible as
+        // `modname::StructName` in the outer scope.
+        let src = r#"
+            mod geo {
+                struct Point { int x, int y }
+            }
+            fn main(int _d) -> int { return 0; }
+        "#;
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        let mut interp = crate::Interpreter::new();
+        // If struct registration fails the eval would error.
+        assert!(interp.eval(&prog).is_ok());
+    }
+
+    #[test]
+    fn eval_module_returns_void() {
+        // eval_module should return Ok(Value::Void) for an empty body.
+        let mut interp = crate::Interpreter::new();
+        let result = super::eval_module("empty", &[], &mut interp);
+        assert!(result.is_ok(), "eval_module failed: {:?}", result);
+        assert!(
+            matches!(result.unwrap(), crate::Value::Void),
+            "expected Void return from empty module"
+        );
+    }
+}

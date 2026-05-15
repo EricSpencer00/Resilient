@@ -1004,6 +1004,12 @@ fn compile_expr(
                 "<=" => Op::Le,
                 ">" => Op::Gt,
                 ">=" => Op::Ge,
+                // Bitwise ops (integer-only; typechecker enforces operand types).
+                "&" => Op::Band,
+                "|" => Op::Bor,
+                "^" => Op::Bxor,
+                "<<" => Op::Shl,
+                ">>" => Op::Shr,
                 _ => return Err(CompileError::Unsupported("non-arithmetic operator")),
             };
             chunk.emit(op, line);

@@ -1252,6 +1252,13 @@ pub struct TypeChecker {
     /// on TypeChecker drop. Default `false`; the cert-emit driver
     /// flips it via `with_emit_certificates(true)`.
     emit_certificates: bool,
+    /// RES-1862: innermost span updated as `check_node` descends the
+    /// AST. When an error propagates back to `check_program_with_source`
+    /// this span is more specific than the top-level statement's span
+    /// (which covers the entire statement from `let` / `fn` to `;`).
+    /// Reset to `stmt.span` at the start of each top-level statement
+    /// so stale spans from a prior statement never pollute a later one.
+    current_span: Span,
 }
 
 impl TypeChecker {
@@ -3782,6 +3789,8 @@ impl TypeChecker {
             // `CapturedCertificate` onto the Vec it'd drop on
             // TypeChecker drop.
             emit_certificates: false,
+            // RES-1862: default to zero span (synthetic / unknown).
+            current_span: Span::default(),
         }
     }
 
@@ -4029,17 +4038,34 @@ impl TypeChecker {
 
                 let mut result_type = Type::Void;
                 for stmt in statements {
-                    result_type = self.check_node(&stmt.node).map_err(|e| {
-                        // RES-080: prepend file:line:col so users can
-                        // locate the offending statement. Skip the
-                        // prefix when the span looks default/empty
-                        // (line 0 means "synthetic" — see span.rs).
-                        if stmt.span.start.line == 0 {
+                    // RES-1862: reset current_span to the statement's
+                    // own span before descending. check_node arms for
+                    // InfixExpression / CallExpression / LetStatement
+                    // overwrite this with the innermost node's span so
+                    // that error messages point at the exact expression
+                    // rather than the whole containing statement.
+                    self.current_span = stmt.span;
+                    let check_result = self.check_node(&stmt.node);
+                    // Capture the best span after check_node returns
+                    // (self is no longer mutably borrowed at this point).
+                    // Use current_span when it's more specific (non-zero
+                    // line within the statement range); fall back to
+                    // stmt.span otherwise.
+                    let diag_span = if self.current_span.start.line > 0 {
+                        self.current_span
+                    } else {
+                        stmt.span
+                    };
+                    result_type = check_result.map_err(|e| {
+                        // RES-080 / RES-1862: prepend file:line:col.
+                        // Skip the prefix when the span looks
+                        // default/empty (line 0 means "synthetic").
+                        if diag_span.start.line == 0 {
                             e
                         } else {
                             format!(
                                 "{}:{}:{}: {}",
-                                source_path, stmt.span.start.line, stmt.span.start.column, e
+                                source_path, diag_span.start.line, diag_span.start.column, e
                             )
                         }
                     })?;
@@ -5401,6 +5427,8 @@ impl TypeChecker {
                 type_annot,
                 span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                self.current_span = *span;
                 let value_type = self.check_node(value)?;
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
@@ -6451,8 +6479,10 @@ impl TypeChecker {
                 left,
                 operator,
                 right,
-                ..
+                span: infix_span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                self.current_span = *infix_span;
                 let left_type = self.check_node(left)?;
                 let right_type = self.check_node(right)?;
 
@@ -6533,6 +6563,8 @@ impl TypeChecker {
                 arguments,
                 span: call_span,
             } => {
+                // RES-1862: track innermost span for better diagnostics.
+                self.current_span = *call_span;
                 // RES-400: tuple-payload enum-variant constructor —
                 // `Either::Just(7)` parses as a CallExpression with
                 // the callee `Identifier("Either::Just")`. Resolve it
@@ -9761,5 +9793,64 @@ mod duplicate_detection_tests {
     #[test]
     fn unique_struct_fields_pass() {
         check_ok("struct Point { int x, int y }");
+    }
+}
+
+#[cfg(test)]
+mod span_diagnostic_tests {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_with_source(src: &str, path: &str) -> Result<(), String> {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, path)
+            .map(|_| ())
+    }
+
+    #[test]
+    fn error_includes_source_path() {
+        // A type annotation mismatch on a let statement should include
+        // the source path in the error message.
+        let err = check_with_source(
+            "fn f(int x) -> int { let y: bool = x; return y; }",
+            "myfile.rz",
+        )
+        .expect_err("expected type error");
+        assert!(
+            err.contains("myfile.rz"),
+            "error should include source path, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn error_includes_line_number() {
+        // Error on the second line should include line 2 in the message.
+        let src = "fn f(int x) -> int { return x; }\nfn f(int y) -> int { return y; }";
+        let err = check_with_source(src, "test.rz").expect_err("expected duplicate fn error");
+        assert!(
+            err.contains("test.rz"),
+            "error should contain file path, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn ok_program_has_no_span_error() {
+        let src = "fn add(int x, int y) -> int { return x + y; }";
+        assert!(check_with_source(src, "test.rz").is_ok());
+    }
+
+    #[test]
+    fn bitwise_type_error_has_path() {
+        let src = r#"fn f(float x) -> int { return x & 1; }"#;
+        let err = check_with_source(src, "ops.rz").expect_err("expected bitwise type error");
+        assert!(
+            err.contains("ops.rz"),
+            "error should contain file path, got: {}",
+            err
+        );
     }
 }

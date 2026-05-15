@@ -902,6 +902,26 @@ fn run_inner(
                     fields,
                 });
             }
+            Op::Band => {
+                let (a, b) = pop_two_ints(&mut stack, "Band")?;
+                stack.push(Value::Int(a & b));
+            }
+            Op::Bor => {
+                let (a, b) = pop_two_ints(&mut stack, "Bor")?;
+                stack.push(Value::Int(a | b));
+            }
+            Op::Bxor => {
+                let (a, b) = pop_two_ints(&mut stack, "Bxor")?;
+                stack.push(Value::Int(a ^ b));
+            }
+            Op::Shl => {
+                let (a, b) = pop_two_ints(&mut stack, "Shl")?;
+                stack.push(Value::Int(a << (b & 63)));
+            }
+            Op::Shr => {
+                let (a, b) = pop_two_ints(&mut stack, "Shr")?;
+                stack.push(Value::Int(a >> (b & 63)));
+            }
         }
     }
 }
@@ -1026,7 +1046,7 @@ type Handler = fn(&mut VmState<'_>, Op) -> Result<Step, VmError>;
 /// `bytecode.rs`. The `op_to_index` table below pins the mapping; if a
 /// new opcode is added, both `OP_KIND_COUNT` and the dispatch table must
 /// grow together.
-const OP_KIND_COUNT: usize = 32;
+const OP_KIND_COUNT: usize = 37;
 
 /// Map an `Op` to its dispatch-table index. Keeping this explicit (rather
 /// than relying on `mem::discriminant` or transmute on the enum tag)
@@ -1073,6 +1093,11 @@ fn op_to_index(op: Op) -> usize {
         Op::StructLiteral { .. } => OP_KIND_STRUCT_LITERAL,
         Op::GetField { .. } => OP_KIND_GET_FIELD,
         Op::SetField { .. } => OP_KIND_SET_FIELD,
+        Op::Band => OP_KIND_BAND,
+        Op::Bor => OP_KIND_BOR,
+        Op::Bxor => OP_KIND_BXOR,
+        Op::Shl => OP_KIND_SHL,
+        Op::Shr => OP_KIND_SHR,
     }
 }
 
@@ -1080,7 +1105,12 @@ const OP_KIND_LOAD_INDEX_UNCHECKED: usize = 31;
 const OP_KIND_STRUCT_LITERAL: usize = 32;
 const OP_KIND_GET_FIELD: usize = 33;
 const OP_KIND_SET_FIELD: usize = 34;
-const HANDLER_TABLE_LEN: usize = 35;
+const OP_KIND_BAND: usize = 35;
+const OP_KIND_BOR: usize = 36;
+const OP_KIND_BXOR: usize = 37;
+const OP_KIND_SHL: usize = 38;
+const OP_KIND_SHR: usize = 39;
+const HANDLER_TABLE_LEN: usize = 40;
 
 /// The dispatch table. Each entry is a handler keyed by the index
 /// returned from `op_to_index`. Built once at compile time.
@@ -1121,6 +1151,11 @@ static HANDLERS: [Handler; HANDLER_TABLE_LEN] = {
     table[OP_KIND_STRUCT_LITERAL] = h_struct_literal;
     table[OP_KIND_GET_FIELD] = h_get_field;
     table[OP_KIND_SET_FIELD] = h_set_field;
+    table[OP_KIND_BAND] = h_band;
+    table[OP_KIND_BOR] = h_bor;
+    table[OP_KIND_BXOR] = h_bxor;
+    table[OP_KIND_SHL] = h_shl;
+    table[OP_KIND_SHR] = h_shr;
     table
 };
 
@@ -1759,6 +1794,41 @@ fn h_set_field(state: &mut VmState<'_>, op: Op) -> Result<Step, VmError> {
     Ok(Step::Continue)
 }
 
+#[inline(never)]
+fn h_band(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Band")?;
+    state.stack.push(Value::Int(a & b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_bor(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Bor")?;
+    state.stack.push(Value::Int(a | b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_bxor(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Bxor")?;
+    state.stack.push(Value::Int(a ^ b));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_shl(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Shl")?;
+    state.stack.push(Value::Int(a << (b & 63)));
+    Ok(Step::Continue)
+}
+
+#[inline(never)]
+fn h_shr(state: &mut VmState<'_>, _op: Op) -> Result<Step, VmError> {
+    let (a, b) = pop_two_ints(&mut state.stack, "Shr")?;
+    state.stack.push(Value::Int(a >> (b & 63)));
+    Ok(Step::Continue)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1916,6 +1986,39 @@ mod tests {
         // Body uses a local beyond the param slots.
         let src = "fn work(int n) { let doubled = n + n; return doubled + 1; } work(5);";
         assert_int(compile_run(src).unwrap(), 11);
+    }
+
+    // ---------- bitwise op tests ----------
+
+    #[test]
+    fn bitwise_and() {
+        assert_int(compile_run("15 & 10;").unwrap(), 10);
+    }
+
+    #[test]
+    fn bitwise_or() {
+        assert_int(compile_run("5 | 10;").unwrap(), 15);
+    }
+
+    #[test]
+    fn bitwise_xor() {
+        assert_int(compile_run("15 ^ 5;").unwrap(), 10);
+    }
+
+    #[test]
+    fn bitwise_shift_left() {
+        assert_int(compile_run("1 << 4;").unwrap(), 16);
+    }
+
+    #[test]
+    fn bitwise_shift_right() {
+        assert_int(compile_run("256 >> 3;").unwrap(), 32);
+    }
+
+    #[test]
+    fn bitwise_ops_in_function() {
+        let src = "fn mask(int x) -> int { return (x & 0xFF) | 0x100; } mask(255);";
+        assert_int(compile_run(src).unwrap(), 0x1FF);
     }
 
     #[test]
@@ -3100,6 +3203,11 @@ mod tests {
             },
             Op::GetField { name_const: 0 },
             Op::SetField { name_const: 0 },
+            Op::Band,
+            Op::Bor,
+            Op::Bxor,
+            Op::Shl,
+            Op::Shr,
         ];
         for op in samples {
             let idx = op_to_index(*op);

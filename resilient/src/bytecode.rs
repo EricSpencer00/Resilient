@@ -184,6 +184,16 @@ pub enum Op {
     /// `SetField`) can commit the update to the binding. Name is
     /// `chunk.constants[name_const]` (a `Value::String`).
     SetField { name_const: u16 },
+    /// Bitwise AND: pop two ints, push `lhs & rhs`.
+    Band,
+    /// Bitwise OR: pop two ints, push `lhs | rhs`.
+    Bor,
+    /// Bitwise XOR: pop two ints, push `lhs ^ rhs`.
+    Bxor,
+    /// Bitwise left-shift: pop two ints, push `lhs << (rhs & 63)`.
+    Shl,
+    /// Bitwise right-shift (arithmetic): pop two ints, push `lhs >> (rhs & 63)`.
+    Shr,
 }
 
 /// One compiled chunk of bytecode. `code` is the instruction stream;
