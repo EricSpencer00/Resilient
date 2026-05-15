@@ -218,6 +218,27 @@ pub(crate) fn body_yields_value(body: &Node) -> bool {
 /// Any. Used everywhere we need "same type, or we don't know yet."
 ///
 /// RES-366: `Type::Int` (the type of integer literals) is compatible
+/// RES-402: infer the common type of match/if arm bodies.
+///
+/// Scans `types`, skips `Type::Any` entries, and returns the
+/// shared concrete type when all non-Any entries agree. Falls back
+/// to `Type::Any` when types differ (or when the slice is empty /
+/// all-Any), keeping inference conservative.
+fn infer_common_arm_type(types: &[Type]) -> Type {
+    let mut result: Option<&Type> = None;
+    for t in types {
+        if matches!(t, Type::Any) {
+            continue;
+        }
+        match result {
+            None => result = Some(t),
+            Some(r) if r == t => {}
+            _ => return Type::Any,
+        }
+    }
+    result.cloned().unwrap_or(Type::Any)
+}
+
 /// with every pinned integer type — assigning a literal `42` to an
 /// `Int8` binding is always legal. Pinned types are NOT compatible
 /// with each other: `Int8 ↔ Int16` requires an explicit `as_int16`
@@ -1230,6 +1251,12 @@ pub struct TypeChecker {
     /// blocks) cannot raise checked failures today and must only
     /// invoke fns with an empty `fails` set.
     current_fn_fails: Option<Vec<String>>,
+    /// RES-403: declared return type of the innermost enclosing function.
+    /// Set when entering a `Node::Function` with a non-empty `return_type`;
+    /// cleared (set to `None`) on exit. `Node::ReturnStatement` uses this
+    /// to validate `return expr` against the declared type, catching early
+    /// returns that bypass the function body's final-expression check.
+    current_fn_return_type: Option<Type>,
     /// RES-910: depth of enclosing `while` / `for-in` bodies. `break`
     /// and `continue` are typechecker-rejected when this is 0. Bumped
     /// before recursing into a loop body and decremented after.
@@ -3873,6 +3900,8 @@ impl TypeChecker {
             let_type_hints: Vec::new(),
             // RES-387: no enclosing fn at program start.
             current_fn_fails: None,
+            // RES-403: no enclosing fn return type at program start.
+            current_fn_return_type: None,
             // RES-910: loop depth starts at 0 (top-level is not a loop).
             loop_depth: 0,
             // RES-354: auto-detect theory by default.
@@ -5372,6 +5401,15 @@ impl TypeChecker {
                 let saved_fn_fails = self.current_fn_fails.take();
                 self.current_fn_fails = Some(fails.clone());
 
+                // RES-403: stash the declared return type so inner
+                // `return expr` statements can validate against it.
+                let saved_fn_return_type = self.current_fn_return_type.take();
+                if let Some(rt_name) = declared_rt
+                    && let Ok(rt) = self.parse_type_name(rt_name)
+                {
+                    self.current_fn_return_type = Some(rt);
+                }
+
                 // Check function body
                 let body_result = self.check_node(body);
 
@@ -5379,6 +5417,8 @@ impl TypeChecker {
                 // error, so a nested fn declared inside this body does
                 // not inherit our fails set on the way out.
                 self.current_fn_fails = saved_fn_fails;
+                // RES-403: restore the enclosing fn's return type.
+                self.current_fn_return_type = saved_fn_return_type;
 
                 let body_type = body_result?;
 
@@ -5783,7 +5823,10 @@ impl TypeChecker {
             }
 
             Node::FunctionLiteral {
-                parameters, body, ..
+                parameters,
+                body,
+                return_type: lit_return_type,
+                ..
             } => {
                 // Evaluate the body's type in a child env with params
                 // bound, just like named Function.
@@ -5797,9 +5840,19 @@ impl TypeChecker {
                     param_types.push(ty.clone());
                     fn_env.set(pname.clone(), ty);
                 }
+                // RES-403: isolate current_fn_return_type so inner
+                // `return` statements validate against the literal's
+                // declared type, not the enclosing named function's.
+                let saved_lit_return_type = self.current_fn_return_type.take();
+                if let Some(rt_name) = lit_return_type
+                    && let Ok(rt) = self.parse_type_name(rt_name)
+                {
+                    self.current_fn_return_type = Some(rt);
+                }
                 std::mem::swap(&mut self.env, &mut fn_env);
                 let body_type = self.check_node(body)?;
                 std::mem::swap(&mut self.env, &mut fn_env);
+                self.current_fn_return_type = saved_lit_return_type;
                 Ok(Type::Function {
                     params: param_types,
                     return_type: Box::new(body_type),
@@ -5811,6 +5864,8 @@ impl TypeChecker {
             } => {
                 self.current_span = *span;
                 let scrutinee_type = self.check_node(scrutinee)?;
+                // RES-402: collect arm body types for return-type inference.
+                let mut arm_types: Vec<Type> = Vec::with_capacity(arms.len());
                 for (pattern, guard, body) in arms {
                     // RES-160: or-pattern binding consistency —
                     // every branch must bind the same set of names,
@@ -5863,7 +5918,8 @@ impl TypeChecker {
                         }
                     }
                     let body_res = self.check_node(body);
-                    // Roll back all pattern-binding entries.
+                    // Roll back all pattern-binding entries before propagating
+                    // the error so the environment is clean on early return.
                     for (n, prev) in rollback_bindings {
                         match prev {
                             Some(t) => self.env.set(n, t),
@@ -5872,7 +5928,8 @@ impl TypeChecker {
                             }
                         }
                     }
-                    let _ = body_res?;
+                    // RES-402: collect arm type for common-type inference.
+                    arm_types.push(body_res?);
                 }
 
                 // RES-054 + RES-159 + RES-160 + RES-369: exhaustiveness.
@@ -5995,7 +6052,8 @@ impl TypeChecker {
                     }
                 }
 
-                Ok(Type::Any)
+                // RES-402: return the common type of all arm bodies.
+                Ok(infer_common_arm_type(&arm_types))
             }
 
             // RES-158: walk each method as if it were a top-level fn.
@@ -6525,10 +6583,22 @@ impl TypeChecker {
                 }
                 // Bare `return;` has type Void; otherwise pass through
                 // the type of the returned value.
-                match value {
-                    Some(expr) => self.check_node(expr),
-                    None => Ok(Type::Void),
+                let ret_type = match value {
+                    Some(expr) => self.check_node(expr)?,
+                    None => Type::Void,
+                };
+                // RES-403: validate against declared return type so early
+                // returns (inside if/match arms) can't silently return the
+                // wrong type while the body's last expression type matches.
+                if let Some(declared) = &self.current_fn_return_type
+                    && !compatible(declared, &ret_type)
+                {
+                    return Err(format!(
+                        "return type mismatch — declared {}, returning {}",
+                        declared, ret_type
+                    ));
                 }
+                Ok(ret_type)
             }
 
             Node::IfStatement {
@@ -6584,7 +6654,7 @@ impl TypeChecker {
                 if let Some(alt) = alternative {
                     let alternative_type = self.check_node(alt)?;
 
-                    // Both branches should have compatible types
+                    // Both branches should have compatible types.
                     if consequence_type != alternative_type
                         && consequence_type != Type::Any
                         && alternative_type != Type::Any
@@ -6594,6 +6664,10 @@ impl TypeChecker {
                             consequence_type, alternative_type
                         ));
                     }
+                    // RES-402: if one branch is Any and the other is a
+                    // concrete type, propagate the concrete type so callers
+                    // get a useful inference result.
+                    return Ok(infer_common_arm_type(&[consequence_type, alternative_type]));
                 }
 
                 Ok(consequence_type)
@@ -10346,5 +10420,200 @@ mod res401_tuple_type {
     fn tuple_destructure_ok() {
         // Destructuring into correct names should pass.
         check_ok(r#"let (a, b) = (1, "x");"#);
+    }
+}
+
+// ── RES-402: match and if expression type inference ───────────────────────────
+
+#[cfg(test)]
+mod res402_arm_type_inference {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn match_result_used_as_int() {
+        // When all match arms return int, the result should be usable
+        // as an int (e.g., added to another int).
+        check_ok(r#"
+fn f(int x) -> int {
+    let v = match x {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    };
+    return v + 1;
+}
+"#);
+    }
+
+    #[test]
+    fn match_result_used_as_string() {
+        // When all match arms return a string, the result is a string.
+        check_ok(r#"
+fn describe(int x) -> string {
+    return match x {
+        0 => "zero",
+        1 => "one",
+        _ => "other",
+    };
+}
+"#);
+    }
+
+    #[test]
+    fn match_result_used_as_bool() {
+        // Arms returning bool — inferred type is bool.
+        check_ok(r#"
+fn is_zero(int x) -> bool {
+    return match x {
+        0 => true,
+        _ => false,
+    };
+}
+"#);
+    }
+
+    #[test]
+    fn if_with_both_branches_propagates_int() {
+        // if/else where both branches return int — result is int.
+        check_ok(r#"
+fn abs_val(int x) -> int {
+    let v = if x >= 0 { x } else { 0 - x };
+    return v + 1;
+}
+"#);
+    }
+
+    #[test]
+    fn if_else_type_mismatch_errors() {
+        // if branch returns int, else branch returns string — type error.
+        let err = check_err(r#"
+fn f(bool c) -> int {
+    let _v = if c { 1 } else { "x" };
+    return 0;
+}
+"#);
+        assert!(
+            err.contains("incompatible") || err.contains("type"),
+            "expected incompatible-types error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn match_arms_used_in_len_context() {
+        // match on bool with both arms returning array — can call len().
+        check_ok(r#"
+fn f(bool b) -> int {
+    let arr = match b {
+        true  => [1, 2, 3],
+        false => [4, 5],
+    };
+    return len(arr);
+}
+"#);
+    }
+}
+
+// ── RES-403: return statement type validation against declared return type ────
+
+#[cfg(test)]
+mod res403_return_type_validation {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn early_return_wrong_type_is_error() {
+        // An early `return 42` in a function declared `-> string` should fail.
+        let err = check_err(r#"
+fn f(bool b) -> string {
+    if b { return 42; }
+    return "hello";
+}
+"#);
+        assert!(
+            err.contains("return type mismatch") || err.contains("type mismatch"),
+            "expected return-type-mismatch error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn early_return_correct_type_ok() {
+        // Early return with the correct type should pass.
+        check_ok(r#"
+fn f(bool b) -> int {
+    if b { return 1; }
+    return 0;
+}
+"#);
+    }
+
+    #[test]
+    fn void_function_bare_return_ok() {
+        // Bare `return;` in a void function is always valid.
+        check_ok(r#"
+fn f(bool b) -> void {
+    if b { return; }
+    println("done");
+}
+"#);
+    }
+
+    #[test]
+    fn lambda_return_validated_against_lambda_type() {
+        // The lambda's own declared return type governs its return statements,
+        // not the enclosing function's return type.
+        check_ok(r#"
+fn outer(array a) -> int {
+    let mapped = array_map(a, fn(int x) -> int { return x * 2; });
+    return len(mapped);
+}
+"#);
+    }
+
+    #[test]
+    fn lambda_return_type_mismatch_errors() {
+        // A lambda returning the wrong type should fail.
+        let err = check_err(r#"
+fn f(array a) -> int {
+    let mapped = array_map(a, fn(int x) -> int { return "oops"; });
+    return len(mapped);
+}
+"#);
+        assert!(
+            err.contains("return type mismatch") || err.contains("type mismatch"),
+            "expected return-type error in lambda; got: {err}"
+        );
     }
 }
