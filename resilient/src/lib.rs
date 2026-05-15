@@ -3099,7 +3099,13 @@ impl Parser {
                 }
                 break;
             }
-            self.next_token();
+            // RES-1860: do NOT advance if synchronize_top_level already
+            // parked the cursor on the first token of the next declaration
+            // (e.g. `fn`). Advancing here would consume that token and cause
+            // the next iteration to miss the declaration entirely.
+            if !parser_recovery::starts_top_level_item(&self.current_token) {
+                self.next_token();
+            }
         }
 
         Node::Program(program)
@@ -40768,6 +40774,52 @@ mod tests {
             Node::Program(stmts) => assert_eq!(stmts.len(), 2),
             other => panic!("expected Program, got {:?}", other),
         }
+    }
+
+    /// RES-1860: parse error in one function must not cascade into the
+    /// next function declaration.  Before the fix, `synchronize_top_level`
+    /// would stop on `fn` but the trailing `next_token()` consumed it,
+    /// causing the next function to be misidentified as an expression.
+    #[test]
+    fn res1860_errors_in_separate_fns_are_independent() {
+        let src = concat!(
+            "fn bad1(int x) -> int { return ???; }\n",
+            "fn good(int x) -> int { return x + 1; }\n",
+            "fn bad2(int x) -> int { return ???; }\n",
+            "fn good2(int x) -> int { return x * 2; }\n",
+        );
+        let (program, errors) = parse(src);
+        // Two bad functions → ≥2 errors (lexer may split `???` into
+        // multiple diagnostics, but the good functions must be parsed
+        // cleanly and appear in the AST).
+        assert!(
+            !errors.is_empty(),
+            "expected parse errors for ??? syntax, got none"
+        );
+        // Crucially: both good functions appear in the program AST.
+        let fn_names: Vec<String> = match &program {
+            Node::Program(stmts) => stmts
+                .iter()
+                .filter_map(|s| {
+                    if let Node::Function { name, .. } = &s.node {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => vec![],
+        };
+        assert!(
+            fn_names.contains(&"good".to_string()),
+            "good fn missing from AST; parsed fns: {:?}",
+            fn_names
+        );
+        assert!(
+            fn_names.contains(&"good2".to_string()),
+            "good2 fn missing from AST; parsed fns: {:?}",
+            fn_names
+        );
     }
 
     #[test]
