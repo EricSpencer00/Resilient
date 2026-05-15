@@ -117,4 +117,19 @@ mod tests {
         assert!(!has_default("Printable", "to_string"));
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn has_default_returns_false_for_unregistered_trait() {
+        assert!(!has_default("NonExistent", "method"));
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

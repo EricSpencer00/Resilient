@@ -89,4 +89,18 @@ mod tests {
         assert!(!is_iterator("Other"));
         install_iterator_impls(HashSet::new());
     }
+    #[test]
+    fn is_iterator_returns_false_for_unregistered_type() {
+        assert!(!is_iterator("UnregisteredType12345"));
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }

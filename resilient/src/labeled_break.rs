@@ -77,4 +77,17 @@ mod tests {
         let p = Node::Program(vec![]);
         assert!(analyze(&p).is_empty());
     }
+    #[test]
+    fn pure_function_no_warnings() {
+        let src = "fn f(int x) -> int { return x + 1; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(analyze(&prog).is_empty());
+    }
+
+    #[test]
+    fn check_ok_for_any_program() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
 }

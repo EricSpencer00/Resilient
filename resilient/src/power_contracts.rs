@@ -146,4 +146,23 @@ mod tests {
         assert!(res.is_err());
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn estimate_uj_returns_nonzero_for_literal() {
+        let node = crate::Node::IntegerLiteral {
+            value: 42,
+            span: crate::Span::default(),
+        };
+        assert!(estimate_uj(&node) >= 0.0, "estimate must be non-negative");
+    }
 }

@@ -97,3 +97,27 @@ fn actor_name_of(node: &Node) -> Option<String> {
     let _ = node;
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_program_returns_ok() {
+        let (prog, _) = crate::parse("");
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn program_without_actor_returns_ok() {
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+    }
+
+    #[test]
+    fn stop_drain_handlers_detected() {
+        assert!(STOP_HANDLERS.contains(&"shutdown"));
+        assert!(DRAIN_HANDLERS.contains(&"drain"));
+    }
+}
