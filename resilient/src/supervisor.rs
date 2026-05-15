@@ -330,12 +330,41 @@ pub(crate) fn check(node: &Node, env: &TypeEnvironment) -> Result<(), String> {
                     ));
                 }
 
-                // Validate that the referenced function exists
+                // Validate that the referenced function exists and has a
+                // compatible signature for use as an actor spawn function.
+                //
+                // RES-776 Phase 2: actor spawn functions are called via
+                // `spawn(fn_name)` with no arguments — they must be
+                // zero-parameter functions. A non-zero-parameter function
+                // can't be spawned directly and would panic at runtime.
+                // The return type is also constrained to Void: a supervisor
+                // child runs in a loop and never returns a meaningful value
+                // to the supervisor (exit is signalled via the crash channel,
+                // not a return value).
                 if let Some(ty) = env.get(&child.fn_name) {
-                    // Check if it's a function type
                     match ty {
-                        crate::typechecker::Type::Function { .. } => {
-                            // Valid — it's a function
+                        crate::typechecker::Type::Function {
+                            params,
+                            return_type,
+                        } => {
+                            // Phase 2 check: spawn function must take no params.
+                            if !params.is_empty() {
+                                return Err(format!(
+                                    "supervisor child `{}` references `{}`, which takes {} parameter(s); \
+                                     actor spawn functions must take no parameters",
+                                    child.id,
+                                    child.fn_name,
+                                    params.len()
+                                ));
+                            }
+                            // Phase 2 check: spawn function must return Void.
+                            if !matches!(return_type.as_ref(), crate::typechecker::Type::Void) {
+                                return Err(format!(
+                                    "supervisor child `{}` references `{}`, which returns `{}`; \
+                                     actor spawn functions must return void",
+                                    child.id, child.fn_name, return_type
+                                ));
+                            }
                         }
                         _ => {
                             return Err(format!(

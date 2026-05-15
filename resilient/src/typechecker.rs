@@ -5839,9 +5839,9 @@ impl TypeChecker {
             // Phase 3 (RES-776 PR 3-5): runtime crash handling and restart policies
             Node::SupervisorDecl { .. } => {
                 // Currently: basic structural validation (functions exist, strategy valid, IDs unique)
+                // RES-776 Phase 2: signature validation (zero-param, void return)
+                // is now integrated into crate::supervisor::check.
                 crate::supervisor::check(node, &self.env)?;
-                // TODO(RES-776 PR 2): Add semantic validation for supervisor/actor compatibility
-                // TODO(RES-776 PR 2): Validate handler function signatures match expected types
                 Ok(Type::Void)
             }
 
