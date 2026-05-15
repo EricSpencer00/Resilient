@@ -2376,34 +2376,38 @@ impl TypeChecker {
             env.set("array_pad_left".to_string(), fn_any_int_any_to_any.clone());
             env.set("array_pad_right".to_string(), fn_any_int_any_to_any);
             // RES-450: array_swap(arr, i, j) — 3-arg.
+            // RES-1859: return_type was Type::Any; swapping elements
+            // produces an array of the same type, so Array is correct.
             env.set(
                 "array_swap".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-451: insert/remove at index.
+            // RES-1859: both produce a new array of the same element type.
             env.set(
                 "array_insert_at".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             env.set(
                 "array_remove_at".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-452: replace element at index.
+            // RES-1859: produces a new array — return_type was Type::Any.
             env.set(
                 "array_set_at".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Int, Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-453: total Unicode-scalar at index.
@@ -2488,11 +2492,13 @@ impl TypeChecker {
                 },
             );
             // RES-566: array of bytes → Result<String, String>.
+            // RES-1859: return_type was Type::Any; the builtin returns a
+            // Result (Ok(string) on success, Err(string) on invalid UTF-8).
             env.set(
                 "string_from_bytes".to_string(),
                 Type::Function {
                     params: vec![Type::Any],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Result),
                 },
             );
             // RES-464: parse int with explicit radix → Result<Int, String>.
@@ -2740,11 +2746,12 @@ impl TypeChecker {
                 },
             );
             // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
+            // RES-1859: a slice is still an array — return_type was Type::Any.
             env.set(
                 "array_slice".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-522: indices of an array as a new array.
@@ -10099,5 +10106,35 @@ mod res1859_builtin_return_types {
     #[test]
     fn string_split_method_return_type_is_array() {
         check_ok("fn f(string s) -> int { let parts = s.split(\",\"); return len(parts); }");
+    }
+
+    // RES-1859: array mutation builtins — verify return type is Array
+    // so callers can pass the result to array-typed parameters.
+
+    #[test]
+    fn array_swap_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_swap(a, 0, 1); return len(b); }");
+    }
+
+    #[test]
+    fn array_insert_at_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_insert_at(a, 0, 42); return len(b); }");
+    }
+
+    #[test]
+    fn array_remove_at_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_remove_at(a, 0); return len(b); }");
+    }
+
+    #[test]
+    fn array_set_at_return_type_is_array() {
+        check_ok("fn f(array a) -> int { let b = array_set_at(a, 0, 99); return len(b); }");
+    }
+
+    #[test]
+    fn array_slice_return_type_is_array() {
+        check_ok(
+            "fn f(array a) -> int { let b = array_slice(a, 0, 3, false); return len(b); }",
+        );
     }
 }

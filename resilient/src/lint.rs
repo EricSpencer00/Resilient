@@ -113,6 +113,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0051", // comparison of two string literals — always evaluates to a constant
     "L0052", // negation of a boolean literal in a condition (`!true` or `!false`)
     "L0053", // array index is a literal that is out of bounds for the literal array
+    "L0054", // `if true` / `if false` — constant condition makes one branch unreachable
+    "L0055", // redundant boolean equality check `x == true` or `x == false`
+    "L0056", // integer left-shift by a constant >= bit-width of the type (undefined behavior)
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -712,6 +715,47 @@ pub fn explain(code: &str) -> Option<&'static str> {
              the index with a bounds check.\n\
              Suppress: // resilient: allow L0053",
         ),
+        "L0054" => Some(
+            "L0054 — constant boolean condition in `if`\n\
+             \n\
+             The condition of an `if` statement is the literal `true` or `false`.\n\
+             One branch is dead code and will never execute; this is almost always\n\
+             a logic error or a forgotten placeholder.\n\
+             \n\
+             Example (bad): if true { ... }   // else branch is dead\n\
+             Example (bad): if false { ... }  // then branch is never reached\n\
+             \n\
+             Fix: replace the constant with the intended runtime condition, or\n\
+             remove the dead branch entirely.\n\
+             Suppress: // resilient: allow L0054",
+        ),
+        "L0055" => Some(
+            "L0055 — redundant boolean equality check\n\
+             \n\
+             Comparing a boolean expression to the literal `true` or `false` with\n\
+             `==` or `!=` is redundant. The boolean value is the condition itself.\n\
+             \n\
+             Example (bad): if x == true { ... }   // same as: if x { ... }\n\
+             Example (bad): if x == false { ... }  // same as: if !x { ... }\n\
+             Example (bad): if x != true { ... }   // same as: if !x { ... }\n\
+             \n\
+             Fix: use the boolean directly as the condition.\n\
+             Suppress: // resilient: allow L0055",
+        ),
+        "L0056" => Some(
+            "L0056 — integer left-shift by amount >= bit-width\n\
+             \n\
+             Shifting a value left by an amount that is >= the bit-width of the\n\
+             type is undefined behavior in most languages and produces 0 or a\n\
+             trap depending on the platform. In Resilient, `int` is 64-bit so\n\
+             any shift by 64 or more is suspicious.\n\
+             \n\
+             Example (bad): let x = 1 << 64;  // undefined; int is 64-bit\n\
+             Example (bad): let x = v << 100; // always 0 on sane targets\n\
+             \n\
+             Fix: ensure the shift amount is in the range [0, 63].\n\
+             Suppress: // resilient: allow L0056",
+        ),
         _ => None,
     }
 }
@@ -793,6 +837,12 @@ struct LintTriggers {
     has_negated_bool_literal: bool,
     /// L0053: any index expression whose object is an array literal.
     has_array_literal_index: bool,
+    /// L0054: any `IfStatement` whose condition is a boolean literal.
+    has_const_bool_condition: bool,
+    /// L0055: any `==`/`!=` infix where one operand is a boolean literal.
+    has_bool_equality_cmp: bool,
+    /// L0056: any `<<` infix with an integer literal RHS >= 64.
+    has_large_shift: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -843,6 +893,20 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 && matches!(right.as_ref(), Node::StringLiteral { .. })
             {
                 t.has_string_literal_cmp = true;
+            }
+            // L0055: `==` or `!=` where one operand is a boolean literal.
+            if matches!(operator.as_str(), "==" | "!=")
+                && (matches!(left.as_ref(), Node::BooleanLiteral { .. })
+                    || matches!(right.as_ref(), Node::BooleanLiteral { .. }))
+            {
+                t.has_bool_equality_cmp = true;
+            }
+            // L0056: `<<` with a large integer literal RHS (>= 64).
+            if operator == "<<"
+                && let Node::IntegerLiteral { value, .. } = right.as_ref()
+                && *value >= 64
+            {
+                t.has_large_shift = true;
             }
         }
         Node::PrefixExpression {
@@ -907,6 +971,10 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             }
             if matches!(condition.as_ref(), Node::Assignment { .. }) {
                 t.has_assign_in_cond = true;
+            }
+            // L0054: `if true` / `if false` — constant condition.
+            if matches!(condition.as_ref(), Node::BooleanLiteral { .. }) {
+                t.has_const_bool_condition = true;
             }
         }
         Node::StructLiteral { .. } => t.has_struct_literal = true,
@@ -1096,6 +1164,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_array_literal_index {
         run_l0053_out_of_bounds_literal_index(program, &mut out);
+    }
+    if t.has_const_bool_condition {
+        run_l0054_const_bool_condition(program, &mut out);
+    }
+    if t.has_bool_equality_cmp {
+        run_l0055_redundant_bool_equality(program, &mut out);
+    }
+    if t.has_large_shift {
+        run_l0056_shift_too_large(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -5428,6 +5505,113 @@ fn walk_l0053(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0054 — constant boolean condition in `if`
+// ============================================================
+
+fn run_l0054_const_bool_condition(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0054(program, out);
+}
+
+fn walk_l0054(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        condition, span, ..
+    } = node
+        && let Node::BooleanLiteral { value, .. } = condition.as_ref()
+    {
+        let which = if *value { "true" } else { "false" };
+        let dead = if *value { "else" } else { "then" };
+        out.push(Lint {
+            code: "L0054".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "`if {which}` — condition is a constant; the `{dead}` branch is dead code"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0054(child, out));
+}
+
+// ============================================================
+// L0055 — redundant boolean equality check (`x == true` / `x == false`)
+// ============================================================
+
+fn run_l0055_redundant_bool_equality(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0055(program, out);
+}
+
+fn walk_l0055(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+    } = node
+        && matches!(operator.as_str(), "==" | "!=")
+    {
+        let (bool_val, _other) = if let Node::BooleanLiteral { value, .. } = left.as_ref() {
+            (Some(*value), right.as_ref())
+        } else if let Node::BooleanLiteral { value, .. } = right.as_ref() {
+            (Some(*value), left.as_ref())
+        } else {
+            (None, left.as_ref())
+        };
+        if let Some(bv) = bool_val {
+            let suggestion = match (operator.as_str(), bv) {
+                ("==", true) | ("!=", false) => "use the expression directly",
+                _ => "negate the expression with `!`",
+            };
+            out.push(Lint {
+                code: "L0055".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "redundant comparison `{} {}` — {suggestion}",
+                    operator,
+                    if bv { "true" } else { "false" }
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0055(child, out));
+}
+
+// ============================================================
+// L0056 — integer left-shift by amount >= 64 (undefined behavior)
+// ============================================================
+
+fn run_l0056_shift_too_large(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0056(program, out);
+}
+
+fn walk_l0056(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        right,
+        span,
+        ..
+    } = node
+        && operator == "<<"
+        && let Node::IntegerLiteral { value: shift, .. } = right.as_ref()
+        && *shift >= 64
+    {
+        out.push(Lint {
+            code: "L0056".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "left-shift by {shift} is >= 64 (the bit-width of `int`) — \
+                 this produces undefined behavior"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0056(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -7827,6 +8011,103 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0053".to_string()),
             "L0053 must not fire on valid index 0"
+        );
+    }
+
+    // ---- L0054: constant boolean condition ----
+
+    #[test]
+    fn l0054_fires_on_if_true() {
+        let src = "fn f() { if true { let x = 1; } }";
+        assert!(
+            codes(src).contains(&"L0054".to_string()),
+            "L0054 must fire for `if true`"
+        );
+    }
+
+    #[test]
+    fn l0054_fires_on_if_false() {
+        let src = "fn f() { if false { let x = 1; } }";
+        assert!(
+            codes(src).contains(&"L0054".to_string()),
+            "L0054 must fire for `if false`"
+        );
+    }
+
+    #[test]
+    fn l0054_silent_on_variable_condition() {
+        let src = "fn f(bool b) { if b { let x = 1; } }";
+        assert!(
+            !codes(src).contains(&"L0054".to_string()),
+            "L0054 must not fire for a variable condition"
+        );
+    }
+
+    // ---- L0055: redundant boolean equality ----
+
+    #[test]
+    fn l0055_fires_on_eq_true() {
+        let src = "fn f(bool b) -> bool { return b == true; }";
+        assert!(
+            codes(src).contains(&"L0055".to_string()),
+            "L0055 must fire for `x == true`"
+        );
+    }
+
+    #[test]
+    fn l0055_fires_on_eq_false() {
+        let src = "fn f(bool b) -> bool { return b == false; }";
+        assert!(
+            codes(src).contains(&"L0055".to_string()),
+            "L0055 must fire for `x == false`"
+        );
+    }
+
+    #[test]
+    fn l0055_silent_on_non_bool_eq() {
+        let src = "fn f(int x) -> bool { return x == 42; }";
+        assert!(
+            !codes(src).contains(&"L0055".to_string()),
+            "L0055 must not fire for integer equality"
+        );
+    }
+
+    // ---- L0056: shift >= 64 bits ----
+
+    #[test]
+    fn l0056_fires_on_shift_64() {
+        let src = "fn f(int x) -> int { return x << 64; }";
+        assert!(
+            codes(src).contains(&"L0056".to_string()),
+            "L0056 must fire for shift by 64"
+        );
+    }
+
+    #[test]
+    fn l0056_fires_on_shift_100() {
+        let src = "fn f(int x) -> int { return x << 100; }";
+        assert!(
+            codes(src).contains(&"L0056".to_string()),
+            "L0056 must fire for shift by 100"
+        );
+    }
+
+    #[test]
+    fn l0056_silent_on_shift_63() {
+        let src = "fn f(int x) -> int { return x << 63; }";
+        assert!(
+            !codes(src).contains(&"L0056".to_string()),
+            "L0056 must not fire for shift by 63 (valid)"
+        );
+    }
+
+    #[test]
+    fn l0056_silent_on_right_shift_large() {
+        // L0056 only fires for LEFT shift, not right shift.
+        let src = "fn f(int x) -> int { return x >> 64; }";
+        assert!(
+            !codes(src).contains(&"L0056".to_string()),
+            "L0056 must not fire for right-shift"
         );
     }
 }
