@@ -28,6 +28,9 @@
 //! 14. `Const(k==0); Sub`                   → drop both (x - 0 == x, identity)
 //! 15. `Const(k==1); Div`                   → drop both (x / 1 == x, identity)
 //! 16. `Not; Not`                            → drop both (!!b == b, idempotent)
+//! 17. `Neg; Neg`                            → drop both (--x == x, double int-neg identity)
+//! 18. `Not; JumpIfTrue(off)`               → `JumpIfFalse(off)` (mirror of Rule 4)
+//! 19. `LoadLocal(n); StoreLocal(n)`        → drop both (self-load-store is a no-op)
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -233,6 +236,30 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         }
         // Rule 16 — drop `Not; Not` (!!b == b, double negation identity).
         if rule_double_not(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 17 — drop `Neg; Neg` (--x == x, double integer negation identity).
+        if rule_double_neg(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 18 — fold `Not; JumpIfTrue(off)` → `JumpIfFalse(off)`.
+        // Mirror of Rule 4. A `JumpIfTrue` that would fire on `!b` is
+        // equivalent to a `JumpIfFalse` on `b` directly.
+        if let Some(off) = rule_not_jit_to_jif(chunk, i, &targets) {
+            new_code.push(Op::JumpIfFalse(off));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 19 — drop `LoadLocal(n); StoreLocal(n)` (self-assign no-op).
+        // Loading a local and immediately storing it back is a no-op: the
+        // local is unchanged and the stack depth is preserved.
+        if rule_load_store_self(chunk, i, &targets) {
             optimized_any = true;
             i += 2;
             continue;
@@ -619,6 +646,69 @@ pub(crate) fn rule_double_not(chunk: &Chunk, i: usize, targets: &[bool]) -> bool
         return false;
     }
     if !matches!(chunk.code[i + 1], Op::Not) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 17: drop `Neg; Neg` — double integer negation is identity.
+/// `--x == x` for all integers `x`.  Skips if the second `Neg` is a
+/// jump target.
+pub(crate) fn rule_double_neg(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    if !matches!(chunk.code[i], Op::Neg) {
+        return false;
+    }
+    if !matches!(chunk.code[i + 1], Op::Neg) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 18: fold `Not; JumpIfTrue(off)` → `JumpIfFalse(off)`.
+/// Mirror of Rule 4. Jumping on the negation of a value inverts the
+/// branch polarity. Skips if `JumpIfTrue` is a jump target.
+pub(crate) fn rule_not_jit_to_jif(chunk: &Chunk, i: usize, targets: &[bool]) -> Option<i16> {
+    if i + 1 >= chunk.code.len() {
+        return None;
+    }
+    if !matches!(chunk.code[i], Op::Not) {
+        return None;
+    }
+    let Op::JumpIfTrue(off) = chunk.code[i + 1] else {
+        return None;
+    };
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return None;
+    }
+    Some(off)
+}
+
+/// Rule 19: drop `LoadLocal(n); StoreLocal(n)` — loading a local and
+/// immediately storing it back is a no-op.  Both the local value and
+/// the stack depth are unchanged.
+///
+/// Skips if EITHER op is a jump target: dropping the pair changes
+/// which instruction occupies those PCs, stranding any jump that aimed
+/// at either position.
+pub(crate) fn rule_load_store_self(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::LoadLocal(n) = chunk.code[i] else {
+        return false;
+    };
+    let Op::StoreLocal(m) = chunk.code[i + 1] else {
+        return false;
+    };
+    if n != m {
+        return false;
+    }
+    // Skip if either position is a jump target (dropping the pair
+    // would strand any jump aimed at PC i or PC i+1).
+    if *targets.get(i).unwrap_or(&false) {
         return false;
     }
     !*targets.get(i + 1).unwrap_or(&false)
@@ -1266,5 +1356,149 @@ mod tests {
         );
         optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    // ---------- Rule 17: Neg; Neg → identity ----------
+
+    #[test]
+    fn rule17_double_neg_fires() {
+        let chunk = mk_chunk(&[Op::Neg, Op::Neg], vec![], &[1, 1]);
+        assert!(rule_double_neg(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule17_double_neg_skips_when_second_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Neg, Op::Neg], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_double_neg(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule17_double_neg_skips_single_neg() {
+        let chunk = mk_chunk(&[Op::Neg, Op::Return], vec![], &[1, 1]);
+        assert!(!rule_double_neg(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule17_double_neg_drops_both_in_full_pass() {
+        // LoadLocal(0); Neg; Neg; Return → LoadLocal(0); Return
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Neg, Op::Neg, Op::Return],
+            vec![],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    #[test]
+    fn rule17_skips_not_neg_pair() {
+        // `Not; Neg` is NOT a double-neg pattern — must not fold.
+        let mut chunk = mk_chunk(&[Op::Not, Op::Neg, Op::Return], vec![], &[1, 1, 1]);
+        let before = chunk.code.clone();
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, before);
+    }
+
+    // ---------- Rule 18: Not; JumpIfTrue → JumpIfFalse ----------
+
+    #[test]
+    fn rule18_not_jit_to_jif_fires() {
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfTrue(3)], vec![], &[1, 1]);
+        assert_eq!(rule_not_jit_to_jif(&chunk, 0, &[false; 3]), Some(3));
+    }
+
+    #[test]
+    fn rule18_not_jit_to_jif_skips_when_jit_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfTrue(3)], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert_eq!(rule_not_jit_to_jif(&chunk, 0, &targets), None);
+    }
+
+    #[test]
+    fn rule18_not_jit_to_jif_skips_non_jit() {
+        // `Not; JumpIfFalse` is Rule 4, not Rule 18.
+        let chunk = mk_chunk(&[Op::Not, Op::JumpIfFalse(3)], vec![], &[1, 1]);
+        assert_eq!(rule_not_jit_to_jif(&chunk, 0, &[false; 3]), None);
+    }
+
+    #[test]
+    fn rule18_folds_in_full_pass() {
+        // Not; JumpIfTrue(1); Const(0); Return
+        // → JumpIfFalse(?); Const(0); Return
+        // Old PCs: 0=Not, 1=JumpIfTrue(1), 2=Const(0), 3=Return
+        // JumpIfTrue(1) target = 1+1+1 = 3 = Return
+        // After fold: 0=JumpIfFalse(?), 1=Const(0), 2=Return
+        // new_target(2) - (0+1) = 1, so JumpIfFalse(1)
+        let mut chunk = mk_chunk(
+            &[Op::Not, Op::JumpIfTrue(1), Op::Const(0), Op::Return],
+            vec![Value::Int(1)],
+            &[1, 1, 2, 3],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 3);
+        match chunk.code[0] {
+            Op::JumpIfFalse(o) => assert_eq!(o, 1, "jump must land on Return"),
+            other => panic!("expected JumpIfFalse, got {:?}", other),
+        }
+    }
+
+    // ---------- Rule 19: LoadLocal(n); StoreLocal(n) → no-op ----------
+
+    #[test]
+    fn rule19_load_store_self_fires_on_same_index() {
+        let chunk = mk_chunk(&[Op::LoadLocal(3), Op::StoreLocal(3)], vec![], &[1, 1]);
+        assert!(rule_load_store_self(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule19_load_store_self_skips_different_indices() {
+        let chunk = mk_chunk(&[Op::LoadLocal(3), Op::StoreLocal(4)], vec![], &[1, 1]);
+        assert!(!rule_load_store_self(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule19_load_store_self_skips_when_load_is_jump_target() {
+        let chunk = mk_chunk(&[Op::LoadLocal(0), Op::StoreLocal(0)], vec![], &[1, 1]);
+        let targets = [true, false, false];
+        assert!(!rule_load_store_self(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule19_load_store_self_skips_when_store_is_jump_target() {
+        let chunk = mk_chunk(&[Op::LoadLocal(0), Op::StoreLocal(0)], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_load_store_self(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule19_drops_self_load_store_in_full_pass() {
+        // Const(0); LoadLocal(0); StoreLocal(0); Return
+        // → Const(0); Return  (self-assign is a no-op)
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::LoadLocal(0),
+                Op::StoreLocal(0),
+                Op::Return,
+            ],
+            vec![Value::Int(42)],
+            &[1, 2, 2, 3],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::Const(0), Op::Return]);
+    }
+
+    #[test]
+    fn rule19_skips_load_store_different_local() {
+        // LoadLocal(0); StoreLocal(1) is NOT a self-store — must not fold.
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::StoreLocal(1), Op::Return],
+            vec![],
+            &[1, 1, 2],
+        );
+        let before = chunk.code.clone();
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, before);
     }
 }

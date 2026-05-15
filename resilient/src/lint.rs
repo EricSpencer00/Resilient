@@ -107,6 +107,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0045", // constant-false condition in `while` loop — body never executes
     "L0046", // empty `for` loop body — iteration has no effect
     "L0047", // assert(true) is vacuously satisfied; assert(false) always panics
+    "L0048", // bitwise XOR of a value with itself (x ^ x) is always 0 — likely a bug
+    "L0049", // empty `if` then-branch — body was probably forgotten or condition is inverted
+    "L0050", // redundant `else` after `if` that always breaks or continues the loop
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -615,6 +618,54 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: supply a meaningful runtime-checkable predicate, or remove the assert.\n\
              Suppress: // resilient: allow L0047",
         ),
+        "L0048" => Some(
+            "L0048 — bitwise XOR of a value with itself (`x ^ x`)\n\
+             \n\
+             XOR-ing any integer with itself always produces 0: `x ^ x == 0` for all `x`.\n\
+             This is almost certainly a copy-paste error — the two operands were meant to\n\
+             be different values. In assembly, `xor reg, reg` is used to zero a register,\n\
+             but at the source level `x ^ x` is confusing and should be written as `0`\n\
+             if zeroing was the intent.\n\
+             \n\
+             Fix: replace one operand with the intended value, or use `0` directly.\n\
+             Suppress: // resilient: allow L0048",
+        ),
+        "L0049" => Some(
+            "L0049 — empty `if` then-branch\n\
+             \n\
+             The body of the `if` statement is an empty block `{ }`. This is almost\n\
+             always either:\n\
+             (a) a forgotten body — the statements that belong here were not written, or\n\
+             (b) an inverted condition — the else branch was intended to be the then\n\
+                 branch; negate the condition to fix.\n\
+             \n\
+             Example (bad):   if error { } else { do_work(); }\n\
+             Example (fixed): if !error { do_work(); }\n\
+             \n\
+             Fix: add the missing body, or invert the condition and drop the else.\n\
+             Suppress: // resilient: allow L0049",
+        ),
+        "L0050" => Some(
+            "L0050 — redundant `else` after `if` that always `break`s or `continue`s\n\
+             \n\
+             When the `if` body always exits the current loop iteration via `break` or\n\
+             `continue`, the `else` block is never reached from the `if` path. The else\n\
+             body is dead under the if-is-true case and can be de-nested to the same\n\
+             scope as the if statement.\n\
+             \n\
+             Example (bad):\n\
+               for x in arr {\n\
+                 if x < 0 { break; } else { process(x); }\n\
+               }\n\
+             Example (good):\n\
+               for x in arr {\n\
+                 if x < 0 { break; }\n\
+                 process(x);\n\
+               }\n\
+             \n\
+             Fix: remove the `else` keyword and de-nest the body.\n\
+             Suppress: // resilient: allow L0050",
+        ),
         _ => None,
     }
 }
@@ -687,6 +738,9 @@ struct LintTriggers {
     has_for_in_stmt: bool,
     /// L0047: any `assert` statement exists (checked for literal condition).
     has_assert_stmt: bool,
+    /// L0048: any `^` (Bxor) infix expression exists.
+    has_xor_infix: bool,
+    // L0049 reuses has_if_statement; L0050 reuses has_if_with_else — no new fields needed.
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -717,6 +771,10 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 && matches!(right.as_ref(), Node::IntegerLiteral { .. })
             {
                 t.has_literal_shift = true;
+            }
+            // L0048: any Bxor (^) infix expression.
+            if operator == "^" {
+                t.has_xor_infix = true;
             }
         }
         Node::Function { .. } => t.has_function = true,
@@ -944,6 +1002,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_assert_stmt {
         run_l0047_vacuous_assert(program, &mut out);
+    }
+    if t.has_xor_infix {
+        run_l0048_xor_with_self(program, &mut out);
+    }
+    if t.has_if_statement {
+        run_l0049_empty_if_body(program, &mut out);
+    }
+    if t.has_if_with_else {
+        run_l0050_redundant_else_after_loop_exit(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -5029,6 +5096,137 @@ fn walk_l0047(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0048: bitwise XOR of a value with itself (`x ^ x`)
+// ============================================================
+//
+// `x ^ x` is always 0 for any integer `x`. In a high-level language
+// this pattern is almost always a copy-paste error (both sides of the
+// XOR were meant to be different variables). At the source level, if
+// zeroing was the intent, write `0` directly.
+//
+// Detects: `InfixExpression { op: "^", left: Identifier(n), right: Identifier(n) }`
+// where both names are identical.
+
+fn run_l0048_xor_with_self(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0048(program, out);
+}
+
+fn walk_l0048(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        left,
+        right,
+        span,
+        ..
+    } = node
+        && operator == "^"
+        && let Node::Identifier { name: lname, .. } = left.as_ref()
+        && let Node::Identifier { name: rname, .. } = right.as_ref()
+        && lname == rname
+    {
+        out.push(Lint {
+            code: "L0048".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "`{lname} ^ {lname}` is always 0 — XOR of a value with itself; \
+                 likely a copy-paste bug (use the other operand) or replace with `0`"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0048(child, out));
+}
+
+// ============================================================
+// L0049: empty `if` then-branch
+// ============================================================
+//
+// `if condition { }` has an empty then-branch. In safety-critical code
+// this is almost always either:
+//   (a) a forgotten body — the statements were not yet written, or
+//   (b) an inverted condition — the else branch should be the then branch.
+//
+// Fires only on `if` with a non-empty alternative OR a bare `if` with no
+// alternative and empty body (both are suspicious). Skips `if cond { }`
+// when the body is whitespace-only — but at the AST level an empty block
+// has `stmts: []` regardless of whitespace, so we fire on all of them.
+
+fn run_l0049_empty_if_body(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0049(program, out);
+}
+
+fn walk_l0049(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence, span, ..
+    } = node
+        && let Node::Block { stmts, .. } = consequence.as_ref()
+        && stmts.is_empty()
+    {
+        out.push(Lint {
+            code: "L0049".into(),
+            severity: Severity::Warning,
+            message: "empty `if` then-branch — either the body is missing or the condition \
+                      is inverted (negate the condition and drop the `else` if present)"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0049(child, out));
+}
+
+// ============================================================
+// L0050: redundant `else` after `if` that always breaks/continues
+// ============================================================
+//
+// When the `if` consequence always exits the current loop iteration via
+// `break` or `continue`, the `else` block is dead under the if-taken
+// path. The else body can be de-nested to the same level as the `if`.
+//
+// This is the loop-exit mirror of L0041 (redundant else after return).
+// The check is conservative: fires only when the LAST statement of the
+// consequence block is a bare `break` or `continue`.
+
+fn run_l0050_redundant_else_after_loop_exit(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0050(program, out);
+}
+
+fn walk_l0050(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence,
+        alternative: Some(_),
+        span,
+        ..
+    } = node
+        && consequence_always_exits_loop(consequence)
+    {
+        out.push(Lint {
+            code: "L0050".into(),
+            severity: Severity::Warning,
+            message: "`else` block is redundant — the `if` arm always `break`s or `continue`s; \
+                      de-nest the body and drop the `else`"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0050(child, out));
+}
+
+/// Returns `true` when the last statement of `block` is `break` or
+/// `continue`, meaning the loop iteration always exits at this point.
+fn consequence_always_exits_loop(block: &Node) -> bool {
+    let Node::Block { stmts, .. } = block else {
+        return false;
+    };
+    matches!(
+        stmts.last(),
+        Some(Node::Break { .. }) | Some(Node::Continue { .. })
+    )
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -7219,6 +7417,119 @@ mod tests {
             codes(src).contains(&"L0047".to_string()),
             "L0047 must fire for assert with constant-true condition; got {:?}",
             codes(src)
+        );
+    }
+
+    // ---------- L0048: bitwise XOR with self ----------
+
+    #[test]
+    fn l0048_fires_on_xor_with_same_identifier() {
+        let src = "fn f(int x) -> int { return x ^ x; }\nf(5);\n";
+        assert!(
+            codes(src).contains(&"L0048".to_string()),
+            "L0048 must fire for `x ^ x`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0048_silent_for_xor_with_different_identifiers() {
+        let src = "fn f(int x, int y) -> int { return x ^ y; }\nf(3, 5);\n";
+        assert!(
+            !codes(src).contains(&"L0048".to_string()),
+            "L0048 must not fire for `x ^ y` (different names)"
+        );
+    }
+
+    #[test]
+    fn l0048_silent_for_xor_with_literal() {
+        let src = "fn f(int x) -> int { return x ^ 0; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0048".to_string()),
+            "L0048 must not fire for `x ^ 0` (literal rhs)"
+        );
+    }
+
+    #[test]
+    fn l0048_silent_for_non_xor_bitwise_self() {
+        // x & x and x | x are also redundant but covered by L0021 (bool) or
+        // not at all (int) — L0048 is specifically for XOR.
+        let src = "fn f(int x) -> int { return x & x; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0048".to_string()),
+            "L0048 must not fire for `x & x`; that's a different rule"
+        );
+    }
+
+    // ---------- L0049: empty if then-branch ----------
+
+    #[test]
+    fn l0049_fires_on_empty_if_body() {
+        let src = "fn f(int x) {\n    if x > 0 { }\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0049".to_string()),
+            "L0049 must fire for empty if body; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0049_fires_on_empty_if_with_else() {
+        let src = "fn f(int x) {\n    if x < 0 { } else { let y = x + 1; }\n}\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0049".to_string()),
+            "L0049 must fire for empty if body with else; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0049_silent_when_if_body_has_statements() {
+        let src = "fn f(int x) {\n    if x > 0 { let y = x; }\n}\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0049".to_string()),
+            "L0049 must not fire when if body has statements"
+        );
+    }
+
+    // ---------- L0050: redundant else after break/continue ----------
+
+    #[test]
+    fn l0050_fires_on_else_after_break() {
+        let src = "let arr = [1, 2, 3];\nfor x in arr {\n    if x < 0 { break; } else { let y = x; }\n}\n";
+        assert!(
+            codes(src).contains(&"L0050".to_string()),
+            "L0050 must fire for else after break; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0050_fires_on_else_after_continue() {
+        let src = "let arr = [1, 2, 3];\nfor x in arr {\n    if x < 0 { continue; } else { let y = x; }\n}\n";
+        assert!(
+            codes(src).contains(&"L0050".to_string()),
+            "L0050 must fire for else after continue; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0050_silent_when_if_has_no_else() {
+        let src = "let arr = [1, 2, 3];\nfor x in arr {\n    if x < 0 { break; }\n}\n";
+        assert!(
+            !codes(src).contains(&"L0050".to_string()),
+            "L0050 must not fire when there is no else branch"
+        );
+    }
+
+    #[test]
+    fn l0050_silent_when_consequence_does_not_break() {
+        // If the if-body does not end with break/continue, L0050 must not fire.
+        let src = "let arr = [1, 2, 3];\nfor x in arr {\n    if x > 0 { let y = x + 1; } else { let z = 0; }\n}\n";
+        assert!(
+            !codes(src).contains(&"L0050".to_string()),
+            "L0050 must not fire when consequence has no break/continue"
         );
     }
 }
