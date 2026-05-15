@@ -22436,10 +22436,9 @@ impl Interpreter {
                                     let items = items.clone();
                                     let predicate = predicate.clone();
                                     for item in items {
-                                        match self.apply_function(
-                                            predicate.clone(),
-                                            vec![item.clone()],
-                                        )? {
+                                        match self
+                                            .apply_function(predicate.clone(), vec![item.clone()])?
+                                        {
                                             Value::Bool(true) => {
                                                 return Ok(Value::Option(Some(Box::new(item))));
                                             }
@@ -22469,10 +22468,7 @@ impl Interpreter {
                                     let items = items.clone();
                                     let predicate = predicate.clone();
                                     for (i, item) in items.into_iter().enumerate() {
-                                        match self.apply_function(
-                                            predicate.clone(),
-                                            vec![item],
-                                        )? {
+                                        match self.apply_function(predicate.clone(), vec![item])? {
                                             Value::Bool(true) => {
                                                 return Ok(Value::Int(i as i64));
                                             }
@@ -22502,10 +22498,7 @@ impl Interpreter {
                                     let items = items.clone();
                                     let predicate = predicate.clone();
                                     for item in items {
-                                        match self.apply_function(
-                                            predicate.clone(),
-                                            vec![item],
-                                        )? {
+                                        match self.apply_function(predicate.clone(), vec![item])? {
                                             Value::Bool(true) => return Ok(Value::Bool(true)),
                                             Value::Bool(false) => {}
                                             other => {
@@ -22533,10 +22526,7 @@ impl Interpreter {
                                     let items = items.clone();
                                     let predicate = predicate.clone();
                                     for item in items {
-                                        match self.apply_function(
-                                            predicate.clone(),
-                                            vec![item],
-                                        )? {
+                                        match self.apply_function(predicate.clone(), vec![item])? {
                                             Value::Bool(true) => {}
                                             Value::Bool(false) => return Ok(Value::Bool(false)),
                                             other => {
@@ -56395,22 +56385,18 @@ mod array_callback_tests {
 
     #[test]
     fn array_find_returns_first_match() {
-        let r = run(
-            "let arr = [1, 2, 3, 4, 5];\n\
+        let r = run("let arr = [1, 2, 3, 4, 5];\n\
              let found = array_find(arr, fn(int x) -> bool { return x > 3; });\n\
-             println(found);",
-        );
+             println(found);");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('4'), "expected 4, got: {}", r.stdout);
     }
 
     #[test]
     fn array_find_returns_none_when_no_match() {
-        let r = run(
-            "let arr = [1, 2, 3];\n\
+        let r = run("let arr = [1, 2, 3];\n\
              let found = array_find(arr, fn(int x) -> bool { return x > 10; });\n\
-             println(found);",
-        );
+             println(found);");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(
             r.stdout.contains("None") || r.stdout.contains("null"),
@@ -56421,44 +56407,40 @@ mod array_callback_tests {
 
     #[test]
     fn array_find_index_returns_index() {
-        let r = run(
-            "let arr = [10, 20, 30, 40];\n\
+        let r = run("let arr = [10, 20, 30, 40];\n\
              let idx = array_find_index(arr, fn(int x) -> bool { return x >= 30; });\n\
-             println(idx);",
-        );
+             println(idx);");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('2'), "expected 2, got: {}", r.stdout);
     }
 
     #[test]
     fn array_find_index_returns_neg1_when_no_match() {
-        let r = run(
-            "let arr = [1, 2, 3];\n\
+        let r = run("let arr = [1, 2, 3];\n\
              let idx = array_find_index(arr, fn(int x) -> bool { return x > 100; });\n\
-             println(idx);",
-        );
+             println(idx);");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains("-1"), "expected -1, got: {}", r.stdout);
     }
 
     #[test]
     fn array_any_true_when_some_match() {
-        let r = run(
-            "let arr = [1, 2, 3];\n\
+        let r = run("let arr = [1, 2, 3];\n\
              let result = array_any(arr, fn(int x) -> bool { return x == 2; });\n\
-             println(result);",
-        );
+             println(result);");
         assert!(r.ok, "errors: {:?}", r.errors);
-        assert!(r.stdout.contains("true"), "expected true, got: {}", r.stdout);
+        assert!(
+            r.stdout.contains("true"),
+            "expected true, got: {}",
+            r.stdout
+        );
     }
 
     #[test]
     fn array_any_false_when_none_match() {
-        let r = run(
-            "let arr = [1, 2, 3];\n\
+        let r = run("let arr = [1, 2, 3];\n\
              let result = array_any(arr, fn(int x) -> bool { return x > 10; });\n\
-             println(result);",
-        );
+             println(result);");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(
             r.stdout.contains("false"),
@@ -56469,22 +56451,22 @@ mod array_callback_tests {
 
     #[test]
     fn array_all_true_when_all_match() {
-        let r = run(
-            "let arr = [2, 4, 6];\n\
+        let r = run("let arr = [2, 4, 6];\n\
              let result = array_all(arr, fn(int x) -> bool { return x % 2 == 0; });\n\
-             println(result);",
-        );
+             println(result);");
         assert!(r.ok, "errors: {:?}", r.errors);
-        assert!(r.stdout.contains("true"), "expected true, got: {}", r.stdout);
+        assert!(
+            r.stdout.contains("true"),
+            "expected true, got: {}",
+            r.stdout
+        );
     }
 
     #[test]
     fn array_all_false_when_some_fail() {
-        let r = run(
-            "let arr = [2, 3, 6];\n\
+        let r = run("let arr = [2, 3, 6];\n\
              let result = array_all(arr, fn(int x) -> bool { return x % 2 == 0; });\n\
-             println(result);",
-        );
+             println(result);");
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(
             r.stdout.contains("false"),
@@ -56495,12 +56477,14 @@ mod array_callback_tests {
 
     #[test]
     fn array_all_vacuously_true_on_empty() {
-        let r = run(
-            "let arr = [];\n\
+        let r = run("let arr = [];\n\
              let result = array_all(arr, fn(int x) -> bool { return false; });\n\
-             println(result);",
-        );
+             println(result);");
         assert!(r.ok, "errors: {:?}", r.errors);
-        assert!(r.stdout.contains("true"), "expected true, got: {}", r.stdout);
+        assert!(
+            r.stdout.contains("true"),
+            "expected true, got: {}",
+            r.stdout
+        );
     }
 }
