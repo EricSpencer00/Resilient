@@ -13,6 +13,8 @@
 
 use crate::{Node, Span};
 use std::collections::HashMap;
+#[cfg(feature = "z3")]
+extern crate z3;
 
 /// Represents a control-flow node in the function's CFG.
 #[derive(Debug, Clone)]
@@ -431,8 +433,9 @@ pub(crate) fn generate_prefix_obligation(
 ///
 /// Phase 1: CFG construction (statement-level boundaries for if/else,
 /// while, for, return, match).
-/// Phase 2: SMT-LIB2 obligation generation (this call).
-/// Phase 3 (future): invoke Z3 solver and surface counterexample spans.
+/// Phase 2: SMT-LIB2 obligation generation.
+/// Phase 3 (RES-1857, `--features z3`): invoke Z3 solver; on SAT emit a
+/// diagnostic with the failing prefix's source span.
 ///
 /// Without `--features z3` the obligations are generated but not solved;
 /// the function always returns Ok so as not to block non-Z3 builds.
@@ -444,13 +447,73 @@ pub(crate) fn check_recovers_to_bmc(
     let cfg = ControlFlowGraph::from_body(fn_body);
     let prefixes = cfg.enumerate_prefixes();
 
-    for (prefix_id, _span) in &prefixes {
-        let _obligation =
+    for (prefix_id, span) in &prefixes {
+        let obligation =
             generate_prefix_obligation(*prefix_id, &format!("init_{fn_name}"), recovers_clause);
-        // Phase 3 (--features z3): invoke Z3 on `_obligation`.
-        // On SAT: return Err("recovers_to invariant violated at prefix N").
+        // RES-1857 Phase 3: invoke Z3 on the obligation string.
+        solve_bmc_obligation(fn_name, *prefix_id, span, &obligation)?;
     }
 
+    Ok(())
+}
+
+/// RES-1857 Phase 3: invoke Z3 on one SMT-LIB2 obligation string.
+///
+/// With `--features z3`:
+/// - `unsat`  → the prefix is safe; continue.
+/// - `sat`    → the `recovers_to` clause can be violated; return `Err` with
+///              the prefix span so the typechecker emits a diagnostic.
+/// - `unknown`→ Z3 timed out or couldn't decide; emit a warning and
+///              continue (conservative: don't block compilation).
+///
+/// Without `--features z3` this is a no-op that always returns `Ok`.
+#[cfg(feature = "z3")]
+fn solve_bmc_obligation(
+    fn_name: &str,
+    prefix_id: usize,
+    span: &Span,
+    obligation: &str,
+) -> Result<(), String> {
+    match crate::verifier_z3::check_smtlib2(obligation) {
+        z3::SatResult::Unsat => {
+            // Postcondition holds at this prefix — safe.
+            Ok(())
+        }
+        z3::SatResult::Sat => {
+            // Z3 found a state where recovers_to can be violated.
+            let line = span.start.line;
+            let col = span.start.col;
+            let loc = if line > 0 {
+                format!("{line}:{col}: ")
+            } else {
+                String::new()
+            };
+            Err(format!(
+                "{loc}fn `{fn_name}`: `recovers_to` postcondition \
+                 may not hold after crash at instruction boundary {prefix_id} \
+                 (RES-392b BMC counterexample)"
+            ))
+        }
+        z3::SatResult::Unknown => {
+            // Z3 timed out or returned unknown — emit a warning but
+            // don't block compilation (same pattern as existing
+            // `partial-proof` warnings in typechecker.rs).
+            eprintln!(
+                "warning[partial-proof]: fn `{fn_name}`: BMC at prefix {prefix_id} \
+                 returned unknown — recovers_to cannot be fully verified (RES-1857)"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "z3"))]
+fn solve_bmc_obligation(
+    _fn_name: &str,
+    _prefix_id: usize,
+    _span: &Span,
+    _obligation: &str,
+) -> Result<(), String> {
     Ok(())
 }
 

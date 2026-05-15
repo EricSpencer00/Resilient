@@ -645,6 +645,51 @@ fn compile_stmt(
             next_fn_idx,
             line,
         ),
+        // RES-384b: `static let NAME = EXPR;` — the VM has no separate
+        // statics store; compile as a regular local binding. The
+        // "initialize only once" semantic is not preserved in bytecode
+        // (single-execution model), but the value is accessible by name.
+        Node::StaticLet { name, value, .. } => {
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx);
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        // RES-361: `const NAME = EXPR;` is pre-evaluated by the const_eval
+        // pass before bytecode compilation. Nothing to emit at runtime.
+        Node::Const { .. } => Ok(()),
+        // RES-139: `live { body }` — compile the body once.
+        // Retry / backoff / invariant semantics are verification-only and
+        // are not emitted in the bytecode backend.
+        Node::LiveBlock { body, .. } => compile_stmt(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
+        ),
+        // Verification-only constructs: emit nothing at runtime.
+        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -1204,6 +1249,46 @@ fn compile_stmt_in_fn(
             next_fn_idx,
             line,
         ),
+        // RES-384b: `static let NAME = EXPR;` inside a fn body — same
+        // treatment as the top-level arm: compile as a regular local.
+        Node::StaticLet { name, value, .. } => {
+            compile_expr(
+                value,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *next_local == u16::MAX {
+                return Err(CompileError::TooManyLocals);
+            }
+            let idx = *next_local;
+            *next_local += 1;
+            locals.insert(name.clone(), idx);
+            chunk.emit(Op::StoreLocal(idx), line);
+            Ok(())
+        }
+        // RES-361: const decl inside fn body — pre-evaluated, no emission.
+        Node::Const { .. } => Ok(()),
+        // RES-139: `live { body }` inside fn body — compile body once.
+        Node::LiveBlock { body, .. } => compile_stmt_in_fn(
+            body,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+            loop_state,
+        ),
+        // Verification-only constructs: emit nothing at runtime.
+        Node::Assume { .. } | Node::InvariantStatement { .. } => Ok(()),
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -2386,6 +2471,125 @@ fn compile_expr(
             );
             Ok(())
         }
+        // RES-152: `b"..."` bytes literal — stored as a Value::Bytes constant.
+        Node::BytesLiteral { value, .. } => {
+            let idx = chunk.add_constant(Value::Bytes(value.clone()))?;
+            chunk.emit(Op::Const(idx), line);
+            Ok(())
+        }
+        // RES-291: `lo..hi` / `lo..=hi` range expression.
+        // Lowered to `array_range(lo, hi)` for exclusive ranges, or
+        // `array_range(lo, hi + 1)` for inclusive ranges (emit hi, Const(1), Add).
+        Node::Range {
+            lo, hi, inclusive, ..
+        } => {
+            compile_expr(
+                lo,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            compile_expr(
+                hi,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            if *inclusive {
+                // hi_incl = hi + 1
+                let one_idx = chunk.add_constant(Value::Int(1))?;
+                chunk.emit(Op::Const(one_idx), line);
+                chunk.emit(Op::Add, line);
+            }
+            let name_idx = chunk.add_string_constant("array_range")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: name_idx,
+                    arity: 2,
+                },
+                line,
+            );
+            Ok(())
+        }
+        // RES-921: `target[lo..hi]` / `target[lo..=hi]` slice expression.
+        // Lowered to `array_slice(target, lo, hi, inclusive)`.
+        // `lo = None` is represented as `Value::Int(0)`;
+        // `hi = None` is represented as `Value::Int(-1)` (sentinel: end of array).
+        Node::Slice {
+            target,
+            lo,
+            hi,
+            inclusive,
+            ..
+        } => {
+            compile_expr(
+                target,
+                chunk,
+                locals,
+                next_local,
+                fn_index,
+                ffi_index,
+                fns,
+                next_fn_idx,
+                line,
+            )?;
+            match lo {
+                Some(lo_expr) => compile_expr(
+                    lo_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?,
+                None => {
+                    let idx = chunk.add_constant(Value::Int(0))?;
+                    chunk.emit(Op::Const(idx), line);
+                }
+            }
+            match hi {
+                Some(hi_expr) => compile_expr(
+                    hi_expr,
+                    chunk,
+                    locals,
+                    next_local,
+                    fn_index,
+                    ffi_index,
+                    fns,
+                    next_fn_idx,
+                    line,
+                )?,
+                None => {
+                    // -1 sentinel = "up to end of array"
+                    let idx = chunk.add_constant(Value::Int(-1))?;
+                    chunk.emit(Op::Const(idx), line);
+                }
+            }
+            let incl_idx = chunk.add_constant(Value::Bool(*inclusive))?;
+            chunk.emit(Op::Const(incl_idx), line);
+            let name_idx = chunk.add_string_constant("array_slice")?;
+            chunk.emit(
+                Op::CallBuiltin {
+                    name_const: name_idx,
+                    arity: 4,
+                },
+                line,
+            );
+            Ok(())
+        }
         other => Err(CompileError::Unsupported(node_kind(other))),
     }
 }
@@ -2922,6 +3126,18 @@ fn node_kind(n: &Node) -> &'static str {
         Node::StructLiteral { .. } => "StructLiteral",
         Node::FieldAccess { .. } => "FieldAccess",
         Node::FieldAssignment { .. } => "FieldAssignment",
+        Node::BytesLiteral { .. } => "BytesLiteral",
+        Node::Range { .. } => "Range",
+        Node::Slice { .. } => "Slice",
+        Node::LetTupleDestructure { .. } => "LetTupleDestructure",
+        Node::LetDestructureStruct { .. } => "LetDestructureStruct",
+        Node::TupleLiteral { .. } => "TupleLiteral",
+        Node::TupleIndex { .. } => "TupleIndex",
+        Node::MapLiteral { .. } => "MapLiteral",
+        Node::SetLiteral { .. } => "SetLiteral",
+        Node::Match { .. } => "Match",
+        Node::FunctionLiteral { .. } => "FunctionLiteral",
+        Node::InterpolatedString { .. } => "InterpolatedString",
         _ => "<other>",
     }
 }
@@ -3978,6 +4194,120 @@ outer;
         match vm_ok(src) {
             Value::Int(3) => {}
             other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    // ---------- RES-384b / RES-291 / RES-921 / RES-152: new compile coverage ----------
+
+    #[test]
+    fn static_let_compiles_as_local() {
+        let src = "static let x = 42; x;";
+        match vm_ok(src) {
+            Value::Int(42) => {}
+            other => panic!("expected Int(42), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn const_decl_is_noop_in_vm() {
+        // `const` is pre-evaluated; the bytecode should compile cleanly.
+        let p = parse_one("const LIMIT = 10;");
+        assert!(compile(&p).is_ok(), "const decl must compile");
+    }
+
+    #[test]
+    fn live_block_body_executes() {
+        // `live { ... }` compiles as a plain block in the VM.
+        let src = r#"
+let x = 0;
+live {
+    x = 5;
+}
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(5) => {}
+            other => panic!("expected Int(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assume_and_invariant_are_noops() {
+        // Verification-only constructs compile to no ops — program still runs.
+        let src = r#"
+let x = 3;
+assume(x > 0, "x must be positive");
+x;
+"#;
+        match vm_ok(src) {
+            Value::Int(3) => {}
+            other => panic!("expected Int(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bytes_literal_compiles_to_bytes_value() {
+        let p = parse_one(r#"b"hello";"#);
+        let prog = compile(&p).expect("bytes literal must compile");
+        assert!(
+            prog.main
+                .constants
+                .iter()
+                .any(|c| matches!(c, Value::Bytes(_))),
+            "constant pool must contain a Bytes constant"
+        );
+    }
+
+    #[test]
+    fn range_expr_exclusive_produces_array() {
+        let src = "let r = 0..3; r;";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[0], Value::Int(0)));
+                assert!(matches!(v[1], Value::Int(1)));
+                assert!(matches!(v[2], Value::Int(2)));
+            }
+            other => panic!("expected Array([0,1,2]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_expr_inclusive_produces_array() {
+        let src = "let r = 1..=3; r;";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(v[0], Value::Int(1)));
+                assert!(matches!(v[2], Value::Int(3)));
+            }
+            other => panic!("expected Array([1,2,3]), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_expr_basic() {
+        let src = "let a = [10, 20, 30, 40]; a[1..3];";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(v[0], Value::Int(20)));
+                assert!(matches!(v[1], Value::Int(30)));
+            }
+            other => panic!("expected [20,30], got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn slice_expr_inclusive() {
+        let src = "let a = [10, 20, 30, 40]; a[1..=2];";
+        match vm_ok(src) {
+            Value::Array(v) => {
+                assert_eq!(v.len(), 2);
+                assert!(matches!(v[0], Value::Int(20)));
+                assert!(matches!(v[1], Value::Int(30)));
+            }
+            other => panic!("expected [20,30], got {:?}", other),
         }
     }
 }

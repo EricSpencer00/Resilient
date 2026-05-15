@@ -10945,6 +10945,8 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     ("array_unzip", builtin_array_unzip),
     // RES-431: generate [start, start+1, ..., end-1].
     ("array_range", builtin_array_range),
+    // RES-921: slice(arr, lo, hi, inclusive) — sub-array / sub-string.
+    ("array_slice", builtin_array_slice),
     // RES-522: generate [0, 1, ..., len(arr)-1] for the given array.
     ("array_indices", builtin_array_indices),
     // RES-432: array of n copies of elem.
@@ -14578,6 +14580,67 @@ fn builtin_array_range(args: &[Value]) -> RResult<Value> {
         )),
         _ => Err(format!(
             "array_range: expected 2 arguments, got {}",
+            args.len()
+        )),
+    }
+}
+
+/// RES-921: `array_slice(arr, lo, hi, inclusive)` — extract a contiguous
+/// sub-array. Mirrors the `Node::Slice` interpreter semantics.
+/// `lo` is 0-based; negative indices count from the end.
+/// `hi == -1` means "up to end" (the compiler's absent-upper-bound sentinel).
+/// Positive `hi` is exclusive unless `inclusive` is `true`.
+/// Indices outside `[0, len)` are clamped silently.
+fn builtin_array_slice(args: &[Value]) -> RResult<Value> {
+    match args {
+        [
+            Value::Array(items),
+            Value::Int(lo_raw),
+            Value::Int(hi_raw),
+            Value::Bool(inclusive),
+        ] => {
+            let len = items.len() as i64;
+            let normalize = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
+            let lo_i = normalize(*lo_raw);
+            // -1 sentinel means "end of array"
+            let hi_i = if *hi_raw == -1 {
+                len
+            } else {
+                let h = normalize(*hi_raw);
+                if *inclusive { h + 1 } else { h }
+            };
+            let lo_u = (lo_i.clamp(0, len)) as usize;
+            let hi_u = (hi_i.clamp(0, len)) as usize;
+            if lo_u >= hi_u {
+                return Ok(Value::Array(Vec::new()));
+            }
+            Ok(Value::Array(items[lo_u..hi_u].to_vec()))
+        }
+        [
+            Value::String(s),
+            Value::Int(lo_raw),
+            Value::Int(hi_raw),
+            Value::Bool(inclusive),
+        ] => {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len() as i64;
+            let normalize = |v: i64| -> i64 { if v < 0 { (v + len).max(0) } else { v } };
+            let lo_i = normalize(*lo_raw);
+            let hi_i = if *hi_raw == -1 {
+                len
+            } else {
+                let h = normalize(*hi_raw);
+                if *inclusive { h + 1 } else { h }
+            };
+            let lo_u = (lo_i.clamp(0, len)) as usize;
+            let hi_u = (hi_i.clamp(0, len)) as usize;
+            if lo_u >= hi_u {
+                return Ok(Value::String(String::new()));
+            }
+            Ok(Value::String(chars[lo_u..hi_u].iter().collect()))
+        }
+        _ => Err(format!(
+            "array_slice: expected (array|string, int, int, bool), got {} args",
             args.len()
         )),
     }

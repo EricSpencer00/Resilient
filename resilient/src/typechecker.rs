@@ -2710,6 +2710,14 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+            // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
+            env.set(
+                "array_slice".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
+                    return_type: Box::new(Type::Any),
+                },
+            );
             // RES-522: indices of an array as a new array.
             env.set("array_indices".to_string(), fn_array_to_array());
             // RES-432: array of n copies.
