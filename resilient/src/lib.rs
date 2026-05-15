@@ -17879,12 +17879,19 @@ fn builtin_array_min(args: &[Value]) -> RResult<Value> {
             if items.is_empty() {
                 return Err("array_min: empty array has no minimum".to_string());
             }
-            let mut best: Option<i64> = None;
-            for v in items {
+            let first = match &items[0] {
+                Value::Int(n) => *n,
+                other => {
+                    return Err(format!(
+                        "array_min: expected all int elements, got {}",
+                        other
+                    ));
+                }
+            };
+            let mut best = first;
+            for v in &items[1..] {
                 match v {
-                    Value::Int(n) => {
-                        best = Some(best.map_or(*n, |cur| cur.min(*n)));
-                    }
+                    Value::Int(n) => best = best.min(*n),
                     other => {
                         return Err(format!(
                             "array_min: expected all int elements, got {}",
@@ -17893,7 +17900,7 @@ fn builtin_array_min(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best))
         }
         [other] => Err(format!("array_min: expected array, got {}", other)),
         _ => Err(format!(
@@ -17911,12 +17918,19 @@ fn builtin_array_max(args: &[Value]) -> RResult<Value> {
             if items.is_empty() {
                 return Err("array_max: empty array has no maximum".to_string());
             }
-            let mut best: Option<i64> = None;
-            for v in items {
+            let first = match &items[0] {
+                Value::Int(n) => *n,
+                other => {
+                    return Err(format!(
+                        "array_max: expected all int elements, got {}",
+                        other
+                    ));
+                }
+            };
+            let mut best = first;
+            for v in &items[1..] {
                 match v {
-                    Value::Int(n) => {
-                        best = Some(best.map_or(*n, |cur| cur.max(*n)));
-                    }
+                    Value::Int(n) => best = best.max(*n),
                     other => {
                         return Err(format!(
                             "array_max: expected all int elements, got {}",
@@ -17925,7 +17939,7 @@ fn builtin_array_max(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best))
         }
         [other] => Err(format!("array_max: expected array, got {}", other)),
         _ => Err(format!(
@@ -17945,12 +17959,19 @@ fn builtin_array_max_or(args: &[Value]) -> RResult<Value> {
             if items.is_empty() {
                 return Ok(Value::Int(*default));
             }
-            let mut best: Option<i64> = None;
-            for v in items {
+            let first = match &items[0] {
+                Value::Int(n) => *n,
+                other => {
+                    return Err(format!(
+                        "array_max_or: expected all int elements, got {}",
+                        other
+                    ));
+                }
+            };
+            let mut best = first;
+            for v in &items[1..] {
                 match v {
-                    Value::Int(n) => {
-                        best = Some(best.map_or(*n, |cur| cur.max(*n)));
-                    }
+                    Value::Int(n) => best = best.max(*n),
                     other => {
                         return Err(format!(
                             "array_max_or: expected all int elements, got {}",
@@ -17959,7 +17980,7 @@ fn builtin_array_max_or(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best))
         }
         [a, b] => Err(format!(
             "array_max_or: expected (array, int), got ({}, {})",
@@ -17981,12 +18002,19 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
             if items.is_empty() {
                 return Ok(Value::Int(*default));
             }
-            let mut best: Option<i64> = None;
-            for v in items {
+            let first = match &items[0] {
+                Value::Int(n) => *n,
+                other => {
+                    return Err(format!(
+                        "array_min_or: expected all int elements, got {}",
+                        other
+                    ));
+                }
+            };
+            let mut best = first;
+            for v in &items[1..] {
                 match v {
-                    Value::Int(n) => {
-                        best = Some(best.map_or(*n, |cur| cur.min(*n)));
-                    }
+                    Value::Int(n) => best = best.min(*n),
                     other => {
                         return Err(format!(
                             "array_min_or: expected all int elements, got {}",
@@ -17995,7 +18023,7 @@ fn builtin_array_min_or(args: &[Value]) -> RResult<Value> {
                     }
                 }
             }
-            Ok(Value::Int(best.unwrap()))
+            Ok(Value::Int(best))
         }
         [a, b] => Err(format!(
             "array_min_or: expected (array, int), got ({}, {})",
@@ -19125,7 +19153,10 @@ fn builtin_format(args: &[Value]) -> RResult<Value> {
             }
             _ => {
                 let rest = &fmt[i..];
-                let ch = rest.chars().next().unwrap();
+                let ch = rest
+                    .chars()
+                    .next()
+                    .ok_or_else(|| "format: internal: byte index past end of string".to_string())?;
                 out.push(ch);
                 i += ch.len_utf8();
             }
@@ -19200,7 +19231,11 @@ fn parse_format_spec(spec_src: &str) -> Result<FormatSpec, String> {
                 spec_src
             ));
         }
-        spec.precision = Some(rest[..pdigit_end].parse::<usize>().unwrap());
+        spec.precision = Some(
+            rest[..pdigit_end]
+                .parse::<usize>()
+                .map_err(|_| format!("format: invalid precision in spec `{}`", spec_src))?,
+        );
         s = &rest[pdigit_end..];
     }
 
@@ -25749,7 +25784,7 @@ fn start_repl() -> RustylineResult<()> {
                     }
                     "clear" => {
                         print!("\x1B[2J\x1B[1;1H"); // ANSI escape code to clear screen
-                        io::stdout().flush().unwrap();
+                        let _ = io::stdout().flush();
                         continue;
                     }
                     "typecheck" => {
