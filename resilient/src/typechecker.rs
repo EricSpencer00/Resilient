@@ -5623,6 +5623,17 @@ impl TypeChecker {
                 // RES-1862: track innermost span for better diagnostics.
                 self.current_span = *span;
                 let value_type = self.check_node(value)?;
+                // RES-414: binding a void-valued expression to a named variable
+                // is always a bug. The `_`-prefixed discard convention is the
+                // expected pattern; bare `let x = void_fn()` produces a variable
+                // that can never be used in a typed context.
+                if value_type == Type::Void && !name.starts_with('_') {
+                    return Err(format!(
+                        "cannot bind void value to `{}` — the right-hand side expression has type void; \
+                         use `let _ = expr;` to explicitly discard it",
+                        name
+                    ));
+                }
                 // RES-053: enforce `let x: T = value` — reject if value's
                 // type isn't compatible with the declared annotation.
                 let bind_type = if let Some(ty_name) = type_annot {
@@ -5632,6 +5643,34 @@ impl TypeChecker {
                             "let {}: {} — value has type {}",
                             name, declared, value_type
                         ));
+                    }
+                    // RES-411: reject integer literals that overflow the declared pinned-int type.
+                    if let Some(literal_val) = fold_const_i64(value, &self.const_bindings) {
+                        let range_ok = match &declared {
+                            Type::Int8 => (-128_i64..=127).contains(&literal_val),
+                            Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
+                            Type::Int32 => (-2_147_483_648_i64..=2_147_483_647)
+                                .contains(&literal_val),
+                            Type::UInt8 => (0_i64..=255).contains(&literal_val),
+                            Type::UInt16 => (0_i64..=65535).contains(&literal_val),
+                            Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
+                            _ => true,
+                        };
+                        if !range_ok {
+                            let range_str = match &declared {
+                                Type::Int8 => "-128..=127",
+                                Type::Int16 => "-32768..=32767",
+                                Type::Int32 => "-2147483648..=2147483647",
+                                Type::UInt8 => "0..=255",
+                                Type::UInt16 => "0..=65535",
+                                Type::UInt32 => "0..=4294967295",
+                                _ => unreachable!(),
+                            };
+                            return Err(format!(
+                                "let {}: {} — value {} overflows the declared type (valid range: {})",
+                                name, declared, literal_val, range_str
+                            ));
+                        }
                     }
                     declared
                 } else {
@@ -6454,32 +6493,67 @@ impl TypeChecker {
                     // Struct name unknown (forward reference, generic container,
                     // etc.) — fall through to permissive Any.
                 }
-                // RES-1859: known method return types for Array/String targets.
+                // RES-1859 / RES-412: known method return types for Array/String targets.
                 // When the method is called as `arr.map(fn)`, the FieldAccess
                 // node is used as the callee in a CallExpression; returning a
                 // Function type here lets the call site infer the correct return.
                 if tgt_ty == Type::Array {
-                    match field.as_str() {
-                        "map" | "filter" => {
-                            return Ok(Type::Function {
+                    let ret = match field.as_str() {
+                        "map" | "filter" | "push" | "pop" | "sort" | "reverse" => {
+                            Type::Function {
                                 params: vec![Type::Any],
                                 return_type: Box::new(Type::Array),
-                            });
+                            }
                         }
-                        "reduce" => {
-                            return Ok(Type::Function {
-                                params: vec![Type::Any, Type::Any],
-                                return_type: Box::new(Type::Any),
-                            });
-                        }
-                        _ => {}
+                        "reduce" => Type::Function {
+                            params: vec![Type::Any, Type::Any],
+                            return_type: Box::new(Type::Any),
+                        },
+                        "len" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Int),
+                        },
+                        "contains" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Bool),
+                        },
+                        "join" => Type::Function {
+                            params: vec![Type::String],
+                            return_type: Box::new(Type::String),
+                        },
+                        _ => Type::Any,
+                    };
+                    if ret != Type::Any {
+                        return Ok(ret);
                     }
                 }
-                if tgt_ty == Type::String && field == "split" {
-                    return Ok(Type::Function {
-                        params: vec![Type::String],
-                        return_type: Box::new(Type::Array),
-                    });
+                if tgt_ty == Type::String {
+                    let ret = match field.as_str() {
+                        "split" | "chars" => Type::Function {
+                            params: vec![Type::Any],
+                            return_type: Box::new(Type::Array),
+                        },
+                        "trim" | "to_upper" | "to_lower" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::String),
+                        },
+                        "replace" => Type::Function {
+                            params: vec![Type::String, Type::String],
+                            return_type: Box::new(Type::String),
+                        },
+                        "contains" | "starts_with" | "ends_with" => Type::Function {
+                            params: vec![Type::String],
+                            return_type: Box::new(Type::Bool),
+                        },
+                        "len" => Type::Function {
+                            params: vec![],
+                            return_type: Box::new(Type::Int),
+                        },
+                        _ => Type::Any,
+                    };
+                    if ret != Type::Any {
+                        return Ok(ret);
+                    }
                 }
                 Ok(Type::Any)
             }
@@ -6981,8 +7055,17 @@ impl TypeChecker {
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "-" | "*" | "/" | "%" => {
-                        // RES-130: same policy as `+` — no mixed int /
-                        // float.
+                        // RES-130: same policy as `+` — no mixed int / float.
+                        // RES-413: static division / modulo by zero detection.
+                        if matches!(operator.as_str(), "/" | "%")
+                            && let Some(divisor) = fold_const_i64(right, &self.const_bindings)
+                            && divisor == 0
+                        {
+                            return Err(format!(
+                                "integer {} by zero — denominator is a compile-time constant 0",
+                                if operator == "/" { "division" } else { "modulo" }
+                            ));
+                        }
                         check_numeric_same_type(operator, &left_type, &right_type)
                     }
                     "&" | "|" | "^" | "<<" | ">>" => {
@@ -11476,15 +11559,290 @@ fn f() -> void { }
     #[test]
     fn duplicate_type_alias_different_target_errors() {
         // Re-declaring with a different target is a compile error.
-        let src = "type M = int;\ntype M = float;\nfn f() -> void { }\n";
-        let (prog, parse_errs) = crate::parse(src);
-        assert!(parse_errs.is_empty(), "parse errors: {:?}", parse_errs);
-        let err = TypeChecker::new()
-            .check_program_with_source(&prog, "test.rz")
-            .expect_err("expected duplicate alias error");
+        let err = check_err("type M = int;\ntype M = float;\nfn f() -> void { }\n");
         assert!(
             err.contains("duplicate type alias") || err.contains("M"),
             "expected duplicate-alias error; got: {err}"
         );
+    }
+}
+
+// ── RES-411: integer literal overflow for pinned int types ───────────────────
+
+#[cfg(test)]
+mod res411_pinned_int_overflow {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn int8_in_range_ok() {
+        check_ok("fn f() -> void { let x: Int8 = 100; }");
+    }
+
+    #[test]
+    fn int8_min_boundary_ok() {
+        check_ok("fn f() -> void { let x: Int8 = -128; }");
+    }
+
+    #[test]
+    fn int8_max_boundary_ok() {
+        check_ok("fn f() -> void { let x: Int8 = 127; }");
+    }
+
+    #[test]
+    fn int8_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: Int8 = 300; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(e.contains("Int8"), "error must name the type; got: {e}");
+    }
+
+    #[test]
+    fn int8_underflow_errors() {
+        let e = check_err("fn f() -> void { let x: Int8 = -200; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn uint8_in_range_ok() {
+        check_ok("fn f() -> void { let x: UInt8 = 255; }");
+    }
+
+    #[test]
+    fn uint8_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: UInt8 = 256; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+        assert!(e.contains("UInt8"), "error must name the type; got: {e}");
+    }
+
+    #[test]
+    fn uint8_negative_errors() {
+        let e = check_err("fn f() -> void { let x: UInt8 = -1; }");
+        assert!(e.contains("overflows"), "expected overflow error for negative UInt8; got: {e}");
+    }
+
+    #[test]
+    fn int16_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: Int16 = 40000; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn uint16_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: UInt16 = 70000; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn int32_max_boundary_ok() {
+        check_ok("fn f() -> void { let x: Int32 = 2147483647; }");
+    }
+
+    #[test]
+    fn uint32_overflow_errors() {
+        let e = check_err("fn f() -> void { let x: UInt32 = 5000000000; }");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn plain_int_no_overflow_check() {
+        // Unbounded `int` never overflows.
+        check_ok("fn f() -> void { let x: int = 9999999999; }");
+    }
+
+    #[test]
+    fn unannotated_let_no_overflow_check() {
+        // Without a type annotation there's no declared range to check.
+        check_ok("fn f() -> void { let x = 300; }");
+    }
+}
+
+// ── RES-412: string/array method return type precision ───────────────────────
+
+#[cfg(test)]
+mod res412_method_return_types {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    #[test]
+    fn array_len_returns_int() {
+        // arr.len() should be usable where an int is expected.
+        check_ok(r#"fn f() -> int { let arr = [1, 2, 3]; return arr.len(); }"#);
+    }
+
+    #[test]
+    fn string_len_returns_int() {
+        check_ok(r#"fn f() -> int { let s = "hello"; return s.len(); }"#);
+    }
+
+    #[test]
+    fn string_trim_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "  hi  "; return s.trim(); }"#);
+    }
+
+    #[test]
+    fn string_to_upper_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "hello"; return s.to_upper(); }"#);
+    }
+
+    #[test]
+    fn string_to_lower_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "HELLO"; return s.to_lower(); }"#);
+    }
+
+    #[test]
+    fn string_contains_returns_bool() {
+        check_ok(r#"fn f() -> bool { let s = "hello world"; return s.contains("world"); }"#);
+    }
+
+    #[test]
+    fn string_starts_with_returns_bool() {
+        check_ok(r#"fn f() -> bool { let s = "hello"; return s.starts_with("he"); }"#);
+    }
+
+    #[test]
+    fn string_ends_with_returns_bool() {
+        check_ok(r#"fn f() -> bool { let s = "hello"; return s.ends_with("lo"); }"#);
+    }
+
+    #[test]
+    fn string_replace_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "hello"; return s.replace("l", "r"); }"#);
+    }
+
+    #[test]
+    fn array_contains_returns_bool() {
+        check_ok(r#"fn f() -> bool { let arr = [1, 2, 3]; return arr.contains(2); }"#);
+    }
+
+    #[test]
+    fn array_join_returns_string() {
+        check_ok(r#"fn f() -> string { let arr = ["a", "b"]; return arr.join(", "); }"#);
+    }
+}
+
+// ── RES-413: static division by zero detection ───────────────────────────────
+
+#[cfg(test)]
+mod res413_div_by_zero {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn div_by_zero_literal_errors() {
+        let e = check_err("fn f() -> int { return 10 / 0; }");
+        assert!(e.contains("division by zero") || e.contains("by zero"), "got: {e}");
+    }
+
+    #[test]
+    fn mod_by_zero_literal_errors() {
+        let e = check_err("fn f() -> int { return 10 % 0; }");
+        assert!(e.contains("modulo by zero") || e.contains("by zero"), "got: {e}");
+    }
+
+    #[test]
+    fn div_by_const_zero_errors() {
+        let e = check_err("fn f() -> int { let d = 0; return 10 / d; }");
+        assert!(e.contains("by zero"), "expected division-by-zero error; got: {e}");
+    }
+
+    #[test]
+    fn div_by_nonzero_ok() {
+        check_ok("fn f() -> int { return 10 / 2; }");
+    }
+
+    #[test]
+    fn div_by_variable_ok() {
+        // Non-constant divisor — can't statically check, so it's ok.
+        check_ok("fn f(int n) -> int { return 10 / n; }");
+    }
+}
+
+// ── RES-414: void-in-let binding detection ───────────────────────────────────
+
+#[cfg(test)]
+mod res414_void_in_let {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn let_void_fn_result_errors() {
+        let e = check_err("fn f() -> void { let x = print(\"hi\"); }");
+        assert!(
+            e.contains("void") || e.contains("Void"),
+            "expected void-binding error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn let_underscore_void_ok() {
+        // _ prefix is the discard convention — allowed for void values.
+        check_ok("fn f() -> void { let _x = print(\"hi\"); }");
+    }
+
+    #[test]
+    fn let_int_fn_ok() {
+        check_ok("fn f() -> int { let x = len(\"hi\"); return x; }");
+    }
+
+    #[test]
+    fn void_fn_as_expression_statement_ok() {
+        // Using a void-returning fn as a plain expression statement is fine.
+        check_ok("fn f() -> void { print(\"hi\"); }");
     }
 }
