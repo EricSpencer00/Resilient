@@ -24988,6 +24988,31 @@ fn render_with_caret(src: &str, err: &str, level: &str) -> String {
     err.to_string()
 }
 
+/// Extract `(line, column, message)` from a compiler error string of
+/// the form `"line:col: message"` or `"path:line:col: message"`.
+/// Returns `(0, 0, err)` when the pattern doesn't match.
+fn parse_error_location(err: &str) -> (u32, u32, String) {
+    // Try bare `<line>:<col>: <msg>` form.
+    let mut it = err.splitn(3, ':');
+    if let (Some(ls), Some(cs), Some(rest)) = (it.next(), it.next(), it.next())
+        && let (Ok(line), Ok(col)) = (ls.trim().parse::<u32>(), cs.trim().parse::<u32>())
+    {
+        return (line, col, rest.trim().to_string());
+    }
+    // Try `<path>:<line>:<col>: <msg>` form — find the first colon after
+    // which two consecutive unsigned integers follow.
+    for (i, _) in err.match_indices(':') {
+        let tail = &err[i + 1..];
+        let mut parts = tail.splitn(3, ':');
+        if let (Some(ls), Some(cs), Some(msg)) = (parts.next(), parts.next(), parts.next())
+            && let (Ok(line), Ok(col)) = (ls.trim().parse::<u32>(), cs.trim().parse::<u32>())
+        {
+            return (line, col, msg.trim().to_string());
+        }
+    }
+    (0, 0, err.to_string())
+}
+
 /// RES-112: scan `src` through the default routing (hand-rolled or
 /// logos lexer, whichever the build has) and print one token per
 /// line on stdout in the format
@@ -27535,6 +27560,7 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut file: Option<PathBuf> = None;
     let mut quiet = false;
     let mut safety_critical = false;
+    let mut emit_diagnostics_json = false;
     let mut verifier_timeout_ms: u32 = 5000;
     // RES-354: theory selection (z3-gated; default Auto).
     #[cfg(feature = "z3")]
@@ -27544,6 +27570,8 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
         let a = &args[i];
         if a == "--quiet" || a == "-q" {
             quiet = true;
+        } else if a == "--emit-diagnostics-json" {
+            emit_diagnostics_json = true;
         } else if a == "--safety-critical" {
             safety_critical = true;
         } else if a == "--verifier-timeout-ms" {
@@ -27632,7 +27660,29 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     // Parse.
     let (mut program, parse_errs) = parse(&src);
     if !parse_errs.is_empty() {
-        if !quiet {
+        if emit_diagnostics_json {
+            let path_str = path.to_string_lossy();
+            let json_diags: Vec<serde_json::Value> = parse_errs
+                .iter()
+                .map(|e| {
+                    // Parse errors carry "line:col: message" prefix; extract
+                    // line/col so the JSON schema stays consistent.
+                    let (line, col, msg) = parse_error_location(e);
+                    serde_json::json!({
+                        "severity": "error",
+                        "code": "parse",
+                        "line": line,
+                        "column": col,
+                        "message": msg,
+                        "file": path_str.as_ref(),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+            );
+        } else if !quiet {
             for e in &parse_errs {
                 eprintln!("{}", render_with_caret(&src, e, "parse error"));
             }
@@ -27694,7 +27744,8 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
     let mut tc = tc_base.with_z3_theory(z3_theory);
     #[cfg(not(feature = "z3"))]
     let mut tc = tc_base;
-    match tc.check_program_with_source(&program, path.to_string_lossy().as_ref()) {
+    let path_str = path.to_string_lossy();
+    match tc.check_program_with_source(&program, path_str.as_ref()) {
         Ok(_) => {
             // RES-390: distributed-invariant verification runs
             // AFTER successful typechecking — we only try to
@@ -27707,7 +27758,25 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
             {
                 let diags = cluster_verifier::verify_program(&program, verifier_timeout_ms);
                 if !diags.is_empty() {
-                    if !quiet {
+                    if emit_diagnostics_json {
+                        let json_diags: Vec<serde_json::Value> = diags
+                            .iter()
+                            .map(|d| {
+                                serde_json::json!({
+                                    "severity": "error",
+                                    "code": "cluster",
+                                    "line": d.span.start.line,
+                                    "column": d.span.start.column,
+                                    "message": format!("[{}/{}.{}] {}", d.cluster, d.actor, d.handler, d.message),
+                                    "file": path_str.as_ref(),
+                                })
+                            })
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+                        );
+                    } else if !quiet {
                         for d in &diags {
                             let header = format!(
                                 "{}:{}:{}: cluster-invariant error: [{}/{}.{}] {}",
@@ -27728,13 +27797,29 @@ fn dispatch_check_subcommand(args: &[String]) -> Option<i32> {
                     return Some(1);
                 }
             }
-            if !quiet {
+            if emit_diagnostics_json {
+                println!("[]");
+            } else if !quiet {
                 println!("{}: ok", path.display());
             }
             Some(0)
         }
         Err(e) => {
-            if !quiet {
+            if emit_diagnostics_json {
+                let (line, col, msg) = parse_error_location(&e);
+                let json_diags = serde_json::json!([{
+                    "severity": "error",
+                    "code": "typecheck",
+                    "line": line,
+                    "column": col,
+                    "message": msg,
+                    "file": path_str.as_ref(),
+                }]);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_diags).unwrap_or_default()
+                );
+            } else if !quiet {
                 eprintln!("{}", e);
                 eprintln!("{}", render_with_caret(&src, &e, "error"));
             }

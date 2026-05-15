@@ -83,7 +83,10 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0021", // redundant boolean sub-expression (x && x, x || x)
     "L0022", // else branch after unconditional return is redundant
     "L0023", // tautological comparison with boolean literal (x == true)
+    "L0024", // struct literal is missing one or more required fields
     "L0025", // unreachable code after infinite `while true` loop (no break)
+    "L0026", // duplicate literal key in map literal (earlier binding shadowed)
+    "L0027", // empty catch block silently discards the error
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -126,6 +129,9 @@ struct LintTriggers {
     has_if_with_else: bool,
     has_bool_literal: bool,
     has_while_true: bool,
+    has_struct_literal: bool,
+    has_map_literal: bool,
+    has_try_catch: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -173,6 +179,9 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_if_with_else = true;
             }
         }
+        Node::StructLiteral { .. } => t.has_struct_literal = true,
+        Node::MapLiteral { .. } => t.has_map_literal = true,
+        Node::TryCatch { .. } => t.has_try_catch = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -258,6 +267,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_while_true && t.has_block {
         run_l0025_unreachable_after_infinite_loop(program, &mut out);
+    }
+    if t.has_struct_literal {
+        run_l0024_struct_missing_fields(program, &mut out);
+    }
+    if t.has_map_literal {
+        run_l0026_duplicate_map_key(program, &mut out);
+    }
+    if t.has_try_catch {
+        run_l0027_empty_catch_block(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -3240,6 +3258,148 @@ fn node_span(node: &Node) -> Option<&Span> {
 }
 
 // ============================================================
+// L0024: struct literal missing required fields
+// ============================================================
+//
+// Collects all `StructDecl` definitions visible at program scope,
+// then walks every `StructLiteral` and warns when a declared field
+// is absent from the literal. This is a lint-level warning (the
+// typechecker will also error); the lint fires first and lists the
+// missing names so the user can see at a glance what to add.
+
+fn run_l0024_struct_missing_fields(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    // Build struct-name → declared field names from top-level decls.
+    let mut decls: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for spanned in stmts {
+        if let Node::StructDecl { name, fields, .. } = &spanned.node {
+            // `fields` is Vec<(type_name, field_name)>
+            decls.insert(
+                name.as_str(),
+                fields.iter().map(|(_, fname)| fname.as_str()).collect(),
+            );
+        }
+        // Descend into impl blocks — they don't contain StructDecls but
+        // let the struct-collection pass stay consistent.
+    }
+    if decls.is_empty() {
+        return;
+    }
+    walk_l0024(program, &decls, out);
+}
+
+fn walk_l0024<'a>(
+    node: &'a Node,
+    decls: &std::collections::HashMap<&str, Vec<&'a str>>,
+    out: &mut Vec<Lint>,
+) {
+    if let Node::StructLiteral { name, fields, span } = node
+        && let Some(declared) = decls.get(name.as_str())
+    {
+        let provided: std::collections::HashSet<&str> =
+            fields.iter().map(|(fname, _)| fname.as_str()).collect();
+        let missing: Vec<&str> = declared
+            .iter()
+            .filter(|f| !provided.contains(**f))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            let list = missing
+                .iter()
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(Lint {
+                code: "L0024".into(),
+                severity: Severity::Warning,
+                message: format!("struct literal `{name}` is missing required field(s): {list}"),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0024(child, decls, out));
+}
+
+// ============================================================
+// L0026: duplicate literal key in map literal
+// ============================================================
+//
+// When a map literal like `{ "a": 1, "b": 2, "a": 3 }` contains
+// two entries with the same literal key, the first is silently
+// overwritten at runtime. This is almost always a copy-paste
+// mistake and never intentional.
+//
+// Only literal keys (string, integer, bool) are checked — dynamic
+// expression keys can't be compared at lint time.
+
+fn run_l0026_duplicate_map_key(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0026(program, out);
+}
+
+fn walk_l0026(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::MapLiteral { entries, span } = node {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (key, _) in entries {
+            let repr = match key {
+                Node::StringLiteral { value, .. } => Some(format!("\"{value}\"")),
+                Node::IntegerLiteral { value, .. } => Some(value.to_string()),
+                Node::BooleanLiteral { value, .. } => Some(value.to_string()),
+                _ => None,
+            };
+            if let Some(k) = repr
+                && !seen.insert(k.clone())
+            {
+                out.push(Lint {
+                    code: "L0026".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "duplicate map key {k} — the earlier binding is silently overwritten"
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0026(child, out));
+}
+
+// ============================================================
+// L0027: empty catch block silently swallows errors
+// ============================================================
+//
+// An empty `catch` arm (`catch (E) { }`) silently discards the
+// error. Code that intentionally swallows should add a comment
+// or a `let _e = ...` binding; this lint surfaces the pattern
+// so it's visible during review.
+
+fn run_l0027_empty_catch_block(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0027(program, out);
+}
+
+fn walk_l0027(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::TryCatch { handlers, span, .. } = node {
+        for (error_type, body) in handlers {
+            if body.is_empty() {
+                out.push(Lint {
+                    code: "L0027".into(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "empty catch block for `{error_type}` silently discards the error — add a handler or re-raise"
+                    ),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0027(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -4634,6 +4794,101 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0025".to_string()),
             "L0025 must not fire for non-literal while condition"
+        );
+    }
+
+    // ---------- L0024: struct literal missing required fields ----------
+
+    #[test]
+    fn l0024_fires_when_field_missing() {
+        let src = "struct Point { int x, int y, int z }\nlet _p = new Point { x: 1, y: 2 };\n";
+        assert!(
+            codes(src).contains(&"L0024".to_string()),
+            "L0024 must fire when a struct literal omits a declared field; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0024_silent_when_all_fields_present() {
+        let src = "struct Point { int x, int y }\nlet _p = new Point { x: 1, y: 2 };\n";
+        assert!(
+            !codes(src).contains(&"L0024".to_string()),
+            "L0024 must not fire when all declared fields are provided"
+        );
+    }
+
+    #[test]
+    fn l0024_message_names_missing_fields() {
+        let src = "struct Rect { int w, int h, int depth }\nlet _r = new Rect { w: 10 };\n";
+        let lints = lint(src);
+        let l = lints.iter().find(|l| l.code == "L0024");
+        assert!(l.is_some(), "L0024 must fire; got {:?}", lints);
+        let msg = &l.unwrap().message;
+        assert!(
+            msg.contains("`h`") && msg.contains("`depth`"),
+            "L0024 message must name missing fields; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn l0024_silent_for_unknown_struct_name() {
+        // If the struct isn't declared in this program, don't fire.
+        let src = "let _p = new Unknown { x: 1 };\n";
+        assert!(
+            !codes(src).contains(&"L0024".to_string()),
+            "L0024 must not fire for unknown struct type"
+        );
+    }
+
+    // ---------- L0026: duplicate key in map literal ----------
+
+    #[test]
+    fn l0026_fires_on_duplicate_string_key() {
+        let src = "fn f() { let _m = {\"a\" -> 1, \"b\" -> 2, \"a\" -> 3}; }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0026".to_string()),
+            "L0026 must fire when a string key appears twice; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0026_fires_on_duplicate_integer_key() {
+        let src = "fn f() { let _m = {1 -> \"x\", 2 -> \"y\", 1 -> \"z\"}; }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0026".to_string()),
+            "L0026 must fire when an integer key appears twice"
+        );
+    }
+
+    #[test]
+    fn l0026_silent_when_keys_unique() {
+        let src = "fn f() { let _m = {\"a\" -> 1, \"b\" -> 2, \"c\" -> 3}; }\nf();\n";
+        assert!(
+            !codes(src).contains(&"L0026".to_string()),
+            "L0026 must not fire when all keys are distinct"
+        );
+    }
+
+    // ---------- L0027: empty catch block ----------
+
+    #[test]
+    fn l0027_fires_on_empty_catch() {
+        let src = "fn risky() fails Bad { }\ntry { risky(); } catch Bad { }\n";
+        assert!(
+            codes(src).contains(&"L0027".to_string()),
+            "L0027 must fire for an empty catch block; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0027_silent_when_catch_has_body() {
+        let src = "fn risky() fails Bad { }\ntry { risky(); } catch Bad { let _x = 1; }\n";
+        assert!(
+            !codes(src).contains(&"L0027".to_string()),
+            "L0027 must not fire when the catch block has statements"
         );
     }
 }
