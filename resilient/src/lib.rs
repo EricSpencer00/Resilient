@@ -4504,12 +4504,12 @@ impl Parser {
     }
 
     /// RES-128: parse `type <Name> = <Target>;` at top level. Emits
-    /// a `Node::TypeAlias`. The target is parsed as a single
-    /// identifier — tuple / generic alias targets are an RES-129
-    /// follow-up. A missing `=`, a non-identifier on either side, or
-    /// a missing `;` gets a clean diagnostic but doesn't stop the
-    /// parser — we still emit the node so later passes don't null-
-    /// pointer on missing metadata.
+    /// a `Node::TypeAlias`. The target is parsed via
+    /// `parse_type_annotation`, so complex targets like
+    /// `fn(int) -> int`, `Array<T>`, and `&T` are all supported.
+    /// A missing `=`, unparseable target, or missing `;` gets a clean
+    /// diagnostic; the node is still emitted so later passes don't
+    /// null-pointer on missing metadata.
     fn parse_type_alias(&mut self) -> Node {
         let kw_span = self.span_at_current();
         self.next_token(); // skip `type`
@@ -4530,17 +4530,11 @@ impl Parser {
             self.next_token(); // skip '='
         }
 
-        let target = match &self.current_token {
-            Token::Identifier(t) => t.clone(),
-            other => {
-                self.record_error(format!(
-                    "Expected target type name after 'type {} =', found {}",
-                    name, other
-                ));
-                String::new()
-            }
-        };
-        self.next_token(); // skip target
+        // RES-423: use parse_type_annotation so fn(...)->R, Array<T>,
+        // reference types, etc. are all valid alias targets.
+        let target = self
+            .parse_type_annotation(&format!("in 'type {} = ...'", name))
+            .unwrap_or_default();
 
         // Trailing `;` — optional (mirrors LetStatement's semicolon
         // handling so copy-paste doesn't trip users up).
@@ -22070,6 +22064,17 @@ impl Interpreter {
                 } else if let Some(value) = self.env.get(name) {
                     Ok(value)
                 } else if let Some(value) = self.statics.borrow().get(name).cloned() {
+                    Ok(value)
+                } else if let Some(idx) = name.find("::")
+                    && let Some(value) = self
+                        .env
+                        .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
+                {
+                    // RES-424: `Struct::method()` syntax bridges to the
+                    // `Struct$method` mangled name impl methods are stored
+                    // under. This makes static method calls (impl methods
+                    // with no `self`) callable without knowing the internal
+                    // mangling convention.
                     Ok(value)
                 } else {
                     // RES-487: hint at close builtin matches via the

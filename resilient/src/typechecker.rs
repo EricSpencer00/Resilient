@@ -6560,7 +6560,15 @@ impl TypeChecker {
                     if let Some((_, ty)) = declared.iter().find(|(n, _)| n == field) {
                         return Ok(ty.clone());
                     }
-                    // RES-407: struct is known but field is not found — error.
+                    // RES-424: check for an impl method `StructName$field`
+                    // before reporting "has no field". When found, return
+                    // its type so method calls type-check correctly.
+                    let mangled = format!("{}${}", sname, field);
+                    if let Some(method_ty) = self.env.get(&mangled) {
+                        return Ok(method_ty);
+                    }
+                    // RES-407: struct is known, field not found, and no
+                    // impl method — report a clear diagnostic.
                     let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
                     return Err(format!(
                         "struct `{}` has no field `{}`; available fields: {}",
@@ -7103,6 +7111,17 @@ impl TypeChecker {
                 match self.env.get(name) {
                     Some(typ) => Ok(typ),
                     None => {
+                        // RES-424: `Struct::method` → try the `Struct$method`
+                        // mangling that impl blocks register under. This makes
+                        // static method calls (no `self`) reachable via the
+                        // `Type::method()` call syntax users expect.
+                        if let Some(idx) = name.find("::")
+                            && let Some(typ) = self
+                                .env
+                                .get(&format!("{}${}", &name[..idx], &name[idx + 2..]))
+                        {
+                            return Ok(typ);
+                        }
                         // RES-306: append a did-you-mean hint when an
                         // in-scope name is within Levenshtein distance 2
                         // of the typo. The helper handles the
@@ -7509,18 +7528,41 @@ impl TypeChecker {
                         params,
                         return_type,
                     } => {
+                        // RES-424: struct impl method-call dispatch — when
+                        // the callee is a FieldAccess on a struct target, the
+                        // receiver is the implicit first `self` argument that
+                        // the interpreter prepends. Only applies for struct
+                        // targets (not Array / String builtins whose method
+                        // types were registered WITHOUT a self param slot).
+                        let is_struct_method_call = if let Node::FieldAccess {
+                            target: fa_target,
+                            ..
+                        } = function.as_ref()
+                        {
+                            matches!(self.check_node(fa_target), Ok(Type::Struct(_)))
+                        } else {
+                            false
+                        };
+                        let (explicit_params, param_offset) = if is_struct_method_call
+                            && !params.is_empty()
+                        {
+                            (params.len() - 1, 1)
+                        } else {
+                            (params.len(), 0)
+                        };
+
                         // Check argument count
-                        if arguments.len() != params.len() {
+                        if arguments.len() != explicit_params {
                             return Err(format!(
                                 "Expected {} arguments, got {}",
-                                params.len(),
+                                explicit_params,
                                 arguments.len()
                             ));
                         }
 
                         // Check each argument type
                         for (i, (arg, param_type)) in
-                            arguments.iter().zip(params.iter()).enumerate()
+                            arguments.iter().zip(params[param_offset..].iter()).enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
                             if arg_type != *param_type
