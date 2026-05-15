@@ -517,6 +517,7 @@ mod const_fn;
 mod contract_inference;
 mod coverage_warnings;
 mod crash_only_cert;
+mod data_utils;
 mod deadlock_freedom;
 mod default_trait_methods;
 mod dependent_arrays;
@@ -12013,6 +12014,26 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "complex_from_polar",
         crate::complex_numbers::builtin_complex_from_polar,
     ),
+    // RES-2662: data utilities — linspace, CSV, table formatting, RLE.
+    ("linspace", crate::data_utils::builtin_linspace),
+    ("logspace", crate::data_utils::builtin_logspace),
+    ("arange", crate::data_utils::builtin_arange),
+    ("csv_parse", crate::data_utils::builtin_csv_parse),
+    ("csv_parse_tsv", crate::data_utils::builtin_csv_parse_tsv),
+    ("csv_format", crate::data_utils::builtin_csv_format),
+    ("csv_format_tsv", crate::data_utils::builtin_csv_format_tsv),
+    ("table_format", crate::data_utils::builtin_table_format),
+    ("format_float", crate::data_utils::builtin_format_float),
+    (
+        "format_int_width",
+        crate::data_utils::builtin_format_int_width,
+    ),
+    (
+        "format_float_sci",
+        crate::data_utils::builtin_format_float_sci,
+    ),
+    ("rle_encode", crate::data_utils::builtin_rle_encode),
+    ("rle_decode", crate::data_utils::builtin_rle_decode),
 ];
 
 /// Print the single argument followed by a newline and return `Void`.
