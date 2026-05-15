@@ -959,6 +959,13 @@ println(stats_percentile([5.0, 1.0, 3.0], 100.0));"#);
         assert!(approx(lines[1], 5.0), "expected 5.0, got {}", lines[1]);
     }
 
+    #[test]
+    fn percentile_nan_input_errors() {
+        // sqrt(-1.0) produces NaN; the percentile function should reject it.
+        let r = run("stats_percentile([1.0, sqrt(-1.0), 3.0], 50.0);");
+        assert!(!r.ok, "expected error for NaN element in percentile");
+    }
+
     // ── zscore ───────────────────────────────────────────────────────────────
 
     #[test]
