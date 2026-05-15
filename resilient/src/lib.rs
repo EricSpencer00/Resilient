@@ -511,6 +511,7 @@ mod autopilot;
 mod behavioral_fingerprint;
 mod blame_attribution;
 mod causal_trace;
+mod combinatorics;
 mod const_fn;
 mod contract_inference;
 mod coverage_warnings;
@@ -11809,6 +11810,31 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     (
         "result_collect",
         crate::type_builtins::builtin_result_collect,
+    ),
+    // RES-2654: combinatorics and discrete collection operations (pure).
+    (
+        "array_cartesian_product",
+        crate::combinatorics::builtin_array_cartesian_product,
+    ),
+    (
+        "array_combinations",
+        crate::combinatorics::builtin_array_combinations,
+    ),
+    (
+        "array_permutations",
+        crate::combinatorics::builtin_array_permutations,
+    ),
+    (
+        "array_powerset",
+        crate::combinatorics::builtin_array_powerset,
+    ),
+    (
+        "array_transpose",
+        crate::combinatorics::builtin_array_transpose,
+    ),
+    (
+        "array_cartesian_product_n",
+        crate::combinatorics::builtin_array_cartesian_product_n,
     ),
 ];
 
