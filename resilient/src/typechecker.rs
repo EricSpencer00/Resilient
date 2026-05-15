@@ -5828,10 +5828,39 @@ impl TypeChecker {
             // surface nested type errors, but fall back to `Type::Any`
             // for the result until a real `Type::Map<K, V>` lands in
             // the typechecker.
+            // RES-415: enforce key-type and value-type consistency so that
+            // {1: "a", "b": "c"} is rejected the same way mixed-type array
+            // literals are rejected.
             Node::MapLiteral { entries, .. } => {
+                let mut key_types: Vec<Type> = Vec::with_capacity(entries.len());
+                let mut val_types: Vec<Type> = Vec::with_capacity(entries.len());
                 for (k, v) in entries {
-                    let _ = self.check_node(k)?;
-                    let _ = self.check_node(v)?;
+                    let kt = self.check_node(k)?;
+                    let vt = self.check_node(v)?;
+                    if !matches!(kt, Type::Any) {
+                        key_types.push(kt);
+                    }
+                    if !matches!(vt, Type::Any) {
+                        val_types.push(vt);
+                    }
+                }
+                if key_types.len() > 1 {
+                    let first = key_types[0].clone();
+                    if let Some(other) = key_types.iter().find(|t| **t != first) {
+                        return Err(format!(
+                            "map literal contains mixed key types: {} and {} — all keys must have the same type",
+                            first, other
+                        ));
+                    }
+                }
+                if val_types.len() > 1 {
+                    let first = val_types[0].clone();
+                    if let Some(other) = val_types.iter().find(|t| **t != first) {
+                        return Err(format!(
+                            "map literal contains mixed value types: {} and {} — all values must have the same type",
+                            first, other
+                        ));
+                    }
                 }
                 Ok(Type::Any)
             }
@@ -5839,9 +5868,24 @@ impl TypeChecker {
             // RES-149: set literal. Walk each item to catch nested
             // type errors; return `Type::Any` for now — same posture
             // as `MapLiteral` until `Type::Set<T>` shows up.
+            // RES-415: set literal element-type consistency, mirroring
+            // the same check for array literals.
             Node::SetLiteral { items, .. } => {
+                let mut concrete: Vec<Type> = Vec::with_capacity(items.len());
                 for item in items {
-                    let _ = self.check_node(item)?;
+                    let ty = self.check_node(item)?;
+                    if !matches!(ty, Type::Any) {
+                        concrete.push(ty);
+                    }
+                }
+                if concrete.len() > 1 {
+                    let first = concrete[0].clone();
+                    if let Some(other) = concrete.iter().find(|t| **t != first) {
+                        return Err(format!(
+                            "Set literal contains mixed element types: {} and {}",
+                            first, other
+                        ));
+                    }
                 }
                 Ok(Type::Any)
             }
@@ -6614,8 +6658,22 @@ impl TypeChecker {
                         idx_ty
                     ));
                 }
-                // Element type not tracked at MVP.
-                Ok(Type::Any)
+                // RES-415: negative constant index is always out-of-bounds.
+                if matches!(tgt_ty, Type::Array | Type::String)
+                    && let Some(idx_val) = fold_const_i64(index, &self.const_bindings)
+                    && idx_val < 0
+                {
+                    return Err(format!(
+                        "index {} is always out of bounds — array/string indices must be non-negative",
+                        idx_val
+                    ));
+                }
+                // String indexing returns a single-char String;
+                // array indexing returns Any (no element-type tracking yet).
+                match tgt_ty {
+                    Type::String => Ok(Type::String),
+                    _ => Ok(Type::Any),
+                }
             }
 
             // RES-911 / RES-916: slicing — `target[lo..hi]` returns
@@ -6784,11 +6842,45 @@ impl TypeChecker {
                             name, declared, value_type
                         ));
                     }
+                    // RES-416: apply the same pinned-int overflow check
+                    // to const declarations that LetStatement already has.
+                    if let Some(literal_val) = fold_const_i64(value, &self.const_bindings) {
+                        let range_ok = match &declared {
+                            Type::Int8 => (-128_i64..=127).contains(&literal_val),
+                            Type::Int16 => (-32768_i64..=32767).contains(&literal_val),
+                            Type::Int32 => (-2_147_483_648_i64..=2_147_483_647)
+                                .contains(&literal_val),
+                            Type::UInt8 => (0_i64..=255).contains(&literal_val),
+                            Type::UInt16 => (0_i64..=65535).contains(&literal_val),
+                            Type::UInt32 => (0_i64..=4_294_967_295).contains(&literal_val),
+                            _ => true,
+                        };
+                        if !range_ok {
+                            let range_str = match &declared {
+                                Type::Int8 => "-128..=127",
+                                Type::Int16 => "-32768..=32767",
+                                Type::Int32 => "-2147483648..=2147483647",
+                                Type::UInt8 => "0..=255",
+                                Type::UInt16 => "0..=65535",
+                                Type::UInt32 => "0..=4294967295",
+                                _ => unreachable!(),
+                            };
+                            return Err(format!(
+                                "const {}: {} — value {} overflows the declared type (valid range: {})",
+                                name, declared, literal_val, range_str
+                            ));
+                        }
+                    }
                     declared
                 } else {
                     value_type.clone()
                 };
                 self.env.set(name.clone(), bind_type);
+                // Fold const bindings so subsequent references can use
+                // the constant value in const-folding contexts.
+                if let Some(v) = fold_const_i64(value, &self.const_bindings) {
+                    self.const_bindings.insert(name.clone(), v);
+                }
                 Ok(Type::Void)
             }
 
@@ -7140,8 +7232,18 @@ impl TypeChecker {
                                 arguments.len()
                             ));
                         }
-                        for arg in arguments {
-                            let _ = self.check_node(arg)?;
+                        // RES-416: validate argument types against the
+                        // declared payload types.
+                        for (arg, type_str) in arguments.iter().zip(declared.iter()) {
+                            let arg_ty = self.check_node(arg)?;
+                            if let Ok(expected_ty) = self.parse_type_name(type_str)
+                                && !compatible(&expected_ty, &arg_ty)
+                            {
+                                return Err(format!(
+                                    "Constructor {}::{}: argument has type {}, expected {}",
+                                    type_name, variant_name, arg_ty, expected_ty
+                                ));
+                            }
                         }
                         return Ok(Type::Struct(type_name.to_string()));
                     }
@@ -11844,5 +11946,147 @@ mod res414_void_in_let {
     fn void_fn_as_expression_statement_ok() {
         // Using a void-returning fn as a plain expression statement is fine.
         check_ok("fn f() -> void { print(\"hi\"); }");
+    }
+}
+
+// ── RES-415: map/set literal type consistency + negative index detection ──────
+
+#[cfg(test)]
+mod res415_collection_type_checks {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn map_uniform_keys_ok() {
+        check_ok(r#"fn f() -> void { let _m = {"a" -> 1, "b" -> 2}; }"#);
+    }
+
+    #[test]
+    fn map_mixed_key_types_errors() {
+        let e = check_err(r#"fn f() -> void { let _m = {"a" -> 1, 2 -> 3}; }"#);
+        assert!(e.contains("mixed key types") || e.contains("key"), "got: {e}");
+    }
+
+    #[test]
+    fn map_mixed_value_types_errors() {
+        let e = check_err(r#"fn f() -> void { let _m = {"a" -> 1, "b" -> "two"}; }"#);
+        assert!(e.contains("mixed value types") || e.contains("value"), "got: {e}");
+    }
+
+    #[test]
+    fn set_uniform_elements_ok() {
+        check_ok(r#"fn f() -> void { let _s = #{1, 2, 3}; }"#);
+    }
+
+    #[test]
+    fn set_mixed_elements_errors() {
+        let e = check_err(r#"fn f() -> void { let _s = #{1, "two", 3}; }"#);
+        assert!(
+            e.contains("mixed element types") || e.contains("element"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
+    fn negative_constant_index_errors() {
+        let e = check_err(r#"fn f() -> void { let arr = [1, 2, 3]; let x = arr[-1]; }"#);
+        assert!(
+            e.contains("out of bounds") || e.contains("negative"),
+            "expected negative-index error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn string_index_returns_string() {
+        check_ok(r#"fn f() -> string { let s = "hello"; return s[0]; }"#);
+    }
+}
+
+// ── RES-416: const pinned-int overflow + enum constructor type checking ────────
+
+#[cfg(test)]
+mod res416_const_and_enum_checks {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn const_int8_in_range_ok() {
+        check_ok("const N: Int8 = 100;");
+    }
+
+    #[test]
+    fn const_int8_overflow_errors() {
+        let e = check_err("const N: Int8 = 300;");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn const_uint8_overflow_errors() {
+        let e = check_err("const N: UInt8 = 256;");
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn enum_constructor_correct_types_ok() {
+        check_ok(r#"
+enum Shape { Circle(int) }
+fn f() -> void { let _s = Shape::Circle(5); }
+"#);
+    }
+
+    #[test]
+    fn enum_constructor_wrong_arg_type_errors() {
+        let e = check_err(r#"
+enum Shape { Circle(int) }
+fn f() -> void { let _s = Shape::Circle("not_an_int"); }
+"#);
+        assert!(
+            e.contains("argument has type") || e.contains("expected"),
+            "expected constructor type error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn enum_constructor_wrong_arg_count_errors() {
+        let e = check_err(r#"
+enum Shape { Circle(int) }
+fn f() -> void { let _s = Shape::Circle(1, 2); }
+"#);
+        assert!(
+            e.contains("expected") && (e.contains("arg") || e.contains("argument")),
+            "expected arity error; got: {e}"
+        );
     }
 }
