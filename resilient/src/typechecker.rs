@@ -1792,6 +1792,10 @@ impl TypeChecker {
             env.set("array_diffs".to_string(), fn_array_to_array_int());
             env.set("array_min_max".to_string(), fn_array_to_array_int());
             // RES-1172: small string + array gaps.
+            let fn_string_to_array = || Type::Function {
+                params: vec![Type::String],
+                return_type: Box::new(Type::Array),
+            };
             let fn_string_string_to_array = || Type::Function {
                 params: vec![Type::String, Type::String],
                 return_type: Box::new(Type::Array),
@@ -2015,7 +2019,7 @@ impl TypeChecker {
                     return_type: Box::new(Type::String),
                 },
             );
-            env.set("array_reverse".to_string(), fn_any_to_any());
+            env.set("array_reverse".to_string(), fn_array_to_array());
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_any());
             env.set("array_product".to_string(), fn_any_to_any());
@@ -2224,11 +2228,11 @@ impl TypeChecker {
             // RES-514: pick every nth element.
             env.set("array_step".to_string(), fn_any_any_to_any());
             // RES-422: integer sort ascending.
-            env.set("array_sort".to_string(), fn_any_to_any());
+            env.set("array_sort".to_string(), fn_array_to_array());
             // RES-443: integer sort descending.
-            env.set("array_sort_desc".to_string(), fn_any_to_any());
+            env.set("array_sort_desc".to_string(), fn_array_to_array());
             // RES-444: Fisher-Yates shuffle (impure: uses RNG).
-            env.set("array_shuffle".to_string(), fn_any_to_any());
+            env.set("array_shuffle".to_string(), fn_array_to_array());
             // RES-445: array prefix/suffix predicates.
             env.set("array_starts_with".to_string(), fn_any_any_to_any());
             env.set("array_ends_with".to_string(), fn_any_any_to_any());
@@ -2375,7 +2379,7 @@ impl TypeChecker {
                 },
             );
             // RES-462: adjacent pairs as tuples.
-            env.set("array_pairs".to_string(), fn_any_to_any());
+            env.set("array_pairs".to_string(), fn_array_to_array());
             // RES-463: UTF-8 byte length.
             env.set(
                 "string_bytes_len".to_string(),
@@ -2429,7 +2433,7 @@ impl TypeChecker {
             // RES-467: remove all matching elements.
             env.set("array_remove_all".to_string(), fn_any_any_to_any());
             // RES-468: collapse adjacent duplicates.
-            env.set("array_dedup".to_string(), fn_any_to_any());
+            env.set("array_dedup".to_string(), fn_array_to_array());
             // RES-504: partition into maximal runs of equal int elements.
             env.set("array_group_by_int".to_string(), fn_any_to_any());
             // RES-533: count of maximal runs.
@@ -2510,8 +2514,8 @@ impl TypeChecker {
                 },
             );
             // RES-481: drop first / drop last.
-            env.set("array_rest".to_string(), fn_any_to_any());
-            env.set("array_init".to_string(), fn_any_to_any());
+            env.set("array_rest".to_string(), fn_array_to_array());
+            env.set("array_init".to_string(), fn_array_to_array());
             // RES-482: replace up to n occurrences.
             env.set(
                 "string_replace_n".to_string(),
@@ -2579,7 +2583,7 @@ impl TypeChecker {
                 },
             );
             // RES-423: flatten one level.
-            env.set("array_flatten".to_string(), fn_any_to_any());
+            env.set("array_flatten".to_string(), fn_array_to_array());
             // RES-424: join string array with separator.
             env.set(
                 "array_join".to_string(),
@@ -2597,7 +2601,7 @@ impl TypeChecker {
                 },
             );
             // RES-426: first-occurrence dedupe.
-            env.set("array_unique".to_string(), fn_any_to_any());
+            env.set("array_unique".to_string(), fn_array_to_array());
             // RES-427: count element occurrences.
             env.set("array_count".to_string(), fn_any_any_to_any());
             // RES-428: array first/last accessors.
@@ -2639,17 +2643,23 @@ impl TypeChecker {
             // RES-531: split an array of 2-tuples into two parallel arrays.
             env.set("array_unzip".to_string(), fn_any_to_any());
             // RES-431: integer range [start, end).
-            env.set("array_range".to_string(), fn_any_any_to_any());
+            env.set(
+                "array_range".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-522: indices of an array as a new array.
-            env.set("array_indices".to_string(), fn_any_to_any());
+            env.set("array_indices".to_string(), fn_array_to_array());
             // RES-432: array of n copies.
             env.set("array_repeat".to_string(), fn_any_any_to_any());
             // RES-433: split string into single-char strings.
-            env.set("string_chars".to_string(), fn_any_to_any());
+            env.set("string_chars".to_string(), fn_string_to_array());
             // RES-434: split string into lines (LF, CRLF).
-            env.set("string_lines".to_string(), fn_any_to_any());
+            env.set("string_lines".to_string(), fn_string_to_array());
             // RES-496: split on Unicode whitespace.
-            env.set("string_words".to_string(), fn_any_to_any());
+            env.set("string_words".to_string(), fn_string_to_array());
             // RES-497: join string array with newline.
             env.set(
                 "string_join_lines".to_string(),
