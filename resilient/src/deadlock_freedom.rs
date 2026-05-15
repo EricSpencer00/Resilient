@@ -163,11 +163,21 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
     }
     let g = build(program);
     let cycles = detect_cycles(&g);
-    for c in &cycles {
+    if cycles.is_empty() {
+        // Emit the deadlock-free certificate so downstream tooling can
+        // record that the actor network was proven cycle-free at this
+        // compilation.
+        let actor_count = g.edges.len();
         eprintln!(
-            "warning: potential deadlock cycle in actor graph: {}",
-            c.join(" -> ")
+            "deadlock-free: actor network ({actor_count} actor(s)) verified cycle-free"
         );
+    } else {
+        for c in &cycles {
+            eprintln!(
+                "warning: potential deadlock cycle in actor graph: {}",
+                c.join(" -> ")
+            );
+        }
     }
     Ok(())
 }
@@ -195,5 +205,73 @@ mod tests {
     fn detect_cycles_on_empty_graph_returns_empty() {
         let empty = ActorGraph::default();
         assert!(detect_cycles(&empty).is_empty());
+    }
+
+    fn make_graph(edges: &[(&str, &str)]) -> ActorGraph {
+        let mut g = ActorGraph::default();
+        for (from, to) in edges {
+            g.edges
+                .entry((*from).to_string())
+                .or_default()
+                .insert((*to).to_string());
+            // Ensure all nodes appear as keys even if they have no outgoing edges.
+            g.edges.entry((*to).to_string()).or_default();
+        }
+        g
+    }
+
+    #[test]
+    fn two_actor_mutual_send_is_a_cycle() {
+        // A → B → A  is a cycle
+        let g = make_graph(&[("A", "B"), ("B", "A")]);
+        let cycles = detect_cycles(&g);
+        assert!(
+            !cycles.is_empty(),
+            "mutual send between two actors must be flagged as a cycle"
+        );
+    }
+
+    #[test]
+    fn linear_chain_has_no_cycle() {
+        // A → B → C: no cycle
+        let g = make_graph(&[("A", "B"), ("B", "C")]);
+        let cycles = detect_cycles(&g);
+        assert!(
+            cycles.is_empty(),
+            "linear actor chain must not be flagged: {cycles:?}"
+        );
+    }
+
+    #[test]
+    fn three_actor_ring_is_a_cycle() {
+        // A → B → C → A
+        let g = make_graph(&[("A", "B"), ("B", "C"), ("C", "A")]);
+        let cycles = detect_cycles(&g);
+        assert!(
+            !cycles.is_empty(),
+            "three-actor ring must be detected as a cycle"
+        );
+    }
+
+    #[test]
+    fn self_loop_is_a_cycle() {
+        // A → A
+        let g = make_graph(&[("A", "A")]);
+        let cycles = detect_cycles(&g);
+        assert!(
+            !cycles.is_empty(),
+            "self-send actor must be detected as a cycle"
+        );
+    }
+
+    #[test]
+    fn dag_has_no_cycles() {
+        // A → B, A → C, B → D, C → D  — pure DAG
+        let g = make_graph(&[("A", "B"), ("A", "C"), ("B", "D"), ("C", "D")]);
+        let cycles = detect_cycles(&g);
+        assert!(
+            cycles.is_empty(),
+            "DAG actor graph must not have cycles: {cycles:?}"
+        );
     }
 }
