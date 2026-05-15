@@ -31,6 +31,10 @@
 //! 17. `Neg; Neg`                            → drop both (--x == x, double int-neg identity)
 //! 18. `Not; JumpIfTrue(off)`               → `JumpIfFalse(off)` (mirror of Rule 4)
 //! 19. `LoadLocal(n); StoreLocal(n)`        → drop both (self-load-store is a no-op)
+//! 20. `Const(true); JumpIfTrue(off)`       → `Jump(off)` (branch always taken)
+//! 21. `Const(false); JumpIfFalse(off)`     → `Jump(off)` (branch always taken)
+//! 22. `Const(true); JumpIfFalse(off)`      → drop both (branch never taken)
+//! 23. `Const(false); JumpIfTrue(off)`      → drop both (branch never taken)
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -260,6 +264,38 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
         // Loading a local and immediately storing it back is a no-op: the
         // local is unchanged and the stack depth is preserved.
         if rule_load_store_self(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 20 — `Const(true); JumpIfTrue(off)` → `Jump(off)`.
+        // The condition is always true so the branch is always taken.
+        if let Some(off) = rule_const_branch_always(chunk, i, &targets, true, Op::JumpIfTrue(0)) {
+            new_code.push(Op::Jump(off));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 21 — `Const(false); JumpIfFalse(off)` → `Jump(off)`.
+        // The condition is always false so the branch is always taken.
+        if let Some(off) = rule_const_branch_always(chunk, i, &targets, false, Op::JumpIfFalse(0)) {
+            new_code.push(Op::Jump(off));
+            new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 22 — `Const(true); JumpIfFalse(off)` → drop both.
+        // The condition is always true so a JumpIfFalse never fires.
+        if rule_const_branch_never(chunk, i, &targets, true, Op::JumpIfFalse(0)) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 23 — `Const(false); JumpIfTrue(off)` → drop both.
+        // The condition is always false so a JumpIfTrue never fires.
+        if rule_const_branch_never(chunk, i, &targets, false, Op::JumpIfTrue(0)) {
             optimized_any = true;
             i += 2;
             continue;
@@ -708,6 +744,91 @@ pub(crate) fn rule_load_store_self(chunk: &Chunk, i: usize, targets: &[bool]) ->
     }
     // Skip if either position is a jump target (dropping the pair
     // would strand any jump aimed at PC i or PC i+1).
+    if *targets.get(i).unwrap_or(&false) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rules 20–21: `Const(lit); JumpIfXxx(off)` → `Jump(off)` — the
+/// condition is a literal that always fires the branch.
+///
+/// `bool_val` is the literal value to match (`true` for Rule 20,
+/// `false` for Rule 21). `branch_op` is the opcode discriminant
+/// (only the variant matters; the embedded offset is ignored for
+/// matching).
+///
+/// Returns `Some(off)` — the offset to embed in the replacement
+/// `Jump`. Returns `None` if the pattern doesn't match or the branch
+/// op is a jump target.
+pub(crate) fn rule_const_branch_always(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    bool_val: bool,
+    branch_op: Op,
+) -> Option<i16> {
+    if i + 1 >= chunk.code.len() {
+        return None;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return None;
+    };
+    // Check the branch op variant matches (ignore embedded offset).
+    let op = chunk.code[i + 1];
+    let off = match (branch_op, op) {
+        (Op::JumpIfTrue(_), Op::JumpIfTrue(o)) => o,
+        (Op::JumpIfFalse(_), Op::JumpIfFalse(o)) => o,
+        _ => return None,
+    };
+    if !matches!(
+        chunk.constants.get(k as usize),
+        Some(Value::Bool(v)) if *v == bool_val
+    ) {
+        return None;
+    }
+    // The branch op is consumed; it must not be a jump target.
+    if *targets.get(i + 1).unwrap_or(&false) {
+        return None;
+    }
+    Some(off)
+}
+
+/// Rules 22–23: `Const(lit); JumpIfXxx(off)` → drop both — the
+/// condition is a literal that never fires the branch (always
+/// falls through).
+///
+/// `bool_val` is the literal value to match. `branch_op` is the
+/// opcode discriminant whose complement condition is being checked
+/// (`true; JumpIfFalse` → never jumps; `false; JumpIfTrue` → never
+/// jumps). Skips if either position is a jump target.
+pub(crate) fn rule_const_branch_never(
+    chunk: &Chunk,
+    i: usize,
+    targets: &[bool],
+    bool_val: bool,
+    branch_op: Op,
+) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    // Check the branch op variant matches.
+    if !matches!(
+        (branch_op, chunk.code[i + 1]),
+        (Op::JumpIfFalse(_), Op::JumpIfFalse(_)) | (Op::JumpIfTrue(_), Op::JumpIfTrue(_))
+    ) {
+        return false;
+    }
+    if !matches!(
+        chunk.constants.get(k as usize),
+        Some(Value::Bool(v)) if *v == bool_val
+    ) {
+        return false;
+    }
+    // Both positions are being dropped; neither can be a jump target.
     if *targets.get(i).unwrap_or(&false) {
         return false;
     }
@@ -1500,5 +1621,165 @@ mod tests {
         let before = chunk.code.clone();
         optimize(&mut chunk).unwrap();
         assert_eq!(chunk.code, before);
+    }
+
+    // ---------- Rules 20-23: constant branch folding ----------
+
+    #[test]
+    fn rule20_const_true_jit_becomes_jump() {
+        // Const(true); JumpIfTrue(3); ... → Jump(3); ...
+        // The branch is always taken when the condition is literal true.
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(3), Op::Return],
+            vec![Value::Bool(true)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        // After fold: [Jump(?), Return] — 2 ops. Jump's offset must
+        // point to the same target as the original JumpIfTrue.
+        assert_eq!(
+            chunk.code.len(),
+            2,
+            "expected Jump + Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Jump(_)));
+        assert!(matches!(chunk.code[1], Op::Return));
+    }
+
+    #[test]
+    fn rule21_const_false_jif_becomes_jump() {
+        // Const(false); JumpIfFalse(3); ... → Jump(3); ...
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfFalse(3), Op::Return],
+            vec![Value::Bool(false)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code.len(),
+            2,
+            "expected Jump + Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Jump(_)));
+    }
+
+    #[test]
+    fn rule22_const_true_jif_drops_both() {
+        // Const(true); JumpIfFalse(3); Return → Return (branch never taken).
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfFalse(3), Op::Return],
+            vec![Value::Bool(true)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "expected only Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule23_const_false_jit_drops_both() {
+        // Const(false); JumpIfTrue(3); Return → Return (branch never taken).
+        let mut chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(3), Op::Return],
+            vec![Value::Bool(false)],
+            &[1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(
+            chunk.code.len(),
+            1,
+            "expected only Return; got {:?}",
+            chunk.code
+        );
+        assert!(matches!(chunk.code[0], Op::Return));
+    }
+
+    #[test]
+    fn rule22_skips_when_const_is_jump_target() {
+        // If the Const itself is a jump target, dropping it would break
+        // jumps that aim at it. The fold must skip.
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfFalse(3)],
+            vec![Value::Bool(true)],
+            &[1, 1],
+        );
+        // Mark position 0 (the Const) as a jump target.
+        let targets = [true, false, false];
+        assert!(!rule_const_branch_never(
+            &chunk,
+            0,
+            &targets,
+            true,
+            Op::JumpIfFalse(0)
+        ));
+    }
+
+    #[test]
+    fn rule20_predicate_skips_when_branch_is_jump_target() {
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(3)],
+            vec![Value::Bool(true)],
+            &[1, 1],
+        );
+        let targets = [false, true, false];
+        assert_eq!(
+            rule_const_branch_always(&chunk, 0, &targets, true, Op::JumpIfTrue(0)),
+            None
+        );
+    }
+
+    #[test]
+    fn rule20_skips_when_const_is_not_bool() {
+        // Const(42) is not a bool — must not fold to Jump.
+        let chunk = mk_chunk(
+            &[Op::Const(0), Op::JumpIfTrue(1)],
+            vec![Value::Int(42)],
+            &[1, 1],
+        );
+        assert_eq!(
+            rule_const_branch_always(&chunk, 0, &[false; 3], true, Op::JumpIfTrue(0)),
+            None
+        );
+    }
+
+    #[test]
+    fn const_branch_fold_relinks_jump_across_dropped_window() {
+        // Build:
+        //   0: Const(true)
+        //   1: JumpIfFalse(+2)   → target = PC 4 (Return)
+        //   2: LoadLocal(0)
+        //   3: Neg
+        //   4: Return
+        //
+        // Rule 22 drops Const(true)+JumpIfFalse (never fires).
+        // After fold:
+        //   0: LoadLocal(0)
+        //   1: Neg
+        //   2: Return
+        //
+        // No jump in the result; just verify no crash and code length.
+        let mut chunk = mk_chunk(
+            &[
+                Op::Const(0),
+                Op::JumpIfFalse(2),
+                Op::LoadLocal(0),
+                Op::Neg,
+                Op::Return,
+            ],
+            vec![Value::Bool(true)],
+            &[1, 1, 2, 2, 3],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code.len(), 3);
+        assert!(matches!(chunk.code[0], Op::LoadLocal(0)));
+        assert!(matches!(chunk.code[1], Op::Neg));
+        assert!(matches!(chunk.code[2], Op::Return));
     }
 }
