@@ -2281,6 +2281,64 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+            env.set(
+                "array_sum_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            env.set(
+                "array_product_by".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            // RES-2649: map higher-order operations.
+            env.set(
+                "map_merge_with".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "map_update_with".to_string(),
+                Type::Function {
+                    params: vec![Type::Any, Type::Any, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            // RES-2649: string higher-order operations.
+            env.set(
+                "string_map_chars".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any],
+                    return_type: Box::new(Type::String),
+                },
+            );
+            env.set(
+                "string_filter_by".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any],
+                    return_type: Box::new(Type::String),
+                },
+            );
+            env.set(
+                "string_fold".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "string_for_each_char".to_string(),
+                Type::Function {
+                    params: vec![Type::String, Type::Any],
+                    return_type: Box::new(Type::Void),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -8632,6 +8690,17 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_windows",
         "array_take_while",
         "array_drop_while",
+        // RES-2649: array aggregation by key.
+        "array_sum_by",
+        "array_product_by",
+        // RES-2649: map higher-order operations.
+        "map_merge_with",
+        "map_update_with",
+        // RES-2649: string higher-order operations.
+        "string_map_chars",
+        "string_filter_by",
+        "string_fold",
+        "string_for_each_char",
         "map_invert",
         // RES-416: array reductions.
         "array_sum",

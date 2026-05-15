@@ -174,6 +174,98 @@ pub(crate) fn builtin_map_invert(args: &[Value]) -> RResult<Value> {
     }
 }
 
+/// `map_merge_with(m1, m2, fn) -> Map`
+///
+/// Merges two maps. For keys that appear in only one map the value is kept
+/// unchanged. For keys that appear in both, `fn(key, val1, val2) -> merged`
+/// decides the result value.
+///
+/// ```text
+/// let merged = map_merge_with({"a" -> 1}, {"a" -> 2, "b" -> 3},
+///     fn(string k, int v1, int v2) -> int { return v1 + v2; });
+/// // merged == {"a" -> 3, "b" -> 3}
+/// ```
+pub(crate) fn builtin_map_merge_with(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> RResult<Value> {
+    let (m1, m2, f) = match args {
+        [Value::Map(m1), Value::Map(m2), f] => (m1.clone(), m2.clone(), f.clone()),
+        [Value::Map(_), a, _] => {
+            return Err(format!(
+                "map_merge_with: second argument must be a Map, got {a}"
+            ))
+        }
+        [a, _, _] => {
+            return Err(format!(
+                "map_merge_with: first argument must be a Map, got {a}"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "map_merge_with: expected 3 arguments (map, map, fn), got {}",
+                args.len()
+            ))
+        }
+    };
+
+    let mut out = m1.clone();
+    for (k, v2) in &m2 {
+        if let Some(v1) = out.get(k) {
+            let k_val = map_key_to_value(k);
+            let merged = interp.apply_function(f.clone(), vec![k_val, v1.clone(), v2.clone()])?;
+            out.insert(k.clone(), merged);
+        } else {
+            out.insert(k.clone(), v2.clone());
+        }
+    }
+    Ok(Value::Map(out))
+}
+
+/// `map_update_with(m, key, default, fn) -> Map`
+///
+/// Returns a new Map that is identical to `m` except that the value at `key`
+/// has been replaced by `fn(existing_value) -> new_value`. If `key` is absent,
+/// `default` is used as the argument to `fn`.
+///
+/// ```text
+/// let m2 = map_update_with({"a" -> 1}, "a", 0,
+///     fn(int v) -> int { return v + 10; });
+/// // m2 == {"a" -> 11}
+/// let m3 = map_update_with({}, "x", 0,
+///     fn(int v) -> int { return v + 1; });
+/// // m3 == {"x" -> 1}
+/// ```
+pub(crate) fn builtin_map_update_with(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> RResult<Value> {
+    let (m, key_val, default, f) = match args {
+        [Value::Map(m), key_val, default, f] => {
+            (m.clone(), key_val.clone(), default.clone(), f.clone())
+        }
+        [a, _, _, _] => {
+            return Err(format!(
+                "map_update_with: first argument must be a Map, got {a}"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "map_update_with: expected 4 arguments (map, key, default, fn), got {}",
+                args.len()
+            ))
+        }
+    };
+
+    let mk = MapKey::from_value(&key_val)
+        .map_err(|e| format!("map_update_with: key is not hashable: {e}"))?;
+    let existing = m.get(&mk).cloned().unwrap_or(default);
+    let new_val = interp.apply_function(f, vec![existing])?;
+    let mut out = m;
+    out.insert(mk, new_val);
+    Ok(Value::Map(out))
+}
+
 /// Convert a `MapKey` back to a `Value` for passing to callbacks.
 fn map_key_to_value(k: &MapKey) -> Value {
     match k {
@@ -316,5 +408,86 @@ let inv = map_invert(m);
 println(inv);"#,
         );
         assert!(!r.ok, "expected error for float value as key");
+    }
+
+    // ── map_merge_with ────────────────────────────────────────────────────────
+
+    #[test]
+    fn map_merge_with_sums_conflicts() {
+        let r = run(
+            r#"let m1 = {"a" -> 1, "b" -> 2};
+let m2 = {"a" -> 10, "c" -> 3};
+let merged = map_merge_with(m1, m2, fn(string k, int v1, int v2) -> int { return v1 + v2; });
+println(merged["a"]);
+println(merged["b"]);
+println(merged["c"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.trim().lines().collect();
+        assert_eq!(lines[0], "11", "a=1+10=11");
+        assert_eq!(lines[1], "2", "b only in m1");
+        assert_eq!(lines[2], "3", "c only in m2");
+    }
+
+    #[test]
+    fn map_merge_with_empty_second() {
+        let r = run(
+            r#"let m1 = {"x" -> 42};
+let m2 = map_new();
+let merged = map_merge_with(m1, m2, fn(string k, int v1, int v2) -> int { return v1 + v2; });
+println(merged["x"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("42"), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_merge_with_empty_first() {
+        let r = run(
+            r#"let m1 = map_new();
+let m2 = {"y" -> 7};
+let merged = map_merge_with(m1, m2, fn(string k, int v1, int v2) -> int { return v1 + v2; });
+println(merged["y"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('7'), "stdout: {}", r.stdout);
+    }
+
+    // ── map_update_with ───────────────────────────────────────────────────────
+
+    #[test]
+    fn map_update_with_existing_key() {
+        let r = run(
+            r#"let m = {"a" -> 5};
+let m2 = map_update_with(m, "a", 0, fn(int v) -> int { return v + 10; });
+println(m2["a"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("15"), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_update_with_missing_key_uses_default() {
+        let r = run(
+            r#"let m = map_new();
+let m2 = map_update_with(m, "x", 0, fn(int v) -> int { return v + 1; });
+println(m2["x"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('1'), "stdout: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_update_with_does_not_mutate_original() {
+        let r = run(
+            r#"let m = {"k" -> 100};
+let m2 = map_update_with(m, "k", 0, fn(int v) -> int { return v * 2; });
+println(m["k"]);
+println(m2["k"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        let lines: Vec<&str> = r.stdout.trim().lines().collect();
+        assert_eq!(lines[0], "100", "original unchanged");
+        assert_eq!(lines[1], "200", "copy updated");
     }
 }

@@ -412,6 +412,89 @@ pub(crate) fn builtin_array_drop_while(
 
 /// Compare two values for ordering (int, float, or string keys).
 /// Returns negative if a < b, 0 if equal, positive if a > b.
+/// `array_sum_by(arr, fn) -> int`
+///
+/// Applies `fn(elem) -> int` to each element and returns the sum of results.
+///
+/// ```text
+/// let total = array_sum_by(["cat","ox","elephant"],
+///     fn(string s) -> int { return len(s); });
+/// // total == 3 + 2 + 8 == 13
+/// ```
+pub(crate) fn builtin_array_sum_by(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> RResult<Value> {
+    let (arr, f) = match args {
+        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [a, _] => {
+            return Err(format!(
+                "array_sum_by: first argument must be an Array, got {a}"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "array_sum_by: expected 2 arguments (array, fn), got {}",
+                args.len()
+            ))
+        }
+    };
+
+    let mut total: i64 = 0;
+    for elem in arr {
+        match interp.apply_function(f.clone(), vec![elem])? {
+            Value::Int(n) => total += n,
+            other => {
+                return Err(format!(
+                    "array_sum_by: callback must return int, got {other}"
+                ))
+            }
+        }
+    }
+    Ok(Value::Int(total))
+}
+
+/// `array_product_by(arr, fn) -> int`
+///
+/// Applies `fn(elem) -> int` to each element and returns the product of results.
+///
+/// ```text
+/// let prod = array_product_by([1,2,3,4], fn(int x) -> int { return x * 2; });
+/// // prod == 2 * 4 * 6 * 8 == 384
+/// ```
+pub(crate) fn builtin_array_product_by(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> RResult<Value> {
+    let (arr, f) = match args {
+        [Value::Array(a), f] => (a.clone(), f.clone()),
+        [a, _] => {
+            return Err(format!(
+                "array_product_by: first argument must be an Array, got {a}"
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "array_product_by: expected 2 arguments (array, fn), got {}",
+                args.len()
+            ))
+        }
+    };
+
+    let mut product: i64 = 1;
+    for elem in arr {
+        match interp.apply_function(f.clone(), vec![elem])? {
+            Value::Int(n) => product *= n,
+            other => {
+                return Err(format!(
+                    "array_product_by: callback must return int, got {other}"
+                ))
+            }
+        }
+    }
+    Ok(Value::Int(product))
+}
+
 fn compare_key(a: &Value, b: &Value) -> RResult<i64> {
     fn ord(o: std::cmp::Ordering) -> i64 {
         match o {
@@ -734,5 +817,48 @@ println(len(rest));"#,
         );
         assert!(r.ok, "errors: {:?}", r.errors);
         assert!(r.stdout.contains('3'));
+    }
+
+    // ── array_sum_by / array_product_by ──────────────────────────────────────
+
+    #[test]
+    fn sum_by_string_lengths() {
+        let r = run(
+            r#"let total = array_sum_by(["cat","ox","elephant"],
+    fn(string s) -> int { return len(s); });
+println(total);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("13"), "3+2+8=13: {}", r.stdout);
+    }
+
+    #[test]
+    fn sum_by_empty_is_zero() {
+        let r = run(
+            r#"let total = array_sum_by([], fn(int x) -> int { return x; });
+println(total);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('0'));
+    }
+
+    #[test]
+    fn product_by_doubles() {
+        let r = run(
+            r#"let prod = array_product_by([1,2,3,4], fn(int x) -> int { return x * 2; });
+println(prod);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("384"), "2*4*6*8=384: {}", r.stdout);
+    }
+
+    #[test]
+    fn product_by_empty_is_one() {
+        let r = run(
+            r#"let prod = array_product_by([], fn(int x) -> int { return x; });
+println(prod);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('1'));
     }
 }

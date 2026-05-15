@@ -18,6 +18,7 @@ mod array_argminmax;
 mod array_functional;
 mod array_combinators;
 mod map_functional;
+mod string_hof;
 // RES-1148: binary search on sorted int / float / string arrays.
 // Pure leaf builtins; module-isolated.
 mod array_binary_search;
@@ -22678,6 +22679,40 @@ impl Interpreter {
                         "array_drop_while" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::array_combinators::builtin_array_drop_while(self, &args);
+                        }
+                        "array_sum_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_sum_by(self, &args);
+                        }
+                        "array_product_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::array_combinators::builtin_array_product_by(self, &args);
+                        }
+                        // RES-2649: map higher-order operations with callbacks.
+                        "map_merge_with" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_merge_with(self, &args);
+                        }
+                        "map_update_with" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::map_functional::builtin_map_update_with(self, &args);
+                        }
+                        // RES-2649: string higher-order operations.
+                        "string_map_chars" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_map_chars(self, &args);
+                        }
+                        "string_filter_by" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_filter_by(self, &args);
+                        }
+                        "string_fold" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_fold(self, &args);
+                        }
+                        "string_for_each_char" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::string_hof::builtin_string_for_each_char(self, &args);
                         }
                         _ => {}
                     }
