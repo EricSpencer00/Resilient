@@ -4167,6 +4167,24 @@ impl TypeChecker {
                         Node::TypeAlias { name, target, .. } => {
                             self.type_aliases.insert(name.clone(), target.clone());
                         }
+                        // RES-417: hoist const declarations so functions
+                        // that textually precede a const declaration can
+                        // still reference it. Without this, `fn f() -> int
+                        // { return N; }` followed by `const N: int = 5;`
+                        // would error with "Undefined variable 'N'" when
+                        // type-checking `f`. The pre-pass registers the
+                        // declared type (from the annotation, if present)
+                        // so the env lookup succeeds; the main pass then
+                        // overwrites the binding with the inferred value
+                        // type and populates const_bindings.
+                        Node::Const { name, type_annot, .. } => {
+                            let bind_type = if let Some(ty_name) = type_annot {
+                                self.parse_type_name(ty_name).unwrap_or(Type::Any)
+                            } else {
+                                Type::Any
+                            };
+                            self.env.set(name.clone(), bind_type);
+                        }
                         _ => {}
                     }
                 }
@@ -6480,20 +6498,34 @@ impl TypeChecker {
                 let declared_opt = self.struct_fields.get(&effective_struct_name).cloned();
                 for (field_name, e) in fields {
                     let val_ty = self.check_node(e)?;
-                    if let Some(declared) = &declared_opt
-                        && let Some((_, field_ty)) =
+                    if let Some(declared) = &declared_opt {
+                        // RES-418: unknown field in struct literal.
+                        if !declared.iter().any(|(n, _)| n == field_name) {
+                            let avail: Vec<&str> =
+                                declared.iter().map(|(n, _)| n.as_str()).collect();
+                            return Err(format!(
+                                "struct `{}` has no field `{}`; available fields: {}",
+                                effective_struct_name,
+                                field_name,
+                                if avail.is_empty() {
+                                    "(none)".to_string()
+                                } else {
+                                    avail.join(", ")
+                                }
+                            ));
+                        }
+                        // Type mismatch on a known field.
+                        if let Some((_, field_ty)) =
                             declared.iter().find(|(n, _)| n == field_name)
-                        && !compatible(field_ty, &val_ty)
-                    {
-                        return Err(format!(
-                            "struct `{}` field `{}` has type {}, \
-                             but the initializer has type {}",
-                            effective_struct_name, field_name, field_ty, val_ty
-                        ));
+                            && !compatible(field_ty, &val_ty)
+                        {
+                            return Err(format!(
+                                "struct `{}` field `{}` has type {}, \
+                                 but the initializer has type {}",
+                                effective_struct_name, field_name, field_ty, val_ty
+                            ));
+                        }
                     }
-                    // Unknown field name — the runtime and L0024 lint
-                    // will surface it; the typechecker is silent here
-                    // to stay compatible with dynamic patterns.
                 }
                 // RES-400: if `name` is an enum-variant constructor
                 // (`EnumName::VariantName`), the resulting value's
@@ -12088,5 +12120,143 @@ fn f() -> void { let _s = Shape::Circle(1, 2); }
             e.contains("expected") && (e.contains("arg") || e.contains("argument")),
             "expected arity error; got: {e}"
         );
+    }
+}
+
+// ── RES-417: const declaration forward reference ──────────────────────────────
+
+#[cfg(test)]
+mod res417_const_forward_ref {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn fn_forward_refs_const_ok() {
+        // Function defined before the const it uses — must succeed.
+        check_ok(
+            r#"
+fn f() -> int { return N; }
+const N: int = 5;
+"#,
+        );
+    }
+
+    #[test]
+    fn const_used_in_expression_ok() {
+        check_ok(
+            r#"
+fn f() -> int { return MAX + 1; }
+const MAX: int = 100;
+"#,
+        );
+    }
+
+    #[test]
+    fn const_after_fn_type_mismatch_errors() {
+        // N is declared as Int8 = 300 — overflow should still be caught
+        // even when the const appears after its use site.
+        let e = check_err(
+            r#"
+const N: Int8 = 300;
+fn f() -> void { }
+"#,
+        );
+        assert!(e.contains("overflows"), "expected overflow error; got: {e}");
+    }
+
+    #[test]
+    fn const_normal_declaration_ok() {
+        check_ok("const N: int = 42;");
+    }
+
+    #[test]
+    fn const_float_ok() {
+        check_ok("const PI: float = 3.14;");
+    }
+}
+
+// ── RES-418: struct literal unknown-field detection ───────────────────────────
+
+#[cfg(test)]
+mod res418_struct_literal_unknown_field {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn known_fields_ok() {
+        check_ok(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { let _p = new Point { x: 1, y: 2 }; }
+"#,
+        );
+    }
+
+    #[test]
+    fn unknown_field_errors() {
+        let e = check_err(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { let _p = new Point { x: 1, z: 2 }; }
+"#,
+        );
+        assert!(
+            e.contains("has no field") || e.contains("no field"),
+            "expected unknown-field error; got: {e}"
+        );
+        assert!(e.contains("z"), "error must name the unknown field; got: {e}");
+    }
+
+    #[test]
+    fn field_type_mismatch_errors() {
+        let e = check_err(
+            r#"
+struct Point { int x, int y }
+fn f() -> void { let _p = new Point { x: "not_an_int", y: 2 }; }
+"#,
+        );
+        assert!(
+            e.contains("type") || e.contains("int"),
+            "expected type mismatch error; got: {e}"
+        );
+    }
+
+    #[test]
+    fn struct_on_unknown_struct_ok() {
+        // If the struct isn't declared, we skip unknown-field checking
+        // to be permissive about partial programs.
+        check_ok("fn f() -> void { let _p = new UnknownStruct { foo: 1 }; }");
     }
 }
