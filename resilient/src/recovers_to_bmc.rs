@@ -446,8 +446,12 @@ pub(crate) fn check_recovers_to_bmc(
     let prefixes = cfg.enumerate_prefixes();
 
     for (prefix_id, span) in &prefixes {
-        let obligation =
-            generate_prefix_obligation(*prefix_id, &format!("init_{fn_name}"), recovers_clause);
+        // Pass "" so generate_prefix_obligation skips the requires
+        // assertion — "init_<fn>" is not a valid SMT-LIB2 term and
+        // caused Z3's from_string to fail, leaving the solver with no
+        // assertions and returning Sat (false alarm). Connecting the
+        // actual requires clause to SMT-LIB2 form is tracked separately.
+        let obligation = generate_prefix_obligation(*prefix_id, "", recovers_clause);
         // RES-1857 Phase 3: invoke Z3 on the obligation string.
         solve_bmc_obligation(fn_name, *prefix_id, span, &obligation)?;
     }
