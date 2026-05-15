@@ -545,9 +545,67 @@ fn expr_is_non_negative(node: &Node) -> bool {
     }
 }
 
-pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
-    // RES-1206: contract inferences are consumed by `--suggest-contracts`.
-    // The extension-pass slot is kept for future compile-time enforcement.
+/// Emit contract suggestions for functions that have no explicit
+/// contracts and for which the syntactic abductor found candidates.
+///
+/// Functions that are fully specified (both `requires` and `ensures`
+/// present) are already handled by the Z3 verifier and are skipped.
+/// Functions with inferred suggestions receive a `note[contract_infer]`
+/// diagnostic so developers see actionable hints inline during
+/// compilation rather than having to run `--suggest-contracts`
+/// separately.
+///
+/// Always returns `Ok(())` — suggestions are never hard errors.
+pub(crate) fn check(program: &Node, source_path: &str) -> Result<(), String> {
+    let inferred = infer_program(program);
+    if inferred.is_empty() {
+        return Ok(());
+    }
+    // Identify functions that have zero contracts — these are the
+    // highest-priority targets: developers haven't started yet.
+    let zero_contract: std::collections::HashSet<&str> = match program {
+        Node::Program(stmts) => stmts
+            .iter()
+            .filter_map(|s| {
+                if let Node::Function {
+                    name,
+                    requires,
+                    ensures,
+                    ..
+                } = &s.node
+                {
+                    if requires.is_empty() && ensures.is_empty() {
+                        return Some(name.as_str());
+                    }
+                }
+                None
+            })
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    };
+    for ic in &inferred {
+        if ic.requires.is_empty() && ic.ensures.is_empty() {
+            continue;
+        }
+        let label = if zero_contract.contains(ic.function_name.as_str()) {
+            "warning[contract_infer]"
+        } else {
+            "note[contract_infer]"
+        };
+        let mut parts: Vec<String> = Vec::new();
+        for r in &ic.requires {
+            parts.push(format!("requires {r}"));
+        }
+        for e in &ic.ensures {
+            parts.push(format!("ensures {e}"));
+        }
+        eprintln!(
+            "{source_path}:0:0: {label}: `{}` — \
+             inferred suggestion: {}",
+            ic.function_name,
+            parts.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -555,6 +613,43 @@ pub(crate) fn check(_program: &Node, _source_path: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::parse;
+
+    // ── check() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn check_ok_on_empty_program() {
+        let (prog, _) = parse("");
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_fully_specified_fn() {
+        // Fully specified functions are skipped — no suggestions emitted.
+        let src = r#"
+            fn div(int a, int b) -> int
+                requires b != 0
+                ensures result == a / b
+            { return a / b; }
+        "#;
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_fn_with_no_inferrable_contracts() {
+        // A function with no risky patterns produces no suggestions.
+        let src = "fn greet() { }";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+    }
+
+    #[test]
+    fn check_ok_on_fn_with_inferrable_contracts() {
+        // check() always returns Ok() — suggestions are advisory, not errors.
+        let src = "fn divide(int a, int b) -> int { return a / b; }";
+        let (prog, _) = parse(src);
+        assert!(check(&prog, "<test>").is_ok());
+    }
 
     #[test]
     fn divisor_param_infers_nonzero_requires() {
