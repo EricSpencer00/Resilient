@@ -4931,7 +4931,8 @@ impl TypeChecker {
             Node::Use { .. } => Ok(Type::Void),
             // RES-780: FFI v1 hardening — stricter validation of extern signatures.
             // Reject unsupported ABI shapes at compile time rather than runtime.
-            Node::Extern { decls, .. } => {
+            Node::Extern { decls, span, .. } => {
+                self.current_span = *span;
                 const SUPPORTED_PARAMS: &[&str] =
                     &["Int", "Float", "Bool", "String", "OpaquePtr", "Callback"];
                 const SUPPORTED_RETURNS: &[&str] =
@@ -5424,7 +5425,8 @@ impl TypeChecker {
             // expression itself has type `Array` so it can flow through
             // a `for x in <range>` (where the loop variable then gets
             // typed `Int`) or a `let r = <range>;` binding.
-            Node::Range { lo, hi, .. } => {
+            Node::Range { lo, hi, span, .. } => {
+                self.current_span = *span;
                 let lo_t = self.check_node(lo)?;
                 let hi_t = self.check_node(hi)?;
                 let ok = |t: &Type| matches!(t, Type::Int | Type::Any);
@@ -5438,8 +5440,9 @@ impl TypeChecker {
             }
 
             Node::Assert {
-                condition, message, ..
+                condition, message, span, ..
             } => {
+                self.current_span = *span;
                 // Condition must be a boolean expression
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
@@ -5469,8 +5472,9 @@ impl TypeChecker {
 
             // RES-133a: assume has the same type rules as assert
             Node::Assume {
-                condition, message, ..
+                condition, message, span, ..
             } => {
+                self.current_span = *span;
                 let condition_type = self.check_node(condition)?;
                 if condition_type != Type::Bool && condition_type != Type::Any {
                     return Err(format!(
@@ -5773,8 +5777,9 @@ impl TypeChecker {
             }
 
             Node::Match {
-                scrutinee, arms, ..
+                scrutinee, arms, span, ..
             } => {
+                self.current_span = *span;
                 let scrutinee_type = self.check_node(scrutinee)?;
                 for (pattern, guard, body) in arms {
                     // RES-160: or-pattern binding consistency —
@@ -6224,7 +6229,8 @@ impl TypeChecker {
                 Ok(Type::Void)
             }
 
-            Node::StructLiteral { name, fields, .. } => {
+            Node::StructLiteral { name, fields, span, .. } => {
+                self.current_span = *span;
                 for (_, e) in fields {
                     let _ = self.check_node(e)?;
                 }
@@ -6242,7 +6248,8 @@ impl TypeChecker {
                 Ok(Type::Struct(name.clone()))
             }
 
-            Node::FieldAccess { target, field, .. } => {
+            Node::FieldAccess { target, field, span, .. } => {
+                self.current_span = *span;
                 let tgt_ty = self.check_node(target)?;
                 // RES-153: if the target is a known struct, return the
                 // declared field's type. Otherwise fall back to Any so
@@ -6351,8 +6358,10 @@ impl TypeChecker {
                 name,
                 iterable,
                 body,
+                span,
                 ..
             } => {
+                self.current_span = *span;
                 let _ = self.check_node(iterable)?;
                 // RES-910: track loop depth so nested `break`/`continue`
                 // are accepted only inside the body.
@@ -6376,8 +6385,9 @@ impl TypeChecker {
             }
 
             Node::WhileStatement {
-                condition, body, ..
+                condition, body, span, ..
             } => {
+                self.current_span = *span;
                 let _ = self.check_node(condition)?;
                 self.loop_depth += 1;
                 let body_result = self.check_node(body);
@@ -10144,6 +10154,87 @@ mod res1859_builtin_return_types {
     fn array_slice_return_type_is_array() {
         check_ok(
             "fn f(array a) -> int { let b = array_slice(a, 0, 3, false); return len(b); }",
+        );
+    }
+}
+
+// ── RES-1862: span attachment for node types that previously lacked it ────────
+
+#[cfg(test)]
+mod res1862_span_attachment {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_err_with_source(src: &str, path: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, path)
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn match_non_exhaustive_error_includes_span() {
+        // Bool scrutinee missing `false` arm — error must name the file.
+        let src = "fn f(bool b) -> int {\n    return match b {\n        true => 1,\n    };\n}";
+        let err = check_err_with_source(src, "match.rz");
+        assert!(
+            err.contains("match.rz"),
+            "non-exhaustive match error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assert_bad_condition_error_includes_span() {
+        let src = "fn f(int x) {\n    assert(x + 1);\n}";
+        let err = check_err_with_source(src, "assert.rz");
+        assert!(
+            err.contains("assert.rz"),
+            "assert type error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assume_bad_condition_error_includes_span() {
+        let src = "fn f(int x) {\n    assume(x + 1);\n}";
+        let err = check_err_with_source(src, "assume.rz");
+        assert!(
+            err.contains("assume.rz"),
+            "assume type error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn range_bad_bound_error_includes_span() {
+        // Range lower bound must be Int; passing a string should error.
+        let src = "fn f(string s) {\n    for x in s..5 { }\n}";
+        let err = check_err_with_source(src, "range.rz");
+        assert!(
+            err.contains("range.rz"),
+            "range bound error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn for_loop_range_error_includes_span() {
+        // Range lower bound is a string — must error with file path.
+        let src = "fn f(string s) {\n    for i in s..5 { }\n}";
+        let err = check_err_with_source(src, "for.rz");
+        assert!(
+            err.contains("for.rz"),
+            "for-loop range error must include file path; got: {err}"
+        );
+    }
+
+    #[test]
+    fn while_range_in_body_error_includes_span() {
+        // For-range with a string lower bound in a while loop body — the
+        // range error should carry the while loop's file path.
+        let src = "fn f(string s) {\n    while true {\n        for i in s..5 { }\n        break;\n    }\n}";
+        let err = check_err_with_source(src, "while.rz");
+        assert!(
+            err.contains("while.rz"),
+            "error inside while loop must include file path; got: {err}"
         );
     }
 }
