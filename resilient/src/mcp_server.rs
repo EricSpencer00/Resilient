@@ -588,11 +588,15 @@ fn tool_compile(args: &Value) -> Result<String, String> {
             parse_errors.join("\n")
         ));
     }
-    let compiled = crate::compiler::compile(&program)
-        .map_err(|e| format!("Compile error:\n{e}"))?;
+    let compiled =
+        crate::compiler::compile(&program).map_err(|e| format!("Compile error:\n{e}"))?;
 
     let total_instructions: usize = compiled.main.code.len()
-        + compiled.functions.iter().map(|f| f.chunk.code.len()).sum::<usize>();
+        + compiled
+            .functions
+            .iter()
+            .map(|f| f.chunk.code.len())
+            .sum::<usize>();
     let fn_count = compiled.functions.len();
 
     let fn_lines: Vec<String> = compiled
@@ -626,8 +630,8 @@ fn tool_disasm(args: &Value) -> Result<String, String> {
             parse_errors.join("\n")
         ));
     }
-    let compiled = crate::compiler::compile(&program)
-        .map_err(|e| format!("Compile error:\n{e}"))?;
+    let compiled =
+        crate::compiler::compile(&program).map_err(|e| format!("Compile error:\n{e}"))?;
 
     let mut out = String::new();
     crate::disasm::disassemble(&compiled, &mut out)
@@ -647,8 +651,8 @@ fn tool_vm_run(args: &Value) -> Result<String, String> {
             parse_errors.join("\n")
         ));
     }
-    let compiled = crate::compiler::compile(&program)
-        .map_err(|e| format!("Compile error:\n{e}"))?;
+    let compiled =
+        crate::compiler::compile(&program).map_err(|e| format!("Compile error:\n{e}"))?;
 
     let (vm_result, captured) =
         crate::output_sink::with_captured_output(|| crate::vm::run(&compiled));
@@ -690,10 +694,9 @@ fn tool_vm_run(args: &Value) -> Result<String, String> {
 /// The spec content is written to a temporary `.tla` file, then
 /// `tla_bridge::check_tla_file` shells out to TLC and surfaces diagnostics.
 fn tool_tla_check(args: &Value) -> Result<String, String> {
-    let spec = args
-        .get("spec")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing required argument: spec (string — TLA+ specification source)".to_string())?;
+    let spec = args.get("spec").and_then(|v| v.as_str()).ok_or_else(|| {
+        "Missing required argument: spec (string — TLA+ specification source)".to_string()
+    })?;
     let tlc_jar = args.get("tlc_jar").and_then(|v| v.as_str());
 
     // Write the spec to a temporary file so TLC can read it.
