@@ -899,6 +899,22 @@ fn run_inner(
                         }
                         stack.push(items.swap_remove(idx as usize));
                     }
+                    // RES-334b: string character indexing for `for c in "hello"`.
+                    // Returns the character at the given code-point index as a
+                    // single-character string.  Negative or out-of-range indices
+                    // surface the same ArrayIndexOutOfBounds error that arrays use
+                    // so callers see a uniform error shape.
+                    Value::String(s) => {
+                        let len = s.chars().count();
+                        if idx < 0 || (idx as usize) >= len {
+                            return Err(VmError::ArrayIndexOutOfBounds { index: idx, len });
+                        }
+                        let ch = s
+                            .chars()
+                            .nth(idx as usize)
+                            .expect("index already bounds-checked");
+                        stack.push(Value::String(ch.to_string()));
+                    }
                     _ => return Err(VmError::TypeMismatch("LoadIndex (non-array target)")),
                 }
             }
@@ -2952,16 +2968,45 @@ mod tests {
     }
 
     #[test]
-    fn res171a_compile_rejects_nested_index_assignment() {
-        // a[i][j] = v is RES-171c — today we emit a clean error.
-        let (program, _) = crate::parse("let a = [[1,2],[3,4]]; a[0][1] = 99; return 0;");
-        let err = crate::compiler::compile(&program).unwrap_err();
-        match err {
-            crate::bytecode::CompileError::Unsupported(msg) => {
-                assert!(msg.contains("nested"), "unexpected msg: {}", msg);
-            }
-            other => panic!("expected Unsupported, got {:?}", other),
+    fn res334b_load_index_on_string_returns_char() {
+        // RES-334b: `s[i]` on a string value returns the i-th character.
+        let v = compile_run(r#"let s = "hello"; return s[1];"#).unwrap();
+        match v {
+            crate::Value::String(c) => assert_eq!(c, "e"),
+            other => panic!("expected String, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn res334b_load_index_on_string_oob_errors() {
+        let err = compile_run(r#"let s = "hi"; return s[5];"#).unwrap_err();
+        assert!(
+            err.to_string().contains("out of bounds"),
+            "unexpected: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn res171c_nested_index_assignment_compiles_and_runs() {
+        // RES-171c: a[i][j] = v now compiles and runs correctly.
+        // After `a[0][1] = 99`, a[0] should be [1, 99].
+        let v = compile_run("let a = [[1,2],[3,4]]; a[0][1] = 99; return a[0][1];").unwrap();
+        assert_int(v, 99);
+    }
+
+    #[test]
+    fn res171c_nested_index_assignment_three_levels() {
+        // a[0][0][0] = 7 updates the innermost element.
+        let v = compile_run("let a = [[[1,2],[3,4]]]; a[0][0][0] = 7; return a[0][0][0];").unwrap();
+        assert_int(v, 7);
+    }
+
+    #[test]
+    fn res171c_nested_index_assignment_preserves_other_elements() {
+        // Updating a[1][0] must not disturb a[0].
+        let v = compile_run("let a = [[10,20],[30,40]]; a[1][0] = 99; return a[0][0];").unwrap();
+        assert_int(v, 10);
     }
 
     #[test]

@@ -467,69 +467,27 @@ fn compile_stmt(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
-        // RES-171a: `a[i] = v;` where `a` is a bare Identifier.
-        // Lowered as:
-        //   LoadLocal(a), <i>, <v>, StoreIndex, StoreLocal(a)
-        // The Array on top of the stack after StoreIndex IS the
-        // mutated one (the VM dispatch pushes it back), so writing
-        // it through `StoreLocal` commits the update.
-        //
-        // Nested `a[i][j] = v` is RES-171c; here we explicitly
-        // reject non-Identifier targets so the compile error is
-        // descriptive rather than a silent miscompile.
+        // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
+        // Depth-1 lowering: LoadLocal(a), <i>, <v>, StoreIndex, StoreLocal(a).
+        // Depth-N lowering: temp-local staging through compile_index_assignment.
         Node::IndexAssignment {
             target,
             index,
             value,
             ..
-        } => {
-            // RES-1430: borrow the target Identifier name as `&str`
-            // for the HashMap lookup. The previous shape eagerly
-            // cloned the name to an owned `String` (`name.clone()`),
-            // then cloned it AGAIN on the error path
-            // (`local_name.clone()` inside `ok_or_else`). With
-            // `locals.get(&str)` taking advantage of `Borrow<str>`,
-            // we hold the borrow through the lookup and only allocate
-            // the owned `String` on the rare UnknownIdentifier error
-            // path. Same pattern as RES-1419 (compile_expr CallExpression).
-            let local_name: &str = match target.as_ref() {
-                Node::Identifier { name, .. } => name.as_str(),
-                _ => {
-                    return Err(CompileError::Unsupported(
-                        "nested index assignment (RES-171c)",
-                    ));
-                }
-            };
-            let slot = *locals
-                .get(local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
-            chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(
-                index,
-                chunk,
-                locals,
-                next_local,
-                fn_index,
-                ffi_index,
-                fns,
-                next_fn_idx,
-                line,
-            )?;
-            compile_expr(
-                value,
-                chunk,
-                locals,
-                next_local,
-                fn_index,
-                ffi_index,
-                fns,
-                next_fn_idx,
-                line,
-            )?;
-            chunk.emit(Op::StoreIndex, line);
-            chunk.emit(Op::StoreLocal(slot), line);
-            Ok(())
-        }
+        } => compile_index_assignment(
+            target,
+            index,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         // RES-335: `p.field = v;` where `p` is a bare Identifier.
         // Lowered as:
         //   LoadLocal(p), <v>, SetField { field }, StoreLocal(p)
@@ -1127,58 +1085,26 @@ fn compile_stmt_in_fn(
             chunk.emit(Op::StoreLocal(idx), line);
             Ok(())
         }
-        // RES-171a: same shape as the main-chunk IndexAssignment
-        // arm. Duplicated on purpose because `compile_stmt` and
-        // `compile_stmt_in_fn` are separate matches (one emits
-        // `Return`, the other `ReturnFromCall`); extracting a
-        // shared helper is overkill for RES-171a but a candidate
-        // cleanup when RES-171c expands this path.
+        // RES-171a/RES-171c: `a[i] = v` and `a[i0][i1]...[iN] = v`.
+        // Shares the compile_index_assignment helper with compile_stmt.
         Node::IndexAssignment {
             target,
             index,
             value,
             ..
-        } => {
-            // RES-1430: borrow target name as &str — see comment on
-            // the compile_stmt IndexAssignment arm.
-            let local_name: &str = match target.as_ref() {
-                Node::Identifier { name, .. } => name.as_str(),
-                _ => {
-                    return Err(CompileError::Unsupported(
-                        "nested index assignment (RES-171c)",
-                    ));
-                }
-            };
-            let slot = *locals
-                .get(local_name)
-                .ok_or_else(|| CompileError::UnknownIdentifier(local_name.to_string()))?;
-            chunk.emit(Op::LoadLocal(slot), line);
-            compile_expr(
-                index,
-                chunk,
-                locals,
-                next_local,
-                fn_index,
-                ffi_index,
-                fns,
-                next_fn_idx,
-                line,
-            )?;
-            compile_expr(
-                value,
-                chunk,
-                locals,
-                next_local,
-                fn_index,
-                ffi_index,
-                fns,
-                next_fn_idx,
-                line,
-            )?;
-            chunk.emit(Op::StoreIndex, line);
-            chunk.emit(Op::StoreLocal(slot), line);
-            Ok(())
-        }
+        } => compile_index_assignment(
+            target,
+            index,
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        ),
         // RES-335: `p.field = v;` inside a fn body. Mirrors the
         // `compile_stmt` arm above; duplicated because the two
         // dispatchers handle `return` differently.
@@ -1597,10 +1523,10 @@ fn compile_for_in(
     chunk.emit(Op::StoreLocal(arr_slot), line);
 
     // 2. Compute length via the canonical `len` builtin and
-    //    store in len_slot. Calling the builtin keeps us aligned
-    //    with the tree walker's iteration semantics — `len` on
-    //    a non-array surfaces a typed error rather than a silent
-    //    miscompile.
+    //    store in len_slot. `len` handles arrays, strings, and
+    //    any other iterable — the VM's LoadIndex was extended
+    //    (RES-334b) to support strings so `for c in "hello"` and
+    //    `for i in 0..10` (via array_range) both work uniformly.
     let len_name_const = chunk.add_string_constant("len")?;
     chunk.emit(Op::LoadLocal(arr_slot), line);
     chunk.emit(
@@ -1698,6 +1624,187 @@ fn compile_for_in(
     } else {
         locals.remove(name);
     }
+    Ok(())
+}
+
+/// RES-171c: compile `a[i0][i1]...[iN] = v` for any nesting depth.
+///
+/// Extracts (root_name, indices[]) from the assignment chain, allocates
+/// N-1 hidden temp locals, and emits load/mutate/writeback sequences
+/// so all intermediate arrays are updated in value-semantics order.
+///
+/// For depth=1 this degenerates to the simple `LoadLocal / StoreIndex /
+/// StoreLocal` triple (no temps needed).
+#[allow(clippy::too_many_arguments)]
+fn compile_index_assignment(
+    target: &Node,
+    outermost_index: &Node,
+    value: &Node,
+    chunk: &mut Chunk,
+    locals: &mut HashMap<String, u16>,
+    next_local: &mut u16,
+    fn_index: &HashMap<String, u16>,
+    ffi_index: &HashMap<String, u16>,
+    fns: &mut Vec<Function>,
+    next_fn_idx: &mut u16,
+    line: u32,
+) -> Result<(), CompileError> {
+    // Walk target chain to collect indices in root-to-leaf order.
+    let mut indices_rev: Vec<&Node> = vec![outermost_index];
+    let mut cursor: &Node = target;
+    let root_name = loop {
+        match cursor {
+            Node::Identifier { name, .. } => break name.as_str(),
+            Node::IndexExpression {
+                target: inner_t,
+                index: inner_i,
+                ..
+            } => {
+                indices_rev.push(inner_i.as_ref());
+                cursor = inner_t.as_ref();
+            }
+            _ => {
+                return Err(CompileError::Unsupported(
+                    "non-identifier target in index assignment",
+                ));
+            }
+        }
+    };
+    indices_rev.reverse();
+    let indices: Vec<&Node> = indices_rev;
+    let depth = indices.len(); // >= 1
+
+    let root_slot = *locals
+        .get(root_name)
+        .ok_or_else(|| CompileError::UnknownIdentifier(root_name.to_string()))?;
+
+    if depth == 1 {
+        // Fast path: `a[i] = v`.
+        chunk.emit(Op::LoadLocal(root_slot), line);
+        compile_expr(
+            indices[0],
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        compile_expr(
+            value,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(Op::StoreIndex, line);
+        chunk.emit(Op::StoreLocal(root_slot), line);
+        return Ok(());
+    }
+
+    // Depth >= 2: allocate N-1 temp locals.
+    let n_temps = depth - 1;
+    if (*next_local as usize) + n_temps > u16::MAX as usize {
+        return Err(CompileError::TooManyLocals);
+    }
+    let temp_base = *next_local;
+    *next_local += n_temps as u16;
+    let temp_keys: Vec<String> = (0..n_temps)
+        .map(|k| format!("$nested_idx@{}", temp_base + k as u16))
+        .collect();
+    for (k, key) in temp_keys.iter().enumerate() {
+        locals.insert(key.clone(), temp_base + k as u16);
+    }
+
+    // Phase 1: load each intermediate level into its temp.
+    // $t0 = root[i0], $t1 = $t0[i1], ..., $t(N-2) = $t(N-3)[i(N-2)]
+    for (k, idx_node) in indices.iter().enumerate().take(n_temps) {
+        let src_slot = if k == 0 {
+            root_slot
+        } else {
+            temp_base + (k as u16 - 1)
+        };
+        chunk.emit(Op::LoadLocal(src_slot), line);
+        compile_expr(
+            idx_node,
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(Op::LoadIndex, line);
+        chunk.emit(Op::StoreLocal(temp_base + k as u16), line);
+    }
+
+    // Phase 2: mutate the deepest temp.
+    // $t(N-2)[i(N-1)] = v
+    let deepest_temp = temp_base + (n_temps as u16 - 1);
+    chunk.emit(Op::LoadLocal(deepest_temp), line);
+    compile_expr(
+        indices[depth - 1],
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    compile_expr(
+        value,
+        chunk,
+        locals,
+        next_local,
+        fn_index,
+        ffi_index,
+        fns,
+        next_fn_idx,
+        line,
+    )?;
+    chunk.emit(Op::StoreIndex, line);
+    chunk.emit(Op::StoreLocal(deepest_temp), line);
+
+    // Phase 3: write back up the chain.
+    // $t(k-1)[i(k)] = $t(k), down to root[i0] = $t0
+    for k in (0..n_temps).rev() {
+        let dst_slot = if k == 0 {
+            root_slot
+        } else {
+            temp_base + (k as u16 - 1)
+        };
+        chunk.emit(Op::LoadLocal(dst_slot), line);
+        compile_expr(
+            indices[k],
+            chunk,
+            locals,
+            next_local,
+            fn_index,
+            ffi_index,
+            fns,
+            next_fn_idx,
+            line,
+        )?;
+        chunk.emit(Op::LoadLocal(temp_base + k as u16), line);
+        chunk.emit(Op::StoreIndex, line);
+        chunk.emit(Op::StoreLocal(dst_slot), line);
+    }
+
+    // Clean up temp keys from locals map.
+    for key in &temp_keys {
+        locals.remove(key);
+    }
+
     Ok(())
 }
 
@@ -3719,6 +3826,23 @@ mod tests {
             "expected at least two zero-initialised index slots in nested for-in: got {:?}",
             zero_init_slots
         );
+    }
+
+    // ---------- RES-334b: string + range iteration ----------
+
+    #[test]
+    fn res334b_for_in_string_compiles() {
+        // `for c in "hi"` must compile without errors.
+        let p = parse_one(r#"let s = "hi"; let n = 0; for c in s { n = n + 1; } return n;"#);
+        compile(&p).expect("for-in over string compiles");
+    }
+
+    #[test]
+    fn res334b_for_in_range_compiles() {
+        // `for i in 0..3` must compile — the range is lowered to
+        // array_range(0, 3) by compile_expr.
+        let p = parse_one("let n = 0; for i in 0..3 { n = n + i; } return n;");
+        compile(&p).expect("for-in over range compiles");
     }
 
     // ---------- RES-081 tests ----------
