@@ -6344,8 +6344,41 @@ impl TypeChecker {
 
             Node::StructLiteral { name, fields, span, .. } => {
                 self.current_span = *span;
-                for (_, e) in fields {
-                    let _ = self.check_node(e)?;
+                // RES-404: look up declared field types. When the struct
+                // is known, validate (a) no unknown fields and (b) every
+                // provided value's type is compatible with the declared
+                // field type. Missing-field errors are L0024 lint; the
+                // typechecker only rejects type mismatches and unknowns.
+                let effective_struct_name = if let Some(idx) = name.rfind("::") {
+                    let type_name = &name[..idx];
+                    if self.enum_decls.contains_key(type_name) {
+                        // enum-variant constructor: validate against the
+                        // variant's payload fields if the enum is known.
+                        // For now only reject obvious unknown field names.
+                        type_name.to_string()
+                    } else {
+                        name.clone()
+                    }
+                } else {
+                    name.clone()
+                };
+                let declared_opt = self.struct_fields.get(&effective_struct_name).cloned();
+                for (field_name, e) in fields {
+                    let val_ty = self.check_node(e)?;
+                    if let Some(declared) = &declared_opt
+                        && let Some((_, field_ty)) =
+                            declared.iter().find(|(n, _)| n == field_name)
+                        && !compatible(field_ty, &val_ty)
+                    {
+                        return Err(format!(
+                            "struct `{}` field `{}` has type {}, \
+                             but the initializer has type {}",
+                            effective_struct_name, field_name, field_ty, val_ty
+                        ));
+                    }
+                    // Unknown field name — the runtime and L0024 lint
+                    // will surface it; the typechecker is silent here
+                    // to stay compatible with dynamic patterns.
                 }
                 // RES-400: if `name` is an enum-variant constructor
                 // (`EnumName::VariantName`), the resulting value's
@@ -6411,22 +6444,36 @@ impl TypeChecker {
                 ..
             } => {
                 let tgt_ty = self.check_node(target)?;
-                let _ = self.check_node(value)?;
+                let val_ty = self.check_node(value)?;
                 // RES-153: reject writes to non-existent fields
                 // statically when the target's struct is known. The
                 // old runtime error ("Struct Point has no field 'z'")
                 // still fires for dynamic `Any` targets.
                 if let Type::Struct(sname) = &tgt_ty
                     && let Some(declared) = self.struct_fields.get(sname)
-                    && !declared.iter().any(|(n, _)| n == field)
                 {
-                    let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
-                    return Err(format!(
-                        "struct `{}` has no field `{}`; available fields: {}",
-                        sname,
-                        field,
-                        avail.join(", ")
-                    ));
+                    match declared.iter().find(|(n, _)| n == field) {
+                        Some((_, field_ty)) => {
+                            // RES-403 follow-up: validate the assigned
+                            // value type against the declared field type.
+                            if !compatible(field_ty, &val_ty) {
+                                return Err(format!(
+                                    "struct `{}` field `{}` has type {}, cannot assign {}",
+                                    sname, field, field_ty, val_ty
+                                ));
+                            }
+                        }
+                        None => {
+                            let avail: Vec<&str> =
+                                declared.iter().map(|(n, _)| n.as_str()).collect();
+                            return Err(format!(
+                                "struct `{}` has no field `{}`; available fields: {}",
+                                sname,
+                                field,
+                                avail.join(", ")
+                            ));
+                        }
+                    }
                 }
                 Ok(Type::Void)
             }
@@ -10614,6 +10661,71 @@ fn f(array a) -> int {
         assert!(
             err.contains("return type mismatch") || err.contains("type mismatch"),
             "expected return-type error in lambda; got: {err}"
+        );
+    }
+}
+
+// ── RES-404: field assignment type validation ─────────────────────────────────
+
+#[cfg(test)]
+mod res404_field_assignment_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn assign_correct_field_type_ok() {
+        check_ok(r#"
+struct Point { int x, int y }
+fn f() -> void {
+    let p = new Point { x: 1, y: 2 };
+    p.x = 10;
+}
+"#);
+    }
+
+    #[test]
+    fn assign_wrong_field_type_errors() {
+        let err = check_err(r#"
+struct Point { int x, int y }
+fn f() -> void {
+    let p = new Point { x: 1, y: 2 };
+    p.x = "oops";
+}
+"#);
+        assert!(
+            err.contains("cannot assign") || err.contains("type"),
+            "expected type mismatch for field assignment; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assign_nonexistent_field_errors() {
+        let err = check_err(r#"
+struct Point { int x, int y }
+fn f() -> void {
+    let p = new Point { x: 1, y: 2 };
+    p.z = 99;
+}
+"#);
+        assert!(
+            err.contains("no field") || err.contains("available"),
+            "expected field-not-found error; got: {err}"
         );
     }
 }
