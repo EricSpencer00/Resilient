@@ -1261,6 +1261,10 @@ pub struct TypeChecker {
     /// and `continue` are typechecker-rejected when this is 0. Bumped
     /// before recursing into a loop body and decremented after.
     loop_depth: usize,
+    /// RES-2653: stack of loop labels in scope. Each entry is the label
+    /// of the corresponding enclosing loop (None for unlabeled loops).
+    /// Used to validate `break label` and `continue label`.
+    loop_label_stack: Vec<Option<String>>,
     /// RES-354: SMT theory selection. Auto-detect (BV32 if bitwise
     /// ops are present, LIA otherwise) by default. The driver
     /// overrides this from `--z3-theory <bv|lia|auto>`.
@@ -4199,6 +4203,8 @@ impl TypeChecker {
             current_fn_return_type: None,
             // RES-910: loop depth starts at 0 (top-level is not a loop).
             loop_depth: 0,
+            // RES-2653: no enclosing labeled loops at the top level.
+            loop_label_stack: Vec::new(),
             // RES-354: auto-detect theory by default.
             #[cfg(feature = "z3")]
             z3_theory: crate::verifier_z3::Z3Theory::Auto,
@@ -7098,6 +7104,7 @@ impl TypeChecker {
                 iterable,
                 body,
                 span,
+                label,
                 ..
             } => {
                 self.current_span = *span;
@@ -7112,6 +7119,8 @@ impl TypeChecker {
                 // RES-910: track loop depth so nested `break`/`continue`
                 // are accepted only inside the body.
                 self.loop_depth += 1;
+                // RES-2653: push loop label onto the label stack.
+                self.loop_label_stack.push(label.clone());
 
                 // RES-1104: bind the loop variable so the body can
                 // reference it without a false "Undefined variable"
@@ -7149,6 +7158,7 @@ impl TypeChecker {
                 std::mem::swap(&mut self.env, &mut loop_env);
 
                 self.loop_depth -= 1;
+                self.loop_label_stack.pop(); // RES-2653
                 let _ = body_result?;
                 Ok(Type::Void)
             }
@@ -7157,6 +7167,7 @@ impl TypeChecker {
                 condition,
                 body,
                 span,
+                label,
                 ..
             } => {
                 self.current_span = *span;
@@ -7169,8 +7180,10 @@ impl TypeChecker {
                     ));
                 }
                 self.loop_depth += 1;
+                self.loop_label_stack.push(label.clone()); // RES-2653
                 let body_result = self.check_node(body);
                 self.loop_depth -= 1;
+                self.loop_label_stack.pop(); // RES-2653
                 let _ = body_result?;
                 Ok(Type::Void)
             }
@@ -7193,16 +7206,35 @@ impl TypeChecker {
                 }
                 Ok(Type::Void)
             }
-            // RES-2653: labeled break/continue — same depth check as unlabeled.
-            Node::BreakLabel { .. } => {
+            // RES-2653: labeled break/continue — validate the label
+            // refers to an enclosing labeled loop.
+            Node::BreakLabel { label, .. } => {
                 if self.loop_depth == 0 {
-                    return Err("'break <label>' outside of a loop".to_string());
+                    return Err(format!("'break {label}' outside of any loop"));
+                }
+                if !self
+                    .loop_label_stack
+                    .iter()
+                    .any(|l| l.as_deref() == Some(label.as_str()))
+                {
+                    return Err(format!(
+                        "label '{label}' not found — no enclosing loop is labeled '{label}'"
+                    ));
                 }
                 Ok(Type::Void)
             }
-            Node::ContinueLabel { .. } => {
+            Node::ContinueLabel { label, .. } => {
                 if self.loop_depth == 0 {
-                    return Err("'continue <label>' outside of a loop".to_string());
+                    return Err(format!("'continue {label}' outside of any loop"));
+                }
+                if !self
+                    .loop_label_stack
+                    .iter()
+                    .any(|l| l.as_deref() == Some(label.as_str()))
+                {
+                    return Err(format!(
+                        "label '{label}' not found — no enclosing loop is labeled '{label}'"
+                    ));
                 }
                 Ok(Type::Void)
             }
