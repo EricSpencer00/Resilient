@@ -471,9 +471,9 @@ pub(crate) fn check_recovers_to_bmc(
 /// With `--features z3`:
 /// - `unsat`  → the prefix is safe; continue.
 /// - `sat`    → the `recovers_to` clause can be violated; return `Err` with
-///              the prefix span so the typechecker emits a diagnostic.
+///   the prefix span so the typechecker emits a diagnostic.
 /// - `unknown`→ Z3 timed out or couldn't decide; emit a warning and
-///              continue (conservative: don't block compilation).
+///   continue (conservative: don't block compilation).
 ///
 /// Without `--features z3` this is a no-op that always returns `Ok`.
 #[cfg(feature = "z3")]

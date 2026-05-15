@@ -173,6 +173,7 @@ fn walk(
             body,
             invariants: pre_invariants,
             span,
+            ..
         } => {
             // First, walk the body itself in case it contains nested
             // loops — those should also get verified, with the OUTER
