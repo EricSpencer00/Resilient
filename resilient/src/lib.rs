@@ -525,6 +525,7 @@ mod feature_attrs;
 mod fmt_validation;
 mod format_builtin;
 mod full_modules;
+mod functional_hof;
 mod ghost_types;
 mod hw_state_machine;
 mod incremental_verify;
@@ -539,6 +540,7 @@ mod mmio_regmap;
 mod mutation_testing;
 mod no_alloc_cert;
 mod no_panic_cert;
+mod number_theory;
 mod package_manager;
 mod param_destructuring;
 // RES-1585: shared top-level marker pre-scan for the typechecker
@@ -11811,6 +11813,28 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
         "result_collect",
         crate::type_builtins::builtin_result_collect,
     ),
+    // RES-2655: number theory builtins (pure).
+    ("prime_factors", crate::number_theory::builtin_prime_factors),
+    ("primes_up_to", crate::number_theory::builtin_primes_up_to),
+    ("euler_totient", crate::number_theory::builtin_euler_totient),
+    ("divisors", crate::number_theory::builtin_divisors),
+    ("is_perfect", crate::number_theory::builtin_is_perfect),
+    ("digit_sum", crate::number_theory::builtin_digit_sum),
+    ("digital_root", crate::number_theory::builtin_digital_root),
+    (
+        "collatz_length",
+        crate::number_theory::builtin_collatz_length,
+    ),
+    ("is_fibonacci", crate::number_theory::builtin_is_fibonacci),
+    ("int_log", crate::number_theory::builtin_int_log),
+    ("count_digits", crate::number_theory::builtin_count_digits),
+    ("int_to_digits", crate::number_theory::builtin_int_to_digits),
+    (
+        "int_from_digits",
+        crate::number_theory::builtin_int_from_digits,
+    ),
+    // RES-2656: functional HOFs — identity is pure; rest need interpreter (inline dispatch).
+    ("identity", crate::functional_hof::builtin_identity),
     // RES-2654: combinatorics and discrete collection operations (pure).
     (
         "array_cartesian_product",
@@ -22976,6 +23000,23 @@ impl Interpreter {
                         "array_from_fn" => {
                             let args = self.eval_expressions(arguments)?;
                             return crate::type_builtins::builtin_array_from_fn(self, &args);
+                        }
+                        // RES-2656: functional HOFs (need interpreter for callbacks).
+                        "array_zip_with_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_zip_with_fn(self, &args);
+                        }
+                        "array_scan_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_scan_fn(self, &args);
+                        }
+                        "array_flat_map_fn" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_flat_map_fn(self, &args);
+                        }
+                        "array_apply_n" => {
+                            let args = self.eval_expressions(arguments)?;
+                            return crate::functional_hof::builtin_array_apply_n(self, &args);
                         }
                         _ => {}
                     }
