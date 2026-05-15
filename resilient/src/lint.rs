@@ -91,6 +91,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0029", // comparison result discarded as statement — likely a typo for `=` or missed `assert`
     "L0030", // float equality comparison (`==` / `!=`) — almost always a bug; use an epsilon check
     "L0031", // double negation `!!x` is redundant — simplify to `x`
+    "L0032", // assignment used as boolean condition — likely typo for `==`
+    "L0033", // integer modulo by 1 is always 0 — likely wrong modulus
+    "L0034", // string concatenation with `+` inside a loop is O(N²)
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -139,6 +142,9 @@ struct LintTriggers {
     has_prefix_expr: bool,
     has_float_literal: bool,
     has_expr_stmt_cmp: bool,
+    has_assign_in_cond: bool,
+    has_string_literal: bool,
+    has_loop: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -176,14 +182,23 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::IntegerLiteral { .. } => t.has_integer_literal = true,
         Node::BooleanLiteral { .. } => t.has_bool_literal = true,
         Node::WhileStatement { condition, .. } => {
+            t.has_loop = true;
             if matches!(condition.as_ref(), Node::BooleanLiteral { value: true, .. }) {
                 t.has_while_true = true;
             }
         }
-        Node::IfStatement { alternative, .. } => {
+        Node::ForInStatement { .. } => t.has_loop = true,
+        Node::IfStatement {
+            condition,
+            alternative,
+            ..
+        } => {
             t.has_if_statement = true;
             if alternative.is_some() {
                 t.has_if_with_else = true;
+            }
+            if matches!(condition.as_ref(), Node::Assignment { .. }) {
+                t.has_assign_in_cond = true;
             }
         }
         Node::StructLiteral { .. } => t.has_struct_literal = true,
@@ -198,6 +213,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
                 t.has_expr_stmt_cmp = true;
             }
         }
+        Node::StringLiteral { .. } => t.has_string_literal = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -304,6 +320,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_prefix_expr {
         run_l0031_double_negation(program, &mut out);
+    }
+    if t.has_assign_in_cond {
+        run_l0032_assign_in_condition(program, &mut out);
+    }
+    if t.has_division {
+        run_l0033_modulo_by_one(program, &mut out);
+    }
+    if t.has_loop && t.has_string_literal && t.has_infix {
+        run_l0034_string_concat_in_loop(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -3575,6 +3600,125 @@ fn walk_l0031(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0032: assignment used as boolean condition
+// ============================================================
+//
+// `if x = value { }` computes the assignment and uses the result
+// as the condition. This is almost always a typo for `if x == value`.
+// In safety-critical code this silently changes the branch predicate.
+
+fn run_l0032_assign_in_condition(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0032(program, out);
+}
+
+fn walk_l0032(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        condition, span, ..
+    } = node
+        && let Node::Assignment { name, .. } = condition.as_ref()
+    {
+        out.push(Lint {
+            code: "L0032".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "assignment to `{name}` used as boolean condition — did you mean `{name} ==`?"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0032(child, out));
+}
+
+// ============================================================
+// L0033: integer modulo by literal 1 (always 0)
+// ============================================================
+//
+// `x % 1` is always 0 for any integer x. This is almost certainly
+// a mistake — the programmer likely meant a different modulus.
+// In embedded contexts the dead operation also wastes a clock cycle.
+
+fn run_l0033_modulo_by_one(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0033(program, out);
+}
+
+fn walk_l0033(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        operator,
+        right,
+        span,
+        ..
+    } = node
+        && operator == "%"
+        && matches!(right.as_ref(), Node::IntegerLiteral { value: 1, .. })
+    {
+        out.push(Lint {
+            code: "L0033".into(),
+            severity: Severity::Warning,
+            message: "`x % 1` is always `0` — did you mean a different modulus?".to_string(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0033(child, out));
+}
+
+// ============================================================
+// L0034: string concatenation with `+` inside a loop
+// ============================================================
+//
+// Building a string by appending in a loop with `+` is O(N²) because
+// each concatenation copies the entire accumulated string. In embedded
+// systems with limited heap, this pattern can cause OOM. The fix is to
+// accumulate parts in an array and join once outside the loop.
+//
+// We fire when at least one operand of a `+` inside a loop body is a
+// string literal — the most common pattern (`result = result + chunk`
+// where `chunk` or `result` was originally a string literal).
+
+fn run_l0034_string_concat_in_loop(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0034_loop(program, false, out);
+}
+
+fn walk_l0034_loop(node: &Node, in_loop: bool, out: &mut Vec<Lint>) {
+    match node {
+        Node::WhileStatement { body, .. } => {
+            walk_l0034_loop(body, true, out);
+        }
+        Node::ForInStatement { body, .. } => {
+            walk_l0034_loop(body, true, out);
+        }
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            span,
+        } if in_loop && operator == "+" => {
+            let left_is_str = matches!(left.as_ref(), Node::StringLiteral { .. });
+            let right_is_str = matches!(right.as_ref(), Node::StringLiteral { .. });
+            if left_is_str || right_is_str {
+                out.push(Lint {
+                    code: "L0034".into(),
+                    severity: Severity::Warning,
+                    message: "string concatenation `+` inside a loop is O(N²) — \
+                              accumulate parts in an array and join outside the loop"
+                        .to_string(),
+                    line: span.start.line as u32,
+                    column: span.start.column as u32,
+                });
+            }
+            // Recurse into operands with in_loop preserved.
+            walk_l0034_loop(left, in_loop, out);
+            walk_l0034_loop(right, in_loop, out);
+        }
+        // For other nodes: propagate in_loop flag to children via manual recursion.
+        _ => {
+            recurse_children(node, &mut |child| walk_l0034_loop(child, in_loop, out));
+        }
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -5176,6 +5320,77 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0031".to_string()),
             "L0031 must not fire for a single negation"
+        );
+    }
+
+    // ---------- L0033: modulo by literal 1 ----------
+
+    #[test]
+    fn l0033_fires_on_modulo_by_one() {
+        let src = "fn f(int x) -> int { return x % 1; }\nf(5);\n";
+        assert!(
+            codes(src).contains(&"L0033".to_string()),
+            "L0033 must fire for `x % 1`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0033_silent_for_modulo_by_two() {
+        let src = "fn f(int x) -> int { return x % 2; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0033".to_string()),
+            "L0033 must not fire for `x % 2`"
+        );
+    }
+
+    #[test]
+    fn l0033_silent_for_modulo_by_zero() {
+        // x % 0 is a different lint (L0009 division by zero); L0033 must not double-fire.
+        let src = "fn f(int x) -> int { return x % 0; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0033".to_string()),
+            "L0033 must not fire for `x % 0` (that is L0009 territory)"
+        );
+    }
+
+    // ---------- L0034: string concat in loop ----------
+
+    #[test]
+    fn l0034_fires_on_string_concat_in_while() {
+        let src = "fn f() { let _r = \"\"; while true { let _r = _r + \"chunk\"; } }\nf();\n";
+        assert!(
+            codes(src).contains(&"L0034".to_string()),
+            "L0034 must fire for string `+` inside while; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0034_fires_on_string_concat_in_for() {
+        let src = "fn f(Array items) { let _r = \"\"; for x in items { let _r = _r + \"x\"; } }\nf([]);\n";
+        assert!(
+            codes(src).contains(&"L0034".to_string()),
+            "L0034 must fire for string `+` inside for; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0034_silent_for_string_concat_outside_loop() {
+        let src = "fn f() -> string { return \"hello\" + \" world\"; }\nf();\n";
+        assert!(
+            !codes(src).contains(&"L0034".to_string()),
+            "L0034 must not fire for string `+` outside any loop"
+        );
+    }
+
+    #[test]
+    fn l0034_silent_for_int_add_in_loop() {
+        let src = "fn f(int n) -> int { let _s = 0; while n > 0 { let _s = _s + 1; } return _s; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0034".to_string()),
+            "L0034 must not fire for integer `+` in a loop"
         );
     }
 }
