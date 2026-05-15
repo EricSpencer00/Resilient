@@ -4979,6 +4979,38 @@ impl Parser {
                 };
                 Some(format!("fn({}) {} {}", params.join(", "), arrow_str, ret))
             }
+            // RES-426: tuple type annotation `(T1, T2, ...)`.
+            // Encoded as the string `"(T1, T2)"` in the single-string
+            // type slot. `parse_type_name_inner` handles the
+            // parenthesised case by recognising the leading `(`.
+            Token::LeftParen => {
+                self.next_token(); // skip `(`
+                let mut elem_types: Vec<String> = Vec::with_capacity(2);
+                while self.current_token != Token::RightParen && self.current_token != Token::Eof {
+                    let elem = self.parse_type_annotation(ctx)?;
+                    elem_types.push(elem);
+                    if self.current_token == Token::Comma {
+                        self.next_token();
+                    } else if self.current_token != Token::RightParen {
+                        let tok = self.current_token.clone();
+                        self.record_error(format!(
+                            "Expected ',' or ')' in tuple type {}, found {}",
+                            ctx, tok
+                        ));
+                        return None;
+                    }
+                }
+                if self.current_token != Token::RightParen {
+                    let tok = self.current_token.clone();
+                    self.record_error(format!(
+                        "Expected ')' to close tuple type {}, found {}",
+                        ctx, tok
+                    ));
+                    return None;
+                }
+                self.next_token(); // skip `)`
+                Some(format!("({})", elem_types.join(", ")))
+            }
             _ => {
                 let tok = self.current_token.clone();
                 self.record_error(format!("Expected type name {}, found {}", ctx, tok));

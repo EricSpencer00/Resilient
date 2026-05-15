@@ -1301,6 +1301,12 @@ pub struct TypeChecker {
     /// Reset to `stmt.span` at the start of each top-level statement
     /// so stale spans from a prior statement never pollute a later one.
     current_span: Span,
+    /// RES-425: maps function name → list of generic type-parameter names
+    /// declared with `fn foo<T, U>(...)`. Used at call sites to recognise
+    /// `Type::Struct("T")` as a type variable that accepts any concrete
+    /// type, fixing the "Type mismatch in argument 1: expected T, got int"
+    /// false-positive that blocked all generic-function calls.
+    fn_type_params: HashMap<String, Vec<String>>,
 }
 
 impl TypeChecker {
@@ -3932,6 +3938,7 @@ impl TypeChecker {
             emit_certificates: false,
             // RES-1862: default to zero span (synthetic / unknown).
             current_span: Span::default(),
+            fn_type_params: HashMap::new(),
         }
     }
 
@@ -5086,8 +5093,15 @@ impl TypeChecker {
                 recovers_to,
                 return_type: declared_rt,
                 fails,
+                type_params,
                 ..
             } => {
+                // RES-425: record type-parameter names so call-site
+                // checking can treat Type::Struct("T") as Type::Any.
+                if !type_params.is_empty() {
+                    self.fn_type_params
+                        .insert(name.clone(), type_params.clone());
+                }
                 // RES-1724: pre-size to `parameters.len()` — exact upper
                 // bound, the loop below pushes one entry per parameter.
                 // Same shape as the rest of the pre-size series.
@@ -7560,13 +7574,32 @@ impl TypeChecker {
                             ));
                         }
 
+                        // RES-425: if the callee is a named generic function,
+                        // collect its type-parameter names so Struct("T") can
+                        // be treated as Any during argument checking.
+                        let callee_type_params: Option<Vec<String>> =
+                            if let Node::Identifier { name: callee_id, .. } = function.as_ref() {
+                                self.fn_type_params.get(callee_id.as_str()).cloned()
+                            } else {
+                                None
+                            };
                         // Check each argument type
                         for (i, (arg, param_type)) in
                             arguments.iter().zip(params[param_offset..].iter()).enumerate()
                         {
                             let arg_type = self.check_node(arg)?;
-                            if arg_type != *param_type
-                                && *param_type != Type::Any
+                            // Treat Struct("T") as Any when T is a generic
+                            // type parameter of the callee (RES-425).
+                            let effective_param = if let Type::Struct(tname) = param_type
+                                && let Some(tp) = &callee_type_params
+                                && tp.iter().any(|p| p == tname)
+                            {
+                                &Type::Any
+                            } else {
+                                param_type
+                            };
+                            if arg_type != *effective_param
+                                && *effective_param != Type::Any
                                 && arg_type != Type::Any
                             {
                                 // RES-340: when RESILIENT_RICH_DIAG=1
@@ -7600,20 +7633,31 @@ impl TypeChecker {
                                         arg_span,
                                         decl_span,
                                         i + 1,
-                                        &param_type.to_string(),
+                                        &effective_param.to_string(),
                                         &arg_type.to_string(),
                                     ));
                                 }
                                 return Err(format!(
                                     "Type mismatch in argument {}: expected {}, got {}",
                                     i + 1,
-                                    param_type,
+                                    effective_param,
                                     arg_type
                                 ));
                             }
                         }
 
-                        Ok(*return_type)
+                        // RES-425: if the return type is a generic type
+                        // parameter (Type::Struct("T")), return Any so
+                        // callers don't get spurious type mismatches.
+                        let effective_return = if let Type::Struct(tname) = return_type.as_ref()
+                            && let Some(tp) = &callee_type_params
+                            && tp.iter().any(|p| p == tname)
+                        {
+                            Type::Any
+                        } else {
+                            *return_type
+                        };
+                        Ok(effective_return)
                     }
                     Type::Any => Ok(Type::Any),
                     _ => Err(format!("Cannot call non-function type: {}", func_type)),
@@ -7821,6 +7865,13 @@ impl TypeChecker {
                     return_type: Box::new(return_type),
                 })
             }
+            // RES-426: tuple type `(T1, T2, ...)`. Encoded by the
+            // parser as a parenthesised comma-list; at type-check
+            // level a tuple is represented as Type::Any (the interpreter
+            // already boxes tuples as Value::Tuple at runtime; the type
+            // system will promote this to Type::Tuple once the full
+            // tuple-type variant lands in G7).
+            other if other.starts_with('(') && other.ends_with(')') => Ok(Type::Any),
             // RES-053: any other identifier is assumed to be a
             // user-defined struct. G7 will register struct decls and
             // reject unknown type names, but at MVP we're permissive.
@@ -12632,6 +12683,116 @@ fn safe_sqrt(int n) -> float {
 }
 fn main(int _d) -> int { return 0; }
 "#,
+        );
+    }
+}
+
+// ── RES-425: generic type parameter call-site fix ────────────────────────────
+
+#[cfg(test)]
+mod res425_generic_typecheck {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("type error: {e}"));
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn generic_id_with_int_no_false_positive() {
+        check_ok("fn id<T>(T x) -> T { return x; }\nfn f(int a) -> int { return id(a); }");
+    }
+
+    #[test]
+    fn generic_id_with_string_no_false_positive() {
+        check_ok("fn id<T>(T x) -> T { return x; }\nfn f(string s) -> string { return id(s); }");
+    }
+
+    #[test]
+    fn generic_two_params_no_false_positive() {
+        check_ok(
+            "fn first<A, B>(A a, B b) -> A { return a; }\n\
+             fn f(int x, string y) -> int { return first(x, y); }",
+        );
+    }
+
+    #[test]
+    fn generic_accepts_different_types_at_different_sites() {
+        check_ok(
+            "fn wrap<T>(T x) -> T { return x; }\n\
+             fn f(int a) -> int { return wrap(a); }\n\
+             fn g(string s) -> string { return wrap(s); }",
+        );
+    }
+
+    #[test]
+    fn non_generic_type_mismatch_still_caught() {
+        let e = check_err(
+            "fn takes_int(int x) -> int { return x; }\n\
+             fn f(string s) -> int { return takes_int(s); }",
+        );
+        assert!(
+            e.contains("mismatch") || e.contains("expected int"),
+            "expected type mismatch; got: {e}"
+        );
+    }
+}
+
+// ── RES-426: tuple return type in function signatures ────────────────────────
+
+#[cfg(test)]
+mod res426_tuple_return_type {
+    use super::*;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = crate::parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program(&prog)
+            .unwrap_or_else(|e| panic!("type error: {e}"));
+    }
+
+    #[test]
+    fn tuple_return_type_parses_and_typechecks() {
+        check_ok(
+            "fn divmod(int a, int b) -> (int, int) { return (a / b, a % b); }\n\
+             fn f(int a) -> int { let r = divmod(a, 3); return 0; }",
+        );
+    }
+
+    #[test]
+    fn tuple_return_single_element() {
+        check_ok("fn wrap(int x) -> (int) { return (x); }\nfn f(int a) -> int { return 0; }");
+    }
+
+    #[test]
+    fn tuple_return_three_elements() {
+        check_ok(
+            "fn triple(int x) -> (int, int, int) { return (x, x, x); }\n\
+             fn f(int a) -> int { return 0; }",
+        );
+    }
+
+    #[test]
+    fn tuple_destructure_from_function() {
+        // let (a, b) = divmod(...) should parse and type-check
+        check_ok(
+            "fn divmod(int a, int b) -> (int, int) { return (a / b, a % b); }\n\
+             fn f(int a) -> int {\n\
+                 let (q, r) = divmod(a, 3);\n\
+                 return q;\n\
+             }",
         );
     }
 }
