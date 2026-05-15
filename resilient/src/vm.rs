@@ -3489,4 +3489,81 @@ mod tests {
             "expected empty Tuple, got {r:?}"
         );
     }
+
+    // ── RES-163: match expression lowering ──────────────────────────────────
+
+    #[test]
+    fn match_wildcard_arm_always_matches() {
+        let r = compile_run("fn f(int x) -> int { return match x { _ => 99 }; } f(42)");
+        assert!(matches!(r, Ok(Value::Int(99))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_literal_arm_exact_hit() {
+        let r = compile_run("fn f(int x) -> int { return match x { 5 => 100, _ => 0 }; } f(5)");
+        assert!(matches!(r, Ok(Value::Int(100))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_literal_arm_miss_falls_to_wildcard() {
+        let r = compile_run("fn f(int x) -> int { return match x { 5 => 100, _ => 0 }; } f(7)");
+        assert!(matches!(r, Ok(Value::Int(0))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_identifier_binding_is_visible_in_body() {
+        let r = compile_run("fn f(int x) -> int { return match x { n => n * 2 }; } f(6)");
+        assert!(matches!(r, Ok(Value::Int(12))), "got {r:?}");
+    }
+
+    #[test]
+    fn match_multiple_literal_arms_select_correctly() {
+        let src = r#"
+            fn grade(int n) -> int {
+                return match n {
+                    1 => 10,
+                    2 => 20,
+                    3 => 30,
+                    _ => 0
+                };
+            }
+            grade(2)
+        "#;
+        assert!(matches!(compile_run(src), Ok(Value::Int(20))));
+    }
+
+    #[test]
+    fn match_no_arm_matched_yields_void() {
+        // A match with only literal arms that all miss → fallthrough = Void.
+        let r = compile_run("match 99 { 1 => 1 }");
+        assert!(matches!(r, Ok(Value::Void)), "got {r:?}");
+    }
+
+    #[test]
+    fn match_guard_skips_arm_when_false() {
+        let src = r#"
+            fn f(int x) -> int {
+                return match x {
+                    n if n > 10 => 1,
+                    _ => 0
+                };
+            }
+            f(5)
+        "#;
+        assert!(matches!(compile_run(src), Ok(Value::Int(0))));
+    }
+
+    #[test]
+    fn match_guard_accepts_arm_when_true() {
+        let src = r#"
+            fn f(int x) -> int {
+                return match x {
+                    n if n > 10 => 1,
+                    _ => 0
+                };
+            }
+            f(15)
+        "#;
+        assert!(matches!(compile_run(src), Ok(Value::Int(1))));
+    }
 }
