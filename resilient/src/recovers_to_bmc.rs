@@ -282,43 +282,167 @@ impl ControlFlowGraph {
     }
 }
 
-/// Generate Z3 SMT-LIB2 obligation for per-prefix recovery invariant.
+/// Convert a Resilient expression AST node to SMT-LIB2 format.
 ///
-/// RES-392b Phase 2 — not yet implemented. Returns an empty string so
-/// the Phase 3 loop can iterate without changes when Phase 2 lands.
-#[allow(dead_code)]
-fn generate_prefix_obligation(
+/// RES-392b Phase 2: handles the expression forms that appear in
+/// `requires` and `recovers_to` clauses:
+/// - Integer/float/bool literals
+/// - Identifiers (function parameters, let bindings)
+/// - Arithmetic: `+`, `-`, `*`, `/`, `%`
+/// - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+/// - Boolean: `&&`, `||`, `!`
+///
+/// Unsupported nodes return a conservative `true` so the obligation
+/// remains satisfiable (safe default: never emit a false counterexample).
+pub(crate) fn node_to_smtlib2(node: &Node) -> String {
+    match node {
+        Node::IntegerLiteral { value, .. } => value.to_string(),
+        Node::FloatLiteral { value, .. } => {
+            // SMT-LIB2 requires explicit decimal point for Reals.
+            if value.fract() == 0.0 {
+                format!("{}.0", value)
+            } else {
+                format!("{}", value)
+            }
+        }
+        Node::BooleanLiteral { value, .. } => {
+            if *value { "true".to_string() } else { "false".to_string() }
+        }
+        Node::Identifier { name, .. } => name.clone(),
+        Node::InfixExpression {
+            left,
+            operator,
+            right,
+            ..
+        } => {
+            let l = node_to_smtlib2(left);
+            let r = node_to_smtlib2(right);
+            let op = match operator.as_str() {
+                "+" => "+",
+                "-" => "-",
+                "*" => "*",
+                "/" => "div",
+                "%" => "mod",
+                "==" => "=",
+                "!=" => "distinct",
+                "<" => "<",
+                "<=" => "<=",
+                ">" => ">",
+                ">=" => ">=",
+                "&&" => "and",
+                "||" => "or",
+                _ => return "true".to_string(),
+            };
+            format!("({op} {l} {r})")
+        }
+        Node::PrefixExpression { operator, right, .. } => {
+            let r = node_to_smtlib2(right);
+            match operator.as_str() {
+                "!" => format!("(not {r})"),
+                "-" => format!("(- {r})"),
+                _ => "true".to_string(),
+            }
+        }
+        // Parenthesised expressions are transparent in the AST.
+        _ => "true".to_string(),
+    }
+}
+
+/// Collect all free variable names appearing in an expression node.
+/// Used to emit `(declare-const …)` lines in the SMT-LIB2 preamble.
+fn collect_identifiers(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::Identifier { name, .. } => {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        Node::InfixExpression { left, right, .. } => {
+            collect_identifiers(left, out);
+            collect_identifiers(right, out);
+        }
+        Node::PrefixExpression { right, .. } => collect_identifiers(right, out),
+        _ => {}
+    }
+}
+
+/// Generate a Z3 SMT-LIB2 obligation for the per-prefix recovery invariant.
+///
+/// RES-392b Phase 2: for each instruction boundary `prefix_id` in the CFG,
+/// emits the query that asks Z3 whether the `recovers_to` postcondition can
+/// be *violated* from any state reachable up to that prefix. If Z3 finds a
+/// satisfying assignment (SAT), the prefix is a crash-recovery hazard.
+///
+/// The caller is responsible for invoking Z3 on the returned string; this
+/// function only generates the textual obligation.
+///
+/// Format:
+/// ```text
+/// (push)
+/// ; RES-392b: per-prefix obligation for prefix N
+/// (declare-const <var> Int)  ; one per free identifier
+/// (assert <requires_constraint>)
+/// (assert (not <recovers_to_expr>))
+/// (check-sat)
+/// (pop)
+/// ```
+pub(crate) fn generate_prefix_obligation(
     prefix_id: usize,
-    _init_state: &str,
+    requires_constraint: &str,
     recovers_clause: &Node,
 ) -> String {
-    // TODO: RES-392b Phase 2 — emit:
-    //   (push)
-    //   (assert (not (=> init_<prefix_id> <recovers_clause_z3>)))
-    //   (check-sat)
-    let _ = (prefix_id, recovers_clause);
-    String::new()
+    let recovers_smt = node_to_smtlib2(recovers_clause);
+
+    // Collect identifiers so we can emit declarations.
+    let mut ids = Vec::new();
+    collect_identifiers(recovers_clause, &mut ids);
+
+    let mut buf = String::with_capacity(256);
+    buf.push_str("(push)\n");
+    buf.push_str(&format!("; RES-392b: per-prefix obligation for prefix {prefix_id}\n"));
+
+    // Declare each free variable as an Int (conservative: the solver
+    // will accept Int arithmetic for most embedded numeric programs).
+    for id in &ids {
+        buf.push_str(&format!("(declare-const {id} Int)\n"));
+    }
+
+    // Assert the requires/precondition (if any).
+    if !requires_constraint.is_empty() && requires_constraint != "true" {
+        buf.push_str(&format!("(assert {requires_constraint})\n"));
+    }
+
+    // Assert the NEGATION of the recovers_to postcondition.
+    // SAT → postcondition can be violated → crash-recovery hazard.
+    buf.push_str(&format!("(assert (not {recovers_smt}))\n"));
+    buf.push_str("(check-sat)\n");
+    buf.push_str("(pop)\n");
+    buf
 }
 
 /// Check crash-recovery guarantees for a function's recovers_to clause
 /// via per-prefix bounded model checking.
 ///
-/// Phase 1 now produces a proper statement-level CFG with per-instruction
-/// boundaries for if/else, while, for, return, and match.  Phase 2/3 Z3
-/// integration is still pending (always returns Ok); the infrastructure is
-/// in place for when the solver is wired up.
+/// Phase 1: CFG construction (statement-level boundaries for if/else,
+/// while, for, return, match).
+/// Phase 2: SMT-LIB2 obligation generation (this call).
+/// Phase 3 (future): invoke Z3 solver and surface counterexample spans.
+///
+/// Without `--features z3` the obligations are generated but not solved;
+/// the function always returns Ok so as not to block non-Z3 builds.
 pub(crate) fn check_recovers_to_bmc(
-    _fn_name: &str,
+    fn_name: &str,
     fn_body: &Node,
-    _recovers_clause: &Node,
+    recovers_clause: &Node,
 ) -> Result<(), String> {
     let cfg = ControlFlowGraph::from_body(fn_body);
     let prefixes = cfg.enumerate_prefixes();
 
-    for (prefix_id, _span) in prefixes {
-        let _obligation = generate_prefix_obligation(prefix_id, "init_state", _recovers_clause);
-        // TODO: RES-392b Phase 2 — invoke Z3 solver on `_obligation`.
-        // On SAT: return Err with the failing prefix span.
+    for (prefix_id, _span) in &prefixes {
+        let _obligation =
+            generate_prefix_obligation(*prefix_id, &format!("init_{fn_name}"), recovers_clause);
+        // Phase 3 (--features z3): invoke Z3 on `_obligation`.
+        // On SAT: return Err("recovers_to invariant violated at prefix N").
     }
 
     Ok(())
@@ -388,5 +512,126 @@ mod tests {
         };
         let result = check_recovers_to_bmc("f", &body, &clause);
         assert!(result.is_ok(), "stub must return Ok: {:?}", result);
+    }
+
+    // --- RES-392b Phase 2: SMT-LIB2 generation tests ---
+
+    #[test]
+    fn smtlib2_integer_literal() {
+        let node = Node::IntegerLiteral {
+            value: 42,
+            span: Span::default(),
+        };
+        assert_eq!(node_to_smtlib2(&node), "42");
+    }
+
+    #[test]
+    fn smtlib2_bool_literal() {
+        let t = Node::BooleanLiteral { value: true, span: Span::default() };
+        let f = Node::BooleanLiteral { value: false, span: Span::default() };
+        assert_eq!(node_to_smtlib2(&t), "true");
+        assert_eq!(node_to_smtlib2(&f), "false");
+    }
+
+    #[test]
+    fn smtlib2_identifier() {
+        let node = Node::Identifier {
+            name: "reading".to_string(),
+            span: Span::default(),
+        };
+        assert_eq!(node_to_smtlib2(&node), "reading");
+    }
+
+    #[test]
+    fn smtlib2_comparison_gt() {
+        // `reading > 100` → `(> reading 100)`
+        let node = Node::InfixExpression {
+            left: Box::new(Node::Identifier {
+                name: "reading".to_string(),
+                span: Span::default(),
+            }),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 100,
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        assert_eq!(node_to_smtlib2(&node), "(> reading 100)");
+    }
+
+    #[test]
+    fn smtlib2_eq_becomes_distinct() {
+        // `a != b` → `(distinct a b)`
+        let node = Node::InfixExpression {
+            left: Box::new(Node::Identifier {
+                name: "a".to_string(),
+                span: Span::default(),
+            }),
+            operator: "!=".to_string(),
+            right: Box::new(Node::Identifier {
+                name: "b".to_string(),
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        assert_eq!(node_to_smtlib2(&node), "(distinct a b)");
+    }
+
+    #[test]
+    fn smtlib2_prefix_not() {
+        let node = Node::PrefixExpression {
+            operator: "!".to_string(),
+            right: Box::new(Node::BooleanLiteral {
+                value: true,
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        assert_eq!(node_to_smtlib2(&node), "(not true)");
+    }
+
+    #[test]
+    fn generate_prefix_obligation_contains_assert_not() {
+        // recovers_to: reading > 100
+        let clause = Node::InfixExpression {
+            left: Box::new(Node::Identifier {
+                name: "reading".to_string(),
+                span: Span::default(),
+            }),
+            operator: ">".to_string(),
+            right: Box::new(Node::IntegerLiteral {
+                value: 100,
+                span: Span::default(),
+            }),
+            span: Span::default(),
+        };
+        let obligation = generate_prefix_obligation(0, "init_poll_sensor", &clause);
+        assert!(
+            obligation.contains("(assert (not (> reading 100)))"),
+            "obligation must negate the recovers_to clause; got:\n{obligation}"
+        );
+        assert!(
+            obligation.contains("(check-sat)"),
+            "obligation must contain (check-sat)"
+        );
+        assert!(
+            obligation.contains("(declare-const reading Int)"),
+            "obligation must declare free variables"
+        );
+    }
+
+    #[test]
+    fn generate_prefix_obligation_push_pop_balanced() {
+        let clause = Node::BooleanLiteral { value: true, span: Span::default() };
+        let obligation = generate_prefix_obligation(3, "init_f", &clause);
+        assert!(
+            obligation.starts_with("(push)"),
+            "obligation must start with (push)"
+        );
+        assert!(
+            obligation.trim_end().ends_with("(pop)"),
+            "obligation must end with (pop)"
+        );
     }
 }

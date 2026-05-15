@@ -87,6 +87,10 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0025", // unreachable code after infinite `while true` loop (no break)
     "L0026", // duplicate literal key in map literal (earlier binding shadowed)
     "L0027", // empty catch block silently discards the error
+    "L0028", // negation of boolean literal (`!true` / `!false`) — use the literal directly
+    "L0029", // comparison result discarded as statement — likely a typo for `=` or missed `assert`
+    "L0030", // float equality comparison (`==` / `!=`) — almost always a bug; use an epsilon check
+    "L0031", // double negation `!!x` is redundant — simplify to `x`
 ];
 
 /// RES-778: process-wide policy switch for safety-critical CLI mode.
@@ -132,6 +136,9 @@ struct LintTriggers {
     has_struct_literal: bool,
     has_map_literal: bool,
     has_try_catch: bool,
+    has_prefix_expr: bool,
+    has_float_literal: bool,
+    has_expr_stmt_cmp: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -182,6 +189,15 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::StructLiteral { .. } => t.has_struct_literal = true,
         Node::MapLiteral { .. } => t.has_map_literal = true,
         Node::TryCatch { .. } => t.has_try_catch = true,
+        Node::PrefixExpression { .. } => t.has_prefix_expr = true,
+        Node::FloatLiteral { .. } => t.has_float_literal = true,
+        Node::ExpressionStatement { expr, .. } => {
+            if matches!(expr.as_ref(), Node::InfixExpression { operator, .. }
+                if matches!(operator.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">="))
+            {
+                t.has_expr_stmt_cmp = true;
+            }
+        }
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -276,6 +292,18 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_try_catch {
         run_l0027_empty_catch_block(program, &mut out);
+    }
+    if t.has_prefix_expr && t.has_bool_literal {
+        run_l0028_negation_of_literal(program, &mut out);
+    }
+    if t.has_expr_stmt_cmp {
+        run_l0029_comparison_result_discarded(program, &mut out);
+    }
+    if t.has_float_literal && t.has_infix {
+        run_l0030_float_equality(program, &mut out);
+    }
+    if t.has_prefix_expr {
+        run_l0031_double_negation(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -3400,6 +3428,155 @@ fn walk_l0027(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0028: negation of boolean literal (`!true` / `!false`)
+// ============================================================
+//
+// `!true` always evaluates to `false` and `!false` always evaluates
+// to `true`. Using the negated literal instead of the result literal
+// is confusing and almost always indicates a logic error.
+
+fn run_l0028_negation_of_literal(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0028(program, out);
+}
+
+fn walk_l0028(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::PrefixExpression {
+        operator,
+        right,
+        span,
+    } = node
+        && operator == "!"
+        && let Node::BooleanLiteral { value, .. } = right.as_ref()
+    {
+        let result = if *value { "false" } else { "true" };
+        let literal = if *value { "true" } else { "false" };
+        out.push(Lint {
+            code: "L0028".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "`!{literal}` is always `{result}` — use `{result}` directly"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0028(child, out));
+}
+
+// ============================================================
+// L0029: comparison result discarded as statement
+// ============================================================
+//
+// An expression statement like `a == b;` computes a boolean but
+// immediately discards the result. This is almost always a typo
+// for an assignment (`a = b;`) or a missed assertion
+// (`assert(a == b);`). For safety-critical code this pattern is
+// particularly dangerous because a postcondition check silently
+// becomes a no-op.
+
+fn run_l0029_comparison_result_discarded(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0029(program, out);
+}
+
+fn walk_l0029(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::ExpressionStatement { expr, span } = node
+        && let Node::InfixExpression { operator, .. } = expr.as_ref()
+        && matches!(operator.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=")
+    {
+        out.push(Lint {
+            code: "L0029".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "comparison `{operator}` result is discarded — did you mean `assert(…)` or `=`?"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0029(child, out));
+}
+
+// ============================================================
+// L0030: float equality comparison (`==` / `!=`)
+// ============================================================
+//
+// Comparing floats with `==` or `!=` is almost always a bug in
+// safety-critical embedded code: floating-point arithmetic
+// accumulates rounding error, so two computations that are
+// mathematically equal will often produce different bit patterns.
+// Use an epsilon comparison: `abs(a - b) < epsilon`.
+//
+// We fire only when at least one operand is a float literal; this
+// covers the most common patterns (`x == 0.0`, `result != 1.5`)
+// without requiring full type inference on both operands.
+
+fn run_l0030_float_equality(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0030(program, out);
+}
+
+fn walk_l0030(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
+        && (operator == "==" || operator == "!=")
+    {
+        let left_is_float = matches!(left.as_ref(), Node::FloatLiteral { .. });
+        let right_is_float = matches!(right.as_ref(), Node::FloatLiteral { .. });
+        if left_is_float || right_is_float {
+            out.push(Lint {
+                code: "L0030".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "float equality comparison `{operator}` is almost always a bug — \
+                     use an epsilon comparison: `abs(a - b) < epsilon`"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0030(child, out));
+}
+
+// ============================================================
+// L0031: double negation `!!x`
+// ============================================================
+//
+// `!!x` is semantically identical to `x` for any boolean `x`.
+// The double negation is redundant and obscures intent; replace
+// with the un-negated expression.
+
+fn run_l0031_double_negation(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0031(program, out);
+}
+
+fn walk_l0031(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::PrefixExpression {
+        operator,
+        right,
+        span,
+    } = node
+        && operator == "!"
+        && let Node::PrefixExpression {
+            operator: inner_op, ..
+        } = right.as_ref()
+        && inner_op == "!"
+    {
+        out.push(Lint {
+            code: "L0031".into(),
+            severity: Severity::Warning,
+            message: "double negation `!!x` is redundant — use `x` directly".to_string(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0031(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -4889,6 +5066,117 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0027".to_string()),
             "L0027 must not fire when the catch block has statements"
+        );
+    }
+
+    // ---------- L0028: negation of boolean literal ----------
+
+    #[test]
+    fn l0028_fires_on_not_true() {
+        let src = "let _x = !true;\n";
+        assert!(
+            codes(src).contains(&"L0028".to_string()),
+            "L0028 must fire for `!true`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0028_fires_on_not_false() {
+        let src = "let _x = !false;\n";
+        assert!(
+            codes(src).contains(&"L0028".to_string()),
+            "L0028 must fire for `!false`"
+        );
+    }
+
+    #[test]
+    fn l0028_silent_for_not_identifier() {
+        let src = "fn f(bool x) -> bool { return !x; }\nf(true);\n";
+        assert!(
+            !codes(src).contains(&"L0028".to_string()),
+            "L0028 must not fire for `!identifier`"
+        );
+    }
+
+    // ---------- L0029: comparison result discarded ----------
+
+    #[test]
+    fn l0029_fires_on_discarded_eq() {
+        let src = "fn f(int x, int y) { x == y; }\nf(1, 2);\n";
+        assert!(
+            codes(src).contains(&"L0029".to_string()),
+            "L0029 must fire when comparison result is discarded; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0029_fires_on_discarded_lt() {
+        let src = "fn f(int x, int y) { x < y; }\nf(1, 2);\n";
+        assert!(
+            codes(src).contains(&"L0029".to_string()),
+            "L0029 must fire when `<` result is discarded"
+        );
+    }
+
+    #[test]
+    fn l0029_silent_when_used_in_if() {
+        let src = "fn f(int x, int y) -> bool { if x == y { return true; } return false; }\nf(1, 2);\n";
+        assert!(
+            !codes(src).contains(&"L0029".to_string()),
+            "L0029 must not fire when comparison is used as condition"
+        );
+    }
+
+    // ---------- L0030: float equality comparison ----------
+
+    #[test]
+    fn l0030_fires_on_float_eq_zero() {
+        let src = "fn f(float x) -> bool { return x == 0.0; }\nf(1.0);\n";
+        assert!(
+            codes(src).contains(&"L0030".to_string()),
+            "L0030 must fire for float == literal; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0030_fires_on_float_neq() {
+        let src = "fn f(float x) -> bool { return 1.5 != x; }\nf(1.0);\n";
+        assert!(
+            codes(src).contains(&"L0030".to_string()),
+            "L0030 must fire for float literal != expression"
+        );
+    }
+
+    #[test]
+    fn l0030_silent_for_int_equality() {
+        let src = "fn f(int x) -> bool { return x == 0; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0030".to_string()),
+            "L0030 must not fire for integer equality"
+        );
+    }
+
+    // ---------- L0031: double negation ----------
+
+    #[test]
+    fn l0031_fires_on_double_not() {
+        let src = "fn f(bool x) -> bool { return !!x; }\nf(true);\n";
+        assert!(
+            codes(src).contains(&"L0031".to_string()),
+            "L0031 must fire for `!!x`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0031_silent_for_single_not() {
+        let src = "fn f(bool x) -> bool { return !x; }\nf(true);\n";
+        assert!(
+            !codes(src).contains(&"L0031".to_string()),
+            "L0031 must not fire for a single negation"
         );
     }
 }
