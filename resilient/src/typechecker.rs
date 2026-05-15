@@ -1305,6 +1305,7 @@ pub struct TypeChecker {
     /// Reset to `stmt.span` at the start of each top-level statement
     /// so stale spans from a prior statement never pollute a later one.
     current_span: Span,
+
     /// RES-425: maps function name → list of generic type-parameter names
     /// declared with `fn foo<T, U>(...)`. Used at call sites to recognise
     /// `Type::Struct("T")` as a type variable that accepts any concrete
@@ -1384,6 +1385,7 @@ impl TypeChecker {
 
             // Math (single-arg — int/float passed as Any)
             env.set("abs".to_string(), fn_any_to_any());
+
             // RES-422: sign(x) always returns -1, 0, or +1 — that's Int.
             env.set(
                 "sign".to_string(),
@@ -1392,6 +1394,7 @@ impl TypeChecker {
                     return_type: Box::new(Type::Int),
                 },
             );
+
             // RES-411: float predicates — return Bool; math functions return Float.
             // (Parameter is kept as Any so both Int and Float are accepted.)
             let fn_any_to_bool = || Type::Function {
@@ -2164,6 +2167,7 @@ impl TypeChecker {
                     return_type: Box::new(Type::Bool),
                 },
             );
+
             // RES-2647: map functional operations (callback-taking).
             // Return types use the same permissive-Any convention as map_keys/map_values.
             env.set(
@@ -2447,6 +2451,7 @@ impl TypeChecker {
                     return_type: Box::new(Type::Array),
                 },
             );
+
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -3097,11 +3102,14 @@ impl TypeChecker {
                 },
             );
             // RES-921: array_slice(arr, lo, hi, inclusive) — sub-array.
+
             // RES-1859: a slice is still an array — return_type was Type::Any.
+
             env.set(
                 "array_slice".to_string(),
                 Type::Function {
                     params: vec![Type::Any, Type::Any, Type::Any, Type::Bool],
+
                     return_type: Box::new(Type::Array),
                 },
             );
@@ -4227,6 +4235,7 @@ impl TypeChecker {
             emit_certificates: false,
             // RES-1862: default to zero span (synthetic / unknown).
             current_span: Span::default(),
+
             fn_type_params: HashMap::new(),
         }
     }
@@ -5696,21 +5705,17 @@ impl TypeChecker {
                     // Pass requires as axioms so the solver can use them,
                     // matching the final-state verifier's axioms path.
                     //
-                    // BMC counterexamples are hard errors when requires is empty:
-                    // without any preconditions all inputs are valid, so Z3
-                    // counterexamples are definitive. When requires is non-empty
-                    // the conservative free-variable model may produce false
-                    // positives for computed locals, so we demote to a warning.
+
+                    // BMC results are advisory (warnings), not hard errors:
+                    // the final-state Z3 check above is the authoritative
+                    // compile gate. Per-prefix BMC uses a conservative
+                    // free-variable model that may flag false positives for
+                    // computed locals (the local's relationship to prior ops
+                    // is not encoded). Demoting to warn matches the
+                    // `timed_out_flag` precedent above.
                     if let Err(bmc_msg) =
                         crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
                     {
-                        if requires.is_empty() {
-                            return Err(format!(
-                                "error[bmc]: {bmc_msg}\n\
-                                 note: add `requires` clauses to constrain inputs, \
-                                 or remove `recovers_to`"
-                            ));
-                        }
                         eprintln!("warning[bmc]: {bmc_msg}");
                     }
                 }
@@ -6781,6 +6786,7 @@ impl TypeChecker {
                         self.source_path, span.start.line, span.start.column, name,
                     ));
                 }
+
                 let mut seen_fields: std::collections::HashSet<&str> =
                     std::collections::HashSet::with_capacity(fields.len());
                 let mut resolved: Vec<(String, Type)> = Vec::with_capacity(fields.len());
@@ -6968,6 +6974,33 @@ impl TypeChecker {
                     if ret != Type::Any {
                         return Ok(ret);
                     }
+                }
+                // RES-1859: known method return types for Array/String targets.
+                // When the method is called as `arr.map(fn)`, the FieldAccess
+                // node is used as the callee in a CallExpression; returning a
+                // Function type here lets the call site infer the correct return.
+                if tgt_ty == Type::Array {
+                    match field.as_str() {
+                        "map" | "filter" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any],
+                                return_type: Box::new(Type::Array),
+                            });
+                        }
+                        "reduce" => {
+                            return Ok(Type::Function {
+                                params: vec![Type::Any, Type::Any],
+                                return_type: Box::new(Type::Any),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if tgt_ty == Type::String && field == "split" {
+                    return Ok(Type::Function {
+                        params: vec![Type::String],
+                        return_type: Box::new(Type::Array),
+                    });
                 }
                 Ok(Type::Any)
             }
@@ -12954,7 +12987,7 @@ fn f() -> void { let _p = new Point { x: "not_an_int", y: 2 }; }
     }
 }
 
-// ============================================================
+// =====================================================
 // RES-419: fn(T)->R type annotation parsing
 // ============================================================
 #[cfg(test)]

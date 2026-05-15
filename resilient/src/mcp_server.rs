@@ -2,8 +2,10 @@
 //!
 //! Implements the [Model Context Protocol](https://modelcontextprotocol.io)
 //! over stdio (newline-delimited JSON-RPC 2.0), exposing the Resilient
+
 //! compiler pipeline as tools, prompts, and resources that AI assistants
 //! can use directly.
+
 //!
 //! ## Activation
 //!
@@ -27,6 +29,7 @@
 //! | `resilient_check` | Full pipeline (parse + typecheck + lint) |
 //! | `resilient_verify` | Z3 contract verification (requires `--features z3`) |
 //!
+
 //! ## Prompts exposed (RES-2645 MCP Scaffolding)
 //!
 //! | Prompt | Description |
@@ -47,6 +50,7 @@
 //! | `resilient://docs/contracts` | Contract (`requires`/`ensures`) guide |
 //! | `resilient://docs/effects` | Effect system (`@pure`, `@io`) guide |
 //!
+
 //! ## Protocol
 //!
 //! Each message is a single JSON object followed by `\n` (NDJSON).
@@ -130,11 +134,13 @@ fn dispatch(
         }
         "tools/list" => Some(handle_tools_list(id)),
         "tools/call" => Some(handle_tools_call(id, params)),
+
         // RES-2645: MCP Scaffolding — prompts and resources support.
         "prompts/list" => Some(handle_prompts_list(id)),
         "prompts/get" => Some(handle_prompts_get(id, params)),
         "resources/list" => Some(handle_resources_list(id)),
         "resources/read" => Some(handle_resources_read(id, params)),
+
         // Gracefully ignore unknown notifications; error on unknown requests.
         _ if is_notification => None,
         _ => Some(error(id, -32601, format!("Method not found: {method}"))),
@@ -149,12 +155,14 @@ fn handle_initialize(id: &Value, _params: Option<&Value>) -> Value {
         json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {
+
                 "tools": {},
                 // RES-2645: advertise prompts and resources so MCP clients
                 // (Claude Desktop, Cursor, etc.) discover guided workflows
                 // and documentation without manual configuration.
                 "prompts": {},
                 "resources": {}
+
             },
             "serverInfo": {
                 "name": "resilient",
@@ -199,6 +207,7 @@ fn handle_tools_call(id: &Value, params: Option<&Value>) -> Value {
         "resilient_disasm" => tool_disasm(args),
         "resilient_vm_run" => tool_vm_run(args),
         "resilient_tla_check" => tool_tla_check(args),
+
         // RES-2645: four new built-in analysis tools.
         "resilient_fingerprint" => tool_fingerprint(args),
         "resilient_resilience_score" => tool_resilience_score(args),
@@ -1897,6 +1906,7 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["spec"]
             }
+
         },
         {
             "name": "resilient_fingerprint",
@@ -1966,6 +1976,7 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["source"]
             }
+
         }
     ])
 }

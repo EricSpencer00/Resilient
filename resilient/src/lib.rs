@@ -118,9 +118,11 @@ mod lsp_server;
 // CLI-only (no wasm32) — same platform constraint as the REPL and watch mode.
 #[cfg(not(target_arch = "wasm32"))]
 mod mcp_server;
+
 /// RES-2645: MCP external-tool bridge registry — generic scaffolding for
 /// connecting external verification/analysis tools as MCP tool providers.
 pub mod mcp_tool_registry;
+
 // TLA+ bridge: `rz tla check <file.tla>` shells out to TLC and surfaces
 // results in Resilient's diagnostic format.  CLI-only (no wasm32).
 pub mod output_sink;
@@ -23033,6 +23035,7 @@ impl Interpreter {
                                 }
                             }
                         }
+
                         // RES-2646: array_flat_map / array_group_by / array_partition.
                         // These need interpreter access (apply_function) so they
                         // are dispatched inline like array_map / array_filter.
@@ -23192,6 +23195,7 @@ impl Interpreter {
                             let args = self.eval_expressions(arguments)?;
                             return crate::functional_hof::builtin_array_apply_n(self, &args);
                         }
+
                         _ => {}
                     }
                 }
