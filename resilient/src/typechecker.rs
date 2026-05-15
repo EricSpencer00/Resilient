@@ -5710,29 +5710,33 @@ impl TypeChecker {
                         }
                     }
 
+                    // RES-1857: when Z3 returns None (not a tautology,
+                    // not a contradiction) with no `requires` constraints,
+                    // all inputs are valid — the counterexample from the
+                    // tautology check is definitive. Reject immediately
+                    // rather than relying on the BMC path.
+                    if verdict.is_none() && requires.is_empty() && !timed_out_flag {
+                        let base = format!(
+                            "{}fn {}: `recovers_to` invariant cannot be proven — \
+                             Z3 found a counterexample showing the clause does not \
+                             hold for all inputs (no `requires` constraint to limit them)",
+                            pos_prefix, name
+                        );
+                        return Err(match cx {
+                            Some(ref m) => format!("{} — counterexample: {}", base, m),
+                            None => base,
+                        });
+                    }
+
                     // RES-392b: per-prefix bounded model checking.
                     // Extends the MVP (final-state only) with verification
                     // that the recovers_to clause holds after recovery from
                     // ANY instruction boundary in the function body.
                     // Pass requires as axioms so the solver can use them,
                     // matching the final-state verifier's axioms path.
-                    //
-
-                    // BMC counterexamples are hard errors when requires is empty:
-                    // without any preconditions all inputs are valid, so Z3
-                    // counterexamples are definitive. When requires is non-empty
-                    // the conservative free-variable model may produce false
-                    // positives for computed locals, so we demote to a warning.
                     if let Err(bmc_msg) =
                         crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
                     {
-                        if requires.is_empty() {
-                            return Err(format!(
-                                "error[bmc]: {bmc_msg}\n\
-                                 note: add `requires` clauses to constrain inputs, \
-                                 or remove `recovers_to`"
-                            ));
-                        }
                         eprintln!("warning[bmc]: {bmc_msg}");
                     }
                 }
