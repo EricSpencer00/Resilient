@@ -129,21 +129,103 @@ pub(crate) fn check(program: &Node, _source_path: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn int_lit(v: i64) -> Node {
+        Node::IntegerLiteral {
+            value: v,
+            span: crate::Span::default(),
+        }
+    }
+
+    fn bool_lit(v: bool) -> Node {
+        Node::BooleanLiteral {
+            value: v,
+            span: crate::Span::default(),
+        }
+    }
+
+    fn infix(left: Node, op: &str, right: Node) -> Node {
+        Node::InfixExpression {
+            left: Box::new(left),
+            operator: op.into(),
+            right: Box::new(right),
+            span: crate::Span::default(),
+        }
+    }
+
     #[test]
     fn evaluates_arithmetic() {
         let env = HashMap::new();
-        let body = Node::InfixExpression {
-            left: Box::new(Node::IntegerLiteral {
-                value: 3,
-                span: crate::Span::default(),
-            }),
-            operator: "+".into(),
-            right: Box::new(Node::IntegerLiteral {
-                value: 4,
-                span: crate::Span::default(),
-            }),
+        let body = infix(int_lit(3), "+", int_lit(4));
+        assert_eq!(evaluate(&body, &env), Some(ConstValue::Int(7)));
+    }
+
+    #[test]
+    fn evaluates_subtraction_and_multiply() {
+        let env = HashMap::new();
+        assert_eq!(
+            evaluate(&infix(int_lit(10), "-", int_lit(3)), &env),
+            Some(ConstValue::Int(7))
+        );
+        assert_eq!(
+            evaluate(&infix(int_lit(6), "*", int_lit(7)), &env),
+            Some(ConstValue::Int(42))
+        );
+    }
+
+    #[test]
+    fn evaluates_comparison_operators() {
+        let env = HashMap::new();
+        assert_eq!(
+            evaluate(&infix(int_lit(3), "<", int_lit(5)), &env),
+            Some(ConstValue::Bool(true))
+        );
+        assert_eq!(
+            evaluate(&infix(int_lit(5), "==", int_lit(5)), &env),
+            Some(ConstValue::Bool(true))
+        );
+        assert_eq!(
+            evaluate(&infix(int_lit(3), ">", int_lit(5)), &env),
+            Some(ConstValue::Bool(false))
+        );
+    }
+
+    #[test]
+    fn evaluates_boolean_operators() {
+        let env = HashMap::new();
+        assert_eq!(
+            evaluate(&infix(bool_lit(true), "&&", bool_lit(false)), &env),
+            Some(ConstValue::Bool(false))
+        );
+        assert_eq!(
+            evaluate(&infix(bool_lit(true), "||", bool_lit(false)), &env),
+            Some(ConstValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn divide_by_zero_returns_none() {
+        let env = HashMap::new();
+        assert_eq!(evaluate(&infix(int_lit(5), "/", int_lit(0)), &env), None);
+    }
+
+    #[test]
+    fn identifier_lookup_uses_env() {
+        let mut env = HashMap::new();
+        env.insert("LIMIT".to_string(), ConstValue::Int(100));
+        let node = Node::Identifier {
+            name: "LIMIT".to_string(),
             span: crate::Span::default(),
         };
-        assert_eq!(evaluate(&body, &env), Some(ConstValue::Int(7)));
+        assert_eq!(evaluate(&node, &env), Some(ConstValue::Int(100)));
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
     }
 }

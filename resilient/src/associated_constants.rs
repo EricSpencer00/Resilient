@@ -117,4 +117,53 @@ mod tests {
         assert_eq!(lookup("Temperature", "MIN"), Some("-40".to_string()));
         crate::feature_attrs::reset();
     }
+
+    #[test]
+    fn lookup_missing_returns_none() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        install(collect());
+        assert_eq!(
+            lookup("NotRegistered", "ANYTHING"),
+            None,
+            "unregistered type+const must return None"
+        );
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn multiple_constants_on_same_type() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        crate::feature_attrs::record(
+            "Volt",
+            crate::feature_attrs::AttrRecord {
+                name: "assoc_const".into(),
+                args: r#"trait = "Units", name = "UNIT", value = "V""#.into(),
+                line: 0,
+            },
+        );
+        crate::feature_attrs::record(
+            "Volt",
+            crate::feature_attrs::AttrRecord {
+                name: "assoc_const".into(),
+                args: r#"trait = "Bounded", name = "MAX", value = "48""#.into(),
+                line: 0,
+            },
+        );
+        install(collect());
+        assert_eq!(lookup("Volt", "UNIT"), Some("V".to_string()));
+        assert_eq!(lookup("Volt", "MAX"), Some("48".to_string()));
+        crate::feature_attrs::reset();
+    }
+
+    #[test]
+    fn check_ok_without_attributes() {
+        let _g = crate::feature_attrs::lock_for_test();
+        crate::feature_attrs::reset();
+        let src = "fn f(int x) -> int { return x; }\n";
+        let (prog, _) = crate::parse(src);
+        assert!(check(&prog, "test").is_ok());
+        crate::feature_attrs::reset();
+    }
 }
