@@ -1311,13 +1311,22 @@ impl TypeChecker {
             env.set("abs".to_string(), fn_any_to_any());
             // RES-410: sign(x) — -1/0/+1.
             env.set("sign".to_string(), fn_any_to_any());
-            // RES-411: float predicates — return Bool, signed as Any per pattern.
-            env.set("is_nan".to_string(), fn_any_to_any());
-            env.set("is_inf".to_string(), fn_any_to_any());
-            env.set("is_finite".to_string(), fn_any_to_any());
-            env.set("sqrt".to_string(), fn_any_to_any());
-            env.set("floor".to_string(), fn_any_to_any());
-            env.set("ceil".to_string(), fn_any_to_any());
+            // RES-411: float predicates — return Bool; math functions return Float.
+            // (Parameter is kept as Any so both Int and Float are accepted.)
+            let fn_any_to_bool = || Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Bool),
+            };
+            let fn_any_to_float = || Type::Function {
+                params: vec![Type::Any],
+                return_type: Box::new(Type::Float),
+            };
+            env.set("is_nan".to_string(), fn_any_to_bool());
+            env.set("is_inf".to_string(), fn_any_to_bool());
+            env.set("is_finite".to_string(), fn_any_to_bool());
+            env.set("sqrt".to_string(), fn_any_to_float());
+            env.set("floor".to_string(), fn_any_to_float());
+            env.set("ceil".to_string(), fn_any_to_float());
             env.set("min".to_string(), fn_any_any_to_any());
             env.set("max".to_string(), fn_any_any_to_any());
             // RES-415: gcd/lcm — strict (Int, Int) -> Int.

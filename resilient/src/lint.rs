@@ -94,6 +94,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0032", // assignment used as boolean condition — likely typo for `==`
     "L0033", // integer modulo by 1 is always 0 — likely wrong modulus
     "L0034", // string concatenation with `+` inside a loop is O(N²)
+    "L0035", // unreachable code after diverging call (exit / abort)
+    "L0036", // comparison of len(...) to negative literal — always true or false
+    "L0037", // self-assignment `x = x` is a no-op
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -451,6 +454,40 @@ pub fn explain(code: &str) -> Option<&'static str> {
              builder if available.\n\
              Suppress: // resilient: allow L0034",
         ),
+        "L0035" => Some(
+            "L0035 — unreachable code after diverging call\n\
+             \n\
+             A call to a diverging function (`exit()` or `abort()`) is followed by\n\
+             additional statements in the same block. Those statements can never\n\
+             execute because the diverging call never returns.\n\
+             \n\
+             Fix: remove the dead code after the diverging call.\n\
+             Suppress: // resilient: allow L0035",
+        ),
+        "L0036" => Some(
+            "L0036 — comparison of `len(...)` to negative literal\n\
+             \n\
+             `len()` always returns a non-negative integer (≥ 0). Comparing it to a\n\
+             negative literal with `<`, `<=`, `==`, or `!=` produces a result that\n\
+             is always the same (`false` for `< -1`, etc.), making the check dead.\n\
+             \n\
+             Example (bad):  if len(arr) < 0 { ... }  // always false\n\
+             Example (bad):  if len(arr) <= -1 { ... } // always false\n\
+             \n\
+             Fix: remove the dead branch or fix the comparison.\n\
+             Suppress: // resilient: allow L0036",
+        ),
+        "L0037" => Some(
+            "L0037 — self-assignment `x = x` is a no-op\n\
+             \n\
+             Assigning a variable to itself has no effect. This is almost certainly\n\
+             a typo — the right-hand side was meant to be a different expression.\n\
+             \n\
+             Example (bad):  x = x  // does nothing\n\
+             \n\
+             Fix: replace the right-hand side with the intended value.\n\
+             Suppress: // resilient: allow L0037",
+        ),
         _ => None,
     }
 }
@@ -504,6 +541,7 @@ struct LintTriggers {
     has_assign_in_cond: bool,
     has_string_literal: bool,
     has_loop: bool,
+    has_assignment: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -573,6 +611,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             }
         }
         Node::StringLiteral { .. } => t.has_string_literal = true,
+        Node::Assignment { .. } => t.has_assignment = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -688,6 +727,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_loop && t.has_string_literal && t.has_infix {
         run_l0034_string_concat_in_loop(program, &mut out);
+    }
+    if t.has_call && t.has_block {
+        run_l0035_unreachable_after_exit(program, &mut out);
+    }
+    if t.has_call && t.has_infix {
+        run_l0036_len_negative_comparison(program, &mut out);
+    }
+    if t.has_assignment {
+        run_l0037_self_assignment(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -4078,6 +4126,162 @@ fn walk_l0034_loop(node: &Node, in_loop: bool, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0035: unreachable code after a diverging call (exit / abort)
+// ============================================================
+//
+// A call to `exit()` or `abort()` never returns. Any statements in
+// the same block after such a call are dead code. This is similar to
+// L0007 (after `return`) but for diverging function calls.
+
+fn run_l0035_unreachable_after_exit(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0035(program, out);
+}
+
+fn is_diverging_call(node: &Node) -> bool {
+    let call = match node {
+        Node::CallExpression { .. } => Some(node),
+        Node::ExpressionStatement { expr, .. } => {
+            if matches!(expr.as_ref(), Node::CallExpression { .. }) {
+                Some(expr.as_ref())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    match call {
+        Some(Node::CallExpression { function, .. }) => matches!(
+            function.as_ref(),
+            Node::Identifier { name, .. } if matches!(name.as_str(), "exit" | "abort")
+        ),
+        _ => false,
+    }
+}
+
+fn walk_l0035(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        let mut saw_exit = false;
+        for stmt in stmts {
+            if saw_exit {
+                if let Some(span) = span_of(stmt) {
+                    out.push(Lint {
+                        code: "L0035".into(),
+                        severity: Severity::Warning,
+                        message: "unreachable code after diverging call (`exit` / `abort`)"
+                            .to_string(),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                }
+                break;
+            }
+            if is_diverging_call(stmt) {
+                saw_exit = true;
+            }
+            walk_l0035(stmt, out);
+        }
+    } else {
+        recurse_children(node, &mut |child| walk_l0035(child, out));
+    }
+}
+
+// ============================================================
+// L0036: comparison of len(...) to negative literal
+// ============================================================
+//
+// `len()` always returns a non-negative integer. Comparing it to a
+// negative literal with `<`, `<=`, `==`, or `!=` yields a result
+// that is always constant (false or true), making the branch dead.
+//
+// Patterns detected:
+//   len(x) < 0       — always false
+//   len(x) <= -1     — always false
+//   len(x) == -N     — always false (N > 0)
+//   0 > len(x)       — always false
+//   -1 >= len(x)     — always false
+
+fn run_l0036_len_negative_comparison(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0036(program, out);
+}
+
+fn is_len_call(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::CallExpression { function, .. }
+        if matches!(function.as_ref(), Node::Identifier { name, .. } if name == "len")
+    )
+}
+
+fn is_negative_int_literal(node: &Node) -> bool {
+    match node {
+        Node::IntegerLiteral { value, .. } => *value < 0,
+        Node::PrefixExpression {
+            operator, right, ..
+        } if operator == "-" => {
+            matches!(right.as_ref(), Node::IntegerLiteral { value, .. } if *value > 0)
+        }
+        _ => false,
+    }
+}
+
+fn walk_l0036(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        span,
+    } = node
+        && matches!(operator.as_str(), "<" | "<=" | "==" | "!=" | ">" | ">=")
+    {
+        let matched = (is_len_call(left) && is_negative_int_literal(right))
+            || (is_len_call(right) && is_negative_int_literal(left));
+        if matched {
+            out.push(Lint {
+                code: "L0036".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "comparison of `len(...)` to a negative literal — \
+                     `len()` is always ≥ 0, so `len(...) {operator} <negative>` is always constant"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0036(child, out));
+}
+
+// ============================================================
+// L0037: self-assignment `x = x` is a no-op
+// ============================================================
+//
+// Assigning a variable to itself has no effect. The right-hand side
+// should have been a different expression. This is almost always a
+// typo (e.g. `x = y` where y was accidentally written as x).
+
+fn run_l0037_self_assignment(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0037(program, out);
+}
+
+fn walk_l0037(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Assignment { name, value, span } = node
+        && let Node::Identifier { name: rhs_name, .. } = value.as_ref()
+        && name == rhs_name
+    {
+        out.push(Lint {
+            code: "L0037".into(),
+            severity: Severity::Warning,
+            message: format!(
+                "`{name} = {name}` is a self-assignment — did you mean a different right-hand side?"
+            ),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0037(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -5750,6 +5954,126 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0034".to_string()),
             "L0034 must not fire for integer `+` in a loop"
+        );
+    }
+
+    // ---------- L0035: unreachable code after diverging call ----------
+
+    #[test]
+    fn l0035_fires_after_exit_call() {
+        let src = "fn f(int x) { exit(); let _y = x + 1; }\nf(5);\n";
+        assert!(
+            codes(src).contains(&"L0035".to_string()),
+            "L0035 must fire when code follows exit(); got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0035_fires_after_abort_call() {
+        let src = "fn f(int x) { abort(); let _y = x + 1; }\nf(5);\n";
+        assert!(
+            codes(src).contains(&"L0035".to_string()),
+            "L0035 must fire when code follows abort(); got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0035_silent_when_exit_is_last() {
+        let src = "fn f(int x) { let _y = x + 1; exit(); }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0035".to_string()),
+            "L0035 must not fire when exit() is the last statement in the block"
+        );
+    }
+
+    #[test]
+    fn l0035_silent_for_normal_function_call() {
+        let src = "fn g() { } fn f(int x) { g(); let _y = x + 1; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0035".to_string()),
+            "L0035 must not fire for a normal (non-diverging) function call"
+        );
+    }
+
+    // ---------- L0036: len() compared to negative literal ----------
+
+    #[test]
+    fn l0036_fires_on_len_lt_negative() {
+        let src = "fn f(Array a) -> bool { return len(a) < -1; }\nf([]);\n";
+        assert!(
+            codes(src).contains(&"L0036".to_string()),
+            "L0036 must fire for len(a) < -1; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0036_fires_on_len_eq_negative() {
+        let src = "fn f(Array a) -> bool { return len(a) == -1; }\nf([]);\n";
+        assert!(
+            codes(src).contains(&"L0036".to_string()),
+            "L0036 must fire for len(a) == -1; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0036_fires_on_reversed_operands() {
+        let src = "fn f(Array a) -> bool { return -1 > len(a); }\nf([]);\n";
+        assert!(
+            codes(src).contains(&"L0036".to_string()),
+            "L0036 must fire when len() is on the right side and negative literal on the left; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0036_silent_for_len_lt_positive() {
+        let src = "fn f(Array a) -> bool { return len(a) < 10; }\nf([]);\n";
+        assert!(
+            !codes(src).contains(&"L0036".to_string()),
+            "L0036 must not fire when len() is compared to a positive literal"
+        );
+    }
+
+    #[test]
+    fn l0036_silent_for_len_lt_zero_non_len_call() {
+        let src = "fn size(Array a) -> int { return len(a); }\nfn f(Array a) -> bool { return size(a) < 0; }\nf([]);\n";
+        assert!(
+            !codes(src).contains(&"L0036".to_string()),
+            "L0036 must not fire when the function is not literally `len`"
+        );
+    }
+
+    // ---------- L0037: self-assignment x = x ----------
+
+    #[test]
+    fn l0037_fires_on_self_assignment() {
+        let src = "fn f(int x) -> int { let y = x; y = y; return y; }\nf(5);\n";
+        assert!(
+            codes(src).contains(&"L0037".to_string()),
+            "L0037 must fire for `y = y`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0037_silent_for_normal_assignment() {
+        let src = "fn f(int x) -> int { let y = 0; y = x; return y; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0037".to_string()),
+            "L0037 must not fire for `y = x` (different names)"
+        );
+    }
+
+    #[test]
+    fn l0037_silent_for_arithmetic_self_update() {
+        let src = "fn f(int x) -> int { let y = x; y = y + 1; return y; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0037".to_string()),
+            "L0037 must not fire for `y = y + 1` (not a bare identifier on rhs)"
         );
     }
 }
