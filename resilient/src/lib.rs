@@ -535,6 +535,7 @@ mod iterator_protocol;
 mod json_builtins;
 mod labeled_break;
 mod lean_spec;
+mod linear_algebra;
 mod lock_priority;
 mod macros;
 mod mmio_regmap;
@@ -11839,6 +11840,27 @@ const BUILTINS: &[(&str, BuiltinFn)] = &[
     // RES-2657: JSON serialization/deserialization (pure).
     ("to_json", crate::json_builtins::builtin_to_json),
     ("from_json", crate::json_builtins::builtin_from_json),
+    // RES-2658: linear algebra — vector and matrix operations (pure).
+    ("vec_add", crate::linear_algebra::builtin_vec_add),
+    ("vec_sub", crate::linear_algebra::builtin_vec_sub),
+    ("vec_scale", crate::linear_algebra::builtin_vec_scale),
+    ("vec_dot", crate::linear_algebra::builtin_vec_dot),
+    ("vec_norm", crate::linear_algebra::builtin_vec_norm),
+    (
+        "vec_normalize",
+        crate::linear_algebra::builtin_vec_normalize,
+    ),
+    ("vec_cross", crate::linear_algebra::builtin_vec_cross),
+    ("vec_lerp", crate::linear_algebra::builtin_vec_lerp),
+    ("mat_mul", crate::linear_algebra::builtin_mat_mul),
+    ("mat_add", crate::linear_algebra::builtin_mat_add),
+    ("mat_scale", crate::linear_algebra::builtin_mat_scale),
+    (
+        "mat_transpose",
+        crate::linear_algebra::builtin_mat_transpose,
+    ),
+    ("mat_identity", crate::linear_algebra::builtin_mat_identity),
+    ("mat_trace", crate::linear_algebra::builtin_mat_trace),
     // RES-2654: combinatorics and discrete collection operations (pure).
     (
         "array_cartesian_product",
