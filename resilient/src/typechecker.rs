@@ -2074,6 +2074,35 @@ impl TypeChecker {
                     return_type: Box::new(Type::Any),
                 },
             );
+            // RES-507: generic callback-based search/predicate builtins.
+            env.set(
+                "array_find".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Any),
+                },
+            );
+            env.set(
+                "array_find_index".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Int),
+                },
+            );
+            env.set(
+                "array_any".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Bool),
+                },
+            );
+            env.set(
+                "array_all".to_string(),
+                Type::Function {
+                    params: vec![Type::Array, Type::Any],
+                    return_type: Box::new(Type::Bool),
+                },
+            );
             // RES-416: integer-array reductions.
             env.set("array_sum".to_string(), fn_any_to_int());
             env.set("array_product".to_string(), fn_any_to_int());
@@ -7666,6 +7695,11 @@ fn is_known_pure_builtin(name: &str) -> bool {
         "array_map",
         "array_filter",
         "array_reduce",
+        // RES-507: generic callback-based search/predicate builtins.
+        "array_find",
+        "array_find_index",
+        "array_any",
+        "array_all",
         // RES-416: array reductions.
         "array_sum",
         "array_product",
