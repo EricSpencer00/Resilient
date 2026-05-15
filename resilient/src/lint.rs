@@ -120,6 +120,10 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0060", // x / 1 — redundant division by one
     "L0061", // x << 0 / x >> 0 — shift by zero is a no-op
     "L0062", // x < x / x > x always false; x <= x / x >= x always true
+    "L0063", // dead code after `break` or `continue` in a loop body
+    "L0064", // empty else block (else {}) can be removed
+    "L0065", // `if cond { return true; } else { return false; }` simplifies to `return cond;`
+    "L0066", // `if cond { return false; } else { return true; }` simplifies to `return !cond;`
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -782,6 +786,45 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: replace one operand with the intended value.\n\
              Suppress: // resilient: allow L0062",
         ),
+        "L0063" => Some(
+            "L0063 — dead code after `break` or `continue` statement\n\
+             \n\
+             Statements following a `break` or `continue` in the same block are never\n\
+             executed. The loop iteration ends at the `break`/`continue` and control\n\
+             jumps to the next iteration or past the loop body immediately.\n\
+             \n\
+             Fix: remove or relocate the unreachable statements.\n\
+             Suppress: // resilient: allow L0063",
+        ),
+        "L0064" => Some(
+            "L0064 — empty `else {}` block can be removed\n\
+             \n\
+             An `else` clause whose body is an empty block `{}` has no effect on\n\
+             program behaviour. It adds visual noise without any semantic content.\n\
+             \n\
+             Fix: remove the `else {}` clause entirely.\n\
+             Suppress: // resilient: allow L0064",
+        ),
+        "L0065" => Some(
+            "L0065 — `if cond { return true; } else { return false; }` simplifies to `return cond;`\n\
+             \n\
+             Returning a boolean literal that matches the condition value directly is\n\
+             redundant. The condition expression itself already evaluates to the same\n\
+             boolean, so wrapping it in an `if`/`else` is unnecessary.\n\
+             \n\
+             Fix: replace with `return cond;`.\n\
+             Suppress: // resilient: allow L0065",
+        ),
+        "L0066" => Some(
+            "L0066 — `if cond { return false; } else { return true; }` simplifies to `return !cond;`\n\
+             \n\
+             Returning the boolean negation of the condition via an `if`/`else` is\n\
+             redundant. The negated condition expression already evaluates to the same\n\
+             boolean.\n\
+             \n\
+             Fix: replace with `return !cond;`.\n\
+             Suppress: // resilient: allow L0066",
+        ),
         _ => None,
     }
 }
@@ -867,6 +910,8 @@ struct LintTriggers {
     has_bool_neq_cmp: bool,
     /// L0057–L0061: infix expression with an integer literal that is 0 or 1 as an operand.
     has_arith_identity: bool,
+    /// L0063: any `break` or `continue` statement found in the program.
+    has_break_continue: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -1011,6 +1056,7 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::StringLiteral { .. } => t.has_string_literal = true,
         Node::Assignment { .. } => t.has_assignment = true,
         Node::ReturnStatement { .. } => t.has_return_in_block = true,
+        Node::Break { .. } | Node::Continue { .. } => t.has_break_continue = true,
         _ => {}
     }
     recurse_children(node, &mut |child| scan_node(child, t));
@@ -1197,6 +1243,16 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_infix {
         run_l0062_inequality_with_self(program, &mut out);
+    }
+    if t.has_break_continue {
+        run_l0063_dead_after_break_continue(program, &mut out);
+    }
+    if t.has_if_statement {
+        run_l0064_empty_else_block(program, &mut out);
+    }
+    if t.has_if_with_else {
+        run_l0065_bool_identity_if(program, &mut out);
+        run_l0066_bool_negation_if(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -5765,6 +5821,160 @@ fn walk_l0062(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0063 — dead code after `break` or `continue` statement
+// ============================================================
+
+fn run_l0063_dead_after_break_continue(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0063(program, out);
+}
+
+fn walk_l0063(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        let mut saw_exit = false;
+        for stmt in stmts {
+            if saw_exit {
+                // Skip trivial bare `return;` — same convention as L0007.
+                if matches!(stmt, Node::ReturnStatement { value: None, .. }) {
+                    continue;
+                }
+                if let Some(span) = span_of(stmt) {
+                    out.push(Lint {
+                        code: "L0063".into(),
+                        severity: Severity::Warning,
+                        message: "dead code after `break`/`continue` statement".into(),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                }
+                // Report only the first dead statement.
+                break;
+            }
+            if matches!(stmt, Node::Break { .. } | Node::Continue { .. }) {
+                saw_exit = true;
+            }
+            // Recurse into nested blocks regardless.
+            walk_l0063(stmt, out);
+        }
+    } else {
+        recurse_children(node, &mut |child| walk_l0063(child, out));
+    }
+}
+
+// ============================================================
+// L0064 — empty `else {}` block
+// ============================================================
+
+fn run_l0064_empty_else_block(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0064(program, out);
+}
+
+fn walk_l0064(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        alternative: Some(alt),
+        span,
+        ..
+    } = node
+        && let Node::Block { stmts, .. } = alt.as_ref()
+        && stmts.is_empty()
+    {
+        out.push(Lint {
+            code: "L0064".into(),
+            severity: Severity::Warning,
+            message: "empty `else {}` block can be removed — it has no effect".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0064(child, out));
+}
+
+// ============================================================
+// L0065 — `if cond { return true; } else { return false; }` simplifies to `return cond;`
+// ============================================================
+
+fn run_l0065_bool_identity_if(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0065(program, out);
+}
+
+fn walk_l0065(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence,
+        alternative: Some(alt),
+        span,
+        ..
+    } = node
+        && let Node::Block { stmts: cons_stmts, .. } = consequence.as_ref()
+        && cons_stmts.len() == 1
+        && matches!(
+            &cons_stmts[0],
+            Node::ReturnStatement {
+                value: Some(v), ..
+            } if matches!(v.as_ref(), Node::BooleanLiteral { value: true, .. })
+        )
+        && let Node::Block { stmts: alt_stmts, .. } = alt.as_ref()
+        && alt_stmts.len() == 1
+        && matches!(
+            &alt_stmts[0],
+            Node::ReturnStatement {
+                value: Some(v), ..
+            } if matches!(v.as_ref(), Node::BooleanLiteral { value: false, .. })
+        )
+    {
+        out.push(Lint {
+            code: "L0065".into(),
+            severity: Severity::Warning,
+            message: "`if cond { return true; } else { return false; }` simplifies to `return cond;`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0065(child, out));
+}
+
+// ============================================================
+// L0066 — `if cond { return false; } else { return true; }` simplifies to `return !cond;`
+// ============================================================
+
+fn run_l0066_bool_negation_if(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0066(program, out);
+}
+
+fn walk_l0066(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::IfStatement {
+        consequence,
+        alternative: Some(alt),
+        span,
+        ..
+    } = node
+        && let Node::Block { stmts: cons_stmts, .. } = consequence.as_ref()
+        && cons_stmts.len() == 1
+        && matches!(
+            &cons_stmts[0],
+            Node::ReturnStatement {
+                value: Some(v), ..
+            } if matches!(v.as_ref(), Node::BooleanLiteral { value: false, .. })
+        )
+        && let Node::Block { stmts: alt_stmts, .. } = alt.as_ref()
+        && alt_stmts.len() == 1
+        && matches!(
+            &alt_stmts[0],
+            Node::ReturnStatement {
+                value: Some(v), ..
+            } if matches!(v.as_ref(), Node::BooleanLiteral { value: true, .. })
+        )
+    {
+        out.push(Lint {
+            code: "L0066".into(),
+            severity: Severity::Warning,
+            message: "`if cond { return false; } else { return true; }` simplifies to `return !cond;`".into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0066(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -8377,6 +8587,86 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0062".to_string()),
             "L0062 must not fire for `x < y` (distinct operands)"
+        );
+    }
+
+    // ---- L0063: dead code after break/continue ----
+
+    #[test]
+    fn l0063_fires_on_code_after_break() {
+        let src = r#"fn f(IntArr xs) { for x in xs { break; let y = 1; } }"#;
+        assert!(
+            codes(src).contains(&"L0063".to_string()),
+            "L0063 must fire for dead code after `break`"
+        );
+    }
+
+    #[test]
+    fn l0063_silent_when_no_break() {
+        let src = r#"fn f(int x) -> int { return x; }"#;
+        assert!(
+            !codes(src).contains(&"L0063".to_string()),
+            "L0063 must not fire when there is no break/continue"
+        );
+    }
+
+    // ---- L0064: empty else block ----
+
+    #[test]
+    fn l0064_fires_on_empty_else() {
+        let src = r#"fn f(int x) -> int { if x > 0 { return x; } else {} return 0; }"#;
+        assert!(
+            codes(src).contains(&"L0064".to_string()),
+            "L0064 must fire for empty else block"
+        );
+    }
+
+    #[test]
+    fn l0064_silent_when_else_has_content() {
+        let src = r#"fn f(int x) -> int { if x > 0 { return x; } else { return 0; } }"#;
+        assert!(
+            !codes(src).contains(&"L0064".to_string()),
+            "L0064 must not fire when else block has content"
+        );
+    }
+
+    // ---- L0065: if cond { return true; } else { return false; } ----
+
+    #[test]
+    fn l0065_fires_on_return_true_else_false() {
+        let src = r#"fn is_pos(int x) -> bool { if x > 0 { return true; } else { return false; } }"#;
+        assert!(
+            codes(src).contains(&"L0065".to_string()),
+            "L0065 must fire for `if cond {{ return true; }} else {{ return false; }}`"
+        );
+    }
+
+    #[test]
+    fn l0065_silent_when_not_bool_identity() {
+        let src = r#"fn f(int x) -> bool { if x > 0 { return true; } else { return true; } }"#;
+        assert!(
+            !codes(src).contains(&"L0065".to_string()),
+            "L0065 must not fire when both branches return true"
+        );
+    }
+
+    // ---- L0066: if cond { return false; } else { return true; } ----
+
+    #[test]
+    fn l0066_fires_on_return_false_else_true() {
+        let src = r#"fn is_neg(int x) -> bool { if x < 0 { return false; } else { return true; } }"#;
+        assert!(
+            codes(src).contains(&"L0066".to_string()),
+            "L0066 must fire for `if cond {{ return false; }} else {{ return true; }}`"
+        );
+    }
+
+    #[test]
+    fn l0066_silent_when_not_bool_negation() {
+        let src = r#"fn f(int x) -> bool { if x > 0 { return false; } else { return false; } }"#;
+        assert!(
+            !codes(src).contains(&"L0066".to_string()),
+            "L0066 must not fire when both branches return false"
         );
     }
 }
