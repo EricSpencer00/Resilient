@@ -1024,7 +1024,7 @@ mod tests {
         optimize(&mut chunk).unwrap();
         // The Shl must still be present — fold was skipped.
         assert!(
-            chunk.code.iter().any(|op| *op == Op::Shl),
+            chunk.code.contains(&Op::Shl),
             "out-of-range Shl must not be folded; code: {:?}",
             chunk.code
         );

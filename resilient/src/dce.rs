@@ -2,10 +2,16 @@
 //!
 //! Two rules:
 //!
-//! 1. **After-return truncation**: after an unconditional terminator
-//!    (`Op::Return` or `Op::ReturnFromCall`) in a straight-line basic
-//!    block with no forward jumps following it, subsequent ops are
-//!    unreachable and are removed.
+//! 1. **Reachability-based dead code removal**: compute the set of PCs
+//!    reachable from PC 0 via forward fall-through and explicit jumps.
+//!    Any PC not in the reachable set is removed with its `line_info`
+//!    entry.  Jump offsets are re-linked through an `old_pc → new_pc`
+//!    fixup table (same technique as the peephole pass).
+//!
+//!    This supersedes the old conservative "abort on any jump after the
+//!    first return" heuristic, which would leave dead code in place
+//!    whenever a conditional branch appeared after an early return inside
+//!    an `if` branch.
 //!
 //! 2. **Constant-branch folding**: when a `Op::Const` loading a
 //!    `Value::Bool` immediately precedes a conditional jump, the branch
@@ -23,44 +29,111 @@ use crate::bytecode::{Chunk, Op};
 
 /// Remove dead code from a compiled chunk in-place.
 pub fn eliminate(chunk: &mut Chunk) {
-    remove_after_return(chunk);
+    remove_unreachable(chunk);
     fold_constant_branches(chunk);
 }
 
 // --------------------------------------------------------------------------
-// Rule 1: truncate ops after an unconditional terminator
+// Rule 1: reachability-based dead instruction removal
 // --------------------------------------------------------------------------
 
-/// Walk `chunk.code` until the first unconditional terminator (`Return` or
-/// `ReturnFromCall`) that is NOT followed by any jump op.  All instructions
-/// after that terminator are unreachable and are removed along with their
-/// matching `line_info` entries.
+/// Remove instructions that are unreachable from PC 0.
 ///
-/// Conservative rule: if *any* jump appears after the first terminator we
-/// abort — there might be jump targets in the suffix we cannot prove dead
-/// without a full control-flow-graph analysis.
-fn remove_after_return(chunk: &mut Chunk) {
-    let mut truncate_at: Option<usize> = None;
-    for (i, op) in chunk.code.iter().enumerate() {
-        match op {
-            Op::Return | Op::ReturnFromCall if truncate_at.is_none() => {
-                truncate_at = Some(i + 1);
-            }
-            Op::Return | Op::ReturnFromCall => {}
-            Op::Jump(_) | Op::JumpIfFalse(_) | Op::JumpIfTrue(_) => {
-                // A jump after the first return could be a forward target;
-                // give up and preserve everything.
-                return;
-            }
-            _ => {}
+/// Computes the reachable set via a BFS/worklist starting at PC 0:
+/// - Fall-through: `pc + 1` is reachable from any reachable non-terminator
+///   that is not an unconditional `Jump`.
+/// - Jump targets: the destination of any reachable jump is reachable.
+/// - `Return` / `ReturnFromCall` / unconditional `Jump` do not fall through.
+///
+/// After computing the reachable set, unreachable instructions are dropped
+/// and jump offsets are re-linked via an `old_pc → new_pc` fixup table.
+fn remove_unreachable(chunk: &mut Chunk) {
+    let n = chunk.code.len();
+    if n == 0 {
+        return;
+    }
+
+    // --- BFS over PCs ---
+    let mut reachable = vec![false; n];
+    let mut worklist = vec![0usize];
+    reachable[0] = true;
+
+    while let Some(pc) = worklist.pop() {
+        let op = chunk.code[pc];
+        // Compute explicit jump target (if this op is a jump).
+        let jump_target = jump_target_pc(op, pc);
+        if let Some(t) = jump_target
+            && t < n
+            && !reachable[t]
+        {
+            reachable[t] = true;
+            worklist.push(t);
+        }
+        // Fall-through: everything except unconditional terminators.
+        let falls_through = !matches!(op, Op::Return | Op::ReturnFromCall | Op::Jump(_));
+        let next_pc = pc + 1;
+        if falls_through && next_pc < n && !reachable[next_pc] {
+            reachable[next_pc] = true;
+            worklist.push(next_pc);
         }
     }
-    if let Some(idx) = truncate_at
-        && idx < chunk.code.len()
-    {
-        chunk.code.truncate(idx);
-        chunk.line_info.truncate(idx);
+
+    // Fast-exit: nothing to remove.
+    if reachable.iter().all(|&r| r) {
+        return;
     }
+
+    // --- Build compacted instruction stream ---
+    // old_to_new[old_pc] = new_pc (usize::MAX for dropped PCs).
+    let mut old_to_new = vec![usize::MAX; n + 1];
+    let mut new_code: Vec<Op> = Vec::with_capacity(n);
+    let mut new_line_info: Vec<u32> = Vec::with_capacity(n);
+
+    // Capture jump targets from original offsets BEFORE we mutate.
+    let orig_targets: Vec<Option<usize>> = chunk
+        .code
+        .iter()
+        .enumerate()
+        .map(|(pc, &op)| jump_target_pc(op, pc))
+        .collect();
+
+    for (pc, &op) in chunk.code.iter().enumerate() {
+        if reachable[pc] {
+            old_to_new[pc] = new_code.len();
+            new_code.push(op);
+            new_line_info.push(chunk.line_info[pc]);
+        }
+    }
+    // Sentinel for end-of-code.
+    old_to_new[n] = new_code.len();
+
+    // --- Re-link jump offsets ---
+    for (new_pc, op) in new_code.iter_mut().enumerate() {
+        if !is_jump_op(*op) {
+            continue;
+        }
+        // Find the old PC that produced this new_pc position.
+        let Some(old_pc) = (0..n).find(|&p| old_to_new[p] == new_pc) else {
+            continue;
+        };
+        let Some(old_target) = orig_targets[old_pc] else {
+            continue;
+        };
+        let new_target = old_to_new[old_target];
+        let offset = (new_target as isize) - (new_pc as isize + 1);
+        let Ok(offset) = i16::try_from(offset) else {
+            continue;
+        };
+        match op {
+            Op::Jump(o) => *o = offset,
+            Op::JumpIfFalse(o) => *o = offset,
+            Op::JumpIfTrue(o) => *o = offset,
+            _ => unreachable!("is_jump_op guards the match"),
+        }
+    }
+
+    chunk.code = new_code;
+    chunk.line_info = new_line_info;
 }
 
 // --------------------------------------------------------------------------
@@ -354,17 +427,32 @@ mod tests {
     }
 
     #[test]
-    fn return_followed_by_jump_is_left_alone() {
-        // Conservative: can't truncate when a jump follows the return —
-        // the jump might be a target for some predecessor.
+    fn return_followed_by_unreachable_jump_is_removed() {
+        // Reachability analysis: Return at PC 0 doesn't fall through; the
+        // Jump and Add at PCs 1 and 2 have no predecessor that reaches them,
+        // so they are correctly identified as dead and removed.
         let mut chunk = chunk_from_ops(vec![Op::Return, Op::Jump(0), Op::Add]);
-        let original_len = chunk.code.len();
         eliminate(&mut chunk);
-        assert_eq!(
-            chunk.code.len(),
-            original_len,
-            "should not truncate when jump follows return"
-        );
+        assert_eq!(chunk.code.len(), 1, "unreachable ops should be removed: {:?}", chunk.code);
+        assert_eq!(chunk.code[0], Op::Return);
+    }
+
+    #[test]
+    fn post_return_code_kept_when_it_has_predecessor_jump() {
+        // [0] JumpIfFalse → targets PC 2 (= Add)
+        // [1] Return       (reachable via fall-through when condition is true)
+        // [2] Add          (reachable via jump from [0] when condition is false)
+        // [3] Return
+        let mut chunk = Chunk::new();
+        // JumpIfFalse with offset +1: target = (1+1) + 1 = 3 → but we want to
+        // jump to PC 2 (Add). offset = 2 - (0+1) = 1.
+        chunk.emit(Op::JumpIfFalse(1), 1); // [0] → targets PC 2
+        chunk.emit(Op::Return, 1); // [1]
+        chunk.emit(Op::Add, 1); // [2] reachable (jump from [0])
+        chunk.emit(Op::Return, 1); // [3] reachable (fall-through from [2])
+        eliminate(&mut chunk);
+        // All four ops are reachable — none should be removed.
+        assert_eq!(chunk.code.len(), 4, "all ops reachable: {:?}", chunk.code);
     }
 
     #[test]
@@ -377,6 +465,49 @@ mod tests {
         assert_eq!(chunk.code.len(), 1);
         assert_eq!(chunk.line_info.len(), 1);
         assert_eq!(chunk.line_info[0], 10);
+    }
+
+    #[test]
+    fn dead_code_after_early_return_inside_conditional_is_removed() {
+        // Simulates: if cond { return; } <dead-code>
+        // [0] JumpIfFalse → targets PC 2 (else branch)
+        // [1] Return        (early return inside if-true branch)
+        // [2] Neg           (dead — only reachable after [1] which returns, AND
+        //                   the JumpIfFalse target is 2 so it IS reachable via
+        //                   the false-branch. This must remain.)
+        // [3] Return
+        //
+        // Actually all 4 are reachable here. Let's test the simpler case:
+        // [0] JumpIfFalse → targets PC 3 (skip two dead ops after true-return)
+        // [1] Return        (true branch return)
+        // [2] Neg           (dead — nothing jumps here, [1] doesn't fall through)
+        // [3] Mul           (dead — nothing jumps here, [2] doesn't fall through,
+        //                    wait — [0] jumps to PC 3, so Mul IS reachable!)
+        // Actually this is getting complex. Simple case: jump skips one dead op.
+        //
+        // [0] JumpIfFalse(+2) → targets PC 3
+        // [1] Return
+        // [2] Neg              ← dead (no predecessor reaches it)
+        // [3] Mul
+        // [4] Return
+        let mut chunk = Chunk::new();
+        chunk.emit(Op::JumpIfFalse(2), 1); // [0] → PC 3
+        chunk.emit(Op::Return, 1);         // [1]
+        chunk.emit(Op::Neg, 1);            // [2] dead
+        chunk.emit(Op::Mul, 1);            // [3] reachable (jump from [0])
+        chunk.emit(Op::Return, 1);         // [4] reachable (fall-through from [3])
+        eliminate(&mut chunk);
+        // After removing PC 2 (Neg): [JumpIfFalse, Return, Mul, Return]
+        assert_eq!(chunk.code.len(), 4, "code: {:?}", chunk.code);
+        assert!(matches!(chunk.code[0], Op::JumpIfFalse(_)));
+        assert_eq!(chunk.code[1], Op::Return);
+        assert_eq!(chunk.code[2], Op::Mul);
+        assert_eq!(chunk.code[3], Op::Return);
+        // Jump at new pc=0 should now target new pc=2 (Mul):
+        // new_target = 2, offset = 2 - (0+1) = 1.
+        if let Op::JumpIfFalse(off) = chunk.code[0] {
+            assert_eq!(1 + off as isize, 2, "JumpIfFalse should target Mul at index 2");
+        }
     }
 
     // ---- Rule 2: constant-branch folding ----

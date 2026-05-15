@@ -104,6 +104,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0042", // dead code after `return` statement in same block
     "L0043", // `let` binding shadows an existing binding with the same name
     "L0044", // shift amount is a literal outside 0..63 — always a runtime error
+    "L0045", // constant-false condition in `while` loop — body never executes
+    "L0046", // empty `for` loop body — iteration has no effect
+    "L0047", // assert(true) is vacuously satisfied; assert(false) always panics
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -572,6 +575,46 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: use a shift amount in 0..63.\n\
              Suppress: // resilient: allow L0044",
         ),
+        "L0045" => Some(
+            "L0045 — `while` loop with constant-false condition\n\
+             \n\
+             The loop condition is statically `false`, so the body never executes.\n\
+             This is dead code: the loop could be removed entirely without changing\n\
+             the program's behavior.\n\
+             \n\
+             In safety-critical embedded code this is almost always a mistake — either\n\
+             the condition is wrong, or the loop should have been an `if` statement.\n\
+             \n\
+             Fix: remove the dead loop or correct the condition.\n\
+             Suppress: // resilient: allow L0045",
+        ),
+        "L0046" => Some(
+            "L0046 — `for` loop with empty body\n\
+             \n\
+             A `for`-in loop with an empty body iterates over the collection but\n\
+             performs no work — no bindings, no side effects. The iteration is dead\n\
+             code and can be removed.\n\
+             \n\
+             In safety-critical embedded code silent no-ops around loop scaffolding\n\
+             are a reliability hazard — the logic may have been accidentally deleted.\n\
+             \n\
+             Fix: add the missing loop body, or remove the loop.\n\
+             Suppress: // resilient: allow L0046",
+        ),
+        "L0047" => Some(
+            "L0047 — vacuous or always-failing `assert`\n\
+             \n\
+             The assertion condition is the literal `true` (always satisfied — provides\n\
+             no safety guarantee) or the literal `false` (always fails — unconditional\n\
+             panic at runtime).\n\
+             \n\
+             `assert(true)` is a no-op and should be removed. `assert(false)` will\n\
+             always halt the program; if this is intentional, use a named `abort()` or\n\
+             add a comment explaining the invariant that was violated.\n\
+             \n\
+             Fix: supply a meaningful runtime-checkable predicate, or remove the assert.\n\
+             Suppress: // resilient: allow L0047",
+        ),
         _ => None,
     }
 }
@@ -638,6 +681,12 @@ struct LintTriggers {
     has_let_binding: bool,
     /// L0044: any bitwise shift (`<<` / `>>`) with an integer literal as the RHS.
     has_literal_shift: bool,
+    /// L0045: any `while` statement exists (checked against constant-false condition).
+    has_while_stmt: bool,
+    /// L0046: any `for`-in statement exists (checked for empty body).
+    has_for_in_stmt: bool,
+    /// L0047: any `assert` statement exists (checked for literal condition).
+    has_assert_stmt: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -702,11 +751,16 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
         Node::BooleanLiteral { .. } => t.has_bool_literal = true,
         Node::WhileStatement { condition, .. } => {
             t.has_loop = true;
+            t.has_while_stmt = true;
             if matches!(condition.as_ref(), Node::BooleanLiteral { value: true, .. }) {
                 t.has_while_true = true;
             }
         }
-        Node::ForInStatement { .. } => t.has_loop = true,
+        Node::ForInStatement { .. } => {
+            t.has_loop = true;
+            t.has_for_in_stmt = true;
+        }
+        Node::Assert { .. } => t.has_assert_stmt = true,
         Node::IfStatement {
             condition,
             alternative,
@@ -881,6 +935,15 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_literal_shift {
         run_l0044_shift_out_of_range(program, &mut out);
+    }
+    if t.has_while_stmt {
+        run_l0045_while_false(program, &mut out);
+    }
+    if t.has_for_in_stmt {
+        run_l0046_empty_for_body(program, &mut out);
+    }
+    if t.has_assert_stmt {
+        run_l0047_vacuous_assert(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -4868,6 +4931,104 @@ fn walk_l0044(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0045: constant-false condition in `while` loop
+// ============================================================
+//
+// `while false { ... }` — body never executes. Detects the same
+// `try_const_bool` helper as L0016 (constant condition in `if`),
+// but fires on `WhileStatement` conditions instead.
+
+fn run_l0045_while_false(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0045(program, out);
+}
+
+fn walk_l0045(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::WhileStatement {
+        condition, span, ..
+    } = node
+        && matches!(try_const_bool(condition), Some(false))
+    {
+        out.push(Lint {
+            code: "L0045".into(),
+            severity: Severity::Warning,
+            message: "loop condition is always `false` — the body never executes; \
+                      remove the dead loop or correct the condition"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0045(child, out));
+}
+
+// ============================================================
+// L0046: empty `for` loop body
+// ============================================================
+//
+// `for x in expr { }` — the body is an empty block so the iteration
+// has no observable effect. The iterable is still evaluated (and any
+// side effects there fire), but the loop variable is bound and
+// discarded without ever being used.
+
+fn run_l0046_empty_for_body(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0046(program, out);
+}
+
+fn walk_l0046(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::ForInStatement { body, span, .. } = node
+        && let Node::Block { stmts, .. } = body.as_ref()
+        && stmts.is_empty()
+    {
+        out.push(Lint {
+            code: "L0046".into(),
+            severity: Severity::Warning,
+            message: "empty `for` loop body — the iteration has no effect; \
+                      add the missing body or remove the loop"
+                .into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0046(child, out));
+}
+
+// ============================================================
+// L0047: vacuous or always-failing `assert`
+// ============================================================
+//
+// `assert(true)` — satisfied unconditionally, provides no safety
+// guarantee. `assert(false)` — always panics, equivalent to an
+// unconditional abort but without a clear message.
+
+fn run_l0047_vacuous_assert(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0047(program, out);
+}
+
+fn walk_l0047(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::Assert {
+        condition, span, ..
+    } = node
+        && let Some(val) = try_const_bool(condition)
+    {
+        let msg = if val {
+            "assert(true) is always satisfied and provides no safety guarantee; \
+             supply a meaningful predicate or remove the assert"
+        } else {
+            "assert(false) always panics at runtime — \
+             use a named abort function or add a comment explaining the invariant"
+        };
+        out.push(Lint {
+            code: "L0047".into(),
+            severity: Severity::Warning,
+            message: msg.into(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0047(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -6954,6 +7115,110 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0044".to_string()),
             "L0044 must not fire when shift amount is not a literal"
+        );
+    }
+
+    // ---------- L0045: constant-false while condition ----------
+
+    #[test]
+    fn l0045_fires_on_while_false() {
+        let src = "while false {\n    let x = 1;\n}\n";
+        assert!(
+            codes(src).contains(&"L0045".to_string()),
+            "L0045 must fire for `while false`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0045_fires_on_while_not_true() {
+        let src = "while !true {\n    let x = 1;\n}\n";
+        assert!(
+            codes(src).contains(&"L0045".to_string()),
+            "L0045 must fire for `while !true`; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0045_silent_for_while_true() {
+        // `while true` is NOT constant-false; L0025 handles that separately.
+        let src = "while true {\n    let x = 1;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0045".to_string()),
+            "L0045 must not fire for `while true`"
+        );
+    }
+
+    #[test]
+    fn l0045_silent_for_while_variable_condition() {
+        let src = "fn f(bool b) {\n    while b {\n        let x = 1;\n    }\n}\n";
+        assert!(
+            !codes(src).contains(&"L0045".to_string()),
+            "L0045 must not fire when condition is not a literal"
+        );
+    }
+
+    // ---------- L0046: empty for loop body ----------
+
+    #[test]
+    fn l0046_fires_on_empty_for_body() {
+        let src = "let arr = [1, 2, 3];\nfor x in arr {\n}\n";
+        assert!(
+            codes(src).contains(&"L0046".to_string()),
+            "L0046 must fire for empty for body; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0046_silent_when_for_body_has_statements() {
+        let src = "let arr = [1, 2, 3];\nfor x in arr {\n    let y = x;\n}\n";
+        assert!(
+            !codes(src).contains(&"L0046".to_string()),
+            "L0046 must not fire when body has statements"
+        );
+    }
+
+    // ---------- L0047: vacuous or always-failing assert ----------
+
+    #[test]
+    fn l0047_fires_on_assert_true() {
+        let src = "assert(true);\n";
+        assert!(
+            codes(src).contains(&"L0047".to_string()),
+            "L0047 must fire for assert(true); got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0047_fires_on_assert_false() {
+        let src = "assert(false);\n";
+        assert!(
+            codes(src).contains(&"L0047".to_string()),
+            "L0047 must fire for assert(false); got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0047_silent_for_non_literal_assert() {
+        let src = "fn f(int x) {\n    assert(x > 0);\n}\n";
+        assert!(
+            !codes(src).contains(&"L0047".to_string()),
+            "L0047 must not fire for non-literal assert condition"
+        );
+    }
+
+    #[test]
+    fn l0047_fires_on_assert_with_constant_folded_true() {
+        // `1 == 1` folds to `true` via try_const_bool → L0047 should fire.
+        let src = "assert(1 == 1);\n";
+        assert!(
+            codes(src).contains(&"L0047".to_string()),
+            "L0047 must fire for assert with constant-true condition; got {:?}",
+            codes(src)
         );
     }
 }

@@ -25,6 +25,9 @@
 //!     (x & 0 == 0 for any x)
 //! 13. `<pure-load>; Const(k==-1); Bor`    → drop pure load + push Const(-1)
 //!     (x | -1 == -1 for any x — -1 is the absorbing element for Bor)
+//! 14. `Const(k==0); Sub`                   → drop both (x - 0 == x, identity)
+//! 15. `Const(k==1); Div`                   → drop both (x / 1 == x, identity)
+//! 16. `Not; Not`                            → drop both (!!b == b, idempotent)
 //!
 //! Jump relinking: offsets in `Jump` / `JumpIfFalse` / `JumpIfTrue`
 //! are relative to the PC *after* the jump, so any rewrite that
@@ -212,6 +215,24 @@ pub fn optimize(chunk: &mut Chunk) -> Result<(), OptimizeError> {
             };
             new_code.push(Op::Const(neg1_k));
             new_line_info.push(chunk.line_info[i]);
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 14 — drop `Const(k==0); Sub` (x - 0 == x, identity).
+        if rule_sub_zero_identity(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 15 — drop `Const(k==1); Div` (x / 1 == x, identity).
+        if rule_div_one_identity(chunk, i, &targets) {
+            optimized_any = true;
+            i += 2;
+            continue;
+        }
+        // Rule 16 — drop `Not; Not` (!!b == b, double negation identity).
+        if rule_double_not(chunk, i, &targets) {
             optimized_any = true;
             i += 2;
             continue;
@@ -548,6 +569,59 @@ pub(crate) fn rule_bor_neg_one(chunk: &Chunk, i: usize, targets: &[bool], new_co
         return false;
     }
     matches!(new_code.last(), Some(Op::LoadLocal(_)) | Some(Op::Const(_)))
+}
+
+/// Rule 14: drop `Const(k==0); Sub` — subtracting zero is a no-op.
+/// `x - 0 == x` for all integer `x`.  Skips if `Sub` is a jump target.
+pub(crate) fn rule_sub_zero_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Sub) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(0))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 15: drop `Const(k==1); Div` — dividing by one is a no-op.
+/// `x / 1 == x` for all integer `x`.  Skips if `Div` is a jump target.
+/// NOTE: does NOT fire for `-1` — that negates rather than preserving.
+pub(crate) fn rule_div_one_identity(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    let Op::Const(k) = chunk.code[i] else {
+        return false;
+    };
+    if !matches!(chunk.code[i + 1], Op::Div) {
+        return false;
+    }
+    if !matches!(chunk.constants.get(k as usize), Some(Value::Int(1))) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
+}
+
+/// Rule 16: drop `Not; Not` — double boolean negation is identity.
+/// `!!b == b` for all booleans `b`.  Skips if the second `Not` is a jump
+/// target.
+pub(crate) fn rule_double_not(chunk: &Chunk, i: usize, targets: &[bool]) -> bool {
+    if i + 1 >= chunk.code.len() {
+        return false;
+    }
+    if !matches!(chunk.code[i], Op::Not) {
+        return false;
+    }
+    if !matches!(chunk.code[i + 1], Op::Not) {
+        return false;
+    }
+    !*targets.get(i + 1).unwrap_or(&false)
 }
 
 #[cfg(test)]
@@ -1095,5 +1169,102 @@ mod tests {
         let mut targets = vec![false; 3];
         targets[1] = true;
         assert!(!rule_bor_neg_one(&chunk, 0, &targets, &new_code));
+    }
+
+    // ---------- Rule 14: Const(0); Sub → identity ----------
+
+    #[test]
+    fn rule14_sub_zero_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(0)], &[1, 1]);
+        assert!(rule_sub_zero_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule14_sub_zero_identity_skips_nonzero() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(1)], &[1, 1]);
+        assert!(!rule_sub_zero_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule14_sub_zero_identity_skips_when_sub_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Sub], vec![Value::Int(0)], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_sub_zero_identity(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule14_sub_zero_drops_both_in_full_pass() {
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Sub, Op::Return],
+            vec![Value::Int(0)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    // ---------- Rule 15: Const(1); Div → identity ----------
+
+    #[test]
+    fn rule15_div_one_identity_fires() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(1)], &[1, 1]);
+        assert!(rule_div_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule15_div_one_identity_skips_neg_one() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(-1)], &[1, 1]);
+        assert!(!rule_div_one_identity(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule15_div_one_identity_skips_when_div_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Const(0), Op::Div], vec![Value::Int(1)], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_div_one_identity(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule15_div_one_drops_both_in_full_pass() {
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Const(0), Op::Div, Op::Return],
+            vec![Value::Int(1)],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
+    }
+
+    // ---------- Rule 16: Not; Not → identity ----------
+
+    #[test]
+    fn rule16_double_not_fires() {
+        let chunk = mk_chunk(&[Op::Not, Op::Not], vec![], &[1, 1]);
+        assert!(rule_double_not(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule16_double_not_skips_when_second_is_jump_target() {
+        let chunk = mk_chunk(&[Op::Not, Op::Not], vec![], &[1, 1]);
+        let targets = [false, true, false];
+        assert!(!rule_double_not(&chunk, 0, &targets));
+    }
+
+    #[test]
+    fn rule16_double_not_skips_single_not() {
+        let chunk = mk_chunk(&[Op::Not, Op::Return], vec![], &[1, 1]);
+        assert!(!rule_double_not(&chunk, 0, &[false; 3]));
+    }
+
+    #[test]
+    fn rule16_double_not_drops_both_in_full_pass() {
+        // LoadLocal(0); Not; Not; Return → LoadLocal(0); Return
+        let mut chunk = mk_chunk(
+            &[Op::LoadLocal(0), Op::Not, Op::Not, Op::Return],
+            vec![],
+            &[1, 1, 1, 2],
+        );
+        optimize(&mut chunk).unwrap();
+        assert_eq!(chunk.code, vec![Op::LoadLocal(0), Op::Return]);
     }
 }
