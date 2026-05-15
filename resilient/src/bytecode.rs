@@ -292,8 +292,10 @@ impl Chunk {
             Op::Jump(o) => *o = offset,
             Op::JumpIfFalse(o) => *o = offset,
             Op::JumpIfTrue(o) => *o = offset,
-            other => {
-                panic!("patch_jump called on non-jump op: {:?}", other);
+            _ => {
+                return Err(CompileError::InternalError(
+                    "patch_jump called on non-jump op",
+                ));
             }
         }
         Ok(())
@@ -558,6 +560,27 @@ mod tests {
             "sizeof(Op) = {} bytes; closure opcodes should not inflate this",
             std::mem::size_of::<Op>()
         );
+    }
+
+    #[test]
+    fn patch_jump_on_non_jump_op_returns_err() {
+        // `patch_jump` must return an error, not panic, when called on
+        // a non-jump opcode. This guards the internal invariant that the
+        // compiler only patches indices it previously recorded from emit().
+        let mut c = Chunk::new();
+        c.emit(Op::Add, 1); // index 0 — not a jump op
+        let result = c.patch_jump(0, 1);
+        assert!(result.is_err(), "patch_jump on non-jump op must return Err");
+    }
+
+    #[test]
+    fn patch_jump_on_jump_if_false_succeeds() {
+        let mut c = Chunk::new();
+        let jif = c.emit(Op::JumpIfFalse(0), 1);
+        c.emit(Op::Add, 2);
+        c.emit(Op::Return, 3);
+        assert!(c.patch_jump(jif, 2).is_ok());
+        assert!(matches!(c.code[jif], Op::JumpIfFalse(1)));
     }
 
     #[test]

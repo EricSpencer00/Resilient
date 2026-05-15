@@ -2597,12 +2597,12 @@ impl TypeChecker {
                     return_type: Box::new(Type::Int),
                 },
             );
-            // RES-486: (quotient, remainder) tuple.
+            // RES-486: (quotient, remainder) tuple — returns an Array of two Ints.
             env.set(
                 "divmod".to_string(),
                 Type::Function {
                     params: vec![Type::Int, Type::Int],
-                    return_type: Box::new(Type::Any),
+                    return_type: Box::new(Type::Array),
                 },
             );
             // RES-423: flatten one level.
@@ -2663,8 +2663,14 @@ impl TypeChecker {
             );
             // RES-430: pair elements as tuples; truncate to shorter array.
             env.set("array_zip".to_string(), fn_any_any_to_array());
-            // RES-531: split an array of 2-tuples into two parallel arrays.
-            env.set("array_unzip".to_string(), fn_any_to_any());
+            // RES-531: split an array of 2-tuples into two parallel arrays — returns Array.
+            env.set(
+                "array_unzip".to_string(),
+                Type::Function {
+                    params: vec![Type::Array],
+                    return_type: Box::new(Type::Array),
+                },
+            );
             // RES-431: integer range [start, end).
             env.set(
                 "array_range".to_string(),

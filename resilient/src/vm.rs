@@ -2040,6 +2040,34 @@ mod tests {
     }
 
     #[test]
+    fn shl_out_of_range_is_error() {
+        // Shift amount 64 is out of the valid range 0..63; both the
+        // interpreter and the VM must return an error (not silently mask).
+        let err = compile_run("1 << 64;").unwrap_err();
+        assert!(
+            matches!(err.kind(), VmError::ShiftOutOfRange(64)),
+            "expected ShiftOutOfRange(64), got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn shr_negative_amount_is_error() {
+        let err = compile_run("1 >> -1;").unwrap_err();
+        assert!(
+            matches!(err.kind(), VmError::ShiftOutOfRange(-1)),
+            "expected ShiftOutOfRange(-1), got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn shl_boundary_63_is_valid() {
+        // 1 << 63 is the minimum i64 value; within the valid range.
+        assert_int(compile_run("1 << 63;").unwrap(), i64::MIN);
+    }
+
+    #[test]
     fn call_stack_overflow_on_runaway_recursion() {
         // Without RES-083's `if`, we can't write terminating
         // recursion in source yet. Hand-roll a chunk whose body
