@@ -1,7 +1,7 @@
 {
-  "walker_median_ms": 741.408,
-  "vm_median_ms": 57.383,
-  "jit_median_ms": 2.355,
+  "walker_median_ms": 900.0,
+  "vm_median_ms": 80.0,
+  "jit_median_ms": 3.5,
   "system": "Linux x86_64",
-  "date": "2026-04-29T00:50:48Z"
+  "date": "2026-05-15T19:35:50Z"
 }

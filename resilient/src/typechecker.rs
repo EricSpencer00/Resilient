@@ -5706,16 +5706,21 @@ impl TypeChecker {
                     // matching the final-state verifier's axioms path.
                     //
 
-                    // BMC results are advisory (warnings), not hard errors:
-                    // the final-state Z3 check above is the authoritative
-                    // compile gate. Per-prefix BMC uses a conservative
-                    // free-variable model that may flag false positives for
-                    // computed locals (the local's relationship to prior ops
-                    // is not encoded). Demoting to warn matches the
-                    // `timed_out_flag` precedent above.
+                    // BMC counterexamples are hard errors when requires is empty:
+                    // without any preconditions all inputs are valid, so Z3
+                    // counterexamples are definitive. When requires is non-empty
+                    // the conservative free-variable model may produce false
+                    // positives for computed locals, so we demote to a warning.
                     if let Err(bmc_msg) =
                         crate::recovers_to_bmc::check_recovers_to_bmc(name, body, requires, clause)
                     {
+                        if requires.is_empty() {
+                            return Err(format!(
+                                "error[bmc]: {bmc_msg}\n\
+                                 note: add `requires` clauses to constrain inputs, \
+                                 or remove `recovers_to`"
+                            ));
+                        }
                         eprintln!("warning[bmc]: {bmc_msg}");
                     }
                 }
