@@ -23059,6 +23059,31 @@ impl Interpreter {
                     (Value::Array(_), other) => {
                         Err(format!("Array index must be int, got {}", other))
                     }
+                    // RES-427: string / int / bool subscript access on
+                    // Map literals (`m["key"]`, `m[42]`).
+                    (Value::Map(mut m), key_val) => {
+                        let mk = MapKey::from_value(&key_val)
+                            .map_err(|e| format!("Invalid map key: {e}"))?;
+                        m.remove(&mk)
+                            .ok_or_else(|| format!("Key not found in map: {}", key_val))
+                    }
+                    // RES-427: string subscript on a string yields a
+                    // one-character substring (`s["0"]` is not useful; the
+                    // useful form is integer subscript `s[i]`).
+                    (Value::String(s), Value::Int(i)) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let len = chars.len() as i64;
+                        let resolved = if i < 0 { i + len } else { i };
+                        if resolved < 0 || resolved >= len {
+                            Err(format!(
+                                "String index {} out of bounds for length {}",
+                                i,
+                                chars.len()
+                            ))
+                        } else {
+                            Ok(Value::String(chars[resolved as usize].to_string()))
+                        }
+                    }
                     (other, _) => Err(format!("Cannot index {:?}", other)),
                 }
             }
@@ -23195,17 +23220,8 @@ impl Interpreter {
                 let path_exprs = indices_rev;
 
                 // Evaluate the RHS first so any side effects there
-                // happen before we start mutating the array.
+                // happen before we start mutating the collection.
                 let new_val = self.eval(value)?;
-                // Then evaluate every index expression in source order.
-                let mut path_indices: Vec<i64> = Vec::with_capacity(path_exprs.len());
-                for idx_expr in &path_exprs {
-                    let idx_val = self.eval(idx_expr)?;
-                    let Value::Int(i) = idx_val else {
-                        return Err(format!("Array index must be int, got {}", idx_val));
-                    };
-                    path_indices.push(i);
-                }
 
                 // Read–modify–write. `env.get` returns a clone, so the
                 // mutation is local until we `reassign` the new root
@@ -23215,15 +23231,45 @@ impl Interpreter {
                     .env
                     .get(&root_name)
                     .ok_or_else(|| format!("Identifier not found: {}", root_name))?;
-                let Value::Array(mut items) = root else {
-                    return Err(format!(
-                        "Cannot index-assign into non-array '{}'",
-                        root_name
-                    ));
-                };
-                replace_at_path(&mut items, &path_indices, new_val)?;
-                let _ = self.env.reassign(&root_name, Value::Array(items));
-                Ok(Value::Void)
+
+                match root {
+                    // RES-427: Map index assignment via MapKey (string / int / bool keys).
+                    Value::Map(mut m) => {
+                        if path_exprs.len() != 1 {
+                            return Err(
+                                "Nested map index assignment not yet supported".to_string()
+                            );
+                        }
+                        let idx_val = self.eval(path_exprs[0])?;
+                        let mk = MapKey::from_value(&idx_val)
+                            .map_err(|e| format!("Invalid map key: {e}"))?;
+                        m.insert(mk, new_val);
+                        let _ = self.env.reassign(&root_name, Value::Map(m));
+                        Ok(Value::Void)
+                    }
+                    // Array index assignment (existing behaviour).
+                    Value::Array(mut items) => {
+                        let mut path_indices: Vec<i64> =
+                            Vec::with_capacity(path_exprs.len());
+                        for idx_expr in &path_exprs {
+                            let idx_val = self.eval(idx_expr)?;
+                            let Value::Int(i) = idx_val else {
+                                return Err(format!(
+                                    "Array index must be int, got {}",
+                                    idx_val
+                                ));
+                            };
+                            path_indices.push(i);
+                        }
+                        replace_at_path(&mut items, &path_indices, new_val)?;
+                        let _ = self.env.reassign(&root_name, Value::Array(items));
+                        Ok(Value::Void)
+                    }
+                    other => Err(format!(
+                        "Cannot index-assign into '{}' (has type {})",
+                        root_name, other
+                    )),
+                }
             }
             // RES-325: a `NamedArg` outside an enclosing call site is
             // an internal error — the parser only emits these inside
@@ -56542,5 +56588,77 @@ mod array_callback_tests {
             "expected true, got: {}",
             r.stdout
         );
+    }
+}
+
+// RES-427: map index read and write via subscript syntax m[key]
+#[cfg(test)]
+mod res427_map_index_tests {
+    use super::*;
+
+    fn run(src: &str) -> RunResult {
+        run_program(src)
+    }
+
+    #[test]
+    fn map_index_read_string_key() {
+        let r = run(
+            r#"let m = {"a" -> 1, "b" -> 2};
+println(m["a"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains('1'), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_read_int_key() {
+        let r = run(
+            r#"let m = {1 -> "one", 2 -> "two"};
+println(m[1]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("one"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_write_string_key() {
+        let r = run(
+            r#"let m = {"x" -> 10};
+m["x"] = 99;
+println(m["x"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("99"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_write_new_key() {
+        let r = run(
+            r#"let m = {"a" -> 1};
+m["b"] = 42;
+println(m["b"]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("42"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_write_int_key() {
+        let r = run(
+            r#"let m = {0 -> "zero"};
+m[0] = "changed";
+println(m[0]);"#,
+        );
+        assert!(r.ok, "errors: {:?}", r.errors);
+        assert!(r.stdout.contains("changed"), "got: {}", r.stdout);
+    }
+
+    #[test]
+    fn map_index_missing_key_errors() {
+        let r = run(
+            r#"let m = {"a" -> 1};
+println(m["z"]);"#,
+        );
+        assert!(!r.ok, "expected error for missing key");
     }
 }
