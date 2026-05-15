@@ -6398,14 +6398,29 @@ impl TypeChecker {
                 self.current_span = *span;
                 let tgt_ty = self.check_node(target)?;
                 // RES-153: if the target is a known struct, return the
-                // declared field's type. Otherwise fall back to Any so
-                // non-struct targets (e.g. through generic containers)
-                // keep the old permissive behaviour.
+                // declared field's type. When the struct IS declared but
+                // the field name is absent, emit a clear diagnostic
+                // instead of silently returning Any.
                 if let Type::Struct(sname) = &tgt_ty
                     && let Some(declared) = self.struct_fields.get(sname)
-                    && let Some((_, ty)) = declared.iter().find(|(n, _)| n == field)
                 {
-                    return Ok(ty.clone());
+                    if let Some((_, ty)) = declared.iter().find(|(n, _)| n == field) {
+                        return Ok(ty.clone());
+                    }
+                    // RES-407: struct is known but field is not found — error.
+                    let avail: Vec<&str> = declared.iter().map(|(n, _)| n.as_str()).collect();
+                    return Err(format!(
+                        "struct `{}` has no field `{}`; available fields: {}",
+                        sname,
+                        field,
+                        if avail.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            avail.join(", ")
+                        }
+                    ));
+                    // Struct name unknown (forward reference, generic container,
+                    // etc.) — fall through to permissive Any.
                 }
                 // RES-1859: known method return types for Array/String targets.
                 // When the method is called as `arr.map(fn)`, the FieldAccess
@@ -6502,11 +6517,27 @@ impl TypeChecker {
             // Endpoints must be `Int`.
             Node::Slice { target, lo, hi, .. } => {
                 let target_ty = self.check_node(target)?;
-                if let Some(lo) = lo {
-                    let _ = self.check_node(lo)?;
+                // RES-407: enforce integer endpoints.
+                let is_int_like = |t: &Type| {
+                    matches!(t, Type::Int | Type::Any) || is_pinned_int(t)
+                };
+                if let Some(lo_expr) = lo {
+                    let lo_ty = self.check_node(lo_expr)?;
+                    if !is_int_like(&lo_ty) {
+                        return Err(format!(
+                            "slice lower bound must be an integer, got {}",
+                            lo_ty
+                        ));
+                    }
                 }
-                if let Some(hi) = hi {
-                    let _ = self.check_node(hi)?;
+                if let Some(hi_expr) = hi {
+                    let hi_ty = self.check_node(hi_expr)?;
+                    if !is_int_like(&hi_ty) {
+                        return Err(format!(
+                            "slice upper bound must be an integer, got {}",
+                            hi_ty
+                        ));
+                    }
                 }
                 match target_ty {
                     Type::String => Ok(Type::String),
@@ -11048,5 +11079,87 @@ fn f() -> void { }
             err.contains("duplicate variant") || err.contains("Red"),
             "expected duplicate-variant error; got: {err}"
         );
+    }
+}
+
+// ── RES-407: field access on known struct + slice endpoint types ──────────────
+
+#[cfg(test)]
+mod res407_field_access_and_slice {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    // ── FieldAccess: unknown field on known struct ─────────────────────────────
+
+    #[test]
+    fn field_access_known_field_ok() {
+        check_ok(r#"
+struct Point { int x, int y }
+fn f(Point p) -> int { return p.x; }
+"#);
+    }
+
+    #[test]
+    fn field_access_unknown_field_errors() {
+        let err = check_err(r#"
+struct Point { int x, int y }
+fn f(Point p) -> int { return p.z; }
+"#);
+        assert!(
+            err.contains("no field") || err.contains("z"),
+            "expected no-field error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn field_access_unknown_struct_is_permissive() {
+        // When the struct name isn't declared, fall through to Any.
+        check_ok(r#"fn f(UnknownStruct s) -> int { return s.x; }"#);
+    }
+
+    // ── Slice endpoint types ───────────────────────────────────────────────────
+
+    #[test]
+    fn slice_int_bounds_ok() {
+        check_ok(r#"fn f(array a) -> array { return a[1..3]; }"#);
+    }
+
+    #[test]
+    fn slice_float_lower_bound_errors() {
+        let err = check_err(r#"fn f(array a) -> array { return a[1.0..3]; }"#);
+        assert!(
+            err.contains("lower bound") || err.contains("integer"),
+            "expected integer-bound error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn slice_float_upper_bound_errors() {
+        let err = check_err(r#"fn f(array a) -> array { return a[0..3.5]; }"#);
+        assert!(
+            err.contains("upper bound") || err.contains("integer"),
+            "expected integer-bound error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn slice_string_int_bounds_ok() {
+        check_ok(r#"fn f(string s) -> string { return s[0..5]; }"#);
     }
 }
