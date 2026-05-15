@@ -79,6 +79,11 @@ pub enum Type {
     Struct(String),
     Void,
     Any, // Used for untyped variables during inference
+    /// RES-401: product tuple `(T0, T1, …)`. Element types are tracked
+    /// so `TupleIndex` can return the element type at a known literal
+    /// index and `LetTupleDestructure` can bind each name to its
+    /// precise element type. An empty Vec represents `()` (unit tuple).
+    Tuple(Vec<Type>),
     /// RES-121: fresh inference variable (Hindley-Milner). Produced
     /// by the inference walker (RES-120, when it lands) and
     /// eliminated by `unify::Substitution::apply`. The `u32` is a
@@ -129,6 +134,16 @@ impl std::fmt::Display for Type {
             Type::Struct(n) => write!(f, "{}", n),
             Type::Void => write!(f, "void"),
             Type::Any => write!(f, "any"),
+            Type::Tuple(ts) => {
+                write!(f, "(")?;
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, ")")
+            }
             Type::Var(_, Some(span)) => {
                 write!(f, "type hole at {}:{}", span.start.line, span.start.column)
             }
@@ -6072,24 +6087,49 @@ impl TypeChecker {
             // RES-390: ClusterDecl is compile-time-only.
             Node::ClusterDecl { .. } => Ok(Type::Void),
 
-            // RES-401: tuples — type-check each item in a literal,
-            // recurse into the destructure RHS, and treat element
-            // access as `Type::Any` until the type system grows a
-            // dedicated tuple shape (follow-up ticket).
+            // RES-401: tuples — type-check each item in a literal and
+            // return a precise Type::Tuple with element types. TupleIndex
+            // returns the element type when the index is in range; otherwise
+            // Type::Any. LetTupleDestructure binds each name to its element
+            // type from the tuple type.
             Node::TupleLiteral { items, .. } => {
+                let mut elem_types = Vec::with_capacity(items.len());
                 for it in items {
-                    self.check_node(it)?;
+                    elem_types.push(self.check_node(it)?);
+                }
+                Ok(Type::Tuple(elem_types))
+            }
+            Node::TupleIndex { tuple, index, .. } => {
+                let tup_ty = self.check_node(tuple)?;
+                if let Type::Tuple(ref elems) = tup_ty {
+                    if let Some(elem_ty) = elems.get(*index) {
+                        return Ok(elem_ty.clone());
+                    }
+                    return Err(format!(
+                        "{}:{}:{}: tuple index {} out of range (tuple has {} element(s))",
+                        self.source_path,
+                        self.current_span.start.line,
+                        self.current_span.start.column,
+                        index,
+                        elems.len()
+                    ));
                 }
                 Ok(Type::Any)
             }
-            Node::TupleIndex { tuple, .. } => {
-                self.check_node(tuple)?;
-                Ok(Type::Any)
-            }
             Node::LetTupleDestructure { names, value, .. } => {
-                self.check_node(value)?;
-                for n in names {
-                    self.env.set(n.clone(), Type::Any);
+                let rhs_ty = self.check_node(value)?;
+                match rhs_ty {
+                    Type::Tuple(ref elems) => {
+                        for (i, n) in names.iter().enumerate() {
+                            let elem_ty = elems.get(i).cloned().unwrap_or(Type::Any);
+                            self.env.set(n.clone(), elem_ty);
+                        }
+                    }
+                    _ => {
+                        for n in names {
+                            self.env.set(n.clone(), Type::Any);
+                        }
+                    }
                 }
                 Ok(Type::Void)
             }
@@ -10251,5 +10291,60 @@ mod res1862_span_attachment {
             err.contains("while.rz"),
             "error inside while loop must include file path; got: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod res401_tuple_type {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn tuple_literal_type_checks() {
+        // A heterogeneous tuple literal type-checks without error.
+        check_ok(r#"let _t = (1, "hello", true);"#);
+    }
+
+    #[test]
+    fn empty_tuple_type_checks() {
+        check_ok("let _t = ();");
+    }
+
+    #[test]
+    fn tuple_index_out_of_range_errors() {
+        // Accessing index 5 of a 2-element tuple should fail.
+        let err = check_err("let t = (1, 2); let _x = t.5;");
+        assert!(
+            err.contains("out of range") || err.contains("index"),
+            "expected out-of-range error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn tuple_index_in_range_ok() {
+        // Accessing a valid index should succeed.
+        check_ok(r#"let t = (1, "x"); let _s = t.1;"#);
+    }
+
+    #[test]
+    fn tuple_destructure_ok() {
+        // Destructuring into correct names should pass.
+        check_ok(r#"let (a, b) = (1, "x");"#);
     }
 }
