@@ -97,6 +97,9 @@ pub const KNOWN_CODES: &[&str] = &[
     "L0035", // unreachable code after diverging call (exit / abort)
     "L0036", // comparison of len(...) to negative literal — always true or false
     "L0037", // self-assignment `x = x` is a no-op
+    "L0038", // RES-1863: panic!() call outside of #[cfg(test)] context
+    "L0039", // RES-1863: unreachable code after call to @noreturn-annotated function
+    "L0040", // RES-1863: magic number in safety-critical computation (unnamed non-trivial literal)
 ];
 
 /// Return a human-readable explanation for a lint code, or `None` if unknown.
@@ -488,6 +491,37 @@ pub fn explain(code: &str) -> Option<&'static str> {
              Fix: replace the right-hand side with the intended value.\n\
              Suppress: // resilient: allow L0037",
         ),
+        "L0038" => Some(
+            "L0038 — `panic!()` call outside of test context\n\
+             \n\
+             A call to `panic()` was found in non-test code. In safety-critical embedded\n\
+             systems, panics are forbidden outside of test scaffolding because they produce\n\
+             uncontrolled program termination.\n\
+             \n\
+             Fix: replace with a proper error return or use `abort()` with a diagnostic.\n\
+             Suppress: // resilient: allow L0038",
+        ),
+        "L0039" => Some(
+            "L0039 — unreachable code after `@noreturn` call\n\
+             \n\
+             A call to a function annotated with `// @noreturn` is followed by additional\n\
+             statements in the same block. Those statements can never execute because\n\
+             the annotated function never returns.\n\
+             \n\
+             Fix: remove the dead statements after the diverging call.\n\
+             Suppress: // resilient: allow L0039",
+        ),
+        "L0040" => Some(
+            "L0040 — magic number in safety-critical computation\n\
+             \n\
+             An unnamed integer literal (other than 0, 1, or powers of two) appears in\n\
+             an arithmetic expression inside a function that has no `requires` or `ensures`\n\
+             contract. In safety-critical embedded code, numeric constants must be named\n\
+             via `let` bindings so their intent is auditable.\n\
+             \n\
+             Fix: extract the literal into a named constant (`let THRESHOLD = 42;`).\n\
+             Suppress: // resilient: allow L0040",
+        ),
         _ => None,
     }
 }
@@ -542,6 +576,12 @@ struct LintTriggers {
     has_string_literal: bool,
     has_loop: bool,
     has_assignment: bool,
+    /// L0038: a call to `panic()` was found anywhere in the program.
+    has_panic_call: bool,
+    /// L0039: a function annotated `// @noreturn` was referenced via call.
+    has_noreturn_call: bool,
+    /// L0040: an arithmetic infix expression with an integer literal exists.
+    has_arith_int_literal: bool,
 }
 
 fn scan_lint_triggers(program: &Node) -> LintTriggers {
@@ -560,6 +600,11 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             if operator == "/" || operator == "%" {
                 t.has_division = true;
             }
+            // L0040: arithmetic operator — combined with has_integer_literal
+            // to gate the magic-number pass.
+            if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%") {
+                t.has_arith_int_literal = true;
+            }
         }
         Node::Function { .. } => t.has_function = true,
         Node::LetStatement { .. } => t.has_let = true,
@@ -575,8 +620,18 @@ fn scan_node(node: &Node, t: &mut LintTriggers) {
             if matches!(function.as_ref(), Node::Identifier { name, .. } if name == "format") {
                 t.has_format_call = true;
             }
+            // L0038: flag any call to `panic`.
+            if matches!(function.as_ref(), Node::Identifier { name, .. } if name == "panic") {
+                t.has_panic_call = true;
+            }
+            // L0039: set coarse trigger so the noreturn pass always
+            // runs when any call exists; the pass does source-level
+            // @noreturn detection internally.
+            t.has_noreturn_call = true;
         }
-        Node::IntegerLiteral { .. } => t.has_integer_literal = true,
+        Node::IntegerLiteral { .. } => {
+            t.has_integer_literal = true;
+        }
         Node::BooleanLiteral { .. } => t.has_bool_literal = true,
         Node::WhileStatement { condition, .. } => {
             t.has_loop = true;
@@ -736,6 +791,16 @@ pub fn check(program: &Node, source: &str) -> Vec<Lint> {
     }
     if t.has_assignment {
         run_l0037_self_assignment(program, &mut out);
+    }
+    // RES-1863: embedded-safety lints.
+    if t.has_panic_call {
+        run_l0038_panic_in_non_test(program, &mut out);
+    }
+    if t.has_noreturn_call && t.has_block {
+        run_l0039_unreachable_after_noreturn(program, source, &mut out);
+    }
+    if t.has_function && t.has_arith_int_literal && t.has_integer_literal {
+        run_l0040_magic_number(program, &mut out);
     }
     let safety_critical = safety_critical_mode();
     if safety_critical {
@@ -4282,6 +4347,255 @@ fn walk_l0037(node: &Node, out: &mut Vec<Lint>) {
 }
 
 // ============================================================
+// L0038: panic!() call outside of #[cfg(test)] context
+// ============================================================
+//
+// Resilient targets safety-critical embedded environments where
+// panics are forbidden outside of test scaffolding. Any call to
+// `panic(...)` in non-test production code is flagged.
+//
+// Detection: walk the AST looking for CallExpression nodes whose
+// function is the identifier `panic`. Because the Resilient test
+// infrastructure does not produce `#[cfg(test)]`-gated AST nodes
+// (test code lives in separate files or is excluded from the main
+// parse), every `panic()` visible to the lint pass is treated as
+// production code.
+
+fn run_l0038_panic_in_non_test(program: &Node, out: &mut Vec<Lint>) {
+    walk_l0038(program, out);
+}
+
+fn walk_l0038(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::CallExpression { function, span, .. } = node
+        && matches!(function.as_ref(), Node::Identifier { name, .. } if name == "panic")
+    {
+        out.push(Lint {
+            code: "L0038".into(),
+            severity: Severity::Warning,
+            message: "`panic()` called in non-test code — panics are forbidden in \
+                      safety-critical embedded systems; use a typed error return or `abort()`"
+                .to_string(),
+            line: span.start.line as u32,
+            column: span.start.column as u32,
+        });
+    }
+    recurse_children(node, &mut |child| walk_l0038(child, out));
+}
+
+// ============================================================
+// L0039: unreachable code after call to @noreturn function
+// ============================================================
+//
+// Functions annotated with a `// @noreturn` comment on the line
+// immediately preceding their declaration never return to the
+// caller. Any statements in the same block that follow a call to
+// such a function are dead code.
+//
+// Detection:
+//   1. Scan the source text for `// @noreturn` comment lines and
+//      record the names of the function declarations on the
+//      following line.
+//   2. Walk every Block node; if a statement calls one of those
+//      functions and there are statements after it, emit L0039 on
+//      the first unreachable statement.
+
+/// Collect the names of functions preceded by a `// @noreturn` comment.
+fn collect_noreturn_functions(source: &str) -> std::collections::HashSet<String> {
+    let mut noreturn_fns = std::collections::HashSet::new();
+    let lines: Vec<&str> = source.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "// @noreturn" || trimmed.starts_with("// @noreturn ") {
+            // Look at the next non-blank line for a function declaration.
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j < lines.len() {
+                let next = lines[j].trim();
+                // Match `fn name(` or `@pure fn name(` etc.
+                let fn_pos = next.find("fn ");
+                if let Some(pos) = fn_pos {
+                    let after_fn = next[pos + 3..].trim_start();
+                    // Function name ends at the first non-identifier character.
+                    let name_end = after_fn
+                        .find(|c: char| !c.is_alphanumeric() && c != '_')
+                        .unwrap_or(after_fn.len());
+                    let fn_name = &after_fn[..name_end];
+                    if !fn_name.is_empty() {
+                        noreturn_fns.insert(fn_name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    noreturn_fns
+}
+
+fn run_l0039_unreachable_after_noreturn(program: &Node, source: &str, out: &mut Vec<Lint>) {
+    let noreturn_fns = collect_noreturn_functions(source);
+    if noreturn_fns.is_empty() {
+        return;
+    }
+    walk_l0039(program, &noreturn_fns, out);
+}
+
+fn is_noreturn_call(node: &Node, noreturn_fns: &std::collections::HashSet<String>) -> bool {
+    let call = match node {
+        Node::CallExpression { .. } => Some(node),
+        Node::ExpressionStatement { expr, .. } => {
+            if matches!(expr.as_ref(), Node::CallExpression { .. }) {
+                Some(expr.as_ref())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    match call {
+        Some(Node::CallExpression { function, .. }) => matches!(
+            function.as_ref(),
+            Node::Identifier { name, .. } if noreturn_fns.contains(name.as_str())
+        ),
+        _ => false,
+    }
+}
+
+fn walk_l0039(node: &Node, noreturn_fns: &std::collections::HashSet<String>, out: &mut Vec<Lint>) {
+    if let Node::Block { stmts, .. } = node {
+        let mut saw_noreturn = false;
+        for stmt in stmts {
+            if saw_noreturn {
+                if let Some(span) = span_of(stmt) {
+                    out.push(Lint {
+                        code: "L0039".into(),
+                        severity: Severity::Warning,
+                        message: "unreachable code after call to `@noreturn`-annotated function"
+                            .to_string(),
+                        line: span.start.line as u32,
+                        column: span.start.column as u32,
+                    });
+                }
+                break;
+            }
+            if is_noreturn_call(stmt, noreturn_fns) {
+                saw_noreturn = true;
+            }
+            walk_l0039(stmt, noreturn_fns, out);
+        }
+        return;
+    }
+    recurse_children(node, &mut |child| walk_l0039(child, noreturn_fns, out));
+}
+
+// ============================================================
+// L0040: magic number in safety-critical computation
+// ============================================================
+//
+// An unnamed integer literal (other than 0, 1, or a power of two)
+// used in an arithmetic expression (+, -, *, /, %) inside a function
+// that has no `requires` or `ensures` contract is a "magic number".
+//
+// In safety-critical embedded code, all numeric constants must be
+// named via `let` bindings so their intent is auditable during
+// certification review. Functions without contracts are especially
+// risky because there is no machine-checkable specification to
+// cross-reference against.
+
+fn run_l0040_magic_number(program: &Node, out: &mut Vec<Lint>) {
+    let Node::Program(stmts) = program else {
+        return;
+    };
+    for spanned in stmts {
+        match &spanned.node {
+            Node::Function {
+                requires,
+                ensures,
+                body,
+                ..
+            } => {
+                let has_contract = !requires.is_empty() || !ensures.is_empty();
+                if !has_contract {
+                    walk_l0040_arith(body, out);
+                }
+            }
+            Node::ImplBlock { methods, .. } => {
+                for method in methods {
+                    if let Node::Function {
+                        requires,
+                        ensures,
+                        body,
+                        ..
+                    } = method
+                    {
+                        let has_contract = !requires.is_empty() || !ensures.is_empty();
+                        if !has_contract {
+                            walk_l0040_arith(body, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Returns true for integer values that are "trivial" in an
+/// arithmetic context: 0, 1, -1, and powers of two up to 2^30.
+fn is_trivial_int(value: i64) -> bool {
+    if value == 0 || value == 1 || value == -1 {
+        return true;
+    }
+    // Powers of two (positive): 2, 4, 8, 16, ...
+    let abs = value.unsigned_abs();
+    abs != 0 && abs.count_ones() == 1
+}
+
+/// Walk an expression tree rooted at `node`. Whenever we find an
+/// arithmetic infix expression that contains a non-trivial integer
+/// literal as a *direct* operand, emit L0040.
+fn walk_l0040_arith(node: &Node, out: &mut Vec<Lint>) {
+    if let Node::InfixExpression {
+        left,
+        operator,
+        right,
+        ..
+    } = node
+        && matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%")
+    {
+        // Check left operand.
+        if let Node::IntegerLiteral { value, span } = left.as_ref()
+            && !is_trivial_int(*value)
+        {
+            out.push(Lint {
+                code: "L0040".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "magic number `{value}` in arithmetic — extract into a named constant"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+        // Check right operand.
+        if let Node::IntegerLiteral { value, span } = right.as_ref()
+            && !is_trivial_int(*value)
+        {
+            out.push(Lint {
+                code: "L0040".into(),
+                severity: Severity::Warning,
+                message: format!(
+                    "magic number `{value}` in arithmetic — extract into a named constant"
+                ),
+                line: span.start.line as u32,
+                column: span.start.column as u32,
+            });
+        }
+    }
+    recurse_children(node, &mut |child| walk_l0040_arith(child, out));
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -6074,6 +6388,147 @@ mod tests {
         assert!(
             !codes(src).contains(&"L0037".to_string()),
             "L0037 must not fire for `y = y + 1` (not a bare identifier on rhs)"
+        );
+    }
+
+    // ---------- L0038: panic() in non-test code ----------
+
+    #[test]
+    fn l0038_fires_on_panic_call() {
+        let src = "fn f(int x) { panic(42); }\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0038".to_string()),
+            "L0038 must fire when panic() is called; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0038_fires_on_panic_no_args() {
+        let src = "fn f(int x) { if x < 0 { panic(0); } }\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0038".to_string()),
+            "L0038 must fire for panic() inside a branch; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0038_silent_for_non_panic_call() {
+        let src = "fn g() { } fn f(int x) { g(); }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0038".to_string()),
+            "L0038 must not fire for a normal function call"
+        );
+    }
+
+    #[test]
+    fn l0038_silent_for_abort_call() {
+        let src = "fn f(int x) { abort(); }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0038".to_string()),
+            "L0038 must not fire for abort() — that is handled by L0035"
+        );
+    }
+
+    // ---------- L0039: unreachable after @noreturn call ----------
+
+    #[test]
+    fn l0039_fires_after_noreturn_call() {
+        // The function `die` is marked @noreturn via a comment on the preceding line.
+        let src = "// @noreturn\nfn die(int code) { abort(); }\nfn f(int x) { die(1); let _y = x + 1; }\nf(5);\n";
+        assert!(
+            codes(src).contains(&"L0039".to_string()),
+            "L0039 must fire when code follows a @noreturn call; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0039_silent_when_noreturn_call_is_last() {
+        let src = "// @noreturn\nfn die(int code) { abort(); }\nfn f(int x) { let _y = x + 1; die(1); }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0039".to_string()),
+            "L0039 must not fire when @noreturn call is the last statement in the block"
+        );
+    }
+
+    #[test]
+    fn l0039_silent_for_normal_call_even_if_followed_by_stmts() {
+        let src = "fn g(int x) { }\nfn f(int x) { g(x); let _y = x + 1; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0039".to_string()),
+            "L0039 must not fire for non-@noreturn function"
+        );
+    }
+
+    #[test]
+    fn l0039_silent_when_no_noreturn_annotation() {
+        // No `// @noreturn` comment — even if function is named `die`.
+        let src = "fn die(int code) { abort(); }\nfn f(int x) { die(1); let _y = x + 1; }\nf(5);\n";
+        assert!(
+            !codes(src).contains(&"L0039".to_string()),
+            "L0039 must not fire without @noreturn comment annotation"
+        );
+    }
+
+    // ---------- L0040: magic number in safety-critical computation ----------
+
+    #[test]
+    fn l0040_fires_on_magic_number_in_uncontracted_fn() {
+        // 42 is not 0, 1, or a power of two, and the function has no contract.
+        let src = "fn f(int x) -> int { return x * 42; }\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0040".to_string()),
+            "L0040 must fire for magic number 42 in arithmetic; got {:?}",
+            codes(src)
+        );
+    }
+
+    #[test]
+    fn l0040_silent_for_trivial_literal_zero() {
+        let src = "fn f(int x) -> int { return x + 0; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0040".to_string()),
+            "L0040 must not fire for literal 0"
+        );
+    }
+
+    #[test]
+    fn l0040_silent_for_trivial_literal_one() {
+        let src = "fn f(int x) -> int { return x + 1; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0040".to_string()),
+            "L0040 must not fire for literal 1"
+        );
+    }
+
+    #[test]
+    fn l0040_silent_for_power_of_two() {
+        let src = "fn f(int x) -> int { return x * 8; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0040".to_string()),
+            "L0040 must not fire for power-of-two literal 8"
+        );
+    }
+
+    #[test]
+    fn l0040_silent_when_function_has_ensures() {
+        // Function has an `ensures` contract — magic number rule is suppressed.
+        let src = "fn f(int x) -> int ensures result > 0 { return x * 42; }\nf(1);\n";
+        assert!(
+            !codes(src).contains(&"L0040".to_string()),
+            "L0040 must not fire when the function has an ensures contract"
+        );
+    }
+
+    #[test]
+    fn l0040_fires_on_non_power_of_two_large_literal() {
+        let src = "fn f(int x) -> int { return x + 100; }\nf(1);\n";
+        assert!(
+            codes(src).contains(&"L0040".to_string()),
+            "L0040 must fire for magic number 100; got {:?}",
+            codes(src)
         );
     }
 }
