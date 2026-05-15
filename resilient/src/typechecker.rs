@@ -6479,8 +6479,20 @@ impl TypeChecker {
             }
 
             Node::IndexExpression { target, index, .. } => {
-                let _ = self.check_node(target)?;
-                let _ = self.check_node(index)?;
+                let tgt_ty = self.check_node(target)?;
+                let idx_ty = self.check_node(index)?;
+                // RES-405: array/string indexing must use an integer
+                // index. Reject obvious type errors like `arr["key"]`
+                // while keeping Map targets permissive (Any index).
+                if matches!(tgt_ty, Type::Array | Type::String)
+                    && !matches!(idx_ty, Type::Int | Type::Any)
+                    && !is_pinned_int(&idx_ty)
+                {
+                    return Err(format!(
+                        "index expression requires an integer index, got {}",
+                        idx_ty
+                    ));
+                }
                 // Element type not tracked at MVP.
                 Ok(Type::Any)
             }
@@ -6611,7 +6623,20 @@ impl TypeChecker {
             }
 
             Node::Assignment { name, value, .. } => {
-                let _ = self.check_node(value)?;
+                let val_ty = self.check_node(value)?;
+                // RES-405: validate the new value type against the
+                // variable's currently-bound type. Rejects patterns like
+                //   let x: int = 5; x = "oops";
+                // while staying permissive for Any-typed variables
+                // (unresolved generics, dynamic containers).
+                if let Some(var_ty) = self.env.get(name)
+                    && !compatible(&var_ty, &val_ty)
+                {
+                    return Err(format!(
+                        "cannot assign {} to variable `{}` of type {}",
+                        val_ty, name, var_ty
+                    ));
+                }
                 // RES-063: any reassignment kills const-tracking. We
                 // could try to re-track if RHS is foldable, but
                 // mid-function mutation is rare and the conservative
@@ -10727,5 +10752,129 @@ fn f() -> void {
             err.contains("no field") || err.contains("available"),
             "expected field-not-found error; got: {err}"
         );
+    }
+}
+
+// ── RES-405: assignment type validation ───────────────────────────────────────
+
+#[cfg(test)]
+mod res405_assignment_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn assign_same_type_ok() {
+        check_ok(r#"
+fn f() -> void {
+    let x = 5;
+    x = 10;
+}
+"#);
+    }
+
+    #[test]
+    fn assign_wrong_type_errors() {
+        let err = check_err(r#"
+fn f() -> void {
+    let x = 5;
+    x = "hello";
+}
+"#);
+        assert!(
+            err.contains("cannot assign") || err.contains("type"),
+            "expected type mismatch on assignment; got: {err}"
+        );
+    }
+
+    #[test]
+    fn assign_to_string_var_ok() {
+        check_ok(r#"
+fn f() -> void {
+    let s = "hello";
+    s = "world";
+}
+"#);
+    }
+
+    #[test]
+    fn assign_int_to_string_var_errors() {
+        let err = check_err(r#"
+fn f() -> void {
+    let s = "hello";
+    s = 42;
+}
+"#);
+        assert!(
+            err.contains("cannot assign") || err.contains("type"),
+            "expected type mismatch on string assignment; got: {err}"
+        );
+    }
+}
+
+// ── RES-405 follow-up: index expression integer validation ────────────────────
+
+#[cfg(test)]
+mod res405_index_type_check {
+    use crate::parse;
+    use crate::typechecker::TypeChecker;
+
+    fn check_ok(src: &str) {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect("expected no type error");
+    }
+
+    fn check_err(src: &str) -> String {
+        let (prog, errs) = parse(src);
+        assert!(errs.is_empty(), "parse errors: {:?}", errs);
+        TypeChecker::new()
+            .check_program_with_source(&prog, "test.rz")
+            .expect_err("expected type error")
+    }
+
+    #[test]
+    fn int_index_ok() {
+        check_ok(r#"fn f(array a) -> void { let _x = a[0]; }"#);
+    }
+
+    #[test]
+    fn float_index_errors() {
+        let err = check_err(r#"fn f(array a) -> void { let _x = a[1.0]; }"#);
+        assert!(
+            err.contains("integer index") || err.contains("index"),
+            "expected integer-index error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn string_index_errors() {
+        let err = check_err(r#"fn f(array a) -> void { let _x = a["key"]; }"#);
+        assert!(
+            err.contains("integer index") || err.contains("index"),
+            "expected integer-index error for string index; got: {err}"
+        );
+    }
+
+    #[test]
+    fn string_char_int_index_ok() {
+        check_ok(r#"fn f(string s) -> void { let _x = s[0]; }"#);
     }
 }
